@@ -12,11 +12,11 @@ lint:
 
 # Tests
 test:
-	python -m pytest tests/ -v
+	PYTHONPATH=src python -m pytest tests/ -v
 
 # Gate: run tests and write handoff.yaml
 gate:
-	@python -m pytest tests/ -q && \
+	@PYTHONPATH=src python -m pytest tests/ -q && \
 	python -c "\
 import yaml, pathlib; \
 pathlib.Path('handoff.yaml').write_text(yaml.dump({'gate_decision': 'PASS', 'scope_completed': [], 'deferred_followups': [], 'next_recommended_step': 'merge'})); \

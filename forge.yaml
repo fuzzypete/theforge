@@ -7,7 +7,7 @@ workspace:
   branch_pattern: "feat/{slug}"
 
 validation:
-  gate_command: "python -m pytest tests/ -q && echo 'gate_decision: PASS' > handoff.yaml"
+  gate_command: "PYTHONPATH=src python -m pytest tests/ -q && echo 'gate_decision: PASS' > handoff.yaml"
   handoff_file: "handoff.yaml"
   gate_decision_key: "gate_decision"
 
