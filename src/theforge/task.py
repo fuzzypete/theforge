@@ -53,7 +53,10 @@ def build_dev_prompt(
 
     The orchestrator fills ALL placeholders. The agent makes zero process decisions.
     """
-    file_scope_str = "\n".join(f"- `{p}`" for p in task.file_scope)
+    if task.file_scope:
+        file_scope_str = "\n".join(f"- `{p}`" for p in task.file_scope)
+    else:
+        file_scope_str = "- (no scope restriction — all project files)"
 
     feedback_section = ""
     if review_findings:

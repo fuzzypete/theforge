@@ -207,7 +207,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     icon = "✓" if result.success else "✗"
     print(f"  {icon} {result.message}", file=sys.stderr)
     print(f"  Audit log: {audit_path}", file=sys.stderr)
-    print(f"  Total cost: ${result.state.total_agent_cost:.3f}", file=sys.stderr)
+    print(f"  Total cost: ${result.state.total_cost:.3f}", file=sys.stderr)
     print(f"{'=' * 60}", file=sys.stderr)
 
     return 0 if result.success else 1

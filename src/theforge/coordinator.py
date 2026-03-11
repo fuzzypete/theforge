@@ -32,6 +32,10 @@ import yaml
 from .config import ForgeConfig
 from .review import ReviewResult, findings_to_markdown, parse_review_output
 from .runner import AgentResult, log_agent_result, run_agent
+
+# Sentinel for review cost tracking — ReviewResult doesn't carry cost,
+# so we store review AgentResults separately from parsed ReviewResults.
+
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 
@@ -58,6 +62,7 @@ class CoordinatorState:
     review_cycle: int = 0  # which dev→review loop we're on
     dev_iteration: int = 0  # retries within the current review cycle
     dev_results: list[AgentResult] = field(default_factory=list)
+    review_agent_results: list[AgentResult] = field(default_factory=list)
     review_results: list[ReviewResult] = field(default_factory=list)
     gate_decisions: list[str] = field(default_factory=list)
     last_review_findings: str | None = None
@@ -65,8 +70,16 @@ class CoordinatorState:
     error: str | None = None
 
     @property
-    def total_agent_cost(self) -> float:
+    def total_dev_cost(self) -> float:
         return sum(r.cost_usd for r in self.dev_results)
+
+    @property
+    def total_review_cost(self) -> float:
+        return sum(r.cost_usd for r in self.review_agent_results)
+
+    @property
+    def total_cost(self) -> float:
+        return self.total_dev_cost + self.total_review_cost
 
 
 @dataclass
@@ -193,9 +206,9 @@ def _run_gate(
 # ── Diff extraction ─────────────────────────────────────────────────
 
 
-def _get_diff(workspace_path: Path) -> str:
-    """Get the diff of changes on the current branch vs main."""
-    ok, diff = _run_shell("git diff main...HEAD", workspace_path)
+def _get_diff(workspace_path: Path, base_branch: str = "main") -> str:
+    """Get the diff of changes on the current branch vs the base branch."""
+    ok, diff = _run_shell(f"git diff {base_branch}...HEAD", workspace_path)
     if ok and diff:
         return diff
 
@@ -342,7 +355,7 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         state.review_cycle += 1
         _log_phase(state.phase, f"cycle={state.review_cycle}")
 
-        diff_text = _get_diff(workspace_path)
+        diff_text = _get_diff(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
 
         review_prompt = build_review_prompt(
@@ -357,6 +370,7 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
             profile=config.review_profile,
             working_dir=workspace_path,
         )
+        state.review_agent_results.append(review_result)
         log_agent_result(review_result, "REVIEW")
 
         parsed_review = parse_review_output(review_result.output)
@@ -364,6 +378,23 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
 
         if parsed_review.parse_errors:
             _log(f"Review parse errors: {parsed_review.parse_errors}")
+            # Schema violations override the verdict — treat as REQUEST_CHANGES
+            # to prevent malformed review output from bypassing the gate
+            if parsed_review.verdict == "APPROVE":
+                _log("Overriding APPROVE → REQUEST_CHANGES due to schema errors")
+                parsed_review = ReviewResult(
+                    verdict="REQUEST_CHANGES",
+                    summary=f"SCHEMA ERROR: {parsed_review.summary}",
+                    findings=parsed_review.findings,
+                    spec_matches=parsed_review.spec_matches,
+                    spec_mismatches=parsed_review.spec_mismatches,
+                    test_adequate=parsed_review.test_adequate,
+                    test_gaps=parsed_review.test_gaps,
+                    parse_errors=parsed_review.parse_errors,
+                    raw_yaml=parsed_review.raw_yaml,
+                )
+                # Replace the stored result with the corrected one
+                state.review_results[-1] = parsed_review
 
         _log(f"Review verdict: {parsed_review.verdict}")
         _log(f"  Summary: {parsed_review.summary}")
@@ -437,7 +468,9 @@ def generate_audit_log(
             "gate_decisions": state.gate_decisions,
         },
         "cost": {
-            "total_usd": state.total_agent_cost,
+            "total_usd": state.total_cost,
+            "dev_usd": state.total_dev_cost,
+            "review_usd": state.total_review_cost,
             "dev_invocations": len(state.dev_results),
             "review_invocations": len(state.review_results),
         },

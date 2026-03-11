@@ -20,7 +20,7 @@ class ModelProfile:
     name: str  # "dev", "review"
     cli: str  # "claude" (future: "codex", "gemini")
     model: str  # "sonnet", "opus", "claude-sonnet-4-6"
-    budget_usd: float  # per-invocation cost ceiling
+    budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
 
@@ -32,6 +32,7 @@ class WorkspaceConfig:
     create_command: str  # shell command template, {slug} is replaced
     path_pattern: str  # path template, {slug} is replaced
     branch_pattern: str  # branch name template, {slug} is replaced
+    base_branch: str = "main"  # base branch for diff comparison
 
 
 @dataclass(frozen=True)
@@ -103,14 +104,15 @@ DEFAULT_VALIDATION = ValidationConfig(
 
 def _parse_profile(name: str, data: dict[str, Any]) -> ModelProfile:
     """Parse a model profile from forge.yaml data."""
+    default = DEFAULT_DEV_PROFILE if name == "dev" else DEFAULT_REVIEW_PROFILE
     tools = data.get("allowed_tools", [])
     return ModelProfile(
         name=name,
-        cli=data.get("cli", "claude"),
-        model=data.get("model", "sonnet" if name == "dev" else "opus"),
-        budget_usd=float(data.get("budget_usd", 2.0 if name == "dev" else 1.0)),
-        timeout_seconds=int(data.get("timeout_seconds", 900 if name == "dev" else 300)),
-        allowed_tools=tuple(tools) if tools else DEFAULT_DEV_PROFILE.allowed_tools,
+        cli=data.get("cli", default.cli),
+        model=data.get("model", default.model),
+        budget_usd=float(data.get("budget_usd", default.budget_usd)),
+        timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
+        allowed_tools=tuple(tools) if tools else default.allowed_tools,
     )
 
 
@@ -131,6 +133,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         create_command=ws_data.get("create_command", DEFAULT_WORKSPACE.create_command),
         path_pattern=ws_data.get("path_pattern", DEFAULT_WORKSPACE.path_pattern),
         branch_pattern=ws_data.get("branch_pattern", DEFAULT_WORKSPACE.branch_pattern),
+        base_branch=ws_data.get("base_branch", DEFAULT_WORKSPACE.base_branch),
     )
 
     # Validation

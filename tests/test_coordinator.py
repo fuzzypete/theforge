@@ -270,6 +270,84 @@ class TestCoordinatorEscalation:
         assert "cycles" in result.message.lower() or "exhausted" in result.message.lower()
 
 
+class TestCoordinatorSchemaErrorOverride:
+    """Test that APPROVE with schema errors is overridden to REQUEST_CHANGES."""
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_approve_with_schema_errors_triggers_retry(self, mock_shell, mock_agent, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        _write_handoff(workspace, "PASS")
+
+        # Review YAML that says APPROVE but is missing required fields
+        # (no spec_compliance or test_coverage → schema errors)
+        malformed_approve = """\
+```yaml
+verdict: APPROVE
+summary: "Looks good."
+findings: []
+```
+"""
+        call_count = {"agent": 0}
+
+        def agent_side_effect(**kwargs):
+            call_count["agent"] += 1
+            prompt = kwargs.get("prompt", "")
+            if "reviewing" in prompt.lower() or "reviewer" in prompt.lower():
+                if call_count["agent"] <= 2:
+                    # First review: malformed APPROVE (should be overridden)
+                    return _make_agent_result(output=malformed_approve)
+                # Second review: proper APPROVE
+                return _make_agent_result(output=APPROVE_REVIEW)
+            _write_handoff(workspace, "PASS")
+            return _make_agent_result()
+
+        mock_agent.side_effect = agent_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.review_cycle == 2  # had to retry due to schema override
+
+
+class TestCoordinatorCostTracking:
+    """Test that both dev and review costs are tracked."""
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_total_cost_includes_review(self, mock_shell, mock_agent, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        _write_handoff(workspace, "PASS")
+
+        dev_result = AgentResult(
+            success=True, output="Done.", session_id="s1",
+            cost_usd=0.75, exit_code=0, raw={},
+        )
+        review_result = AgentResult(
+            success=True, output=APPROVE_REVIEW, session_id="s2",
+            cost_usd=1.25, exit_code=0, raw={},
+        )
+
+        mock_agent.side_effect = [dev_result, review_result]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.total_dev_cost == 0.75
+        assert result.state.total_review_cost == 1.25
+        assert result.state.total_cost == 2.00
+
+
 class TestCoordinatorWorkspaceFailure:
     """Test that workspace creation failure escalates immediately."""
 
