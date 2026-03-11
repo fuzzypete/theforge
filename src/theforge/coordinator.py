@@ -290,6 +290,19 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         state.dev_session_id = dev_result.session_id
         log_agent_result(dev_result, "DEV")
 
+        if state.total_dev_cost > config.dev_profile.budget_usd:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
+                f"(limit ${config.dev_profile.budget_usd:.4f})"
+            )
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
+
         if not dev_result.success:
             _log(f"Dev agent failed (exit={dev_result.exit_code})")
             # Don't immediately escalate — try validation anyway,
@@ -374,6 +387,19 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         )
         state.review_agent_results.append(review_result)
         log_agent_result(review_result, "REVIEW")
+
+        if state.total_review_cost > config.review_profile.budget_usd:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Review budget exceeded: spent ${state.total_review_cost:.4f} "
+                f"(limit ${config.review_profile.budget_usd:.4f})"
+            )
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
 
         parsed_review = parse_review_output(review_result.output)
         state.review_results.append(parsed_review)
