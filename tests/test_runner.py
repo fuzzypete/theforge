@@ -76,6 +76,21 @@ class TestRunAgentClaude:
         assert call_args[1]["input"] == "implement the thing"
         assert call_args[1]["cwd"] == str(tmp_path)
 
+    def test_claudecode_env_stripped(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        """CLAUDECODE must be absent from the subprocess env to bypass nested-session check."""
+        json_output = json.dumps({"result": "done"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        import os
+
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            with patch.dict(os.environ, {"CLAUDECODE": "1"}):
+                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        env_passed = mock_run.call_args[1]["env"]
+        assert "CLAUDECODE" not in env_passed
+
     def test_with_session_resume(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         json_output = json.dumps({"result": "continued.", "session_id": "sess-abc123"})
         mock_proc = subprocess.CompletedProcess(

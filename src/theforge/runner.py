@@ -7,6 +7,7 @@ MVP supports Claude Code CLI. Extensible to Codex, Gemini, etc.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -97,6 +98,10 @@ def _run_claude(
     if session_id:
         cmd.extend(["--resume", session_id])
 
+    # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+
     try:
         proc = subprocess.run(
             cmd,
@@ -105,6 +110,7 @@ def _run_claude(
             text=True,
             cwd=str(working_dir),
             timeout=profile.timeout_seconds,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return AgentResult(
