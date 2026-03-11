@@ -31,11 +31,14 @@ import yaml
 
 from .config import ForgeConfig
 from .review import ReviewResult, findings_to_markdown, parse_review_output
-from .runner import AgentResult, log_agent_result, run_agent
-
-# Sentinel for review cost tracking — ReviewResult doesn't carry cost,
-# so we store review AgentResults separately from parsed ReviewResults.
-from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
+from .runner import AgentResult, log_agent_result, run_agent, run_agent_pool
+from .task import (
+    TaskSpec,
+    build_dev_prompt,
+    build_review_prompt,
+    build_synthesis_prompt,
+    load_spec,
+)
 
 
 class Phase(Enum):
@@ -51,6 +54,16 @@ class Phase(Enum):
 
 
 @dataclass
+class ReviewCycleMetadata:
+    """Per-cycle metadata for audit logging."""
+
+    pool_models: list[str]  # profile names of all pool agents
+    successful: list[str]  # profile names that succeeded
+    failed: list[str]  # profile names that failed
+    synthesized: bool  # whether synthesis ran
+
+
+@dataclass
 class CoordinatorState:
     """Mutable state tracking for a single task execution."""
 
@@ -63,6 +76,7 @@ class CoordinatorState:
     dev_results: list[AgentResult] = field(default_factory=list)
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_results: list[ReviewResult] = field(default_factory=list)
+    review_cycle_metadata: list[ReviewCycleMetadata] = field(default_factory=list)
     gate_decisions: list[str] = field(default_factory=list)
     last_review_findings: str | None = None
     human_feedback: str | None = None
@@ -242,7 +256,8 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
     This is the main entry point. It creates a workspace, runs the dev agent,
-    validates output, runs the review agent, and loops until done or exhausted.
+    validates output, runs the review pool (+synthesis if >1 reviewer), and
+    loops until done or exhausted.
 
     Every transition is deterministic. No LLM makes process decisions.
     """
@@ -378,7 +393,8 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         # ── REVIEW ────────────────────────────────────────────
         state.phase = Phase.REVIEW
         state.review_cycle += 1
-        _log_phase(state.phase, f"cycle={state.review_cycle}")
+        pool_size = len(config.review_pool)
+        _log_phase(state.phase, f"cycle={state.review_cycle} pool={pool_size}")
 
         diff_text = _get_diff(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
@@ -390,20 +406,57 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
             handoff_content=handoff_content,
         )
 
-        review_result = run_agent(
+        # Run all pool reviewers (sequentially for MVP)
+        _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+        pool_results = run_agent_pool(
             prompt=review_prompt,
-            profile=config.review_profile,
+            profiles=config.review_pool,
             working_dir=workspace_path,
         )
-        state.review_agent_results.append(review_result)
-        log_agent_result(review_result, "REVIEW")
+        for r in pool_results:
+            state.review_agent_results.append(r)
+            log_agent_result(r, f"REVIEW/{r.profile_name}")
 
-        if state.total_review_cost > config.review_profile.budget_usd:
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Review budget exceeded: spent ${state.total_review_cost:.4f} "
-                f"(limit ${config.review_profile.budget_usd:.4f})"
+        # Per-profile budget enforcement (cumulative across cycles)
+        for profile in config.review_pool:
+            profile_cost = sum(
+                r.cost_usd for r in state.review_agent_results if r.profile_name == profile.name
             )
+            if profile_cost > profile.budget_usd:
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"Review budget exceeded for {profile.name}: "
+                    f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
+                )
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
+
+        successful = [r for r in pool_results if r.success]
+        failed_results = [r for r in pool_results if not r.success]
+
+        for f in failed_results:
+            _log(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
+
+        # Create metadata now and append immediately — mutations will be visible
+        # through the stored reference (P2 fix: metadata present on all early returns)
+        meta = ReviewCycleMetadata(
+            pool_models=[p.name for p in config.review_pool],
+            successful=[r.profile_name for r in successful],
+            failed=[r.profile_name for r in failed_results],
+            synthesized=False,
+        )
+        state.review_cycle_metadata.append(meta)
+
+        if not successful:
+            state.phase = Phase.ESCALATE
+            failed_desc = ", ".join(
+                f"{r.profile_name} (exit={r.exit_code})" for r in failed_results
+            )
+            state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
             return CoordinatorResult(
                 success=False,
                 phase=state.phase,
@@ -411,7 +464,76 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
                 message=state.error,
             )
 
-        parsed_review = parse_review_output(review_result.output)
+        # Determine the output to parse as the final review verdict
+        if config.synthesis_profile is None or len(successful) == 1:
+            # Pool of 1, or degraded to 1 successful reviewer — no synthesis
+            if len(failed_results) > 0:
+                _log(
+                    f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
+                    "skipping synthesis"
+                )
+            synthesis_output = successful[0].output
+
+        else:
+            # Multi-model: run synthesis over all successful outputs
+            meta.synthesized = True  # mutate in place; already in state.review_cycle_metadata
+            _log(
+                f"Synthesizing {len(successful)} review outputs "
+                f"(+{len(failed_results)} failed excluded)"
+            )
+            synthesis_prompt = build_synthesis_prompt(
+                task,
+                review_outputs=[r.output for r in successful],
+                review_names=[r.profile_name for r in successful],
+                spec_content=spec_content,
+                failed_count=len(failed_results),
+                total_count=pool_size,
+            )
+            synthesis_result = run_agent(
+                prompt=synthesis_prompt,
+                profile=config.synthesis_profile,
+                working_dir=workspace_path,
+            )
+            # Tag with profile name using dataclasses.replace
+            from dataclasses import replace as _replace
+
+            synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+
+            state.review_agent_results.append(synthesis_result)
+            log_agent_result(synthesis_result, "SYNTHESIS")
+
+            # Synthesis budget enforcement
+            if config.synthesis_profile is not None:
+                synth_cost = sum(
+                    r.cost_usd for r in state.review_agent_results if r.profile_name == "synthesis"
+                )
+                if synth_cost > config.synthesis_profile.budget_usd:
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Synthesis budget exceeded: "
+                        f"spent ${synth_cost:.4f} "
+                        f"(limit ${config.synthesis_profile.budget_usd:.4f})"
+                    )
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+
+            if not synthesis_result.success:
+                state.phase = Phase.ESCALATE
+                state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
+
+            synthesis_output = synthesis_result.output
+
+        parsed_review = parse_review_output(synthesis_output)
         state.review_results.append(parsed_review)
 
         if parsed_review.parse_errors:
@@ -491,6 +613,28 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
     This is the orchestrator's own handoff — a complete record of what happened.
     """
     state = result.state
+    # Build reviews list from cycle metadata (primary) joined with parsed results
+    reviews = []
+    for i, meta in enumerate(state.review_cycle_metadata):
+        entry: dict = {
+            "cycle": i + 1,
+            "pool_models": meta.pool_models,
+            "successful": meta.successful,
+            "failed": meta.failed,
+            "synthesized": meta.synthesized,
+        }
+        if i < len(state.review_results):
+            r = state.review_results[i]
+            entry.update(
+                {
+                    "verdict": r.verdict,
+                    "summary": r.summary,
+                    "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
+                    "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
+                }
+            )
+        reviews.append(entry)
+
     return {
         "forge_version": "0.1.0",
         "task": {
@@ -517,17 +661,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "dev_usd": state.total_dev_cost,
             "review_usd": state.total_review_cost,
             "dev_invocations": len(state.dev_results),
-            "review_invocations": len(state.review_results),
+            "review_invocations": len(state.review_agent_results),
         },
-        "reviews": [
-            {
-                "cycle": i + 1,
-                "verdict": r.verdict,
-                "summary": r.summary,
-                "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
-                "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
-            }
-            for i, r in enumerate(state.review_results)
-        ],
+        "reviews": reviews,
         "error": state.error,
     }

@@ -10,6 +10,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,7 @@ class AgentResult:
     cost_usd: float  # invocation cost
     exit_code: int  # raw exit code
     raw: dict[str, Any]  # full parsed JSON (if available)
+    profile_name: str = ""  # identifies which profile produced this result
 
 
 # ── Runner dispatch ───────────────────────────────────────────────────
@@ -58,6 +61,7 @@ def run_agent(
             cost_usd=0.0,
             exit_code=-1,
             raw={},
+            profile_name=profile.name,
         )
 
     return runner_fn(
@@ -66,6 +70,20 @@ def run_agent(
         working_dir=working_dir,
         session_id=session_id,
     )
+
+
+def run_agent_pool(
+    *,
+    prompt: str,
+    profiles: list[ModelProfile],
+    working_dir: Path,
+) -> list[AgentResult]:
+    """Run multiple agents sequentially with the same prompt.
+
+    Returns results in the same order as the input profiles list.
+    Each agent runs independently with no shared context.
+    """
+    return [run_agent(prompt=prompt, profile=p, working_dir=working_dir) for p in profiles]
 
 
 # ── Claude Code CLI ──────────────────────────────────────────────────
@@ -81,7 +99,8 @@ def _run_claude(
     """Invoke `claude -p --output-format json` as a subprocess.
 
     The prompt is passed via stdin to avoid shell escaping issues
-    with large spec content.
+    with large spec content. Progress heartbeats are printed to stderr
+    every 30 seconds so the user knows the agent is still running.
     """
     cmd: list[str] = [
         "claude",
@@ -102,34 +121,81 @@ def _run_claude(
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            cwd=str(working_dir),
-            timeout=profile.timeout_seconds,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return AgentResult(
-            success=False,
-            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
-            session_id=None,
-            cost_usd=0.0,
-            exit_code=-1,
-            raw={},
-        )
-    except FileNotFoundError:
-        return AgentResult(
-            success=False,
-            output="ERROR: 'claude' CLI not found. Is Claude Code installed?",
-            session_id=None,
-            cost_usd=0.0,
-            exit_code=-1,
-            raw={},
-        )
+    label = profile.name or f"{profile.cli}/{profile.model}"
+    print(
+        f"[forge]   Starting {label} "
+        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    # Run subprocess in a background thread so we can print progress heartbeats
+    # every 30s while waiting. The mock in tests returns immediately, so the
+    # heartbeat loop never fires during test runs.
+    result_holder: list[subprocess.CompletedProcess[str]] = []
+    exc_holder: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                cwd=str(working_dir),
+                timeout=profile.timeout_seconds,
+                env=env,
+            )
+            result_holder.append(proc)
+        except BaseException as e:
+            exc_holder.append(e)
+
+    start = time.monotonic()
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    while thread.is_alive():
+        thread.join(timeout=30)
+        if thread.is_alive():
+            elapsed = int(time.monotonic() - start)
+            print(
+                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    elapsed = time.monotonic() - start
+
+    if exc_holder:
+        exc = exc_holder[0]
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return AgentResult(
+                success=False,
+                output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+            )
+        if isinstance(exc, FileNotFoundError):
+            return AgentResult(
+                success=False,
+                output="ERROR: 'claude' CLI not found. Is Claude Code installed?",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+            )
+        raise exc  # unexpected exception — propagate
+
+    proc = result_holder[0]
+    print(
+        f"[forge]   ... {label} done ({elapsed:.0f}s)",
+        file=sys.stderr,
+        flush=True,
+    )
 
     # Parse JSON output
     result_json: dict[str, Any] = {}
@@ -144,6 +210,7 @@ def _run_claude(
             cost_usd=0.0,
             exit_code=proc.returncode,
             raw={},
+            profile_name=profile.name,
         )
 
     try:
@@ -158,6 +225,7 @@ def _run_claude(
         cost_usd=cost,
         exit_code=proc.returncode,
         raw=result_json,
+        profile_name=profile.name,
     )
 
 

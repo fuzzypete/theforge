@@ -188,11 +188,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     task = _build_task(spec_path, slug=args.slug)
 
     print("TheForge v0.1.0", file=sys.stderr)
-    print(f"  Project:   {config.project}", file=sys.stderr)
-    print(f"  Task:      {task.name}", file=sys.stderr)
-    print(f"  Slug:      {task.slug}", file=sys.stderr)
-    print(f"  Dev model: {config.dev_profile.model}", file=sys.stderr)
-    print(f"  Rev model: {config.review_profile.model}", file=sys.stderr)
+    print(f"  Project:    {config.project}", file=sys.stderr)
+    print(f"  Task:       {task.name}", file=sys.stderr)
+    print(f"  Slug:       {task.slug}", file=sys.stderr)
+    print(f"  Dev model:  {config.dev_profile.model}", file=sys.stderr)
+    if len(config.review_pool) == 1:
+        print(f"  Rev model:  {config.review_pool[0].model}", file=sys.stderr)
+    else:
+        pool_info = ", ".join(f"{p.name}({p.model})" for p in config.review_pool)
+        print(f"  Rev pool:   {pool_info}", file=sys.stderr)
+        if config.synthesis_profile:
+            print(f"  Synthesis:  {config.synthesis_profile.model}", file=sys.stderr)
     print(f"  Max cycles: {config.retry.max_review_cycles}", file=sys.stderr)
     print(f"  Max iters:  {config.retry.max_dev_iterations}", file=sys.stderr)
     print(file=sys.stderr)

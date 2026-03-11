@@ -147,6 +147,102 @@ def build_dev_prompt(
     """)
 
 
+# ── Synthesis prompt ──────────────────────────────────────────────────
+
+
+def build_synthesis_prompt(
+    task: TaskSpec,
+    review_outputs: list[str],
+    review_names: list[str],
+    spec_content: str,
+    *,
+    failed_count: int = 0,
+    total_count: int | None = None,
+) -> str:
+    """Build the synthesis agent prompt.
+
+    The synthesis agent reads N independent reviews of the same diff and
+    produces a single reconciled ReviewResult. Attribution uses profile
+    name (not model) to handle cases where multiple profiles share a model.
+    """
+    # Build delimited review sections
+    review_sections = []
+    for name, output in zip(review_names, review_outputs):
+        review_sections.append(
+            f'## Review from "{name}"\n'
+            f"--- BEGIN REVIEW OUTPUT ---\n"
+            f"{output}\n"
+            f"--- END REVIEW OUTPUT ---"
+        )
+    reviews_block = "\n\n".join(review_sections)
+
+    degraded_note = ""
+    if failed_count > 0 and total_count is not None:
+        degraded_note = (
+            f"\n**Note:** {failed_count} of {total_count} reviewers failed and "
+            f"their outputs are excluded from this synthesis.\n"
+        )
+
+    return dedent(f"""\
+        You are synthesizing {len(review_outputs)} independent code reviews of **{task.name}**.
+
+        ## Your Role
+
+        You have received {len(review_outputs)} independent reviews of the same code diff.
+        The reviewers worked blind — they did not see each other's output.
+        Your job is to reconcile these reviews into a single authoritative verdict.
+        {degraded_note}
+        ## Spec
+
+        {spec_content}
+
+        ## Independent Reviews
+
+        {reviews_block}
+
+        ## Synthesis Instructions
+
+        1. **Agreements** — findings reported by multiple reviewers carry high confidence.
+        2. **Disagreements** — divergence between reviewers should be noted in your summary.
+        3. **Unique contributions** — a finding from only one reviewer is still valid if
+           well-reasoned.
+        4. **P1 rule** — if ANY reviewer identified a reproducible P1 finding, your verdict
+           MUST be REQUEST_CHANGES regardless of other reviewers' verdicts.
+        5. Produce a reconciled set of findings. Do not duplicate the same finding multiple times.
+
+        ## Output Format
+
+        You MUST output ONLY a YAML block. No prose before or after.
+        Start your response with ```yaml and end with ```.
+
+        ```yaml
+        verdict: APPROVE | REQUEST_CHANGES
+        summary: "<one-line summary — note divergence if reviewers disagreed significantly>"
+        findings:
+          - severity: P1 | P2
+            file: "<file path>"
+            line: <line number or null>
+            description: "<what is wrong>"
+            suggestion: "<how to fix it>"
+        spec_compliance:
+          matches_spec: true | false
+          mismatches:
+            - "<description of mismatch>"
+        test_coverage:
+          adequate: true | false
+          gaps:
+            - "<description of missing test>"
+        ```
+
+        ## Rules
+
+        - verdict MUST be `APPROVE` if there are zero P1 findings
+        - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists
+        - Be concrete: cite file + line + what is wrong + how to fix
+        - Do NOT invent issues. Only report findings with evidence from the reviews.
+    """)
+
+
 # ── Review prompt ─────────────────────────────────────────────────────
 
 

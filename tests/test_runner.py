@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from theforge.config import ModelProfile
-from theforge.runner import AgentResult, log_agent_result, run_agent
+from theforge.runner import AgentResult, log_agent_result, run_agent, run_agent_pool
 
 
 @pytest.fixture
@@ -63,6 +63,7 @@ class TestRunAgentClaude:
         assert result.session_id == "sess-abc123"
         assert result.cost_usd == 0.42
         assert result.exit_code == 0
+        assert result.profile_name == "dev"
 
         # Verify CLI args
         call_args = mock_run.call_args
@@ -185,6 +186,19 @@ class TestRunAgentClaude:
         assert "not found" in result.output
         assert result.exit_code == -1
 
+    def test_profile_name_set_on_result(
+        self, review_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """AgentResult.profile_name must be set to profile.name."""
+        json_output = json.dumps({"result": "reviewed.", "cost_usd": 0.10})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="review this", profile=review_profile, working_dir=tmp_path)
+
+        assert result.profile_name == "review"
+
 
 class TestRunAgentCostCoercion:
     """Test that non-numeric cost_usd is coerced to float safely."""
@@ -239,6 +253,120 @@ class TestRunAgentUnknownCli:
         assert "Unknown CLI" in result.output
         assert "gemini" in result.output
         assert result.exit_code == -1
+        assert result.profile_name == "dev"
+
+
+class TestRunAgentPool:
+    """Test pool runner."""
+
+    def test_pool_runs_sequentially_in_order(self, tmp_path: Path) -> None:
+        """run_agent_pool returns results in profile order."""
+        profiles = [
+            ModelProfile(
+                name="reviewer-a",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="reviewer-b",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+        outputs = ["Review A output", "Review B output"]
+        call_index = {"n": 0}
+
+        def mock_run_agent(**kwargs):
+            idx = call_index["n"]
+            call_index["n"] += 1
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=True,
+                output=outputs[idx],
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+            results = run_agent_pool(
+                prompt="review this",
+                profiles=profiles,
+                working_dir=tmp_path,
+            )
+
+        assert len(results) == 2
+        assert results[0].output == "Review A output"
+        assert results[0].profile_name == "reviewer-a"
+        assert results[1].output == "Review B output"
+        assert results[1].profile_name == "reviewer-b"
+
+    def test_pool_of_one(self, tmp_path: Path) -> None:
+        """Pool with 1 profile returns a list of 1 result."""
+        profile = ModelProfile(
+            name="solo",
+            cli="claude",
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        json_output = json.dumps({"result": "solo review", "cost_usd": 0.20})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            results = run_agent_pool(
+                prompt="review this",
+                profiles=[profile],
+                working_dir=tmp_path,
+            )
+
+        assert len(results) == 1
+        assert results[0].output == "solo review"
+        assert results[0].profile_name == "solo"
+
+    def test_pool_profile_name_set_on_results(self, tmp_path: Path) -> None:
+        """Each result in the pool has profile_name matching the profile."""
+        profiles = [
+            ModelProfile(
+                name="r1",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="r2",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+        json_output = json.dumps({"result": "done", "cost_usd": 0.10})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            results = run_agent_pool(
+                prompt="review this",
+                profiles=profiles,
+                working_dir=tmp_path,
+            )
+
+        assert results[0].profile_name == "r1"
+        assert results[1].profile_name == "r2"
 
 
 class TestLogAgentResult:

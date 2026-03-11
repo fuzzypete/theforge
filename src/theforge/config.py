@@ -17,7 +17,7 @@ import yaml
 class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
-    name: str  # "dev", "review"
+    name: str  # "dev", "review", or pool entry name like "opus-reviewer"
     cli: str  # "claude" (future: "codex", "gemini")
     model: str  # "sonnet", "opus", "claude-sonnet-4-6"
     budget_usd: float  # cumulative cost ceiling across all invocations
@@ -61,8 +61,14 @@ class ForgeConfig:
     workspace: WorkspaceConfig
     validation: ValidationConfig
     dev_profile: ModelProfile
-    review_profile: ModelProfile
+    review_pool: list[ModelProfile]  # all reviewers; at least 1
+    synthesis_profile: ModelProfile | None  # None when pool size <= 1
     retry: RetryPolicy
+
+    @property
+    def review_profile(self) -> ModelProfile:
+        """Backward-compat: returns review_pool[0]."""
+        return self.review_pool[0]
 
 
 # ── Defaults ──────────────────────────────────────────────────────────
@@ -98,13 +104,21 @@ DEFAULT_VALIDATION = ValidationConfig(
     gate_decision_key="gate_decision",
 )
 
+# CLIs supported by the runner. Unsupported CLIs are rejected at config load.
+SUPPORTED_CLIS: frozenset[str] = frozenset({"claude"})
+
 
 # ── Loader ────────────────────────────────────────────────────────────
 
 
-def _parse_profile(name: str, data: dict[str, Any]) -> ModelProfile:
-    """Parse a model profile from forge.yaml data."""
-    default = DEFAULT_DEV_PROFILE if name == "dev" else DEFAULT_REVIEW_PROFILE
+def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> ModelProfile:
+    """Parse a model profile from forge.yaml data.
+
+    role controls which defaults to apply: "dev" uses DEFAULT_DEV_PROFILE,
+    anything else uses DEFAULT_REVIEW_PROFILE. This prevents pool entries
+    named "dev" from accidentally inheriting dev-level tools/timeouts.
+    """
+    default = DEFAULT_DEV_PROFILE if role == "dev" else DEFAULT_REVIEW_PROFILE
     tools = data.get("allowed_tools")
     return ModelProfile(
         name=name,
@@ -121,6 +135,9 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     The config file path is used to derive the project root (its parent directory).
     Missing sections fall back to sensible defaults.
+
+    Raises ValueError for invalid configurations (empty pool, duplicate names,
+    unsupported CLI, missing synthesis profile when pool size > 1).
     """
     project_root = config_path.parent.resolve()
 
@@ -147,13 +164,62 @@ def load_config(config_path: Path) -> ForgeConfig:
     # Profiles
     profiles = raw.get("profiles", {})
     dev_profile = (
-        _parse_profile("dev", profiles["dev"]) if "dev" in profiles else DEFAULT_DEV_PROFILE
+        _parse_profile("dev", profiles["dev"], role="dev")
+        if "dev" in profiles
+        else DEFAULT_DEV_PROFILE
     )
-    review_profile = (
-        _parse_profile("review", profiles["review"])
-        if "review" in profiles
-        else DEFAULT_REVIEW_PROFILE
-    )
+
+    # review_pool precedence: review_pool > review > default
+    if "review_pool" in profiles:
+        pool_data = profiles["review_pool"]
+        if not isinstance(pool_data, list) or len(pool_data) == 0:
+            raise ValueError("profiles.review_pool must be a non-empty list")
+        names = [e.get("name") for e in pool_data]
+        if any(n is None for n in names):
+            raise ValueError("Each profiles.review_pool entry must have a 'name' field")
+        if len(names) != len(set(names)):
+            raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
+        for entry in pool_data:
+            cli = entry.get("cli", DEFAULT_REVIEW_PROFILE.cli)
+            if cli not in SUPPORTED_CLIS:
+                raise ValueError(
+                    f"Unsupported CLI {cli!r} in review_pool entry {entry['name']!r}. "
+                    f"Supported: {sorted(SUPPORTED_CLIS)}"
+                )
+        review_pool = [_parse_profile(e["name"], e, role="review") for e in pool_data]
+        if len(review_pool) > 1:
+            if "synthesis" not in profiles:
+                raise ValueError(
+                    "profiles.synthesis is required when review_pool has more than 1 entry"
+                )
+            synth_data = profiles["synthesis"]
+            synth_cli = synth_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
+            if synth_cli not in SUPPORTED_CLIS:
+                raise ValueError(
+                    f"Unsupported CLI {synth_cli!r} in profiles.synthesis. "
+                    f"Supported: {sorted(SUPPORTED_CLIS)}"
+                )
+            synthesis_profile: ModelProfile | None = _parse_profile(
+                "synthesis", synth_data, role="review"
+            )
+        else:
+            synthesis_profile = None
+
+    elif "review" in profiles:
+        # Backward compat: single review dict wrapped into a pool of one.
+        # CLI validation applies here too (P1 fix).
+        review_data = profiles["review"]
+        cli = review_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
+        if cli not in SUPPORTED_CLIS:
+            raise ValueError(
+                f"Unsupported CLI {cli!r} in profiles.review. Supported: {sorted(SUPPORTED_CLIS)}"
+            )
+        review_pool = [_parse_profile("review", review_data, role="review")]
+        synthesis_profile = None
+
+    else:
+        review_pool = [DEFAULT_REVIEW_PROFILE]
+        synthesis_profile = None
 
     # Retry
     retry_data = raw.get("retry", {})
@@ -168,7 +234,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         workspace=workspace,
         validation=validation,
         dev_profile=dev_profile,
-        review_profile=review_profile,
+        review_pool=review_pool,
+        synthesis_profile=synthesis_profile,
         retry=retry,
     )
 
