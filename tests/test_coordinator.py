@@ -13,6 +13,7 @@ from theforge.config import (
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
     ForgeConfig,
+    ModelProfile,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -337,7 +338,7 @@ class TestCoordinatorCostTracking:
             success=True,
             output=APPROVE_REVIEW,
             session_id="s2",
-            cost_usd=1.25,
+            cost_usd=0.90,  # within default review budget of $1.00
             exit_code=0,
             raw={},
         )
@@ -348,8 +349,152 @@ class TestCoordinatorCostTracking:
 
         assert result.success is True
         assert result.state.total_dev_cost == 0.75
-        assert result.state.total_review_cost == 1.25
-        assert result.state.total_cost == 2.00
+        assert result.state.total_review_cost == 0.90
+        assert result.state.total_cost == 1.65
+
+
+class TestCoordinatorBudgetEnforcement:
+    """Test that budget limits are enforced for dev and review agents."""
+
+    def _make_budget_config(
+        self, tmp_path: Path, dev_budget: float, review_budget: float
+    ) -> ForgeConfig:
+        """Create a config with tight budgets for testing."""
+        dev_profile = ModelProfile(
+            name=DEFAULT_DEV_PROFILE.name,
+            cli=DEFAULT_DEV_PROFILE.cli,
+            model=DEFAULT_DEV_PROFILE.model,
+            budget_usd=dev_budget,
+            timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
+            allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+        )
+        review_profile = ModelProfile(
+            name=DEFAULT_REVIEW_PROFILE.name,
+            cli=DEFAULT_REVIEW_PROFILE.cli,
+            model=DEFAULT_REVIEW_PROFILE.model,
+            budget_usd=review_budget,
+            timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+        return ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=dev_profile,
+            review_profile=review_profile,
+            retry=RetryPolicy(max_dev_iterations=3, max_review_cycles=3),
+        )
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_dev_budget_exceeded_first_call(self, mock_shell, mock_agent, tmp_path):
+        """Dev agent exceeds budget on first call → ESCALATE with budget error."""
+        config = self._make_budget_config(tmp_path, dev_budget=0.40, review_budget=1.00)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+
+        # Agent costs $0.50, budget is $0.40 → immediate escalation
+        mock_agent.return_value = AgentResult(
+            success=True,
+            output="Done.",
+            session_id="s1",
+            cost_usd=0.50,
+            exit_code=0,
+            raw={},
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "budget" in result.message.lower()
+        assert "0.5000" in result.message
+        assert "0.4000" in result.message
+        # Only one dev invocation — escalated before retry
+        assert len(result.state.dev_results) == 1
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_dev_budget_exceeded_on_retry(self, mock_shell, mock_agent, tmp_path):
+        """Dev agent exceeds budget on second call (retry) → ESCALATE."""
+        # Budget of $0.60 allows first call ($0.30) but not second ($0.60 cumulative)
+        config = self._make_budget_config(tmp_path, dev_budget=0.50, review_budget=1.00)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+
+        call_count = {"dev": 0}
+
+        def agent_side_effect(**kwargs):
+            call_count["dev"] += 1
+            if call_count["dev"] == 1:
+                # First call: gate fails so we retry
+                _write_handoff(workspace, "FAIL")
+            else:
+                _write_handoff(workspace, "PASS")
+            return AgentResult(
+                success=True,
+                output="Done.",
+                session_id="s1",
+                cost_usd=0.30,
+                exit_code=0,
+                raw={},
+            )
+
+        mock_agent.side_effect = agent_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "budget" in result.message.lower()
+        # Two dev invocations: $0.30 + $0.30 = $0.60 > $0.50
+        assert len(result.state.dev_results) == 2
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_review_budget_exceeded(self, mock_shell, mock_agent, tmp_path):
+        """Review agent exceeds budget → ESCALATE with budget error."""
+        config = self._make_budget_config(tmp_path, dev_budget=2.00, review_budget=0.40)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        _write_handoff(workspace, "PASS")
+
+        dev_result = AgentResult(
+            success=True, output="Done.", session_id="s1", cost_usd=0.10, exit_code=0, raw={}
+        )
+        review_result = AgentResult(
+            success=True,
+            output=APPROVE_REVIEW,
+            session_id="s2",
+            cost_usd=0.50,  # exceeds $0.40 budget
+            exit_code=0,
+            raw={},
+        )
+
+        mock_agent.side_effect = [dev_result, review_result]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "budget" in result.message.lower()
+        assert "0.5000" in result.message
+        assert "0.4000" in result.message
+        assert len(result.state.review_agent_results) == 1
 
 
 class TestCoordinatorWorkspaceFailure:
