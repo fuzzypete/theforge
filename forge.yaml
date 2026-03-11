@@ -1,0 +1,40 @@
+# forge.yaml — TheForge developing itself
+project: theforge
+
+workspace:
+  create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
+  path_pattern: ".forge/worktrees/{slug}"
+  branch_pattern: "feat/{slug}"
+
+validation:
+  gate_command: "python -m pytest tests/ -q && echo 'gate_decision: PASS' > handoff.yaml"
+  handoff_file: "handoff.yaml"
+  gate_decision_key: "gate_decision"
+
+profiles:
+  dev:
+    cli: claude
+    model: sonnet
+    budget_usd: 2.00
+    timeout_seconds: 900
+    allowed_tools:
+      - Read
+      - Edit
+      - Write
+      - Bash
+      - Glob
+      - Grep
+  review:
+    cli: claude
+    model: opus
+    budget_usd: 1.00
+    timeout_seconds: 300
+    allowed_tools:
+      - Read
+      - Bash
+      - Glob
+      - Grep
+
+retry:
+  max_dev_iterations: 3
+  max_review_cycles: 2

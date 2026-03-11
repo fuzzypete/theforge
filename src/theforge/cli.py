@@ -16,7 +16,7 @@ import yaml
 
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import CoordinatorResult, generate_audit_log, run_task
-from .task import TaskSpec
+from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 
 def _find_config(start: Path | None = None) -> Path | None:
@@ -88,6 +88,60 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
     return audit_path
 
 
+def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
+    """Print what would happen without invoking any agents."""
+    spec_content = load_spec(spec_path)
+    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+    branch_name = config.workspace.branch_pattern.format(slug=task.slug)
+
+    dev_prompt = build_dev_prompt(
+        task,
+        workspace_path=workspace_path,
+        branch_name=branch_name,
+        spec_content=spec_content,
+        gate_command=config.validation.gate_command,
+    )
+    review_prompt = build_review_prompt(
+        task,
+        spec_content=spec_content,
+        diff_text="(dry run — no diff available)",
+        handoff_content="(dry run — no handoff available)",
+    )
+
+    sep = "=" * 60
+    print(f"{sep}")
+    print(f"DRY RUN — no agents will be invoked")
+    print(f"{sep}\n")
+
+    print(f"Workspace command: {config.workspace.create_command.format(slug=task.slug)}")
+    print(f"Workspace path:    {workspace_path}")
+    print(f"Branch:            {branch_name}")
+    print(f"Gate command:      {config.validation.gate_command}")
+    print()
+
+    print(f"{sep}")
+    print(f"DEV PROMPT ({len(dev_prompt)} chars)")
+    print(f"  CLI:     {config.dev_profile.cli}")
+    print(f"  Model:   {config.dev_profile.model}")
+    print(f"  Budget:  ${config.dev_profile.budget_usd:.2f}")
+    print(f"  Timeout: {config.dev_profile.timeout_seconds}s")
+    print(f"  Tools:   {', '.join(config.dev_profile.allowed_tools)}")
+    print(f"{sep}")
+    print(dev_prompt)
+
+    print(f"\n{sep}")
+    print(f"REVIEW PROMPT ({len(review_prompt)} chars)")
+    print(f"  CLI:     {config.review_profile.cli}")
+    print(f"  Model:   {config.review_profile.model}")
+    print(f"  Budget:  ${config.review_profile.budget_usd:.2f}")
+    print(f"  Timeout: {config.review_profile.timeout_seconds}s")
+    print(f"  Tools:   {', '.join(config.review_profile.allowed_tools)}")
+    print(f"{sep}")
+    print(review_prompt)
+
+    return 0
+
+
 # ── Commands ─────────────────────────────────────────────────────────
 
 
@@ -138,6 +192,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"  Max cycles: {config.retry.max_review_cycles}", file=sys.stderr)
     print(f"  Max iters:  {config.retry.max_dev_iterations}", file=sys.stderr)
     print(file=sys.stderr)
+
+    if getattr(args, "dry_run", False):
+        return _cmd_dry_run(config, task, spec_path)
 
     result = run_task(config, task)
 
@@ -214,6 +271,11 @@ def main() -> None:
     run_parser.add_argument("spec", help="Path to the spec file")
     run_parser.add_argument("--slug", help="Workspace slug (default: spec filename stem)")
     run_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print prompts and config without invoking agents",
+    )
 
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
