@@ -6,7 +6,6 @@ from theforge.review import (
     parse_review_output,
 )
 
-
 VALID_APPROVE_YAML = """\
 ```yaml
 verdict: APPROVE

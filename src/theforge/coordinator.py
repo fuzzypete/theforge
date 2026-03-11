@@ -35,7 +35,6 @@ from .runner import AgentResult, log_agent_result, run_agent
 
 # Sentinel for review cost tracking — ReviewResult doesn't carry cost,
 # so we store review AgentResults separately from parsed ReviewResults.
-
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 
@@ -181,9 +180,7 @@ def _read_gate_decision(
     return str(decision).upper(), None
 
 
-def _run_gate(
-    config: ForgeConfig, workspace_path: Path
-) -> tuple[str | None, str | None]:
+def _run_gate(config: ForgeConfig, workspace_path: Path) -> tuple[str | None, str | None]:
     """Run the gate command and read the decision. Returns (decision, error)."""
     _log(f"Running gate: {config.validation.gate_command}")
     ok, output = _run_shell(
@@ -251,7 +248,9 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         state.phase = Phase.ESCALATE
         state.error = err
         return CoordinatorResult(
-            success=False, phase=state.phase, state=state,
+            success=False,
+            phase=state.phase,
+            state=state,
             message=f"Workspace creation failed: {err}",
         )
 
@@ -308,7 +307,9 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
                 state.phase = Phase.ESCALATE
                 state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
                 return CoordinatorResult(
-                    success=False, phase=state.phase, state=state,
+                    success=False,
+                    phase=state.phase,
+                    state=state,
                     message=state.error,
                 )
             # Retry dev with feedback about the gate failure
@@ -324,12 +325,11 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         elif gate_decision in ("FAIL", "BLOCKED"):
             if state.dev_iteration >= config.retry.max_dev_iterations:
                 state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Gate returned {gate_decision} after "
-                    f"{state.dev_iteration} attempts"
-                )
+                state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
                 return CoordinatorResult(
-                    success=False, phase=state.phase, state=state,
+                    success=False,
+                    phase=state.phase,
+                    state=state,
                     message=state.error,
                 )
             # Retry dev — the gate failure details are in handoff.yaml
@@ -346,7 +346,9 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
             state.phase = Phase.ESCALATE
             state.error = f"Unknown gate decision: {gate_decision!r}"
             return CoordinatorResult(
-                success=False, phase=state.phase, state=state,
+                success=False,
+                phase=state.phase,
+                state=state,
                 message=state.error,
             )
 
@@ -407,7 +409,9 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
             state.phase = Phase.DONE
             _log_phase(state.phase, "Review approved — ready for human merge")
             return CoordinatorResult(
-                success=True, phase=state.phase, state=state,
+                success=True,
+                phase=state.phase,
+                state=state,
                 message=(
                     f"Task '{task.name}' completed. "
                     f"Review approved after {state.review_cycle} cycle(s), "
@@ -424,7 +428,9 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
                 f"Max cycles ({config.retry.max_review_cycles}) exhausted."
             )
             return CoordinatorResult(
-                success=False, phase=state.phase, state=state,
+                success=False,
+                phase=state.phase,
+                state=state,
                 message=state.error,
             )
 
@@ -438,9 +444,7 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
 # ── Audit ────────────────────────────────────────────────────────────
 
 
-def generate_audit_log(
-    config: ForgeConfig, task: TaskSpec, result: CoordinatorResult
-) -> dict:
+def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorResult) -> dict:
     """Generate a structured audit log for the entire coordination run.
 
     This is the orchestrator's own handoff — a complete record of what happened.

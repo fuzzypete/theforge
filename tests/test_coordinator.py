@@ -4,7 +4,7 @@ Uses mocked runner to test all state transitions without real agent calls.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import yaml
 
@@ -12,7 +12,6 @@ from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
-    DEFAULT_WORKSPACE,
     ForgeConfig,
     RetryPolicy,
     WorkspaceConfig,
@@ -20,7 +19,6 @@ from theforge.config import (
 from theforge.coordinator import Phase, run_task
 from theforge.runner import AgentResult
 from theforge.task import TaskSpec
-
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -74,9 +72,7 @@ def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
     }
-    (workspace / "handoff.yaml").write_text(
-        yaml.dump(handoff), encoding="utf-8"
-    )
+    (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 
 
 APPROVE_REVIEW = """\
@@ -330,12 +326,20 @@ class TestCoordinatorCostTracking:
         _write_handoff(workspace, "PASS")
 
         dev_result = AgentResult(
-            success=True, output="Done.", session_id="s1",
-            cost_usd=0.75, exit_code=0, raw={},
+            success=True,
+            output="Done.",
+            session_id="s1",
+            cost_usd=0.75,
+            exit_code=0,
+            raw={},
         )
         review_result = AgentResult(
-            success=True, output=APPROVE_REVIEW, session_id="s2",
-            cost_usd=1.25, exit_code=0, raw={},
+            success=True,
+            output=APPROVE_REVIEW,
+            session_id="s2",
+            cost_usd=1.25,
+            exit_code=0,
+            raw={},
         )
 
         mock_agent.side_effect = [dev_result, review_result]

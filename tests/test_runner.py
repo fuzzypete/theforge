@@ -41,11 +41,13 @@ class TestRunAgentClaude:
     """Test Claude CLI subprocess invocation."""
 
     def test_happy_path(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({
-            "result": "I implemented the feature.",
-            "session_id": "sess-abc123",
-            "cost_usd": 0.42,
-        })
+        json_output = json.dumps(
+            {
+                "result": "I implemented the feature.",
+                "session_id": "sess-abc123",
+                "cost_usd": 0.42,
+            }
+        )
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
@@ -116,9 +118,7 @@ class TestRunAgentClaude:
             args=[], returncode=1, stdout=json_output, stderr=""
         )
         with patch("theforge.runner.subprocess.run", return_value=mock_proc):
-            result = run_agent(
-                prompt="test", profile=dev_profile, working_dir=tmp_path
-            )
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert result.exit_code == 1
@@ -130,9 +130,7 @@ class TestRunAgentClaude:
             args=[], returncode=0, stdout="plain text output", stderr=""
         )
         with patch("theforge.runner.subprocess.run", return_value=mock_proc):
-            result = run_agent(
-                prompt="test", profile=dev_profile, working_dir=tmp_path
-            )
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
         assert result.output == "plain text output"
@@ -144,9 +142,7 @@ class TestRunAgentClaude:
             args=[], returncode=1, stdout="", stderr="some error"
         )
         with patch("theforge.runner.subprocess.run", return_value=mock_proc):
-            result = run_agent(
-                prompt="test", profile=dev_profile, working_dir=tmp_path
-            )
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert result.output == "some error"
@@ -156,9 +152,7 @@ class TestRunAgentClaude:
             "theforge.runner.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=900),
         ):
-            result = run_agent(
-                prompt="test", profile=dev_profile, working_dir=tmp_path
-            )
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert "TIMEOUT" in result.output
@@ -170,9 +164,7 @@ class TestRunAgentClaude:
             "theforge.runner.subprocess.run",
             side_effect=FileNotFoundError(),
         ):
-            result = run_agent(
-                prompt="test", profile=dev_profile, working_dir=tmp_path
-            )
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert "not found" in result.output

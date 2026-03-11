@@ -1,9 +1,5 @@
 """Tests for CLI: spec frontmatter parsing and config discovery."""
 
-from pathlib import Path
-
-import yaml
-
 from theforge.cli import _build_task, _find_config, _parse_spec_frontmatter
 
 

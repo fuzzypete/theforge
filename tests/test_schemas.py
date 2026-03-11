@@ -43,18 +43,14 @@ class TestValidateReviewYaml:
     def test_approve_with_p1_is_error(self):
         data = _valid_review()
         data["verdict"] = "APPROVE"
-        data["findings"] = [
-            {"severity": "P1", "file": "x.py", "description": "Bug"}
-        ]
+        data["findings"] = [{"severity": "P1", "file": "x.py", "description": "Bug"}]
         errors = validate_review_yaml(data)
         assert any("APPROVE" in e and "P1" in e for e in errors)
 
     def test_request_changes_without_p1_is_error(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
-        data["findings"] = [
-            {"severity": "P2", "file": "x.py", "description": "Style nit"}
-        ]
+        data["findings"] = [{"severity": "P2", "file": "x.py", "description": "Style nit"}]
         errors = validate_review_yaml(data)
         assert any("REQUEST_CHANGES" in e and "P1" in e for e in errors)
 
@@ -79,18 +75,14 @@ class TestValidateReviewYaml:
     def test_finding_missing_file(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
-        data["findings"] = [
-            {"severity": "P1", "file": "", "description": "Bug"}
-        ]
+        data["findings"] = [{"severity": "P1", "file": "", "description": "Bug"}]
         errors = validate_review_yaml(data)
         assert any("file" in e for e in errors)
 
     def test_finding_invalid_severity(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
-        data["findings"] = [
-            {"severity": "P0", "file": "x.py", "description": "Critical"}
-        ]
+        data["findings"] = [{"severity": "P0", "file": "x.py", "description": "Critical"}]
         errors = validate_review_yaml(data)
         assert any("severity" in e for e in errors)
 

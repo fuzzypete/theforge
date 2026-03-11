@@ -85,8 +85,10 @@ def _run_claude(
     cmd: list[str] = [
         "claude",
         "-p",
-        "--output-format", "json",
-        "--model", profile.model,
+        "--output-format",
+        "json",
+        "--model",
+        profile.model,
     ]
 
     if profile.allowed_tools:

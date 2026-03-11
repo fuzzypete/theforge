@@ -52,8 +52,7 @@ def validate_review_yaml(data: Any) -> list[str]:
         severity = finding.get("severity")
         if severity not in VALID_SEVERITIES:
             errors.append(
-                f"findings[{i}].severity must be one of {VALID_SEVERITIES}, "
-                f"got: {severity!r}"
+                f"findings[{i}].severity must be one of {VALID_SEVERITIES}, got: {severity!r}"
             )
         if severity == "P1":
             p1_count += 1

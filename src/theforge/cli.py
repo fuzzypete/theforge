@@ -110,7 +110,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
 
     sep = "=" * 60
     print(f"{sep}")
-    print(f"DRY RUN — no agents will be invoked")
+    print("DRY RUN — no agents will be invoked")
     print(f"{sep}\n")
 
     print(f"Workspace command: {config.workspace.create_command.format(slug=task.slug)}")
@@ -183,7 +183,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     config = load_config(config_path)
     task = _build_task(spec_path, slug=args.slug)
 
-    print(f"TheForge v0.1.0", file=sys.stderr)
+    print("TheForge v0.1.0", file=sys.stderr)
     print(f"  Project:   {config.project}", file=sys.stderr)
     print(f"  Task:      {task.name}", file=sys.stderr)
     print(f"  Slug:      {task.slug}", file=sys.stderr)
@@ -239,7 +239,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     print(f"  Cost: ${cost.get('total_usd', 0):.3f}")
 
     if reviews:
-        print(f"  Reviews:")
+        print("  Reviews:")
         for r in reviews:
             print(
                 f"    Cycle {r.get('cycle', '?')}: {r.get('verdict', '?')} "

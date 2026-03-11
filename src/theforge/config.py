@@ -141,17 +141,13 @@ def load_config(config_path: Path) -> ForgeConfig:
     validation = ValidationConfig(
         gate_command=val_data.get("gate_command", DEFAULT_VALIDATION.gate_command),
         handoff_file=val_data.get("handoff_file", DEFAULT_VALIDATION.handoff_file),
-        gate_decision_key=val_data.get(
-            "gate_decision_key", DEFAULT_VALIDATION.gate_decision_key
-        ),
+        gate_decision_key=val_data.get("gate_decision_key", DEFAULT_VALIDATION.gate_decision_key),
     )
 
     # Profiles
     profiles = raw.get("profiles", {})
     dev_profile = (
-        _parse_profile("dev", profiles["dev"])
-        if "dev" in profiles
-        else DEFAULT_DEV_PROFILE
+        _parse_profile("dev", profiles["dev"]) if "dev" in profiles else DEFAULT_DEV_PROFILE
     )
     review_profile = (
         _parse_profile("review", profiles["review"])
