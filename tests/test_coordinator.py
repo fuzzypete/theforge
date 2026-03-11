@@ -527,6 +527,32 @@ class TestCoordinatorStaleHandoff:
         assert "Gate" in result.message or "gate" in result.message
 
 
+class TestCoordinatorStaleHandoffUnlinkFailure:
+    """Test that unlink failure on stale handoff is handled gracefully."""
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_handoff_is_directory(self, mock_shell, mock_agent, tmp_path):
+        """If handoff.yaml is a directory, unlink fails → gate error → retry/escalate."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Create handoff.yaml as a directory (pathological case)
+        (workspace / "handoff.yaml").mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        # Should mention stale handoff or gate failure
+        assert "handoff" in result.message.lower() or "gate" in result.message.lower()
+
+
 class TestCoordinatorSchemaErrorOnRequestChanges:
     """Test that malformed REQUEST_CHANGES also gets flagged as parse error."""
 

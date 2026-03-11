@@ -187,7 +187,10 @@ def _run_gate(config: ForgeConfig, workspace_path: Path) -> tuple[str | None, st
     # Delete stale handoff to prevent a prior PASS from leaking through on gate failure
     stale_handoff = workspace_path / config.validation.handoff_file
     if stale_handoff.exists():
-        stale_handoff.unlink()
+        try:
+            stale_handoff.unlink()
+        except OSError as e:
+            return None, f"Cannot remove stale handoff file: {e}"
 
     _log(f"Running gate: {config.validation.gate_command}")
     ok, output = _run_shell(
