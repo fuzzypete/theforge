@@ -34,6 +34,19 @@ class TestParseFrontmatter:
         fm = _parse_spec_frontmatter(spec)
         assert fm == {}
 
+    def test_non_mapping_frontmatter(self, tmp_path):
+        """Non-dict frontmatter (e.g. a list) must return empty dict, not crash."""
+        spec = tmp_path / "list_fm.md"
+        spec.write_text("---\n- not-a-mapping\n- item-two\n---\nContent\n", encoding="utf-8")
+        fm = _parse_spec_frontmatter(spec)
+        assert fm == {}
+
+    def test_scalar_frontmatter(self, tmp_path):
+        spec = tmp_path / "scalar.md"
+        spec.write_text("---\njust a string\n---\nContent\n", encoding="utf-8")
+        fm = _parse_spec_frontmatter(spec)
+        assert fm == {}
+
 
 class TestBuildTask:
     def test_from_frontmatter(self, tmp_path):

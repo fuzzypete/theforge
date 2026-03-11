@@ -169,6 +169,8 @@ def _read_gate_decision(
             data = yaml.safe_load(f) or {}
     except yaml.YAMLError as e:
         return None, f"Failed to parse handoff YAML: {e}"
+    except OSError as e:
+        return None, f"Failed to read handoff file: {e}"
 
     decision = data.get(config.validation.gate_decision_key)
     if decision is None:
@@ -182,6 +184,11 @@ def _read_gate_decision(
 
 def _run_gate(config: ForgeConfig, workspace_path: Path) -> tuple[str | None, str | None]:
     """Run the gate command and read the decision. Returns (decision, error)."""
+    # Delete stale handoff to prevent a prior PASS from leaking through on gate failure
+    stale_handoff = workspace_path / config.validation.handoff_file
+    if stale_handoff.exists():
+        stale_handoff.unlink()
+
     _log(f"Running gate: {config.validation.gate_command}")
     ok, output = _run_shell(
         config.validation.gate_command,
@@ -406,23 +413,28 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
 
         if parsed_review.parse_errors:
             _log(f"Review parse errors: {parsed_review.parse_errors}")
-            # Schema violations override the verdict — treat as REQUEST_CHANGES
-            # to prevent malformed review output from bypassing the gate
+            # Schema violations always produce a canonical PARSE ERROR result.
+            # For APPROVE: prevents malformed output from bypassing the gate.
+            # For REQUEST_CHANGES: prevents invalid findings from driving
+            #   unnecessary retry loops — surface as protocol failure instead.
+            canonical_summary = f"PARSE ERROR: {parsed_review.summary}"
             if parsed_review.verdict == "APPROVE":
                 _log("Overriding APPROVE → REQUEST_CHANGES due to schema errors")
-                parsed_review = ReviewResult(
-                    verdict="REQUEST_CHANGES",
-                    summary=f"SCHEMA ERROR: {parsed_review.summary}",
-                    findings=parsed_review.findings,
-                    spec_matches=parsed_review.spec_matches,
-                    spec_mismatches=parsed_review.spec_mismatches,
-                    test_adequate=parsed_review.test_adequate,
-                    test_gaps=parsed_review.test_gaps,
-                    parse_errors=parsed_review.parse_errors,
-                    raw_yaml=parsed_review.raw_yaml,
-                )
-                # Replace the stored result with the corrected one
-                state.review_results[-1] = parsed_review
+            else:
+                _log("Flagging REQUEST_CHANGES as schema-invalid (parse errors present)")
+            parsed_review = ReviewResult(
+                verdict="REQUEST_CHANGES",
+                summary=canonical_summary,
+                findings=parsed_review.findings,
+                spec_matches=parsed_review.spec_matches,
+                spec_mismatches=parsed_review.spec_mismatches,
+                test_adequate=parsed_review.test_adequate,
+                test_gaps=parsed_review.test_gaps,
+                parse_errors=parsed_review.parse_errors,
+                raw_yaml=parsed_review.raw_yaml,
+            )
+            # Replace the stored result with the corrected one
+            state.review_results[-1] = parsed_review
 
         _log(f"Review verdict: {parsed_review.verdict}")
         _log(f"  Summary: {parsed_review.summary}")

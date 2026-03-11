@@ -146,11 +146,16 @@ def _run_claude(
             raw={},
         )
 
+    try:
+        cost = float(result_json.get("cost_usd", 0.0))
+    except (TypeError, ValueError):
+        cost = 0.0
+
     return AgentResult(
         success=proc.returncode == 0,
         output=result_json.get("result", proc.stdout),
         session_id=result_json.get("session_id"),
-        cost_usd=result_json.get("cost_usd", 0.0),
+        cost_usd=cost,
         exit_code=proc.returncode,
         raw=result_json,
     )

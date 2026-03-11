@@ -84,6 +84,26 @@ class TestLoadConfig:
         assert config.project_root == sub
 
 
+class TestAllowedToolsConfig:
+    def test_empty_allowed_tools_is_empty(self, tmp_path):
+        """allowed_tools: [] should produce an empty tuple, not fall back to defaults."""
+        config_path = _write_config(
+            {"profiles": {"dev": {"allowed_tools": []}}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.dev_profile.allowed_tools == ()
+
+    def test_omitted_allowed_tools_gets_defaults(self, tmp_path):
+        """Omitting allowed_tools entirely should fall back to defaults."""
+        config_path = _write_config(
+            {"profiles": {"dev": {"model": "opus"}}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.dev_profile.allowed_tools == DEFAULT_DEV_PROFILE.allowed_tools
+
+
 class TestGenerateDefaultConfig:
     def test_is_valid_yaml(self):
         content = generate_default_config()

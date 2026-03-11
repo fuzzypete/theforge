@@ -76,6 +76,29 @@ def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
     (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 
 
+def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
+    """Create a _run_shell side_effect that writes handoff.yaml during gate execution.
+
+    With the stale-handoff fix, _run_gate() deletes handoff before running the gate
+    command, so tests must produce handoff *during* (not before) gate execution.
+    """
+    if isinstance(decisions, str):
+        decisions_list = [decisions] * 20
+    else:
+        decisions_list = list(decisions)
+    gate_idx = {"n": 0}
+
+    def side_effect(cmd, cwd, **kwargs):
+        if "gate" in cmd:
+            d = decisions_list[min(gate_idx["n"], len(decisions_list) - 1)]
+            gate_idx["n"] += 1
+            _write_handoff(Path(cwd), d)
+            return (True, "OK")
+        return (True, "OK")
+
+    return side_effect
+
+
 APPROVE_REVIEW = """\
 ```yaml
 verdict: APPROVE
@@ -124,12 +147,7 @@ class TestCoordinatorHappyPath:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        # Mock: workspace creation succeeds (already exists)
-        # Mock: gate command succeeds
-        mock_shell.return_value = (True, "OK")
-
-        # Write handoff after "gate" runs
-        _write_handoff(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
         # Mock agent calls: dev then review
         mock_agent.side_effect = [
@@ -158,20 +176,12 @@ class TestCoordinatorGateFailRetry:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-
-        # First dev run: gate returns FAIL, second: PASS
-        call_count = {"dev": 0}
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
 
         def agent_side_effect(**kwargs):
             prompt = kwargs.get("prompt", "")
             if "reviewing" in prompt.lower() or "reviewer" in prompt.lower():
                 return _make_agent_result(output=APPROVE_REVIEW)
-            call_count["dev"] += 1
-            if call_count["dev"] == 1:
-                _write_handoff(workspace, "FAIL")
-            else:
-                _write_handoff(workspace, "PASS")
             return _make_agent_result()
 
         mock_agent.side_effect = agent_side_effect
@@ -194,8 +204,7 @@ class TestCoordinatorReviewRequestChanges:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-        _write_handoff(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
         # Sequence: dev → review(reject) → dev → review(approve)
         call_count = {"agent": 0}
@@ -207,7 +216,6 @@ class TestCoordinatorReviewRequestChanges:
                 if call_count["agent"] <= 2:
                     return _make_agent_result(output=REQUEST_CHANGES_REVIEW)
                 return _make_agent_result(output=APPROVE_REVIEW)
-            _write_handoff(workspace, "PASS")
             return _make_agent_result()
 
         mock_agent.side_effect = agent_side_effect
@@ -229,9 +237,7 @@ class TestCoordinatorEscalation:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-        # Gate always fails
-        _write_handoff(workspace, "FAIL")
+        mock_shell.side_effect = _shell_with_gate(workspace, "FAIL")
         mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
@@ -248,14 +254,12 @@ class TestCoordinatorEscalation:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-        _write_handoff(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
         def agent_side_effect(**kwargs):
             prompt = kwargs.get("prompt", "")
             if "reviewing" in prompt.lower() or "reviewer" in prompt.lower():
                 return _make_agent_result(output=REQUEST_CHANGES_REVIEW)
-            _write_handoff(workspace, "PASS")
             return _make_agent_result()
 
         mock_agent.side_effect = agent_side_effect
@@ -278,8 +282,7 @@ class TestCoordinatorSchemaErrorOverride:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-        _write_handoff(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
         # Review YAML that says APPROVE but is missing required fields
         # (no spec_compliance or test_coverage → schema errors)
@@ -301,7 +304,6 @@ findings: []
                     return _make_agent_result(output=malformed_approve)
                 # Second review: proper APPROVE
                 return _make_agent_result(output=APPROVE_REVIEW)
-            _write_handoff(workspace, "PASS")
             return _make_agent_result()
 
         mock_agent.side_effect = agent_side_effect
@@ -323,8 +325,7 @@ class TestCoordinatorCostTracking:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-        _write_handoff(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
         dev_result = AgentResult(
             success=True,
@@ -425,33 +426,24 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator._run_shell")
     def test_dev_budget_exceeded_on_retry(self, mock_shell, mock_agent, tmp_path):
         """Dev agent exceeds budget on second call (retry) → ESCALATE."""
-        # Budget of $0.60 allows first call ($0.30) but not second ($0.60 cumulative)
+        # Budget of $0.50 allows first call ($0.30) but not second ($0.60 cumulative)
         config = self._make_budget_config(tmp_path, dev_budget=0.50, review_budget=1.00)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        # First gate returns FAIL (retry), second would return PASS but budget
+        # check triggers before second gate runs
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
 
-        call_count = {"dev": 0}
-
-        def agent_side_effect(**kwargs):
-            call_count["dev"] += 1
-            if call_count["dev"] == 1:
-                # First call: gate fails so we retry
-                _write_handoff(workspace, "FAIL")
-            else:
-                _write_handoff(workspace, "PASS")
-            return AgentResult(
-                success=True,
-                output="Done.",
-                session_id="s1",
-                cost_usd=0.30,
-                exit_code=0,
-                raw={},
-            )
-
-        mock_agent.side_effect = agent_side_effect
+        mock_agent.return_value = AgentResult(
+            success=True,
+            output="Done.",
+            session_id="s1",
+            cost_usd=0.30,
+            exit_code=0,
+            raw={},
+        )
 
         result = run_task(config, task)
 
@@ -470,8 +462,7 @@ class TestCoordinatorBudgetEnforcement:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
-        _write_handoff(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
         dev_result = AgentResult(
             success=True, output="Done.", session_id="s1", cost_usd=0.10, exit_code=0, raw={}
@@ -495,6 +486,86 @@ class TestCoordinatorBudgetEnforcement:
         assert "0.5000" in result.message
         assert "0.4000" in result.message
         assert len(result.state.review_agent_results) == 1
+
+
+class TestCoordinatorStaleHandoff:
+    """Test that stale handoff.yaml is deleted before running the gate."""
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_stale_handoff_not_reused(self, mock_shell, mock_agent, tmp_path):
+        """A PASS from a prior gate run must not leak through on gate failure."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Pre-plant a stale PASS handoff from a prior run
+        _write_handoff(workspace, "PASS")
+
+        call_count = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            call_count["n"] += 1
+            if "mkdir" in cmd:
+                return (True, "OK")
+            # Gate command fails (e.g. tests fail)
+            if "gate" in cmd.lower() or "pytest" in cmd.lower():
+                return (False, "FAIL: 1 test failed")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+
+        # Dev agent succeeds, then should retry until exhaustion
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+
+        result = run_task(config, task)
+
+        # Gate failed and stale handoff was deleted → should escalate, not PASS
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "Gate" in result.message or "gate" in result.message
+
+
+class TestCoordinatorSchemaErrorOnRequestChanges:
+    """Test that malformed REQUEST_CHANGES also gets flagged as parse error."""
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_malformed_request_changes_flagged(self, mock_shell, mock_agent, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        # Malformed REQUEST_CHANGES: has P1 finding but spec_compliance missing fields
+        malformed_review = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Needs work"
+findings:
+  - severity: P1
+    file: src/foo.py
+    description: "Bug"
+    suggestion: "Fix"
+test_coverage:
+  adequate: false
+```
+"""
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Done."),
+            _make_agent_result(success=True, output=malformed_review),
+            _make_agent_result(success=True, output="Fixed."),
+            _make_agent_result(success=True, output=APPROVE_REVIEW),
+        ]
+
+        result = run_task(config, task)
+
+        # The first review had parse errors — its summary should be prefixed
+        first_review = result.state.review_results[0]
+        assert first_review.summary.startswith("PARSE ERROR:")
 
 
 class TestCoordinatorWorkspaceFailure:

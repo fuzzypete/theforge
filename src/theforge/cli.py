@@ -58,9 +58,13 @@ def _parse_spec_frontmatter(spec_path: Path) -> dict:
 
     frontmatter = text[3:end].strip()
     try:
-        return yaml.safe_load(frontmatter) or {}
+        result = yaml.safe_load(frontmatter) or {}
     except yaml.YAMLError:
         return {}
+
+    if not isinstance(result, dict):
+        return {}
+    return result
 
 
 def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:

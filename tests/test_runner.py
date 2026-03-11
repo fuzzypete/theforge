@@ -186,6 +186,41 @@ class TestRunAgentClaude:
         assert result.exit_code == -1
 
 
+class TestRunAgentCostCoercion:
+    """Test that non-numeric cost_usd is coerced to float safely."""
+
+    def test_string_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        json_output = json.dumps({"result": "done", "cost_usd": "0.42"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.cost_usd == 0.42
+        assert isinstance(result.cost_usd, float)
+
+    def test_null_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        json_output = json.dumps({"result": "done", "cost_usd": None})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.cost_usd == 0.0
+
+    def test_garbage_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        json_output = json.dumps({"result": "done", "cost_usd": "not-a-number"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.cost_usd == 0.0
+
+
 class TestRunAgentUnknownCli:
     """Test dispatch for unsupported CLI."""
 

@@ -105,14 +105,14 @@ DEFAULT_VALIDATION = ValidationConfig(
 def _parse_profile(name: str, data: dict[str, Any]) -> ModelProfile:
     """Parse a model profile from forge.yaml data."""
     default = DEFAULT_DEV_PROFILE if name == "dev" else DEFAULT_REVIEW_PROFILE
-    tools = data.get("allowed_tools", [])
+    tools = data.get("allowed_tools")
     return ModelProfile(
         name=name,
         cli=data.get("cli", default.cli),
         model=data.get("model", default.model),
         budget_usd=float(data.get("budget_usd", default.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
-        allowed_tools=tuple(tools) if tools else default.allowed_tools,
+        allowed_tools=tuple(tools) if tools is not None else default.allowed_tools,
     )
 
 
