@@ -1,0 +1,455 @@
+"""Coordinator: deterministic state machine for dev→review loops.
+
+The coordinator is the heart of TheForge. It is NOT an LLM — it is a Python
+program that mechanically orchestrates agent invocations. Every decision is
+deterministic. Every boundary is a validation checkpoint.
+
+State machine:
+    INIT → WORKSPACE → DEV → VALIDATE → REVIEW → (loop or DONE/ESCALATE)
+
+Transitions:
+    INIT → WORKSPACE:       Always (create workspace)
+    WORKSPACE → DEV:        Workspace created successfully
+    DEV → VALIDATE:         Dev agent finished (success or failure)
+    VALIDATE → REVIEW:      Gate produced handoff.yaml with PASS
+    VALIDATE → DEV:         Gate failed, retries remaining
+    VALIDATE → ESCALATE:    Gate failed, no retries left
+    REVIEW → DONE:          Review verdict is APPROVE
+    REVIEW → DEV:           Review verdict is REQUEST_CHANGES, retries remaining
+    REVIEW → ESCALATE:      Review verdict is REQUEST_CHANGES, no retries left
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from pathlib import Path
+
+import yaml
+
+from .config import ForgeConfig
+from .review import ReviewResult, findings_to_markdown, parse_review_output
+from .runner import AgentResult, log_agent_result, run_agent
+from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
+
+
+class Phase(Enum):
+    """Coordinator state machine phases."""
+
+    INIT = auto()
+    WORKSPACE = auto()
+    DEV = auto()
+    VALIDATE = auto()
+    REVIEW = auto()
+    DONE = auto()
+    ESCALATE = auto()
+
+
+@dataclass
+class CoordinatorState:
+    """Mutable state tracking for a single task execution."""
+
+    phase: Phase = Phase.INIT
+    workspace_path: Path | None = None
+    branch_name: str | None = None
+    dev_session_id: str | None = None
+    review_cycle: int = 0  # which dev→review loop we're on
+    dev_iteration: int = 0  # retries within the current review cycle
+    dev_results: list[AgentResult] = field(default_factory=list)
+    review_results: list[ReviewResult] = field(default_factory=list)
+    gate_decisions: list[str] = field(default_factory=list)
+    last_review_findings: str | None = None
+    human_feedback: str | None = None
+    error: str | None = None
+
+    @property
+    def total_agent_cost(self) -> float:
+        return sum(r.cost_usd for r in self.dev_results)
+
+
+@dataclass
+class CoordinatorResult:
+    """Final result from a coordinator run."""
+
+    success: bool
+    phase: Phase
+    state: CoordinatorState
+    message: str
+
+
+# ── Logging ──────────────────────────────────────────────────────────
+
+
+def _log(msg: str) -> None:
+    """Print coordinator status to stderr."""
+    print(f"[forge] {msg}", file=sys.stderr)
+
+
+def _log_phase(phase: Phase, detail: str = "") -> None:
+    suffix = f" — {detail}" if detail else ""
+    _log(f"▸ {phase.name}{suffix}")
+
+
+# ── Shell helpers ────────────────────────────────────────────────────
+
+
+def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
+    """Run a shell command. Returns (success, combined output)."""
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=timeout,
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        return proc.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, f"TIMEOUT after {timeout}s: {cmd}"
+    except Exception as e:
+        return False, f"ERROR: {e}"
+
+
+# ── Workspace ────────────────────────────────────────────────────────
+
+
+def _create_workspace(
+    config: ForgeConfig, task: TaskSpec
+) -> tuple[Path | None, str | None, str | None]:
+    """Create an isolated workspace. Returns (path, branch, error)."""
+    slug = task.slug
+    cmd = config.workspace.create_command.format(slug=slug)
+    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=slug)
+    branch_name = config.workspace.branch_pattern.format(slug=slug)
+
+    if workspace_path.exists():
+        _log(f"Workspace already exists: {workspace_path}")
+        return workspace_path, branch_name, None
+
+    _log(f"Creating workspace: {cmd}")
+    ok, output = _run_shell(cmd, config.project_root)
+    if not ok:
+        return None, None, f"Failed to create workspace: {output}"
+
+    if not workspace_path.exists():
+        return None, None, f"Workspace path does not exist after creation: {workspace_path}"
+
+    return workspace_path, branch_name, None
+
+
+# ── Validation ───────────────────────────────────────────────────────
+
+
+def _read_gate_decision(
+    config: ForgeConfig, workspace_path: Path
+) -> tuple[str | None, str | None]:
+    """Read gate decision from handoff.yaml. Returns (decision, error)."""
+    handoff_path = workspace_path / config.validation.handoff_file
+    if not handoff_path.exists():
+        return None, f"handoff file not found: {handoff_path}"
+
+    try:
+        with open(handoff_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except yaml.YAMLError as e:
+        return None, f"Failed to parse handoff YAML: {e}"
+
+    decision = data.get(config.validation.gate_decision_key)
+    if decision is None:
+        return None, (
+            f"Key {config.validation.gate_decision_key!r} not found in "
+            f"{config.validation.handoff_file}"
+        )
+
+    return str(decision).upper(), None
+
+
+def _run_gate(
+    config: ForgeConfig, workspace_path: Path
+) -> tuple[str | None, str | None]:
+    """Run the gate command and read the decision. Returns (decision, error)."""
+    _log(f"Running gate: {config.validation.gate_command}")
+    ok, output = _run_shell(
+        config.validation.gate_command,
+        workspace_path,
+        timeout=300,  # gate can be slow (runs tests, lint, etc.)
+    )
+
+    if not ok:
+        _log(f"Gate command failed: {output[:200]}")
+        # Gate may have still produced a handoff with FAIL/BLOCKED
+        decision, err = _read_gate_decision(config, workspace_path)
+        if decision:
+            return decision, None
+        return None, f"Gate command failed and no handoff produced: {output[:500]}"
+
+    return _read_gate_decision(config, workspace_path)
+
+
+# ── Diff extraction ─────────────────────────────────────────────────
+
+
+def _get_diff(workspace_path: Path) -> str:
+    """Get the diff of changes on the current branch vs main."""
+    ok, diff = _run_shell("git diff main...HEAD", workspace_path)
+    if ok and diff:
+        return diff
+
+    # Fallback: diff of staged + unstaged
+    ok, diff = _run_shell("git diff HEAD", workspace_path)
+    if ok and diff:
+        return diff
+
+    return "(no diff available)"
+
+
+def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
+    """Read the handoff.yaml content as text for the reviewer."""
+    handoff_path = workspace_path / config.validation.handoff_file
+    if handoff_path.exists():
+        return handoff_path.read_text(encoding="utf-8")
+    return "(handoff.yaml not found)"
+
+
+# ── State machine ────────────────────────────────────────────────────
+
+
+def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
+    """Execute the full coordinator state machine for a single task.
+
+    This is the main entry point. It creates a workspace, runs the dev agent,
+    validates output, runs the review agent, and loops until done or exhausted.
+
+    Every transition is deterministic. No LLM makes process decisions.
+    """
+    state = CoordinatorState()
+    spec_content = load_spec(task.spec_path)
+
+    # ── WORKSPACE ─────────────────────────────────────────────────
+    state.phase = Phase.WORKSPACE
+    _log_phase(state.phase, f"slug={task.slug}")
+
+    workspace_path, branch_name, err = _create_workspace(config, task)
+    if err:
+        state.phase = Phase.ESCALATE
+        state.error = err
+        return CoordinatorResult(
+            success=False, phase=state.phase, state=state,
+            message=f"Workspace creation failed: {err}",
+        )
+
+    assert workspace_path is not None
+    assert branch_name is not None
+    state.workspace_path = workspace_path
+    state.branch_name = branch_name
+
+    # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
+    while True:
+        # ── DEV ───────────────────────────────────────────────
+        state.phase = Phase.DEV
+        state.dev_iteration += 1
+        _log_phase(
+            state.phase,
+            f"cycle={state.review_cycle + 1} iter={state.dev_iteration}",
+        )
+
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=workspace_path,
+            branch_name=branch_name,
+            spec_content=spec_content,
+            gate_command=config.validation.gate_command,
+            review_findings=state.last_review_findings,
+            human_feedback=state.human_feedback,
+            iteration=state.dev_iteration,
+        )
+
+        dev_result = run_agent(
+            prompt=prompt,
+            profile=config.dev_profile,
+            working_dir=workspace_path,
+            session_id=state.dev_session_id,
+        )
+        state.dev_results.append(dev_result)
+        state.dev_session_id = dev_result.session_id
+        log_agent_result(dev_result, "DEV")
+
+        if not dev_result.success:
+            _log(f"Dev agent failed (exit={dev_result.exit_code})")
+            # Don't immediately escalate — try validation anyway,
+            # the agent may have committed partial work + run the gate
+
+        # ── VALIDATE ──────────────────────────────────────────
+        state.phase = Phase.VALIDATE
+        _log_phase(state.phase)
+
+        gate_decision, gate_err = _run_gate(config, workspace_path)
+
+        if gate_err:
+            _log(f"Gate error: {gate_err}")
+            if state.dev_iteration >= config.retry.max_dev_iterations:
+                state.phase = Phase.ESCALATE
+                state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                return CoordinatorResult(
+                    success=False, phase=state.phase, state=state,
+                    message=state.error,
+                )
+            # Retry dev with feedback about the gate failure
+            state.human_feedback = f"Gate validation failed: {gate_err}"
+            continue
+
+        assert gate_decision is not None
+        state.gate_decisions.append(gate_decision)
+        _log(f"Gate decision: {gate_decision}")
+
+        if gate_decision == "PASS":
+            pass  # proceed to review
+        elif gate_decision in ("FAIL", "BLOCKED"):
+            if state.dev_iteration >= config.retry.max_dev_iterations:
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"Gate returned {gate_decision} after "
+                    f"{state.dev_iteration} attempts"
+                )
+                return CoordinatorResult(
+                    success=False, phase=state.phase, state=state,
+                    message=state.error,
+                )
+            # Retry dev — the gate failure details are in handoff.yaml
+            handoff_text = _get_handoff_content(config, workspace_path)
+            state.human_feedback = (
+                f"Gate returned {gate_decision}. "
+                f"Fix the issues and re-run the gate.\n\n"
+                f"Current handoff:\n{handoff_text}"
+            )
+            _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
+            continue
+        else:
+            _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
+            state.phase = Phase.ESCALATE
+            state.error = f"Unknown gate decision: {gate_decision!r}"
+            return CoordinatorResult(
+                success=False, phase=state.phase, state=state,
+                message=state.error,
+            )
+
+        # ── REVIEW ────────────────────────────────────────────
+        state.phase = Phase.REVIEW
+        state.review_cycle += 1
+        _log_phase(state.phase, f"cycle={state.review_cycle}")
+
+        diff_text = _get_diff(workspace_path)
+        handoff_content = _get_handoff_content(config, workspace_path)
+
+        review_prompt = build_review_prompt(
+            task,
+            spec_content=spec_content,
+            diff_text=diff_text,
+            handoff_content=handoff_content,
+        )
+
+        review_result = run_agent(
+            prompt=review_prompt,
+            profile=config.review_profile,
+            working_dir=workspace_path,
+        )
+        log_agent_result(review_result, "REVIEW")
+
+        parsed_review = parse_review_output(review_result.output)
+        state.review_results.append(parsed_review)
+
+        if parsed_review.parse_errors:
+            _log(f"Review parse errors: {parsed_review.parse_errors}")
+
+        _log(f"Review verdict: {parsed_review.verdict}")
+        _log(f"  Summary: {parsed_review.summary}")
+        _log(
+            f"  Findings: {len(parsed_review.findings)} "
+            f"({sum(1 for f in parsed_review.findings if f.severity == 'P1')} P1)"
+        )
+
+        if parsed_review.verdict == "APPROVE":
+            state.phase = Phase.DONE
+            _log_phase(state.phase, "Review approved — ready for human merge")
+            return CoordinatorResult(
+                success=True, phase=state.phase, state=state,
+                message=(
+                    f"Task '{task.name}' completed. "
+                    f"Review approved after {state.review_cycle} cycle(s), "
+                    f"{state.dev_iteration} dev iteration(s). "
+                    f"Branch: {branch_name}"
+                ),
+            )
+
+        # REQUEST_CHANGES — loop back to dev
+        if state.review_cycle >= config.retry.max_review_cycles:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Review requested changes after {state.review_cycle} cycles. "
+                f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+            )
+            return CoordinatorResult(
+                success=False, phase=state.phase, state=state,
+                message=state.error,
+            )
+
+        # Feed findings back to dev agent
+        state.last_review_findings = findings_to_markdown(parsed_review.findings)
+        state.dev_iteration = 0  # reset iteration count for new review cycle
+        state.human_feedback = None  # clear any gate feedback
+        _log(f"Sending {len(parsed_review.findings)} findings back to dev agent")
+
+
+# ── Audit ────────────────────────────────────────────────────────────
+
+
+def generate_audit_log(
+    config: ForgeConfig, task: TaskSpec, result: CoordinatorResult
+) -> dict:
+    """Generate a structured audit log for the entire coordination run.
+
+    This is the orchestrator's own handoff — a complete record of what happened.
+    """
+    state = result.state
+    return {
+        "forge_version": "0.1.0",
+        "task": {
+            "name": task.name,
+            "slug": task.slug,
+            "spec_path": str(task.spec_path),
+        },
+        "outcome": {
+            "success": result.success,
+            "final_phase": result.phase.name,
+            "message": result.message,
+        },
+        "workspace": {
+            "path": str(state.workspace_path) if state.workspace_path else None,
+            "branch": state.branch_name,
+        },
+        "iterations": {
+            "review_cycles": state.review_cycle,
+            "dev_iterations": state.dev_iteration,
+            "gate_decisions": state.gate_decisions,
+        },
+        "cost": {
+            "total_usd": state.total_agent_cost,
+            "dev_invocations": len(state.dev_results),
+            "review_invocations": len(state.review_results),
+        },
+        "reviews": [
+            {
+                "cycle": i + 1,
+                "verdict": r.verdict,
+                "summary": r.summary,
+                "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
+                "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
+            }
+            for i, r in enumerate(state.review_results)
+        ],
+        "error": state.error,
+    }
