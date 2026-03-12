@@ -1,18 +1,7 @@
 gate_decision: PASS
 scope_completed:
-  - Switched _run_claude from subprocess.run+heartbeat to subprocess.Popen with
-    line-by-line JSONL stream reading
-  - Added --output-format stream-json --verbose to Claude CLI invocation
-  - Added _process_stream_event: prints tool_use_summary events as
-    "[forge]   ↳ <summary>" and falls back to assistant tool_use input preview
-  - Added _format_tool_input_preview helper
-  - Timeout now uses proc.wait(timeout=...) + proc.kill() cleanup
-  - Updated all Claude tests in tests/test_runner.py to mock subprocess.Popen
-    via _make_stream_mock helper and _result_line builder
-  - Added test_activity_printed and test_activity_assistant_fallback
-  - All 138 tests pass
-deferred_followups:
-  - Storing the activity stream in the audit log (out of scope per spec)
-  - Gemini/Codex activity streaming (out of scope per spec)
-  - Filtering/rate-limiting verbose output (out of scope per spec)
-next_recommended_step: Open a PR from feat/live-activity to main for review
+  - src/theforge/campaign.py: CampaignManifest, CampaignResult, load_manifest(), run_campaign(), _write_campaign_audit()
+  - src/theforge/cli.py: cmd_campaign() command + forge campaign subparser
+  - tests/test_campaign.py: 20 tests covering all acceptance criteria
+deferred_followups: []
+next_recommended_step: "Review and merge feat/campaign-mode branch"
