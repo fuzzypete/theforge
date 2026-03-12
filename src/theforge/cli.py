@@ -208,7 +208,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # --auto disables human review; default (no flag) is interactive
     interactive = not getattr(args, "auto", False)
-    result = run_task(config, task, interactive=interactive)
+    auto_merge = getattr(args, "auto_merge", False)
+    result = run_task(config, task, interactive=interactive, auto_merge=auto_merge)
 
     # Write audit log
     audit_path = _write_audit(result, config, task)
@@ -369,6 +370,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Skip human review; run fully unattended (CI mode)",
+    )
+    run_parser.add_argument(
+        "--auto-merge",
+        action="store_true",
+        default=False,
+        help="Merge feature branch into base branch after review APPROVE",
     )
 
     # forge audit

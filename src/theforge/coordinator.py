@@ -125,6 +125,7 @@ class CoordinatorResult:
     phase: Phase
     state: CoordinatorState
     message: str
+    merge: dict | None = None
 
 
 # ── Logging ──────────────────────────────────────────────────────────
@@ -223,6 +224,80 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
         return False, f"ERROR: {e}"
+
+
+# ── Merge ────────────────────────────────────────────────────────────
+
+
+def _merge_branch(
+    project_root: Path,
+    base_branch: str,
+    branch_name: str,
+    slug: str,
+    workspace_path: Path,
+) -> dict:
+    """Merge branch_name into base_branch in project_root.
+
+    Returns a merge info dict with keys: attempted, merged, base_branch, error.
+    """
+    info: dict = {
+        "attempted": True,
+        "merged": False,
+        "base_branch": base_branch,
+        "error": None,
+    }
+
+    # Safety check 1: verify base branch exists
+    ok, out = _run_shell(f"git branch --list {base_branch}", project_root)
+    if not ok or not out.strip():
+        info["error"] = f"Base branch {base_branch!r} not found in project root"
+        _log(f"Auto-merge skipped: {info['error']}")
+        return info
+
+    # Safety check 2: no uncommitted changes in project root
+    ok, dirty = _run_shell("git status --porcelain", project_root)
+    if ok and dirty.strip():
+        info["error"] = f"Uncommitted changes in project root: {dirty.strip()[:200]}"
+        _log(f"Auto-merge skipped: {info['error']}")
+        return info
+
+    # Safety check 3: verify branch has commits not on base
+    ok, log_out = _run_shell(f"git log {base_branch}..{branch_name} --oneline", project_root)
+    if not ok or not log_out.strip():
+        info["error"] = f"Branch {branch_name!r} has no commits ahead of {base_branch!r}"
+        _log(f"Auto-merge skipped: {info['error']}")
+        return info
+
+    # Checkout base branch
+    ok, out = _run_shell(f"git checkout {base_branch}", project_root)
+    if not ok:
+        info["error"] = f"Failed to checkout {base_branch!r}: {out}"
+        _log(f"Auto-merge failed: {info['error']}")
+        return info
+
+    # Attempt fast-forward merge
+    ok, out = _run_shell(f"git merge --ff-only {branch_name}", project_root)
+    if not ok:
+        _log(f"Fast-forward merge failed, falling back to regular merge: {out}")
+        ok, out = _run_shell(f"git merge --no-edit {branch_name}", project_root)
+
+    if not ok:
+        info["error"] = f"Merge failed: {out}"
+        _log(f"Auto-merge failed: {info['error']}")
+        return info
+
+    info["merged"] = True
+    _log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
+
+    # Worktree cleanup (best-effort)
+    worktree_rel = f".forge/worktrees/{slug}"
+    ok_rm, rm_out = _run_shell(f"git worktree remove {worktree_rel}", project_root)
+    if not ok_rm:
+        _log(f"Warning: worktree cleanup failed (harmless): {rm_out}")
+    else:
+        _log(f"Worktree removed: {worktree_rel}")
+
+    return info
 
 
 # ── Preflight ───────────────────────────────────────────────────────
@@ -396,7 +471,11 @@ def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
 
 
 def run_task(
-    config: ForgeConfig, task: TaskSpec, *, interactive: bool = False
+    config: ForgeConfig,
+    task: TaskSpec,
+    *,
+    interactive: bool = False,
+    auto_merge: bool = False,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -411,6 +490,8 @@ def run_task(
         task: The task specification.
         interactive: When True, pause at HUMAN_REVIEW for operator input before
             finalizing DONE or ESCALATE. When False (default), behave as before.
+        auto_merge: When True, merge the feature branch into base_branch after
+            a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
     """
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -826,6 +907,21 @@ def run_task(
                 if decision == "approve":
                     state.phase = Phase.DONE
                     _log_phase(state.phase, "Human approved — ready to merge")
+                    merge_info: dict | None = None
+                    merge_suffix = ""
+                    if auto_merge:
+                        merge_info = _merge_branch(
+                            config.project_root,
+                            config.workspace.base_branch,
+                            branch_name,
+                            task.slug,
+                            workspace_path,
+                        )
+                        merge_suffix = (
+                            " Merged."
+                            if merge_info["merged"]
+                            else f" Merge failed: {merge_info['error']}"
+                        )
                     return CoordinatorResult(
                         success=True,
                         phase=state.phase,
@@ -834,8 +930,9 @@ def run_task(
                             f"Task '{task.name}' completed. "
                             f"Human approved after {state.review_cycle} cycle(s), "
                             f"{state.dev_iteration} dev iteration(s). "
-                            f"Branch: {branch_name}"
+                            f"Branch: {branch_name}{merge_suffix}"
                         ),
+                        merge=merge_info,
                     )
                 if decision == "escalate":
                     state.phase = Phase.ESCALATE
@@ -855,6 +952,21 @@ def run_task(
             else:
                 state.phase = Phase.DONE
                 _log_phase(state.phase, "Review approved — ready for human merge")
+                merge_info = None
+                merge_suffix = ""
+                if auto_merge:
+                    merge_info = _merge_branch(
+                        config.project_root,
+                        config.workspace.base_branch,
+                        branch_name,
+                        task.slug,
+                        workspace_path,
+                    )
+                    merge_suffix = (
+                        " Merged."
+                        if merge_info["merged"]
+                        else f" Merge failed: {merge_info['error']}"
+                    )
                 return CoordinatorResult(
                     success=True,
                     phase=state.phase,
@@ -863,8 +975,9 @@ def run_task(
                         f"Task '{task.name}' completed. "
                         f"Review approved after {state.review_cycle} cycle(s), "
                         f"{state.dev_iteration} dev iteration(s). "
-                        f"Branch: {branch_name}"
+                        f"Branch: {branch_name}{merge_suffix}"
                     ),
+                    merge=merge_info,
                 )
 
         # REQUEST_CHANGES — loop back to dev
@@ -880,6 +993,21 @@ def run_task(
                 if decision == "approve":
                     state.phase = Phase.DONE
                     _log_phase(state.phase, "Human approved despite exhausted cycles")
+                    merge_info = None
+                    merge_suffix = ""
+                    if auto_merge:
+                        merge_info = _merge_branch(
+                            config.project_root,
+                            config.workspace.base_branch,
+                            branch_name,
+                            task.slug,
+                            workspace_path,
+                        )
+                        merge_suffix = (
+                            " Merged."
+                            if merge_info["merged"]
+                            else f" Merge failed: {merge_info['error']}"
+                        )
                     return CoordinatorResult(
                         success=True,
                         phase=state.phase,
@@ -887,8 +1015,9 @@ def run_task(
                         message=(
                             f"Task '{task.name}' completed. "
                             f"Human approved after {state.review_cycle} cycle(s). "
-                            f"Branch: {branch_name}"
+                            f"Branch: {branch_name}{merge_suffix}"
                         ),
+                        merge=merge_info,
                     )
                 if decision == "reject":
                     # Human wants another dev loop; reset iteration counter
@@ -1078,5 +1207,6 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             if state.human_review_decision is not None
             else None
         ),
+        "merge": result.merge,
         "error": state.error,
     }
