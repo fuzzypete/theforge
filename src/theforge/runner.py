@@ -1,7 +1,7 @@
 """CLI subprocess wrapper for invoking LLM agents.
 
 Dispatches to the appropriate CLI based on ModelProfile.cli.
-MVP supports Claude Code CLI. Extensible to Codex, Gemini, etc.
+Supports Claude Code, Codex (OpenAI), and Gemini (Google) CLIs.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -49,7 +50,8 @@ def run_agent(
     """
     runners = {
         "claude": _run_claude,
-        # Future: "codex": _run_codex, "gemini": _run_gemini
+        "codex": _run_codex,
+        "gemini": _run_gemini,
     }
 
     runner_fn = runners.get(profile.cli)
@@ -223,6 +225,280 @@ def _run_claude(
         output=result_json.get("result", proc.stdout),
         session_id=result_json.get("session_id"),
         cost_usd=cost,
+        exit_code=proc.returncode,
+        raw=result_json,
+        profile_name=profile.name,
+    )
+
+
+# ── Codex CLI ────────────────────────────────────────────────────────
+
+
+def _run_codex(
+    *,
+    prompt: str,
+    profile: ModelProfile,
+    working_dir: Path,
+    session_id: str | None = None,
+) -> AgentResult:
+    """Invoke `npx @openai/codex exec --full-auto` as a subprocess.
+
+    The prompt is passed as a positional arg. Output is captured via a
+    temp file using `-o <file>`; falls back to stdout if the file is empty.
+    No cost tracking or session resume are supported.
+    """
+    fd, output_path_str = tempfile.mkstemp(suffix=".txt", prefix="forge_codex_")
+    os.close(fd)
+    output_file = Path(output_path_str)
+
+    cmd: list[str] = [
+        "npx",
+        "@openai/codex",
+        "exec",
+        "--full-auto",
+        "-m",
+        profile.model,
+        "-C",
+        str(working_dir),
+        "-o",
+        str(output_file),
+        prompt,
+    ]
+
+    label = profile.name or f"{profile.cli}/{profile.model}"
+    print(
+        f"[forge]   Starting {label} "
+        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    result_holder: list[subprocess.CompletedProcess[str]] = []
+    exc_holder: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=profile.timeout_seconds,
+            )
+            result_holder.append(proc)
+        except BaseException as e:
+            exc_holder.append(e)
+
+    start = time.monotonic()
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    while thread.is_alive():
+        thread.join(timeout=30)
+        if thread.is_alive():
+            elapsed = int(time.monotonic() - start)
+            print(
+                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    elapsed = time.monotonic() - start
+
+    try:
+        if exc_holder:
+            exc = exc_holder[0]
+            if isinstance(exc, subprocess.TimeoutExpired):
+                return AgentResult(
+                    success=False,
+                    output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+                    session_id=None,
+                    cost_usd=0.0,
+                    exit_code=-1,
+                    raw={},
+                    profile_name=profile.name,
+                )
+            if isinstance(exc, FileNotFoundError):
+                return AgentResult(
+                    success=False,
+                    output="ERROR: 'npx @openai/codex' CLI not found. Is Codex installed?",
+                    session_id=None,
+                    cost_usd=0.0,
+                    exit_code=-1,
+                    raw={},
+                    profile_name=profile.name,
+                )
+            raise exc
+
+        proc = result_holder[0]
+        print(
+            f"[forge]   ... {label} done ({elapsed:.0f}s)",
+            file=sys.stderr,
+            flush=True,
+        )
+
+        # Read output file; fall back to stdout then stderr
+        output_text = ""
+        try:
+            content = output_file.read_text(encoding="utf-8").strip()
+            if content:
+                output_text = content
+        except OSError:
+            pass
+
+        if not output_text:
+            output_text = proc.stdout or proc.stderr or "(no output)"
+
+        # Try JSON parse for structured response
+        result_json: dict[str, Any] = {}
+        try:
+            result_json = json.loads(output_text)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        if result_json:
+            return AgentResult(
+                success=proc.returncode == 0,
+                output=result_json.get("result", output_text),
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=proc.returncode,
+                raw=result_json,
+                profile_name=profile.name,
+            )
+
+        return AgentResult(
+            success=proc.returncode == 0,
+            output=output_text,
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=proc.returncode,
+            raw={},
+            profile_name=profile.name,
+        )
+    finally:
+        try:
+            output_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+# ── Gemini CLI ───────────────────────────────────────────────────────
+
+
+def _run_gemini(
+    *,
+    prompt: str,
+    profile: ModelProfile,
+    working_dir: Path,
+    session_id: str | None = None,
+) -> AgentResult:
+    """Invoke `gemini -p <prompt> --yolo -m <model> -o json` as a subprocess.
+
+    The prompt is passed via the `-p` flag. `-o json` requests structured JSON
+    output. No cost tracking or session resume are supported.
+    """
+    cmd: list[str] = [
+        "gemini",
+        "-p",
+        prompt,
+        "--yolo",
+        "-m",
+        profile.model,
+        "-o",
+        "json",
+    ]
+
+    label = profile.name or f"{profile.cli}/{profile.model}"
+    print(
+        f"[forge]   Starting {label} "
+        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    result_holder: list[subprocess.CompletedProcess[str]] = []
+    exc_holder: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(working_dir),
+                timeout=profile.timeout_seconds,
+            )
+            result_holder.append(proc)
+        except BaseException as e:
+            exc_holder.append(e)
+
+    start = time.monotonic()
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    while thread.is_alive():
+        thread.join(timeout=30)
+        if thread.is_alive():
+            elapsed = int(time.monotonic() - start)
+            print(
+                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    elapsed = time.monotonic() - start
+
+    if exc_holder:
+        exc = exc_holder[0]
+        if isinstance(exc, subprocess.TimeoutExpired):
+            return AgentResult(
+                success=False,
+                output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+            )
+        if isinstance(exc, FileNotFoundError):
+            return AgentResult(
+                success=False,
+                output="ERROR: 'gemini' CLI not found. Is Gemini CLI installed?",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+            )
+        raise exc
+
+    proc = result_holder[0]
+    print(
+        f"[forge]   ... {label} done ({elapsed:.0f}s)",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    # Parse JSON output (-o json requests structured response)
+    result_json: dict[str, Any] = {}
+    try:
+        result_json = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return AgentResult(
+            success=proc.returncode == 0,
+            output=proc.stdout or proc.stderr or "(no output)",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=proc.returncode,
+            raw={},
+            profile_name=profile.name,
+        )
+
+    return AgentResult(
+        success=proc.returncode == 0,
+        output=result_json.get("result", proc.stdout),
+        session_id=None,
+        cost_usd=0.0,
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,

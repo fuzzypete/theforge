@@ -249,7 +249,7 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "gemini-reviewer", "cli": "gemini", "model": "pro"},
+                        {"name": "llama-reviewer", "cli": "llama", "model": "llama3"},
                     ],
                 }
             },
@@ -263,13 +263,47 @@ class TestReviewPool:
         config_path = _write_config(
             {
                 "profiles": {
-                    "review": {"cli": "gemini", "model": "pro"},
+                    "review": {"cli": "llama", "model": "llama3"},
                 }
             },
             tmp_path,
         )
         with pytest.raises(ValueError, match="Unsupported CLI"):
             load_config(config_path)
+
+    def test_codex_cli_in_pool_accepted(self, tmp_path):
+        """codex CLI in review_pool is valid and loads without error."""
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {"name": "codex-reviewer", "cli": "codex", "model": "o4-mini"},
+                    ],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.review_pool[0].cli == "codex"
+
+    def test_gemini_cli_in_pool_accepted(self, tmp_path):
+        """gemini CLI in review_pool is valid and loads without error."""
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "gemini-reviewer",
+                            "cli": "gemini",
+                            "model": "gemini-2.5-pro",
+                        },
+                    ],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.review_pool[0].cli == "gemini"
 
     def test_pool_gt1_missing_synthesis_raises(self, tmp_path):
         """Pool with >1 entries but no synthesis profile → ValueError."""
@@ -335,6 +369,12 @@ class TestSupportedClis:
     def test_supported_clis_contains_claude(self):
         assert "claude" in SUPPORTED_CLIS
 
+    def test_supported_clis_contains_codex(self):
+        assert "codex" in SUPPORTED_CLIS
+
+    def test_supported_clis_contains_gemini(self):
+        assert "gemini" in SUPPORTED_CLIS
+
     def test_unsupported_cli_in_synthesis_raises(self, tmp_path):
         """Unsupported CLI in synthesis profile → ValueError."""
         config_path = _write_config(
@@ -344,10 +384,36 @@ class TestSupportedClis:
                         {"name": "a", "cli": "claude", "model": "opus"},
                         {"name": "b", "cli": "claude", "model": "sonnet"},
                     ],
-                    "synthesis": {"cli": "gemini", "model": "pro"},
+                    "synthesis": {"cli": "llama", "model": "llama3"},
                 }
             },
             tmp_path,
         )
         with pytest.raises(ValueError, match="Unsupported CLI"):
             load_config(config_path)
+
+    def test_mixed_cli_pool_with_synthesis_loads(self, tmp_path):
+        """Pool with claude + codex + gemini entries loads successfully."""
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {"name": "claude-reviewer", "cli": "claude", "model": "opus"},
+                        {"name": "codex-reviewer", "cli": "codex", "model": "o4-mini"},
+                        {
+                            "name": "gemini-reviewer",
+                            "cli": "gemini",
+                            "model": "gemini-2.5-pro",
+                        },
+                    ],
+                    "synthesis": {"cli": "claude", "model": "opus"},
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert len(config.review_pool) == 3
+        clis = [p.cli for p in config.review_pool]
+        assert "claude" in clis
+        assert "codex" in clis
+        assert "gemini" in clis
