@@ -51,6 +51,7 @@ class Phase(Enum):
     DEV = auto()
     VALIDATE = auto()
     REVIEW = auto()
+    HUMAN_REVIEW = auto()
     DONE = auto()
     ESCALATE = auto()
 
@@ -87,6 +88,8 @@ class CoordinatorState:
     gate_decisions: list[str] = field(default_factory=list)
     last_review_findings: str | None = None
     human_feedback: str | None = None
+    human_review_decision: str | None = None  # "approve" | "reject" | "escalate"
+    human_review_feedback: str | None = None  # rejection text from human
     error: str | None = None
 
     @property
@@ -123,6 +126,64 @@ def _log(msg: str) -> None:
 def _log_phase(phase: Phase, detail: str = "") -> None:
     suffix = f" — {detail}" if detail else ""
     _log(f"▸ {phase.name}{suffix}")
+
+
+# ── Human review ─────────────────────────────────────────────────────
+
+
+def _human_review(
+    state: CoordinatorState,
+    parsed_review: "ReviewResult",  # noqa: F821
+    workspace_path: "Path",  # noqa: F821
+    branch_name: str,
+) -> tuple[str, str | None]:
+    """Prompt the human operator for a review decision.
+
+    Returns (decision, feedback) where decision is one of:
+      "approve"   → transition to DONE
+      "reject"    → transition back to DEV with feedback text
+      "escalate"  → transition to ESCALATE
+    """
+
+    p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
+    finding_summary = f"{p1} P1, {p2} P2" if (p1 or p2) else "no findings"
+
+    _log("─── Human Review ───")
+    _log(f"  Verdict:   {parsed_review.verdict} ({finding_summary})")
+    _log(f"  Summary:   {parsed_review.summary}")
+    _log(f"  Workspace: {workspace_path}")
+    _log(f"  Branch:    {branch_name}")
+    _log(f"  Cost:      ${state.total_cost:.3f}")
+    _log("")
+    _log("Options:")
+    _log("  [a]pprove  → DONE (ready to merge)")
+    _log("  [r]eject   → send findings back to dev")
+    _log("  [e]scalate → give up")
+    _log("")
+
+    while True:
+        print("[forge] Choice [a/r/e]: ", end="", file=sys.stderr, flush=True)
+        raw = sys.stdin.readline().strip().lower()
+        if raw in ("a", "approve"):
+            return "approve", None
+        if raw in ("e", "escalate"):
+            return "escalate", None
+        if raw in ("r", "reject"):
+            _log("Enter your findings (empty line to finish):")
+            lines: list[str] = []
+            while True:
+                print("> ", end="", file=sys.stderr, flush=True)
+                line = sys.stdin.readline()
+                # readline() returns "" on EOF, "\n" on empty line
+                stripped = line.rstrip("\n")
+                if stripped == "" and line != "":
+                    break
+                if line == "":
+                    break
+                lines.append(stripped)
+            return "reject", "\n".join(lines)
+        _log("Invalid choice. Enter 'a', 'r', or 'e'.")
 
 
 # ── Shell helpers ────────────────────────────────────────────────────
@@ -259,7 +320,9 @@ def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
 # ── State machine ────────────────────────────────────────────────────
 
 
-def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
+def run_task(
+    config: ForgeConfig, task: TaskSpec, *, interactive: bool = False
+) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
     This is the main entry point. It creates a workspace, runs the dev agent,
@@ -267,6 +330,12 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
     loops until done or exhausted.
 
     Every transition is deterministic. No LLM makes process decisions.
+
+    Args:
+        config: The forge configuration.
+        task: The task specification.
+        interactive: When True, pause at HUMAN_REVIEW for operator input before
+            finalizing DONE or ESCALATE. When False (default), behave as before.
     """
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -616,33 +685,109 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         )
 
         if parsed_review.verdict == "APPROVE":
-            state.phase = Phase.DONE
-            _log_phase(state.phase, "Review approved — ready for human merge")
-            return CoordinatorResult(
-                success=True,
-                phase=state.phase,
-                state=state,
-                message=(
-                    f"Task '{task.name}' completed. "
-                    f"Review approved after {state.review_cycle} cycle(s), "
-                    f"{state.dev_iteration} dev iteration(s). "
-                    f"Branch: {branch_name}"
-                ),
-            )
+            if interactive:
+                state.phase = Phase.HUMAN_REVIEW
+                _log_phase(state.phase)
+                decision, feedback = _human_review(
+                    state, parsed_review, workspace_path, branch_name
+                )
+                state.human_review_decision = decision
+                state.human_review_feedback = feedback
+                if decision == "approve":
+                    state.phase = Phase.DONE
+                    _log_phase(state.phase, "Human approved — ready to merge")
+                    return CoordinatorResult(
+                        success=True,
+                        phase=state.phase,
+                        state=state,
+                        message=(
+                            f"Task '{task.name}' completed. "
+                            f"Human approved after {state.review_cycle} cycle(s), "
+                            f"{state.dev_iteration} dev iteration(s). "
+                            f"Branch: {branch_name}"
+                        ),
+                    )
+                if decision == "escalate":
+                    state.phase = Phase.ESCALATE
+                    state.error = "Human chose to escalate after APPROVE."
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+                # decision == "reject" — loop back to dev with human feedback
+                state.human_feedback = feedback
+                state.last_review_findings = None
+                state.dev_iteration = 0
+                _log("Human rejected — looping back to dev with feedback")
+                continue
+            else:
+                state.phase = Phase.DONE
+                _log_phase(state.phase, "Review approved — ready for human merge")
+                return CoordinatorResult(
+                    success=True,
+                    phase=state.phase,
+                    state=state,
+                    message=(
+                        f"Task '{task.name}' completed. "
+                        f"Review approved after {state.review_cycle} cycle(s), "
+                        f"{state.dev_iteration} dev iteration(s). "
+                        f"Branch: {branch_name}"
+                    ),
+                )
 
         # REQUEST_CHANGES — loop back to dev
         if state.review_cycle >= config.retry.max_review_cycles:
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Review requested changes after {state.review_cycle} cycles. "
-                f"Max cycles ({config.retry.max_review_cycles}) exhausted."
-            )
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
+            if interactive:
+                state.phase = Phase.HUMAN_REVIEW
+                _log_phase(state.phase, "cycles exhausted")
+                decision, feedback = _human_review(
+                    state, parsed_review, workspace_path, branch_name
+                )
+                state.human_review_decision = decision
+                state.human_review_feedback = feedback
+                if decision == "approve":
+                    state.phase = Phase.DONE
+                    _log_phase(state.phase, "Human approved despite exhausted cycles")
+                    return CoordinatorResult(
+                        success=True,
+                        phase=state.phase,
+                        state=state,
+                        message=(
+                            f"Task '{task.name}' completed. "
+                            f"Human approved after {state.review_cycle} cycle(s). "
+                            f"Branch: {branch_name}"
+                        ),
+                    )
+                if decision == "reject":
+                    # Human wants another dev loop; bump the cycle limit by 1
+                    state.human_feedback = feedback
+                    state.last_review_findings = None
+                    state.dev_iteration = 0
+                    _log("Human rejected — looping back to dev with feedback")
+                    continue
+                # escalate
+                state.phase = Phase.ESCALATE
+                state.error = "Human chose to escalate after exhausted cycles."
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
+            else:
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"Review requested changes after {state.review_cycle} cycles. "
+                    f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+                )
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
 
         # Feed findings back to dev agent
         state.last_review_findings = findings_to_markdown(parsed_review.findings)
@@ -764,5 +909,13 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "agents": agents,
         },
         "reviews": reviews,
+        "human_review": (
+            {
+                "decision": state.human_review_decision,
+                "feedback": state.human_review_feedback,
+            }
+            if state.human_review_decision is not None
+            else None
+        ),
         "error": state.error,
     }

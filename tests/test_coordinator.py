@@ -1442,3 +1442,161 @@ class TestCoordinatorDirtyWorktree:
         # handoff.yaml is filtered out → clean worktree → proceeds to review
         assert result.success is True
         assert result.phase == Phase.DONE
+
+
+# ── Human Review Tests ────────────────────────────────────────────────
+
+
+class TestCoordinatorHumanReview:
+    """Tests for the HUMAN_REVIEW phase (R7 from the spec)."""
+
+    # ── helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_interactive_base(tmp_path):
+        """Return (config, task, workspace) with workspace already created."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        return config, task, workspace
+
+    @staticmethod
+    def _shell_side_effect(workspace):
+        """Standard shell mock: gate writes PASS handoff, git status is clean."""
+
+        def side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(workspace, "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        return side_effect
+
+    # ── test_interactive_approve ──────────────────────────────────────
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_interactive_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Human enters 'a' → DONE."""
+        config, task, workspace = self._make_interactive_base(tmp_path)
+        mock_shell.side_effect = self._shell_side_effect(workspace)
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        import io
+
+        with patch("sys.stdin", io.StringIO("a\n")):
+            result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.human_review_decision == "approve"
+        assert result.state.human_review_feedback is None
+
+    # ── test_interactive_reject_loops_back ────────────────────────────
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_interactive_reject_loops_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Human enters 'r' + findings → dev called again with human_feedback, then approves."""
+        config, task, workspace = self._make_interactive_base(tmp_path)
+        mock_shell.side_effect = self._shell_side_effect(workspace)
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+
+        # First review cycle: APPROVE → human rejects; second cycle: APPROVE → human approves
+        approve_result = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_pool.return_value = approve_result  # same list each call (pool is called twice)
+
+        # Use side_effect list so first call triggers reject path, second triggers approve
+        import io
+
+        stdin_input = "r\nfix the bug\n\na\n"
+        with patch("sys.stdin", io.StringIO(stdin_input)):
+            result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # dev agent was called at least twice (original + after rejection)
+        assert len(result.state.dev_results) >= 2
+        # The human_review_decision records the final decision
+        assert result.state.human_review_decision == "approve"
+
+    # ── test_interactive_escalate ─────────────────────────────────────
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_interactive_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Human enters 'e' → ESCALATE."""
+        config, task, workspace = self._make_interactive_base(tmp_path)
+        mock_shell.side_effect = self._shell_side_effect(workspace)
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        import io
+
+        with patch("sys.stdin", io.StringIO("e\n")):
+            result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.human_review_decision == "escalate"
+
+    # ── test_auto_mode_skips_human_review ─────────────────────────────
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_auto_mode_skips_human_review(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """interactive=False never enters HUMAN_REVIEW."""
+        config, task, workspace = self._make_interactive_base(tmp_path)
+        mock_shell.side_effect = self._shell_side_effect(workspace)
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=False)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # HUMAN_REVIEW phase was never set
+        assert result.state.human_review_decision is None
+        # The phase stored in state at completion is DONE (not HUMAN_REVIEW)
+        assert result.state.phase == Phase.DONE
+
+    # ── test_interactive_on_exhausted_cycles ─────────────────────────
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_interactive_on_exhausted_cycles(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """When review cycles exhaust with REQUEST_CHANGES, human can still choose."""
+        config, task, workspace = self._make_interactive_base(tmp_path)
+        mock_shell.side_effect = self._shell_side_effect(workspace)
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        # Always REQUEST_CHANGES → cycles exhaust → HUMAN_REVIEW
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+
+        import io
+
+        # Human escalates at the HUMAN_REVIEW prompt
+        with patch("sys.stdin", io.StringIO("e\n")):
+            result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.human_review_decision == "escalate"

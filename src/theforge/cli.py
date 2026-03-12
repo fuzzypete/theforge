@@ -206,7 +206,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         return _cmd_dry_run(config, task, spec_path)
 
-    result = run_task(config, task)
+    # --auto disables human review; default (no flag) is interactive
+    interactive = not getattr(args, "auto", False)
+    result = run_task(config, task, interactive=interactive)
 
     # Write audit log
     audit_path = _write_audit(result, config, task)
@@ -350,6 +352,19 @@ def main() -> None:
         "--dry-run",
         action="store_true",
         help="Print prompts and config without invoking agents",
+    )
+    _mode = run_parser.add_mutually_exclusive_group()
+    _mode.add_argument(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Pause for human review before DONE/ESCALATE (default)",
+    )
+    _mode.add_argument(
+        "--auto",
+        action="store_true",
+        default=False,
+        help="Skip human review; run fully unattended (CI mode)",
     )
 
     # forge audit
