@@ -45,7 +45,7 @@ class TestRunAgentClaude:
             {
                 "result": "I implemented the feature.",
                 "session_id": "sess-abc123",
-                "cost_usd": 0.42,
+                "total_cost_usd": 0.42,
             }
         )
         mock_proc = subprocess.CompletedProcess(
@@ -129,7 +129,7 @@ class TestRunAgentClaude:
         assert "--allowedTools" not in cmd
 
     def test_nonzero_exit(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "partial work", "cost_usd": 0.15})
+        json_output = json.dumps({"result": "partial work", "total_cost_usd": 0.15})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout=json_output, stderr=""
         )
@@ -190,7 +190,7 @@ class TestRunAgentClaude:
         self, review_profile: ModelProfile, tmp_path: Path
     ) -> None:
         """AgentResult.profile_name must be set to profile.name."""
-        json_output = json.dumps({"result": "reviewed.", "cost_usd": 0.10})
+        json_output = json.dumps({"result": "reviewed.", "total_cost_usd": 0.10})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
@@ -204,7 +204,7 @@ class TestRunAgentCostCoercion:
     """Test that non-numeric cost_usd is coerced to float safely."""
 
     def test_string_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "done", "cost_usd": "0.42"})
+        json_output = json.dumps({"result": "done", "total_cost_usd": "0.42"})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
@@ -225,7 +225,7 @@ class TestRunAgentCostCoercion:
         assert result.cost_usd == 0.0
 
     def test_garbage_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "done", "cost_usd": "not-a-number"})
+        json_output = json.dumps({"result": "done", "total_cost_usd": "not-a-number"})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
@@ -233,6 +233,90 @@ class TestRunAgentCostCoercion:
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.0
+
+
+class TestRunAgentModelUsage:
+    """Test per-model usage breakdown parsing from Claude JSON output."""
+
+    def test_model_usage_parsed(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        json_output = json.dumps(
+            {
+                "result": "done",
+                "total_cost_usd": 0.123,
+                "modelUsage": {
+                    "claude-sonnet-4-6": {
+                        "inputTokens": 1000,
+                        "outputTokens": 500,
+                        "cacheReadInputTokens": 8000,
+                        "cacheCreationInputTokens": 2000,
+                        "costUSD": 0.123,
+                    }
+                },
+            }
+        )
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.cost_usd == 0.123
+        assert len(result.model_usage) == 1
+        u = result.model_usage[0]
+        assert u.model == "claude-sonnet-4-6"
+        assert u.input_tokens == 1000
+        assert u.output_tokens == 500
+        assert u.cache_read_tokens == 8000
+        assert u.cache_creation_tokens == 2000
+        assert u.cost_usd == 0.123
+
+    def test_model_usage_empty_when_absent(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        json_output = json.dumps({"result": "done", "total_cost_usd": 0.05})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.model_usage == ()
+
+    def test_multi_model_usage(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        """modelUsage can contain multiple models (e.g. tool use with different models)."""
+        json_output = json.dumps(
+            {
+                "result": "done",
+                "total_cost_usd": 0.20,
+                "modelUsage": {
+                    "claude-sonnet-4-6": {
+                        "inputTokens": 500,
+                        "outputTokens": 200,
+                        "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0,
+                        "costUSD": 0.10,
+                    },
+                    "claude-opus-4-6": {
+                        "inputTokens": 300,
+                        "outputTokens": 100,
+                        "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0,
+                        "costUSD": 0.10,
+                    },
+                },
+            }
+        )
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.cost_usd == 0.20
+        assert len(result.model_usage) == 2
+        models = {u.model for u in result.model_usage}
+        assert "claude-sonnet-4-6" in models
+        assert "claude-opus-4-6" in models
 
 
 class TestRunAgentUnknownCli:
@@ -319,7 +403,7 @@ class TestRunAgentPool:
             timeout_seconds=300,
             allowed_tools=(),
         )
-        json_output = json.dumps({"result": "solo review", "cost_usd": 0.20})
+        json_output = json.dumps({"result": "solo review", "total_cost_usd": 0.20})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
@@ -403,7 +487,7 @@ class TestRunAgentPool:
                 allowed_tools=(),
             ),
         ]
-        json_output = json.dumps({"result": "done", "cost_usd": 0.10})
+        json_output = json.dumps({"result": "done", "total_cost_usd": 0.10})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )

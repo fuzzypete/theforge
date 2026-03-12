@@ -827,25 +827,47 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
     agents: list[dict] = []
     for i, r in enumerate(state.dev_results):
         dur = state.dev_durations[i] if i < len(state.dev_durations) else None
-        agents.append(
-            {
-                "role": "dev",
-                "profile": r.profile_name or config.dev_profile.name,
-                "cost_usd": r.cost_usd,
-                "duration_seconds": dur,
-            }
-        )
+        entry: dict = {
+            "role": "dev",
+            "profile": r.profile_name or config.dev_profile.name,
+            "cost_usd": r.cost_usd,
+            "duration_seconds": dur,
+        }
+        if r.model_usage:
+            entry["model_usage"] = [
+                {
+                    "model": u.model,
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_read_tokens": u.cache_read_tokens,
+                    "cache_creation_tokens": u.cache_creation_tokens,
+                    "cost_usd": u.cost_usd,
+                }
+                for u in r.model_usage
+            ]
+        agents.append(entry)
     for i, r in enumerate(state.review_agent_results):
         dur = state.review_durations[i] if i < len(state.review_durations) else None
         role = "synthesis" if r.profile_name == "synthesis" else "review"
-        agents.append(
-            {
-                "role": role,
-                "profile": r.profile_name,
-                "cost_usd": r.cost_usd,
-                "duration_seconds": dur,
-            }
-        )
+        entry = {
+            "role": role,
+            "profile": r.profile_name,
+            "cost_usd": r.cost_usd,
+            "duration_seconds": dur,
+        }
+        if r.model_usage:
+            entry["model_usage"] = [
+                {
+                    "model": u.model,
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_read_tokens": u.cache_read_tokens,
+                    "cache_creation_tokens": u.cache_creation_tokens,
+                    "cost_usd": u.cost_usd,
+                }
+                for u in r.model_usage
+            ]
+        agents.append(entry)
 
     # Build reviews list from cycle metadata (primary) joined with parsed results
     reviews = []

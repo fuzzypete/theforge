@@ -21,16 +21,29 @@ from .config import ModelProfile
 
 
 @dataclass(frozen=True)
+class ModelUsage:
+    """Per-model token and cost breakdown from a single agent invocation."""
+
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cost_usd: float
+
+
+@dataclass(frozen=True)
 class AgentResult:
     """Structured result from an agent invocation."""
 
     success: bool  # subprocess returned 0
     output: str  # agent's text response
     session_id: str | None  # for --resume on follow-up
-    cost_usd: float  # invocation cost
+    cost_usd: float  # total invocation cost
     exit_code: int  # raw exit code
     raw: dict[str, Any]  # full parsed JSON (if available)
     profile_name: str = ""  # identifies which profile produced this result
+    model_usage: tuple[ModelUsage, ...] = ()  # per-model breakdown (Claude only)
 
 
 # ── Heartbeat helper ─────────────────────────────────────────────────
@@ -87,6 +100,28 @@ def _run_with_heartbeat(
 
     elapsed = time.monotonic() - start
     return outcome, elapsed
+
+
+def _parse_model_usage(result_json: dict[str, Any]) -> tuple[ModelUsage, ...]:
+    """Extract per-model usage breakdown from Claude CLI JSON output."""
+    raw_usage = result_json.get("modelUsage", {})
+    if not isinstance(raw_usage, dict):
+        return ()
+    usages = []
+    for model_name, data in raw_usage.items():
+        if not isinstance(data, dict):
+            continue
+        usages.append(
+            ModelUsage(
+                model=model_name,
+                input_tokens=int(data.get("inputTokens", 0)),
+                output_tokens=int(data.get("outputTokens", 0)),
+                cache_read_tokens=int(data.get("cacheReadInputTokens", 0)),
+                cache_creation_tokens=int(data.get("cacheCreationInputTokens", 0)),
+                cost_usd=float(data.get("costUSD", 0.0)),
+            )
+        )
+    return tuple(usages)
 
 
 def _handle_exception(
@@ -250,7 +285,7 @@ def _run_claude(
         )
 
     try:
-        cost = float(result_json.get("cost_usd", 0.0))
+        cost = float(result_json.get("total_cost_usd", 0.0))
     except (TypeError, ValueError):
         cost = 0.0
 
@@ -262,6 +297,7 @@ def _run_claude(
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,
+        model_usage=_parse_model_usage(result_json),
     )
 
 
