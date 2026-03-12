@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -76,7 +77,11 @@ class CoordinatorState:
     review_cycle: int = 0  # which dev→review loop we're on
     dev_iteration: int = 0  # retries within the current review cycle
     dev_results: list[AgentResult] = field(default_factory=list)
+    dev_durations: list[float] = field(default_factory=list)  # wall-clock seconds per dev call
     review_agent_results: list[AgentResult] = field(default_factory=list)
+    review_durations: list[float] = field(
+        default_factory=list
+    )  # wall-clock seconds per review call
     review_results: list[ReviewResult] = field(default_factory=list)
     review_cycle_metadata: list[ReviewCycleMetadata] = field(default_factory=list)
     gate_decisions: list[str] = field(default_factory=list)
@@ -308,6 +313,7 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
             iteration=state.dev_iteration,
         )
 
+        _dev_start = time.monotonic()
         dev_result = run_agent(
             prompt=prompt,
             profile=config.dev_profile,
@@ -315,6 +321,7 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
             session_id=state.dev_session_id,
         )
         state.dev_results.append(dev_result)
+        state.dev_durations.append(time.monotonic() - _dev_start)
         state.dev_session_id = dev_result.session_id
         log_agent_result(dev_result, "DEV")
 
@@ -411,13 +418,17 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
 
         # Run all pool reviewers (sequentially for MVP)
         _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+        _pool_start = time.monotonic()
         pool_results = run_agent_pool(
             prompt=review_prompt,
             profiles=config.review_pool,
             working_dir=workspace_path,
         )
+        _pool_elapsed = time.monotonic() - _pool_start
+        _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
         for r in pool_results:
             state.review_agent_results.append(r)
+            state.review_durations.append(_per_agent_dur)
             log_agent_result(r, f"REVIEW/{r.profile_name}")
 
         # Per-profile budget enforcement (cumulative across cycles)
@@ -492,17 +503,20 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
                 failed_count=len(failed_results),
                 total_count=pool_size,
             )
+            _synth_start = time.monotonic()
             synthesis_result = run_agent(
                 prompt=synthesis_prompt,
                 profile=config.synthesis_profile,
                 working_dir=workspace_path,
             )
+            _synth_elapsed = time.monotonic() - _synth_start
             # Tag with profile name using dataclasses.replace
             from dataclasses import replace as _replace
 
             synthesis_result = _replace(synthesis_result, profile_name="synthesis")
 
             state.review_agent_results.append(synthesis_result)
+            state.review_durations.append(_synth_elapsed)
             log_agent_result(synthesis_result, "SYNTHESIS")
 
             # Synthesis budget enforcement
@@ -629,27 +643,27 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             pass
 
     # Build per-agent invocation list for cost breakdown.
-    # NOTE: AgentResult does not currently store duration_seconds (runner.py tracks
-    # elapsed locally but does not persist it in AgentResult). Per-agent duration
-    # will be null until runner.py is expanded to include it.
+    # Durations are measured in the coordinator around each agent call.
     agents: list[dict] = []
-    for r in state.dev_results:
+    for i, r in enumerate(state.dev_results):
+        dur = state.dev_durations[i] if i < len(state.dev_durations) else None
         agents.append(
             {
                 "role": "dev",
                 "profile": r.profile_name or config.dev_profile.name,
                 "cost_usd": r.cost_usd,
-                "duration_seconds": None,
+                "duration_seconds": dur,
             }
         )
-    for r in state.review_agent_results:
+    for i, r in enumerate(state.review_agent_results):
+        dur = state.review_durations[i] if i < len(state.review_durations) else None
         role = "synthesis" if r.profile_name == "synthesis" else "review"
         agents.append(
             {
                 "role": role,
                 "profile": r.profile_name,
                 "cost_usd": r.cost_usd,
-                "duration_seconds": None,
+                "duration_seconds": dur,
             }
         )
 

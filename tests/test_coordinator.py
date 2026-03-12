@@ -3,20 +3,12 @@
 Uses mocked runner to test all state transitions without real agent calls.
 """
 
-import sys
 from pathlib import Path
+from unittest.mock import patch
 
-# Ensure the worktree's theforge package takes precedence over any other
-# installed version (e.g. the parent project installed in system site-packages).
-_worktree_src = Path(__file__).parents[1] / "src"
-if str(_worktree_src) not in sys.path:
-    sys.path.insert(0, str(_worktree_src))
+import yaml
 
-from unittest.mock import patch  # noqa: E402
-
-import yaml  # noqa: E402
-
-from theforge.config import (  # noqa: E402
+from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
@@ -25,9 +17,9 @@ from theforge.config import (  # noqa: E402
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import Phase, run_task  # noqa: E402
-from theforge.runner import AgentResult  # noqa: E402
-from theforge.task import TaskSpec  # noqa: E402
+from theforge.coordinator import Phase, run_task
+from theforge.runner import AgentResult
+from theforge.task import TaskSpec
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -1078,10 +1070,14 @@ class TestCoordinatorAuditAgentBreakdown:
         assert dev_entry["profile"] == "dev"
         assert dev_entry["cost_usd"] == 0.30
         assert "duration_seconds" in dev_entry
+        assert dev_entry["duration_seconds"] is not None
+        assert dev_entry["duration_seconds"] >= 0
 
         review_entry = next(a for a in agents if a["role"] == "review")
         assert review_entry["profile"] == "review"
         assert review_entry["cost_usd"] == 0.20
+        assert review_entry["duration_seconds"] is not None
+        assert review_entry["duration_seconds"] >= 0
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")

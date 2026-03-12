@@ -312,12 +312,12 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
             findings = r.get("findings", [])
             if findings:
-                for f in findings:
-                    sev = f.get("severity", "?")
-                    ffile = f.get("file", "?")
-                    line = f.get("line")
+                for finding in findings:
+                    sev = finding.get("severity", "?")
+                    ffile = finding.get("file", "?")
+                    line = finding.get("line")
                     loc = f"{ffile}:{line}" if line else ffile
-                    desc = f.get("description", "")
+                    desc = finding.get("description", "")
                     print(f"      [{sev}] {loc} — {desc}")
 
     if audit.get("error"):
