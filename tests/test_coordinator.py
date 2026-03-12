@@ -6,6 +6,7 @@ Uses mocked runner to test all state transitions without real agent calls.
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from theforge.config import (
@@ -181,6 +182,58 @@ test_coverage:
 ```
 """
 
+PREFLIGHT_PROCEED = """\
+```yaml
+verdict: PROCEED
+reason: "Spec requirements are not yet implemented."
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "Not found in codebase"
+```
+"""
+
+PREFLIGHT_ALREADY_DONE = """\
+```yaml
+verdict: ALREADY_DONE
+reason: "All acceptance criteria are already satisfied."
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: true
+    evidence: "Implemented in coordinator.py:42"
+```
+"""
+
+PREFLIGHT_BLOCKED = """\
+```yaml
+verdict: BLOCKED
+reason: "Spec references removed_function() which no longer exists."
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "removed_function() was deleted in a prior commit"
+```
+"""
+
+
+_PREFLIGHT_RESULT = _make_agent_result(
+    success=True, output=PREFLIGHT_PROCEED, cost_usd=0.05, profile_name="review"
+)
+
+
+def _preflight_then(*dev_results: AgentResult):
+    """Preflight PROCEED on first call, then dev_results."""
+    preflight_result = _PREFLIGHT_RESULT
+    results = [preflight_result, *dev_results]
+    call_idx = {"n": 0}
+
+    def side_effect(**kwargs):
+        idx = min(call_idx["n"], len(results) - 1)
+        call_idx["n"] += 1
+        return results[idx]
+
+    return side_effect
+
 
 # ── Tests ────────────────────────────────────────────────────────────
 
@@ -198,7 +251,9 @@ class TestCoordinatorHappyPath:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -226,7 +281,7 @@ class TestCoordinatorGateFailRetry:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
-        mock_agent.return_value = _make_agent_result()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -251,7 +306,7 @@ class TestCoordinatorReviewRequestChanges:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
         call_count = {"pool": 0}
 
@@ -286,7 +341,7 @@ class TestCoordinatorEscalation:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "FAIL")
-        mock_agent.return_value = _make_agent_result()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -307,7 +362,7 @@ class TestCoordinatorEscalation:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
         mock_pool.return_value = [
             _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
         ]
@@ -334,7 +389,7 @@ class TestCoordinatorSchemaErrorOverride:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
         # Review YAML that says APPROVE but is missing required fields
         malformed_approve = """\
@@ -397,7 +452,7 @@ class TestCoordinatorCostTracking:
             profile_name="review",
         )
 
-        mock_agent.return_value = dev_result
+        mock_agent.side_effect = _preflight_then(dev_result)
         mock_pool.return_value = [review_result]
 
         result = run_task(config, task)
@@ -405,7 +460,8 @@ class TestCoordinatorCostTracking:
         assert result.success is True
         assert result.state.total_dev_cost == 0.75
         assert result.state.total_review_cost == 0.90
-        assert result.state.total_cost == 1.65
+        # total_cost includes preflight ($0.05) + dev + review
+        assert result.state.total_cost == pytest.approx(0.05 + 0.75 + 0.90)
 
 
 class TestCoordinatorBudgetEnforcement:
@@ -459,7 +515,7 @@ class TestCoordinatorBudgetEnforcement:
         mock_shell.return_value = (True, "OK")
 
         # Agent costs $0.50, budget is $0.40 → immediate escalation
-        mock_agent.return_value = AgentResult(
+        expensive_result = AgentResult(
             success=True,
             output="Done.",
             session_id="s1",
@@ -468,6 +524,7 @@ class TestCoordinatorBudgetEnforcement:
             raw={},
             profile_name="dev",
         )
+        mock_agent.side_effect = _preflight_then(expensive_result)
 
         result = run_task(config, task)
 
@@ -491,7 +548,7 @@ class TestCoordinatorBudgetEnforcement:
 
         mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
 
-        mock_agent.return_value = AgentResult(
+        retry_result = AgentResult(
             success=True,
             output="Done.",
             session_id="s1",
@@ -500,6 +557,7 @@ class TestCoordinatorBudgetEnforcement:
             raw={},
             profile_name="dev",
         )
+        mock_agent.side_effect = _preflight_then(retry_result)
 
         result = run_task(config, task)
 
@@ -541,7 +599,7 @@ class TestCoordinatorBudgetEnforcement:
             profile_name="review",
         )
 
-        mock_agent.return_value = dev_result
+        mock_agent.side_effect = _preflight_then(dev_result)
         mock_pool.return_value = [review_result]
 
         result = run_task(config, task)
@@ -582,7 +640,7 @@ class TestCoordinatorStaleHandoff:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -612,7 +670,7 @@ class TestCoordinatorStaleHandoffUnlinkFailure:
         (workspace / "handoff.yaml").mkdir()
 
         mock_shell.return_value = (True, "OK")
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -638,7 +696,7 @@ class TestCoordinatorSchemaErrorOnRequestChanges:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
 
         # Malformed REQUEST_CHANGES: has P1 finding but spec_compliance missing fields
         malformed_review = """\
@@ -734,6 +792,7 @@ class TestCoordinatorMultiModelReview:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         # run_agent: DEV (first call), SYNTHESIS (second call)
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
@@ -762,6 +821,7 @@ class TestCoordinatorMultiModelReview:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         # run_agent calls: DEV (cycle 1), SYNTHESIS (cycle 1), DEV (cycle 2), SYNTHESIS (cycle 2)
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(
                 success=True, output=REQUEST_CHANGES_REVIEW, profile_name="synthesis"
@@ -807,7 +867,9 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="solo"),
         ]
@@ -815,8 +877,8 @@ class TestCoordinatorMultiModelReview:
         result = run_task(config, task)
 
         assert result.success is True
-        # run_agent (synthesis) should NOT have been called (only DEV was)
-        assert mock_agent.call_count == 1
+        # run_agent called for PREFLIGHT + DEV (no synthesis for pool of 1)
+        assert mock_agent.call_count == 2
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -833,7 +895,9 @@ class TestCoordinatorMultiModelReview:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         # run_agent: only DEV — no synthesis since we degrade to 1 successful
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
             _make_agent_result(success=False, output="TIMEOUT", profile_name="r2"),
@@ -842,8 +906,8 @@ class TestCoordinatorMultiModelReview:
         result = run_task(config, task)
 
         assert result.success is True
-        # Only DEV called run_agent; synthesis was skipped
-        assert mock_agent.call_count == 1
+        # PREFLIGHT + DEV called run_agent; synthesis was skipped
+        assert mock_agent.call_count == 2
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -857,7 +921,9 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
         mock_pool.return_value = [
             _make_agent_result(success=False, output="TIMEOUT", profile_name="r1"),
             _make_agent_result(success=False, output="CRASH", profile_name="r2"),
@@ -883,6 +949,7 @@ class TestCoordinatorMultiModelReview:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         # run_agent: DEV then SYNTHESIS (fails)
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(success=False, output="CRASH", profile_name="synthesis"),
         ]
@@ -910,7 +977,9 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
         # tight profile costs $0.50 which exceeds its $0.10 budget
         mock_pool.return_value = [
             _make_agent_result(success=True, output="R1", profile_name="tight", cost_usd=0.50),
@@ -945,6 +1014,7 @@ class TestCoordinatorMultiModelReview:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             # synthesis costs $0.50 > budget $0.10
             _make_agent_result(
@@ -980,7 +1050,7 @@ class TestCoordinatorAuditTiming:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1007,7 +1077,7 @@ class TestCoordinatorAuditTiming:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1041,7 +1111,7 @@ class TestCoordinatorAuditAgentBreakdown:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = AgentResult(
+        dev_result_30 = AgentResult(
             success=True,
             output="Done.",
             session_id="s1",
@@ -1050,6 +1120,7 @@ class TestCoordinatorAuditAgentBreakdown:
             raw={},
             profile_name="dev",
         )
+        mock_agent.side_effect = _preflight_then(dev_result_30)
         mock_pool.return_value = [
             AgentResult(
                 success=True,
@@ -1096,6 +1167,7 @@ class TestCoordinatorAuditAgentBreakdown:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
@@ -1131,7 +1203,7 @@ class TestCoordinatorAuditFindings:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
         call_count = {"pool": 0}
 
@@ -1182,7 +1254,7 @@ class TestCoordinatorAuditFindings:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1211,6 +1283,7 @@ class TestCoordinatorReviewCycleMetadata:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
@@ -1242,7 +1315,9 @@ class TestCoordinatorReviewCycleMetadata:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
         mock_pool.return_value = [
             _make_agent_result(success=False, output="FAIL", profile_name="r1"),
             _make_agent_result(success=False, output="FAIL", profile_name="r2"),
@@ -1273,6 +1348,7 @@ class TestCoordinatorReviewCycleMetadata:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(success=False, output="CRASH", profile_name="synthesis"),
         ]
@@ -1305,6 +1381,7 @@ class TestCoordinatorReviewCycleMetadata:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
+            _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
@@ -1354,7 +1431,7 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1364,8 +1441,8 @@ class TestCoordinatorDirtyWorktree:
         # Dev was retried (dirty first, clean second) → should succeed
         assert result.success is True
         assert result.phase == Phase.DONE
-        # Dev was called twice (once dirty, once clean)
-        assert mock_agent.call_count == 2
+        # PREFLIGHT + 2 DEV calls (once dirty, once clean)
+        assert mock_agent.call_count == 3
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -1401,7 +1478,7 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1432,7 +1509,7 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1484,7 +1561,7 @@ class TestCoordinatorHumanReview:
         """Human enters 'a' → DONE."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1508,7 +1585,7 @@ class TestCoordinatorHumanReview:
         """Human enters 'r' + findings → dev called again with human_feedback, then approves."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
 
         # First review cycle: APPROVE → human rejects; second cycle: APPROVE → human approves
         approve_result = [
@@ -1539,7 +1616,7 @@ class TestCoordinatorHumanReview:
         """Human enters 'e' → ESCALATE."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1562,7 +1639,7 @@ class TestCoordinatorHumanReview:
         """interactive=False never enters HUMAN_REVIEW."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1585,7 +1662,7 @@ class TestCoordinatorHumanReview:
         """When review cycles exhaust with REQUEST_CHANGES, human can still choose."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
         # Always REQUEST_CHANGES → cycles exhaust → HUMAN_REVIEW
         mock_pool.return_value = [
             _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
@@ -1600,3 +1677,194 @@ class TestCoordinatorHumanReview:
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert result.state.human_review_decision == "escalate"
+
+
+# ── Preflight tests ──────────────────────────────────────────────────
+
+
+class TestCoordinatorPreflight:
+    """Test the PREFLIGHT phase: classify spec before expensive dev cycles."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_proceed_continues_to_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """PROCEED verdict → normal dev→validate→review flow."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "PROCEED"
+        assert len(result.state.dev_results) == 1
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_already_done_skips_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """ALREADY_DONE verdict → DONE immediately, no dev or review cycles."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_agent.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08, profile_name="review"
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "ALREADY_DONE"
+        assert "already" in result.message.lower()
+        assert len(result.state.dev_results) == 0
+        assert len(result.state.review_results) == 0
+        assert mock_agent.call_count == 1
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_blocked_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """BLOCKED verdict → ESCALATE with reason."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_agent.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_BLOCKED, cost_usd=0.08, profile_name="review"
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert "blocked" in result.message.lower()
+        assert "removed_function" in result.message
+        assert len(result.state.dev_results) == 0
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_agent_failure_proceeds(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """If the preflight agent itself fails, fail-open to PROCEED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        preflight_fail = _make_agent_result(success=False, output="CLI error", cost_usd=0.0)
+        dev_ok = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = [preflight_fail, dev_ok]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "PROCEED"
+        assert "failed" in result.state.preflight_reason.lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_unparseable_proceeds(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """If preflight output is not valid YAML, fail-open to PROCEED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        preflight_garbage = _make_agent_result(
+            success=True, output="I don't know what to do", cost_usd=0.05
+        )
+        dev_ok = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.side_effect = [preflight_garbage, dev_ok]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "PROCEED"
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_cost_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Preflight cost appears in audit log."""
+        from theforge.coordinator import generate_audit_log
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_agent.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08, profile_name="review"
+        )
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        assert audit["preflight"] is not None
+        assert audit["preflight"]["verdict"] == "ALREADY_DONE"
+        assert audit["preflight"]["cost_usd"] == 0.08
+        assert "already" in audit["preflight"]["reason"].lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_preflight_reads_file_scope(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Preflight prompt includes current file contents from file_scope."""
+        config = _make_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n\nDo the thing.", encoding="utf-8")
+        task = TaskSpec(
+            name="Scoped Task",
+            spec_path=spec,
+            slug="test-task",
+            file_scope=["src/foo.py"],
+        )
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        (tmp_path / "src").mkdir(exist_ok=True)
+        (tmp_path / "src" / "foo.py").write_text("def foo(): pass\n", encoding="utf-8")
+
+        mock_shell.return_value = (True, "OK")
+        mock_agent.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.05
+        )
+
+        run_task(config, task)
+
+        preflight_call = mock_agent.call_args_list[0]
+        prompt = preflight_call.kwargs["prompt"]
+        assert "def foo(): pass" in prompt
+        assert "src/foo.py" in prompt

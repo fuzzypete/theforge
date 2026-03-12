@@ -11,7 +11,7 @@ conventions for any Claude agent working in this codebase.
 is deterministic Python code. Agents only write code and write reviews. The coordinator
 validates boundaries mechanically.
 
-State machine: `INIT → WORKSPACE → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
+State machine: `INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
 
 Key modules:
 - `src/theforge/coordinator.py` — state machine, the heart of the system

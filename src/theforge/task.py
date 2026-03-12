@@ -27,6 +27,95 @@ def load_spec(spec_path: Path) -> str:
     return spec_path.read_text(encoding="utf-8")
 
 
+# ── Preflight prompt ─────────────────────────────────────────────────
+
+
+def build_preflight_prompt(
+    task: TaskSpec,
+    *,
+    spec_content: str,
+    file_contents: dict[str, str],
+) -> str:
+    """Build the preflight check prompt.
+
+    The preflight agent receives the spec and current file contents for the
+    file_scope. It determines whether the spec is already implemented, valid
+    and ready for implementation, or blocked/stale.
+
+    This is a one-shot classification call — the agent outputs a structured
+    YAML verdict, not code.
+    """
+    if file_contents:
+        files_block = "\n\n".join(
+            f"### `{path}`\n```\n{content}\n```" for path, content in file_contents.items()
+        )
+    else:
+        files_block = "(no file_scope defined — spec applies to entire project)"
+
+    return dedent(f"""\
+        You are a preflight validator for **{task.name}**.
+
+        ## Your Role
+
+        Before committing expensive dev+review cycles, determine whether this
+        spec should proceed to implementation. You are NOT implementing anything.
+        You are classifying the spec's current status.
+
+        ## Spec
+
+        {spec_content}
+
+        ## Current File Contents (file_scope)
+
+        These are the files the spec targets, as they exist RIGHT NOW on the
+        main branch:
+
+        {files_block}
+
+        ## Classification
+
+        Evaluate the spec against the current code and output ONE of these verdicts:
+
+        - **PROCEED** — The spec describes work that has NOT been done yet.
+          The files exist (or should be created), and the acceptance criteria
+          are NOT already satisfied. Implementation should begin.
+
+        - **ALREADY_DONE** — Every acceptance criterion in the spec is ALREADY
+          satisfied by the current code. There is nothing to implement.
+          You MUST verify each criterion individually — do not assume "related
+          code exists" means "spec is satisfied."
+
+        - **BLOCKED** — The spec cannot be implemented as written because:
+          - It references files, functions, or APIs that do not exist
+          - It conflicts with the current architecture
+          - It has unresolvable ambiguities
+          - A dependency is missing
+          Provide a clear reason so a human can fix the spec.
+
+        ## Output Format
+
+        You MUST output ONLY a YAML block. No prose before or after.
+        Start your response with ```yaml and end with ```.
+
+        ```yaml
+        verdict: PROCEED | ALREADY_DONE | BLOCKED
+        reason: "<1-2 sentence explanation of your classification>"
+        criteria_checked:
+          - criterion: "<acceptance criterion text>"
+            satisfied: true | false
+            evidence: "<where in the code this is satisfied, or what is missing>"
+        ```
+
+        ## Rules
+
+        - Check EVERY acceptance criterion individually. Do not shortcut.
+        - "Related code exists" is NOT the same as "criterion is satisfied."
+        - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
+        - If the spec references things that don't exist, verdict is BLOCKED.
+        - When in doubt, verdict is PROCEED — it's cheaper to try than to skip.
+    """)
+
+
 # ── Dev prompt ────────────────────────────────────────────────────────
 
 

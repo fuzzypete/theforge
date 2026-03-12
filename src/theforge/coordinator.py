@@ -5,11 +5,14 @@ program that mechanically orchestrates agent invocations. Every decision is
 deterministic. Every boundary is a validation checkpoint.
 
 State machine:
-    INIT → WORKSPACE → DEV → VALIDATE → REVIEW → (loop or DONE/ESCALATE)
+    INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → (loop or DONE/ESCALATE)
 
 Transitions:
     INIT → WORKSPACE:       Always (create workspace)
-    WORKSPACE → DEV:        Workspace created successfully
+    WORKSPACE → PREFLIGHT:  Workspace created successfully
+    PREFLIGHT → DEV:        Verdict is PROCEED (or agent failed — fail-open)
+    PREFLIGHT → DONE:       Verdict is ALREADY_DONE (spec satisfied on main)
+    PREFLIGHT → ESCALATE:   Verdict is BLOCKED (spec is stale/invalid)
     DEV → VALIDATE:         Dev agent finished (success or failure)
     VALIDATE → REVIEW:      Gate produced handoff.yaml with PASS
     VALIDATE → DEV:         Gate failed, retries remaining
@@ -37,6 +40,7 @@ from .runner import AgentResult, log_agent_result, run_agent, run_agent_pool
 from .task import (
     TaskSpec,
     build_dev_prompt,
+    build_preflight_prompt,
     build_review_prompt,
     build_synthesis_prompt,
     load_spec,
@@ -48,6 +52,7 @@ class Phase(Enum):
 
     INIT = auto()
     WORKSPACE = auto()
+    PREFLIGHT = auto()
     DEV = auto()
     VALIDATE = auto()
     REVIEW = auto()
@@ -90,6 +95,9 @@ class CoordinatorState:
     human_feedback: str | None = None
     human_review_decision: str | None = None  # "approve" | "reject" | "escalate"
     human_review_feedback: str | None = None  # rejection text from human
+    preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
+    preflight_reason: str | None = None
+    preflight_result: AgentResult | None = None
     error: str | None = None
 
     @property
@@ -101,8 +109,12 @@ class CoordinatorState:
         return sum(r.cost_usd for r in self.review_agent_results)
 
     @property
+    def total_preflight_cost(self) -> float:
+        return self.preflight_result.cost_usd if self.preflight_result else 0.0
+
+    @property
     def total_cost(self) -> float:
-        return self.total_dev_cost + self.total_review_cost
+        return self.total_dev_cost + self.total_review_cost + self.total_preflight_cost
 
 
 @dataclass
@@ -211,6 +223,64 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
         return False, f"ERROR: {e}"
+
+
+# ── Preflight ───────────────────────────────────────────────────────
+
+
+_VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
+
+
+def _load_file_scope_contents(task: TaskSpec, project_root: Path) -> dict[str, str]:
+    """Read current contents of files in task.file_scope.
+
+    Returns a dict of {relative_path: content}. Missing files are
+    silently skipped (the preflight agent will note their absence).
+    """
+    contents: dict[str, str] = {}
+    for rel_path in task.file_scope:
+        full_path = project_root / rel_path
+        if full_path.is_file():
+            try:
+                contents[rel_path] = full_path.read_text(encoding="utf-8")
+            except OSError:
+                pass
+    return contents
+
+
+def _parse_preflight_verdict(output: str) -> tuple[str, str]:
+    """Extract verdict and reason from preflight agent output.
+
+    Returns (verdict, reason). If parsing fails, returns ("PROCEED", reason)
+    to avoid blocking on a broken preflight — it's cheaper to try DEV than
+    to stall.
+    """
+    # Extract YAML block from markdown fences
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+    except yaml.YAMLError:
+        return "PROCEED", f"Failed to parse preflight YAML; proceeding anyway. Raw: {output[:200]}"
+
+    if not isinstance(parsed, dict):
+        return "PROCEED", "Preflight output is not a dict; proceeding anyway."
+
+    verdict = str(parsed.get("verdict", "PROCEED")).upper()
+    reason = str(parsed.get("reason", "(no reason provided)"))
+
+    if verdict not in _VALID_PREFLIGHT_VERDICTS:
+        return "PROCEED", f"Unknown preflight verdict {verdict!r}; proceeding anyway. {reason}"
+
+    return verdict, reason
 
 
 # ── Workspace ────────────────────────────────────────────────────────
@@ -365,6 +435,61 @@ def run_task(
     assert branch_name is not None
     state.workspace_path = workspace_path
     state.branch_name = branch_name
+
+    # ── PREFLIGHT ──────────────────────────────────────────────────
+    state.phase = Phase.PREFLIGHT
+    _log_phase(state.phase)
+
+    file_contents = _load_file_scope_contents(task, config.project_root)
+    preflight_prompt = build_preflight_prompt(
+        task, spec_content=spec_content, file_contents=file_contents
+    )
+
+    # Use the first review profile for preflight (read-only, lightweight)
+    preflight_profile = config.review_pool[0]
+    _preflight_start = time.monotonic()
+    preflight_result = run_agent(
+        prompt=preflight_prompt,
+        profile=preflight_profile,
+        working_dir=workspace_path,
+    )
+    state.preflight_result = preflight_result
+    log_agent_result(preflight_result, "PREFLIGHT")
+
+    if preflight_result.success:
+        verdict, reason = _parse_preflight_verdict(preflight_result.output)
+    else:
+        # Agent failed — don't block on a broken preflight, proceed
+        verdict, reason = (
+            "PROCEED",
+            f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
+        )
+
+    state.preflight_verdict = verdict
+    state.preflight_reason = reason
+    _log(f"Preflight verdict: {verdict}")
+    _log(f"  Reason: {reason}")
+
+    if verdict == "ALREADY_DONE":
+        state.phase = Phase.DONE
+        return CoordinatorResult(
+            success=True,
+            phase=state.phase,
+            state=state,
+            message=f"Preflight: spec already implemented. {reason}",
+        )
+
+    if verdict == "BLOCKED":
+        state.phase = Phase.ESCALATE
+        state.error = f"Preflight: spec is blocked. {reason}"
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    # verdict == "PROCEED" — continue to DEV
 
     # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
     while True:
@@ -935,6 +1060,15 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "review_invocations": len(state.review_agent_results),
             "agents": agents,
         },
+        "preflight": (
+            {
+                "verdict": state.preflight_verdict,
+                "reason": state.preflight_reason,
+                "cost_usd": state.preflight_result.cost_usd if state.preflight_result else 0.0,
+            }
+            if state.preflight_verdict is not None
+            else None
+        ),
         "reviews": reviews,
         "human_review": (
             {

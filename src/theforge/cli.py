@@ -242,6 +242,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
     timing = audit.get("timing", {})
     workspace = audit.get("workspace", {})
     reviews = audit.get("reviews", [])
+    preflight = audit.get("preflight")
 
     sep = "=" * 60
     icon = "✓" if outcome.get("success") else "✗"
@@ -254,6 +255,16 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if workspace.get("path") or workspace.get("branch"):
         print(f"  Workspace: {workspace.get('path', '?')}")
         print(f"  Branch:    {workspace.get('branch', '?')}")
+
+    # Preflight
+    if preflight:
+        pf_verdict = preflight.get("verdict", "?")
+        pf_reason = preflight.get("reason", "")
+        pf_cost = preflight.get("cost_usd", 0.0) or 0.0
+        print()
+        print(f"  Preflight: {pf_verdict} (${pf_cost:.4f})")
+        if pf_reason:
+            print(f"    Reason: {pf_reason}")
 
     # Timing
     started = timing.get("started_at")
