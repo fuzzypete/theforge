@@ -101,34 +101,29 @@ Tool-use summaries printed to stderr as they happen. All CLIs have
 
 ---
 
-### Phase 6: Auto-Merge
+### Phase 6: Auto-Merge ✓
 
-**Why next:** `forge run` produces a reviewed branch but merging is
-still manual. An `--auto-merge` flag (separate from `--auto` / interactive)
-would fast-forward merge to main after APPROVE, with safety checks
-(branch protection, CI status, clean diff).
+**Status: Done.** `forge run --auto-merge` merges the feature branch
+into the base branch after APPROVE. Fast-forward preferred, regular
+merge fallback. Safety checks: base branch exists, no uncommitted
+changes in project root, branch has commits ahead of base. Worktree
+cleanup attempted after successful merge. Merge outcome recorded in
+audit log.
 
-**Spec:** `specs/auto-merge.md` (planned)
+**Spec:** `specs/auto-merge.md`
 
 ---
 
-### Phase 7: Campaign Mode
+### Phase 7: Campaign Mode ✓
 
-**Why after auto-merge:** Running specs one at a time is fine for
-development, but reaching vision completion requires autonomous
-multi-spec execution. A `forge campaign` command reads a `campaign.yaml`
-manifest and runs specs sequentially, with per-spec and aggregate
-budget gates.
+**Status: Done.** `forge campaign campaign.yaml` runs specs sequentially
+through the full pipeline. `campaign.yaml` manifest defines ordered spec
+list and aggregate budget ceiling. Budget enforcement is Claude-only
+(Codex/Gemini report $0.00) — warning logged at start. Continues after
+individual spec failures. ALREADY_DONE specs counted as skipped.
+Writes `campaign-audit.yaml` with per-spec outcomes and costs.
 
-**Key design constraints:**
-- Campaign is a deterministic outer loop — no LLM decides ordering
-- `--auto-merge` merges each spec's branch after APPROVE
-- Budget enforcement is aggregate (stop if campaign ceiling hit)
-- Claude-only for budget tracking until Codex/Gemini report costs
-- DECOMPOSE (LLM-driven task splitting) is deferred — campaign specs
-  are human-authored
-
-**Spec:** `specs/campaign-mode.md` (planned)
+**Spec:** `specs/campaign-mode.md`
 
 ---
 
@@ -165,10 +160,11 @@ it work for other projects proves generality.
 3. **Multi-model review:** `forge.yaml` configures Claude + Codex + Gemini
    review pools. Tested with real cross-CLI reviews.
 
-4. **Unit tests:** 145+ tests in `tests/test_coordinator.py` covering all
-   state transitions, budget enforcement, preflight verdicts, pool
-   degradation, synthesis, human review, and edge cases. All tests mock
-   subprocess — no real CLI invocations.
+4. **Unit tests:** 175+ tests across `test_coordinator.py` and
+   `test_campaign.py` covering all state transitions, budget enforcement,
+   preflight verdicts, pool degradation, synthesis, human review, auto-merge,
+   campaign execution, and edge cases. All tests mock subprocess — no real
+   CLI invocations.
 
 ---
 
