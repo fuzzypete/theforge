@@ -353,14 +353,7 @@ def main() -> None:
         action="store_true",
         help="Print prompts and config without invoking agents",
     )
-    _mode = run_parser.add_mutually_exclusive_group()
-    _mode.add_argument(
-        "--interactive",
-        action="store_true",
-        default=False,
-        help="Pause for human review before DONE/ESCALATE (default)",
-    )
-    _mode.add_argument(
+    run_parser.add_argument(
         "--auto",
         action="store_true",
         default=False,

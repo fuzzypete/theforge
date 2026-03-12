@@ -164,22 +164,27 @@ def _human_review(
 
     while True:
         print("[forge] Choice [a/r/e]: ", end="", file=sys.stderr, flush=True)
-        raw = sys.stdin.readline().strip().lower()
-        if raw in ("a", "approve"):
-            return "approve", None
-        if raw in ("e", "escalate"):
+        raw = sys.stdin.readline()
+        if not raw:
+            # EOF (Ctrl+D or piped input exhausted) → treat as escalate
+            _log("EOF on stdin — escalating.")
             return "escalate", None
-        if raw in ("r", "reject"):
+        choice = raw.strip().lower()
+        if choice in ("a", "approve"):
+            return "approve", None
+        if choice in ("e", "escalate"):
+            return "escalate", None
+        if choice in ("r", "reject"):
             _log("Enter your findings (empty line to finish):")
             lines: list[str] = []
             while True:
                 print("> ", end="", file=sys.stderr, flush=True)
                 line = sys.stdin.readline()
-                # readline() returns "" on EOF, "\n" on empty line
-                stripped = line.rstrip("\n")
-                if stripped == "" and line != "":
+                if not line:
+                    # EOF during findings input
                     break
-                if line == "":
+                stripped = line.rstrip("\n")
+                if stripped == "":
                     break
                 lines.append(stripped)
             return "reject", "\n".join(lines)
@@ -761,7 +766,7 @@ def run_task(
                         ),
                     )
                 if decision == "reject":
-                    # Human wants another dev loop; bump the cycle limit by 1
+                    # Human wants another dev loop; reset iteration counter
                     state.human_feedback = feedback
                     state.last_review_findings = None
                     state.dev_iteration = 0
