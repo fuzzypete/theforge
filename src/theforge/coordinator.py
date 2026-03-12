@@ -369,7 +369,37 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
         _log(f"Gate decision: {gate_decision}")
 
         if gate_decision == "PASS":
-            pass  # proceed to review
+            # Verify worktree is clean — the dev agent must commit all changes.
+            # The gate runs against the working tree, so it can pass even with
+            # uncommitted files. This check catches that process violation.
+            dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
+            if dirty_ok and dirty_out.strip():
+                # Filter out handoff.yaml and other gate artifacts
+                dirty_lines = [
+                    line
+                    for line in dirty_out.strip().splitlines()
+                    if not line.strip().endswith(config.validation.handoff_file)
+                ]
+                if dirty_lines:
+                    dirty_files = ", ".join(
+                        line.strip().split(maxsplit=1)[-1] for line in dirty_lines
+                    )
+                    _log(f"Dirty worktree detected: {dirty_files}")
+                    if state.dev_iteration >= config.retry.max_dev_iterations:
+                        state.phase = Phase.ESCALATE
+                        state.error = f"Dev agent left uncommitted changes: {dirty_files}"
+                        return CoordinatorResult(
+                            success=False,
+                            phase=state.phase,
+                            state=state,
+                            message=state.error,
+                        )
+                    state.human_feedback = (
+                        "PROCESS VIOLATION: You left uncommitted changes in the "
+                        f"worktree: {dirty_files}. You MUST commit ALL modified "
+                        "files before running the gate. Stage and commit them now."
+                    )
+                    continue
         elif gate_decision in ("FAIL", "BLOCKED"):
             if state.dev_iteration >= config.retry.max_dev_iterations:
                 state.phase = Phase.ESCALATE

@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import ModelProfile
 
@@ -31,6 +31,92 @@ class AgentResult:
     exit_code: int  # raw exit code
     raw: dict[str, Any]  # full parsed JSON (if available)
     profile_name: str = ""  # identifies which profile produced this result
+
+
+# ── Heartbeat helper ─────────────────────────────────────────────────
+
+
+@dataclass
+class _SubprocessOutcome:
+    """Mutable container for background subprocess result."""
+
+    proc: subprocess.CompletedProcess[str] | None = None
+    exception: BaseException | None = None
+
+
+def _run_with_heartbeat(
+    *,
+    run_fn: Callable[[], subprocess.CompletedProcess[str]],
+    label: str,
+    profile: ModelProfile,
+    cli_name: str,
+) -> tuple[_SubprocessOutcome, float]:
+    """Run a subprocess in a background thread with 30s heartbeat.
+
+    Returns (outcome, elapsed_seconds). The caller handles interpreting
+    the outcome into an AgentResult.
+    """
+    print(
+        f"[forge]   Starting {label} "
+        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
+        file=sys.stderr,
+        flush=True,
+    )
+
+    outcome = _SubprocessOutcome()
+
+    def _run() -> None:
+        try:
+            outcome.proc = run_fn()
+        except BaseException as e:
+            outcome.exception = e
+
+    start = time.monotonic()
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    while thread.is_alive():
+        thread.join(timeout=30)
+        if thread.is_alive():
+            elapsed = int(time.monotonic() - start)
+            print(
+                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
+                file=sys.stderr,
+                flush=True,
+            )
+
+    elapsed = time.monotonic() - start
+    return outcome, elapsed
+
+
+def _handle_exception(
+    exc: BaseException,
+    *,
+    profile: ModelProfile,
+    cli_name: str,
+) -> AgentResult | None:
+    """Handle common subprocess exceptions. Returns AgentResult or None to re-raise."""
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return AgentResult(
+            success=False,
+            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+        )
+    if isinstance(exc, FileNotFoundError):
+        return AgentResult(
+            success=False,
+            output=f"ERROR: '{cli_name}' CLI not found. Is it installed?",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+        )
+    return None
 
 
 # ── Runner dispatch ───────────────────────────────────────────────────
@@ -98,12 +184,7 @@ def _run_claude(
     working_dir: Path,
     session_id: str | None = None,
 ) -> AgentResult:
-    """Invoke `claude -p --output-format json` as a subprocess.
-
-    The prompt is passed via stdin to avoid shell escaping issues
-    with large spec content. Progress heartbeats are printed to stderr
-    every 30 seconds so the user knows the agent is still running.
-    """
+    """Invoke `claude -p --output-format json` as a subprocess."""
     cmd: list[str] = [
         "claude",
         "-p",
@@ -124,75 +205,29 @@ def _run_claude(
     env.pop("CLAUDECODE", None)
 
     label = profile.name or f"{profile.cli}/{profile.model}"
-    print(
-        f"[forge]   Starting {label} "
-        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
-        file=sys.stderr,
-        flush=True,
+    outcome, elapsed = _run_with_heartbeat(
+        run_fn=lambda: subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            cwd=str(working_dir),
+            timeout=profile.timeout_seconds,
+            env=env,
+        ),
+        label=label,
+        profile=profile,
+        cli_name="claude",
     )
 
-    # Run subprocess in a background thread so we can print progress heartbeats
-    # every 30s while waiting. The mock in tests returns immediately, so the
-    # heartbeat loop never fires during test runs.
-    result_holder: list[subprocess.CompletedProcess[str]] = []
-    exc_holder: list[BaseException] = []
+    if outcome.exception:
+        result = _handle_exception(outcome.exception, profile=profile, cli_name="claude")
+        if result:
+            return result
+        raise outcome.exception
 
-    def _run() -> None:
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                cwd=str(working_dir),
-                timeout=profile.timeout_seconds,
-                env=env,
-            )
-            result_holder.append(proc)
-        except BaseException as e:
-            exc_holder.append(e)
-
-    start = time.monotonic()
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-
-    while thread.is_alive():
-        thread.join(timeout=30)
-        if thread.is_alive():
-            elapsed = int(time.monotonic() - start)
-            print(
-                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    elapsed = time.monotonic() - start
-
-    if exc_holder:
-        exc = exc_holder[0]
-        if isinstance(exc, subprocess.TimeoutExpired):
-            return AgentResult(
-                success=False,
-                output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
-                session_id=None,
-                cost_usd=0.0,
-                exit_code=-1,
-                raw={},
-                profile_name=profile.name,
-            )
-        if isinstance(exc, FileNotFoundError):
-            return AgentResult(
-                success=False,
-                output="ERROR: 'claude' CLI not found. Is Claude Code installed?",
-                session_id=None,
-                cost_usd=0.0,
-                exit_code=-1,
-                raw={},
-                profile_name=profile.name,
-            )
-        raise exc  # unexpected exception — propagate
-
-    proc = result_holder[0]
+    proc = outcome.proc
+    assert proc is not None
     print(
         f"[forge]   ... {label} done ({elapsed:.0f}s)",
         file=sys.stderr,
@@ -204,7 +239,6 @@ def _run_claude(
     try:
         result_json = json.loads(proc.stdout)
     except (json.JSONDecodeError, ValueError):
-        # If JSON parsing fails, fall back to raw text
         return AgentResult(
             success=proc.returncode == 0,
             output=proc.stdout or proc.stderr or "(no output)",
@@ -243,9 +277,8 @@ def _run_codex(
 ) -> AgentResult:
     """Invoke `npx @openai/codex exec --full-auto` as a subprocess.
 
-    The prompt is passed as a positional arg. Output is captured via a
-    temp file using `-o <file>`; falls back to stdout if the file is empty.
-    No cost tracking or session resume are supported.
+    Output is captured via a temp file using `-o <file>`;
+    falls back to stdout if the file is empty.
     """
     fd, output_path_str = tempfile.mkstemp(suffix=".txt", prefix="forge_codex_")
     os.close(fd)
@@ -266,70 +299,29 @@ def _run_codex(
     ]
 
     label = profile.name or f"{profile.cli}/{profile.model}"
-    print(
-        f"[forge]   Starting {label} "
-        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
-        file=sys.stderr,
-        flush=True,
+    outcome, elapsed = _run_with_heartbeat(
+        run_fn=lambda: subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=profile.timeout_seconds,
+        ),
+        label=label,
+        profile=profile,
+        cli_name="npx @openai/codex",
     )
 
-    result_holder: list[subprocess.CompletedProcess[str]] = []
-    exc_holder: list[BaseException] = []
-
-    def _run() -> None:
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=profile.timeout_seconds,
-            )
-            result_holder.append(proc)
-        except BaseException as e:
-            exc_holder.append(e)
-
-    start = time.monotonic()
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-
-    while thread.is_alive():
-        thread.join(timeout=30)
-        if thread.is_alive():
-            elapsed = int(time.monotonic() - start)
-            print(
-                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    elapsed = time.monotonic() - start
-
     try:
-        if exc_holder:
-            exc = exc_holder[0]
-            if isinstance(exc, subprocess.TimeoutExpired):
-                return AgentResult(
-                    success=False,
-                    output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
-                    session_id=None,
-                    cost_usd=0.0,
-                    exit_code=-1,
-                    raw={},
-                    profile_name=profile.name,
-                )
-            if isinstance(exc, FileNotFoundError):
-                return AgentResult(
-                    success=False,
-                    output="ERROR: 'npx @openai/codex' CLI not found. Is Codex installed?",
-                    session_id=None,
-                    cost_usd=0.0,
-                    exit_code=-1,
-                    raw={},
-                    profile_name=profile.name,
-                )
-            raise exc
+        if outcome.exception:
+            result = _handle_exception(
+                outcome.exception, profile=profile, cli_name="npx @openai/codex"
+            )
+            if result:
+                return result
+            raise outcome.exception
 
-        proc = result_holder[0]
+        proc = outcome.proc
+        assert proc is not None
         print(
             f"[forge]   ... {label} done ({elapsed:.0f}s)",
             file=sys.stderr,
@@ -392,11 +384,7 @@ def _run_gemini(
     working_dir: Path,
     session_id: str | None = None,
 ) -> AgentResult:
-    """Invoke `gemini -p <prompt> --yolo -m <model> -o json` as a subprocess.
-
-    The prompt is passed via the `-p` flag. `-o json` requests structured JSON
-    output. No cost tracking or session resume are supported.
-    """
+    """Invoke `gemini -p <prompt> --yolo -m <model> -o json` as a subprocess."""
     cmd: list[str] = [
         "gemini",
         "-p",
@@ -409,70 +397,27 @@ def _run_gemini(
     ]
 
     label = profile.name or f"{profile.cli}/{profile.model}"
-    print(
-        f"[forge]   Starting {label} "
-        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
-        file=sys.stderr,
-        flush=True,
+    outcome, elapsed = _run_with_heartbeat(
+        run_fn=lambda: subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(working_dir),
+            timeout=profile.timeout_seconds,
+        ),
+        label=label,
+        profile=profile,
+        cli_name="gemini",
     )
 
-    result_holder: list[subprocess.CompletedProcess[str]] = []
-    exc_holder: list[BaseException] = []
+    if outcome.exception:
+        result = _handle_exception(outcome.exception, profile=profile, cli_name="gemini")
+        if result:
+            return result
+        raise outcome.exception
 
-    def _run() -> None:
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(working_dir),
-                timeout=profile.timeout_seconds,
-            )
-            result_holder.append(proc)
-        except BaseException as e:
-            exc_holder.append(e)
-
-    start = time.monotonic()
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
-
-    while thread.is_alive():
-        thread.join(timeout=30)
-        if thread.is_alive():
-            elapsed = int(time.monotonic() - start)
-            print(
-                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
-                file=sys.stderr,
-                flush=True,
-            )
-
-    elapsed = time.monotonic() - start
-
-    if exc_holder:
-        exc = exc_holder[0]
-        if isinstance(exc, subprocess.TimeoutExpired):
-            return AgentResult(
-                success=False,
-                output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
-                session_id=None,
-                cost_usd=0.0,
-                exit_code=-1,
-                raw={},
-                profile_name=profile.name,
-            )
-        if isinstance(exc, FileNotFoundError):
-            return AgentResult(
-                success=False,
-                output="ERROR: 'gemini' CLI not found. Is Gemini CLI installed?",
-                session_id=None,
-                cost_usd=0.0,
-                exit_code=-1,
-                raw={},
-                profile_name=profile.name,
-            )
-        raise exc
-
-    proc = result_holder[0]
+    proc = outcome.proc
+    assert proc is not None
     print(
         f"[forge]   ... {label} done ({elapsed:.0f}s)",
         file=sys.stderr,

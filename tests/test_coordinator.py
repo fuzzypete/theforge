@@ -141,6 +141,8 @@ def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
             gate_idx["n"] += 1
             _write_handoff(Path(cwd), d)
             return (True, "OK")
+        if "git status --porcelain" in cmd:
+            return (True, "")  # clean worktree
         return (True, "OK")
 
     return side_effect
@@ -1322,3 +1324,121 @@ class TestCoordinatorReviewCycleMetadata:
         assert rev["failed"] == []
         assert rev["synthesized"] is True
         assert rev["verdict"] == "APPROVE"
+
+
+class TestCoordinatorDirtyWorktree:
+    """Test that the coordinator catches uncommitted changes after gate PASS."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_dirty_worktree_retries_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Dirty worktree after gate PASS sends dev back with process violation feedback."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        call_count = {"gate": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                call_count["gate"] += 1
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                # First call: dirty; second call: clean (dev fixed it)
+                if call_count["gate"] == 1:
+                    return (True, " M src/theforge/runner.py\n M src/theforge/config.py")
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # Dev was retried (dirty first, clean second) → should succeed
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Dev was called twice (once dirty, once clean)
+        assert mock_agent.call_count == 2
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_dirty_worktree_escalates_after_max_retries(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Dirty worktree with no retries left escalates."""
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=1, max_review_cycles=2),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, " M src/theforge/runner.py")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "uncommitted" in result.message.lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_handoff_file_not_flagged_as_dirty(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """handoff.yaml in git status output is excluded from dirty check."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                # Only handoff.yaml is dirty — that's expected
+                return (True, "?? handoff.yaml")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # handoff.yaml is filtered out → clean worktree → proceeds to review
+        assert result.success is True
+        assert result.phase == Phase.DONE

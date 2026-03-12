@@ -18,7 +18,7 @@ class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
     name: str  # "dev", "review", or pool entry name like "opus-reviewer"
-    cli: str  # "claude" (future: "codex", "gemini")
+    cli: str  # "claude", "codex", or "gemini"
     model: str  # "sonnet", "opus", "claude-sonnet-4-6"
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
