@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from .campaign import load_manifest, run_campaign
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import CoordinatorResult, generate_audit_log, run_task
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
@@ -226,6 +227,50 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.success else 1
 
 
+def cmd_campaign(args: argparse.Namespace) -> int:
+    """Run multiple specs sequentially via a campaign manifest."""
+    manifest_path = Path(args.manifest).resolve()
+    if not manifest_path.exists():
+        print(f"Campaign manifest not found: {manifest_path}", file=sys.stderr)
+        return 1
+
+    # Find config (search from manifest's directory)
+    config_path: Path | None = None
+    if args.config:
+        config_path = Path(args.config).resolve()
+    else:
+        config_path = _find_config(manifest_path.parent)
+
+    if config_path is None or not config_path.exists():
+        print(
+            "forge.yaml not found. Run 'forge init' to create one, "
+            "or pass --config path/to/forge.yaml",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = load_config(config_path)
+
+    # Validate manifest before running anything
+    try:
+        load_manifest(manifest_path)
+    except ValueError as exc:
+        print(f"Invalid campaign manifest: {exc}", file=sys.stderr)
+        return 1
+
+    auto_merge = getattr(args, "auto_merge", False)
+    interactive = getattr(args, "interactive", False)
+
+    result = run_campaign(
+        config,
+        manifest_path,
+        auto_merge=auto_merge,
+        interactive=interactive,
+    )
+
+    return 0 if result.specs_failed == 0 else 1
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     """Print a human-readable summary of an audit file."""
     audit_path = Path(args.file).resolve()
@@ -378,6 +423,25 @@ def main() -> None:
         help="Merge feature branch into base branch after review APPROVE",
     )
 
+    # forge campaign
+    campaign_parser = subparsers.add_parser(
+        "campaign", help="Run multiple specs sequentially from a campaign manifest"
+    )
+    campaign_parser.add_argument("manifest", help="Path to campaign.yaml manifest")
+    campaign_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    campaign_parser.add_argument(
+        "--auto-merge",
+        action="store_true",
+        default=False,
+        help="Merge each spec's branch after APPROVE",
+    )
+    campaign_parser.add_argument(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Pause for human review at each spec",
+    )
+
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
     audit_parser.add_argument("file", help="Path to forge_audit.yaml")
@@ -387,6 +451,7 @@ def main() -> None:
     commands = {
         "init": cmd_init,
         "run": cmd_run,
+        "campaign": cmd_campaign,
         "audit": cmd_audit,
     }
 
