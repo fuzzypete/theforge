@@ -24,6 +24,10 @@ htmlcov/
 
 # TheForge artifacts
 forge_audit.yaml
+.forge/
+
+# Claude Code
+.claude/settings.local.json
 
 # OS
 .DS_Store
