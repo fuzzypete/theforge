@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -37,21 +37,37 @@ def review_profile() -> ModelProfile:
     )
 
 
+def _make_stream_mock(lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
+    """Return a mock Popen object whose stdout yields the given JSONL lines."""
+    mock_proc = MagicMock()
+    mock_proc.stdout = iter(lines)
+    mock_proc.stdin = MagicMock()
+    mock_proc.stderr = MagicMock()
+    mock_proc.stderr.read.return_value = stderr
+    mock_proc.returncode = returncode
+    mock_proc.wait.return_value = returncode
+    return mock_proc
+
+
+def _result_line(**fields: object) -> str:
+    """Build a stream-json result line (type=result + caller-supplied fields)."""
+    return json.dumps({"type": "result", **fields}) + "\n"
+
+
 class TestRunAgentClaude:
     """Test Claude CLI subprocess invocation."""
 
     def test_happy_path(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps(
-            {
-                "result": "I implemented the feature.",
-                "session_id": "sess-abc123",
-                "total_cost_usd": 0.42,
-            }
+        mock_proc = _make_stream_mock(
+            [
+                _result_line(
+                    result="I implemented the feature.",
+                    session_id="sess-abc123",
+                    total_cost_usd=0.42,
+                )
+            ]
         )
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
             result = run_agent(
                 prompt="implement the thing",
                 profile=dev_profile,
@@ -65,39 +81,41 @@ class TestRunAgentClaude:
         assert result.exit_code == 0
         assert result.profile_name == "dev"
 
-        # Verify CLI args
-        call_args = mock_run.call_args
+        # Verify CLI args passed to Popen
+        call_args = mock_popen.call_args
         cmd = call_args[0][0]
         assert cmd[0] == "claude"
         assert "-p" in cmd
         assert "--output-format" in cmd
+        fmt_idx = cmd.index("--output-format")
+        assert cmd[fmt_idx + 1] == "stream-json"
+        assert "--verbose" in cmd
         assert "--model" in cmd
         assert "sonnet" in cmd
         assert "--allowedTools" in cmd
-        assert call_args[1]["input"] == "implement the thing"
         assert call_args[1]["cwd"] == str(tmp_path)
+
+        # Prompt written to stdin
+        mock_proc.stdin.write.assert_called_once_with("implement the thing")
+        mock_proc.stdin.close.assert_called_once()
 
     def test_claudecode_env_stripped(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """CLAUDECODE must be absent from the subprocess env to bypass nested-session check."""
-        json_output = json.dumps({"result": "done"})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
         import os
 
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
             with patch.dict(os.environ, {"CLAUDECODE": "1"}):
                 run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
-        env_passed = mock_run.call_args[1]["env"]
+        env_passed = mock_popen.call_args[1]["env"]
         assert "CLAUDECODE" not in env_passed
 
     def test_with_session_resume(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "continued.", "session_id": "sess-abc123"})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
+        mock_proc = _make_stream_mock(
+            [_result_line(result="continued.", session_id="sess-abc123")]
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
             run_agent(
                 prompt="continue",
                 profile=dev_profile,
@@ -105,7 +123,7 @@ class TestRunAgentClaude:
                 session_id="sess-abc123",
             )
 
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         assert "--resume" in cmd
         assert "sess-abc123" in cmd
 
@@ -118,22 +136,19 @@ class TestRunAgentClaude:
             timeout_seconds=60,
             allowed_tools=(),
         )
-        json_output = json.dumps({"result": "done"})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
             run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
-        cmd = mock_run.call_args[0][0]
+        cmd = mock_popen.call_args[0][0]
         assert "--allowedTools" not in cmd
 
     def test_nonzero_exit(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "partial work", "total_cost_usd": 0.15})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout=json_output, stderr=""
+        mock_proc = _make_stream_mock(
+            [_result_line(result="partial work", total_cost_usd=0.15)],
+            returncode=1,
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -142,10 +157,8 @@ class TestRunAgentClaude:
         assert result.cost_usd == 0.15
 
     def test_non_json_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="plain text output", stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock(["plain text output"])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
@@ -154,30 +167,32 @@ class TestRunAgentClaude:
         assert result.cost_usd == 0.0
 
     def test_empty_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="some error"
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([], returncode=1, stderr="some error")
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert result.output == "some error"
 
     def test_timeout(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        with patch(
-            "theforge.runner.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd="claude", timeout=900),
-        ):
+        mock_proc = _make_stream_mock([])
+        # First wait() raises TimeoutExpired; second (cleanup) returns normally.
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="claude", timeout=900),
+            None,
+        ]
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert "TIMEOUT" in result.output
         assert "900" in result.output
         assert result.exit_code == -1
+        mock_proc.kill.assert_called_once()
 
     def test_cli_not_found(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runner.subprocess.run",
+            "theforge.runner.subprocess.Popen",
             side_effect=FileNotFoundError(),
         ):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
@@ -190,46 +205,86 @@ class TestRunAgentClaude:
         self, review_profile: ModelProfile, tmp_path: Path
     ) -> None:
         """AgentResult.profile_name must be set to profile.name."""
-        json_output = json.dumps({"result": "reviewed.", "total_cost_usd": 0.10})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="reviewed.", total_cost_usd=0.10)])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="review this", profile=review_profile, working_dir=tmp_path)
 
         assert result.profile_name == "review"
+
+    def test_activity_printed(
+        self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """tool_use_summary events must be printed to stderr."""
+        summary_line = (
+            json.dumps(
+                {
+                    "type": "tool_use_summary",
+                    "summary": "Read src/theforge/runner.py (240 lines)",
+                }
+            )
+            + "\n"
+        )
+        mock_proc = _make_stream_mock(
+            [summary_line, _result_line(result="done", total_cost_usd=0.01)]
+        )
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        captured = capsys.readouterr()
+        assert "↳ Read src/theforge/runner.py (240 lines)" in captured.err
+
+    def test_activity_assistant_fallback(
+        self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """assistant tool_use events fall back to name: input_preview format."""
+        assistant_line = (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": "pytest tests/ -q"},
+                            }
+                        ]
+                    },
+                }
+            )
+            + "\n"
+        )
+        mock_proc = _make_stream_mock(
+            [assistant_line, _result_line(result="done", total_cost_usd=0.01)]
+        )
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        captured = capsys.readouterr()
+        assert "↳ Bash: pytest tests/ -q" in captured.err
 
 
 class TestRunAgentCostCoercion:
     """Test that non-numeric cost_usd is coerced to float safely."""
 
     def test_string_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "done", "total_cost_usd": "0.42"})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="0.42")])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.42
         assert isinstance(result.cost_usd, float)
 
     def test_null_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "done", "cost_usd": None})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="done", cost_usd=None)])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.0
 
     def test_garbage_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps({"result": "done", "total_cost_usd": "not-a-number"})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="not-a-number")])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.0
@@ -239,25 +294,24 @@ class TestRunAgentModelUsage:
     """Test per-model usage breakdown parsing from Claude JSON output."""
 
     def test_model_usage_parsed(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        json_output = json.dumps(
-            {
-                "result": "done",
-                "total_cost_usd": 0.123,
-                "modelUsage": {
-                    "claude-sonnet-4-6": {
-                        "inputTokens": 1000,
-                        "outputTokens": 500,
-                        "cacheReadInputTokens": 8000,
-                        "cacheCreationInputTokens": 2000,
-                        "costUSD": 0.123,
-                    }
-                },
-            }
+        mock_proc = _make_stream_mock(
+            [
+                _result_line(
+                    result="done",
+                    total_cost_usd=0.123,
+                    modelUsage={
+                        "claude-sonnet-4-6": {
+                            "inputTokens": 1000,
+                            "outputTokens": 500,
+                            "cacheReadInputTokens": 8000,
+                            "cacheCreationInputTokens": 2000,
+                            "costUSD": 0.123,
+                        }
+                    },
+                )
+            ]
         )
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.123
@@ -273,43 +327,39 @@ class TestRunAgentModelUsage:
     def test_model_usage_empty_when_absent(
         self, dev_profile: ModelProfile, tmp_path: Path
     ) -> None:
-        json_output = json.dumps({"result": "done", "total_cost_usd": 0.05})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.05)])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.model_usage == ()
 
     def test_multi_model_usage(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """modelUsage can contain multiple models (e.g. tool use with different models)."""
-        json_output = json.dumps(
-            {
-                "result": "done",
-                "total_cost_usd": 0.20,
-                "modelUsage": {
-                    "claude-sonnet-4-6": {
-                        "inputTokens": 500,
-                        "outputTokens": 200,
-                        "cacheReadInputTokens": 0,
-                        "cacheCreationInputTokens": 0,
-                        "costUSD": 0.10,
+        mock_proc = _make_stream_mock(
+            [
+                _result_line(
+                    result="done",
+                    total_cost_usd=0.20,
+                    modelUsage={
+                        "claude-sonnet-4-6": {
+                            "inputTokens": 500,
+                            "outputTokens": 200,
+                            "cacheReadInputTokens": 0,
+                            "cacheCreationInputTokens": 0,
+                            "costUSD": 0.10,
+                        },
+                        "claude-opus-4-6": {
+                            "inputTokens": 300,
+                            "outputTokens": 100,
+                            "cacheReadInputTokens": 0,
+                            "cacheCreationInputTokens": 0,
+                            "costUSD": 0.10,
+                        },
                     },
-                    "claude-opus-4-6": {
-                        "inputTokens": 300,
-                        "outputTokens": 100,
-                        "cacheReadInputTokens": 0,
-                        "cacheCreationInputTokens": 0,
-                        "costUSD": 0.10,
-                    },
-                },
-            }
+                )
+            ]
         )
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.20
@@ -403,11 +453,8 @@ class TestRunAgentPool:
             timeout_seconds=300,
             allowed_tools=(),
         )
-        json_output = json.dumps({"result": "solo review", "total_cost_usd": 0.20})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="solo review", total_cost_usd=0.20)])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=[profile],
@@ -487,11 +534,8 @@ class TestRunAgentPool:
                 allowed_tools=(),
             ),
         ]
-        json_output = json.dumps({"result": "done", "total_cost_usd": 0.10})
-        mock_proc = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout=json_output, stderr=""
-        )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.10)])
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=profiles,

@@ -212,6 +212,42 @@ def run_agent_pool(
 # ── Claude Code CLI ──────────────────────────────────────────────────
 
 
+def _format_tool_input_preview(inp: dict[str, Any]) -> str:
+    """Return a short preview string for a tool's input dict."""
+    if not inp:
+        return ""
+    for v in inp.values():
+        if isinstance(v, str):
+            return v[:120]
+    return str(inp)[:120]
+
+
+def _process_stream_event(line: str, label: str) -> None:
+    """Process a single JSONL stream event and print tool activity to stderr."""
+    if not line:
+        return
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return
+
+    event_type = event.get("type")
+
+    if event_type == "tool_use_summary":
+        summary = event.get("summary", "")
+        if summary:
+            print(f"[forge]   ↳ {summary}", file=sys.stderr, flush=True)
+    elif event_type == "assistant":
+        message = event.get("message", {})
+        content = message.get("content", [])
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                tool_name = item.get("name", "?")
+                inp = item.get("input", {})
+                preview = _format_tool_input_preview(inp)
+                print(f"[forge]   ↳ {tool_name}: {preview}", file=sys.stderr, flush=True)
+
+
 def _run_claude(
     *,
     prompt: str,
@@ -219,12 +255,13 @@ def _run_claude(
     working_dir: Path,
     session_id: str | None = None,
 ) -> AgentResult:
-    """Invoke `claude -p --output-format json` as a subprocess."""
+    """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
     cmd: list[str] = [
         "claude",
         "-p",
         "--output-format",
-        "json",
+        "stream-json",
+        "--verbose",
         "--model",
         profile.model,
     ]
@@ -240,43 +277,90 @@ def _run_claude(
     env.pop("CLAUDECODE", None)
 
     label = profile.name or f"{profile.cli}/{profile.model}"
-    outcome, elapsed = _run_with_heartbeat(
-        run_fn=lambda: subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            cwd=str(working_dir),
-            timeout=profile.timeout_seconds,
-            env=env,
-        ),
-        label=label,
-        profile=profile,
-        cli_name="claude",
+    print(
+        f"[forge]   Starting {label} "
+        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
+        file=sys.stderr,
+        flush=True,
     )
 
-    if outcome.exception:
-        result = _handle_exception(outcome.exception, profile=profile, cli_name="claude")
-        if result:
-            return result
-        raise outcome.exception
+    start = time.monotonic()
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(working_dir),
+            env=env,
+        )
+        assert proc.stdin is not None
+        proc.stdin.write(prompt)
+        proc.stdin.close()
 
-    proc = outcome.proc
-    assert proc is not None
+        lines: list[str] = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            lines.append(line)
+            _process_stream_event(line.strip(), label)
+
+        proc.wait(timeout=profile.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        return AgentResult(
+            success=False,
+            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+        )
+    except FileNotFoundError:
+        return AgentResult(
+            success=False,
+            output="ERROR: 'claude' CLI not found. Is it installed?",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+        )
+
+    elapsed = time.monotonic() - start
     print(
         f"[forge]   ... {label} done ({elapsed:.0f}s)",
         file=sys.stderr,
         flush=True,
     )
 
-    # Parse JSON output
+    # Find the result line (type=result) in the JSONL stream
     result_json: dict[str, Any] = {}
-    try:
-        result_json = json.loads(proc.stdout)
-    except (json.JSONDecodeError, ValueError):
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+            if event.get("type") == "result":
+                result_json = event
+                break
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+    if not result_json:
+        raw_output = "".join(lines).strip()
+        stderr_text = ""
+        if proc.stderr:
+            try:
+                stderr_text = proc.stderr.read()
+            except Exception:
+                pass
         return AgentResult(
             success=proc.returncode == 0,
-            output=proc.stdout or proc.stderr or "(no output)",
+            output=raw_output or stderr_text or "(no output)",
             session_id=None,
             cost_usd=0.0,
             exit_code=proc.returncode,
@@ -291,7 +375,7 @@ def _run_claude(
 
     return AgentResult(
         success=proc.returncode == 0,
-        output=result_json.get("result", proc.stdout),
+        output=result_json.get("result", "".join(lines)),
         session_id=result_json.get("session_id"),
         cost_usd=cost,
         exit_code=proc.returncode,
