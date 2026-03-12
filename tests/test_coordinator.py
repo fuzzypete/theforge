@@ -3,12 +3,20 @@
 Uses mocked runner to test all state transitions without real agent calls.
 """
 
+import sys
 from pathlib import Path
-from unittest.mock import patch
 
-import yaml
+# Ensure the worktree's theforge package takes precedence over any other
+# installed version (e.g. the parent project installed in system site-packages).
+_worktree_src = Path(__file__).parents[1] / "src"
+if str(_worktree_src) not in sys.path:
+    sys.path.insert(0, str(_worktree_src))
 
-from theforge.config import (
+from unittest.mock import patch  # noqa: E402
+
+import yaml  # noqa: E402
+
+from theforge.config import (  # noqa: E402
     DEFAULT_DEV_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
@@ -17,9 +25,9 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import Phase, run_task
-from theforge.runner import AgentResult
-from theforge.task import TaskSpec
+from theforge.coordinator import Phase, run_task  # noqa: E402
+from theforge.runner import AgentResult  # noqa: E402
+from theforge.task import TaskSpec  # noqa: E402
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -962,6 +970,231 @@ class TestCoordinatorMultiModelReview:
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert "synthesis" in result.message.lower()
+
+
+class TestCoordinatorAuditTiming:
+    """Test that audit log includes timing and started_at fields."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_started_at_set_in_state(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """CoordinatorState.started_at is set when run_task() begins."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.started_at is not None
+        # Should be a valid ISO timestamp
+        import datetime
+
+        dt = datetime.datetime.fromisoformat(result.state.started_at)
+        assert dt.tzinfo is not None  # timezone-aware
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_log_timing_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """generate_audit_log() includes started_at, finished_at, duration_seconds."""
+        from theforge.coordinator import generate_audit_log
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        timing = audit["timing"]
+        assert "started_at" in timing
+        assert "finished_at" in timing
+        assert "duration_seconds" in timing
+        assert timing["started_at"] is not None
+        assert timing["finished_at"] is not None
+        assert timing["duration_seconds"] is not None
+        assert timing["duration_seconds"] >= 0
+
+
+class TestCoordinatorAuditAgentBreakdown:
+    """Test per-agent cost breakdown in audit log."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_cost_agents_list(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """cost.agents contains one entry per dev and review invocation."""
+        from theforge.coordinator import generate_audit_log
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = AgentResult(
+            success=True,
+            output="Done.",
+            session_id="s1",
+            cost_usd=0.30,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+        )
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id="s2",
+                cost_usd=0.20,
+                exit_code=0,
+                raw={},
+                profile_name="review",
+            )
+        ]
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        agents = audit["cost"]["agents"]
+        assert len(agents) == 2  # 1 dev + 1 review
+
+        dev_entry = next(a for a in agents if a["role"] == "dev")
+        assert dev_entry["profile"] == "dev"
+        assert dev_entry["cost_usd"] == 0.30
+        assert "duration_seconds" in dev_entry
+
+        review_entry = next(a for a in agents if a["role"] == "review")
+        assert review_entry["profile"] == "review"
+        assert review_entry["cost_usd"] == 0.20
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_synthesis_agent_tagged_correctly(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Synthesis agent entry has role='synthesis' in agents list."""
+        from theforge.coordinator import generate_audit_log
+
+        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
+        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output="R1", profile_name="r1"),
+            _make_agent_result(success=True, output="R2", profile_name="r2"),
+        ]
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        agents = audit["cost"]["agents"]
+        roles = [a["role"] for a in agents]
+        assert "synthesis" in roles
+
+        synth_entry = next(a for a in agents if a["role"] == "synthesis")
+        assert synth_entry["profile"] == "synthesis"
+
+
+class TestCoordinatorAuditFindings:
+    """Test that review findings are included in audit log."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_review_findings_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Audit reviews[] entries include findings list with severity, file, line, description."""
+        from theforge.coordinator import generate_audit_log
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result()
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] <= 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        assert len(audit["reviews"]) == 2
+
+        # First review has findings
+        first_rev = audit["reviews"][0]
+        assert "findings" in first_rev
+        assert first_rev["p1_count"] == 1
+        assert len(first_rev["findings"]) == 1
+        finding = first_rev["findings"][0]
+        assert finding["severity"] == "P1"
+        assert finding["file"] == "src/foo.py"
+        assert finding["line"] == 10
+        assert "Off by one" in finding["description"]
+
+        # Second review (APPROVE) has empty findings
+        second_rev = audit["reviews"][1]
+        assert "findings" in second_rev
+        assert second_rev["findings"] == []
+        assert second_rev["p1_count"] == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_approve_review_has_empty_findings(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """APPROVE review in audit has findings: [] (not missing key)."""
+        from theforge.coordinator import generate_audit_log
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        rev = audit["reviews"][0]
+        assert "findings" in rev
+        assert rev["findings"] == []
 
 
 class TestCoordinatorReviewCycleMetadata:

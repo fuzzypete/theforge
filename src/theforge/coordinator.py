@@ -21,6 +21,7 @@ Transitions:
 
 from __future__ import annotations
 
+import datetime
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -68,6 +69,7 @@ class CoordinatorState:
     """Mutable state tracking for a single task execution."""
 
     phase: Phase = Phase.INIT
+    started_at: str | None = None  # ISO timestamp set at INIT
     workspace_path: Path | None = None
     branch_name: str | None = None
     dev_session_id: str | None = None
@@ -262,6 +264,7 @@ def run_task(config: ForgeConfig, task: TaskSpec) -> CoordinatorResult:
     Every transition is deterministic. No LLM makes process decisions.
     """
     state = CoordinatorState()
+    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     spec_content = load_spec(task.spec_path)
 
     # ── WORKSPACE ─────────────────────────────────────────────────
@@ -613,6 +616,43 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
     This is the orchestrator's own handoff — a complete record of what happened.
     """
     state = result.state
+
+    # Compute overall timing
+    finished_at = datetime.datetime.now(datetime.timezone.utc)
+    finished_at_str = finished_at.isoformat()
+    duration_seconds: float | None = None
+    if state.started_at:
+        try:
+            started = datetime.datetime.fromisoformat(state.started_at)
+            duration_seconds = (finished_at - started).total_seconds()
+        except ValueError:
+            pass
+
+    # Build per-agent invocation list for cost breakdown.
+    # NOTE: AgentResult does not currently store duration_seconds (runner.py tracks
+    # elapsed locally but does not persist it in AgentResult). Per-agent duration
+    # will be null until runner.py is expanded to include it.
+    agents: list[dict] = []
+    for r in state.dev_results:
+        agents.append(
+            {
+                "role": "dev",
+                "profile": r.profile_name or config.dev_profile.name,
+                "cost_usd": r.cost_usd,
+                "duration_seconds": None,
+            }
+        )
+    for r in state.review_agent_results:
+        role = "synthesis" if r.profile_name == "synthesis" else "review"
+        agents.append(
+            {
+                "role": role,
+                "profile": r.profile_name,
+                "cost_usd": r.cost_usd,
+                "duration_seconds": None,
+            }
+        )
+
     # Build reviews list from cycle metadata (primary) joined with parsed results
     reviews = []
     for i, meta in enumerate(state.review_cycle_metadata):
@@ -625,12 +665,22 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
         }
         if i < len(state.review_results):
             r = state.review_results[i]
+            findings_list = [
+                {
+                    "severity": f.severity,
+                    "file": f.file,
+                    "line": f.line,
+                    "description": f.description,
+                }
+                for f in r.findings
+            ]
             entry.update(
                 {
                     "verdict": r.verdict,
                     "summary": r.summary,
                     "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
                     "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
+                    "findings": findings_list,
                 }
             )
         reviews.append(entry)
@@ -647,6 +697,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "final_phase": result.phase.name,
             "message": result.message,
         },
+        "timing": {
+            "started_at": state.started_at,
+            "finished_at": finished_at_str,
+            "duration_seconds": duration_seconds,
+        },
         "workspace": {
             "path": str(state.workspace_path) if state.workspace_path else None,
             "branch": state.branch_name,
@@ -662,6 +717,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "review_usd": state.total_review_cost,
             "dev_invocations": len(state.dev_results),
             "review_invocations": len(state.review_agent_results),
+            "agents": agents,
         },
         "reviews": reviews,
         "error": state.error,

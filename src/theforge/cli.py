@@ -237,29 +237,94 @@ def cmd_audit(args: argparse.Namespace) -> int:
     outcome = audit.get("outcome", {})
     iterations = audit.get("iterations", {})
     cost = audit.get("cost", {})
+    timing = audit.get("timing", {})
+    workspace = audit.get("workspace", {})
     reviews = audit.get("reviews", [])
 
+    sep = "=" * 60
     icon = "✓" if outcome.get("success") else "✗"
-    print(f"{icon} {task.get('name', '?')}")
-    print(f"  Phase: {outcome.get('final_phase', '?')}")
-    print(f"  Message: {outcome.get('message', '?')}")
-    print(f"  Dev iterations: {iterations.get('dev_iterations', '?')}")
-    print(f"  Review cycles: {iterations.get('review_cycles', '?')}")
-    print(f"  Gate decisions: {iterations.get('gate_decisions', [])}")
-    print(f"  Cost: ${cost.get('total_usd', 0):.3f}")
+    print(f"{sep}")
+    print(f"{icon} {task.get('name', '?')}  [{outcome.get('final_phase', '?')}]")
+    print(f"{sep}")
+    print(f"  Message:  {outcome.get('message', '?')}")
 
+    # Workspace
+    if workspace.get("path") or workspace.get("branch"):
+        print(f"  Workspace: {workspace.get('path', '?')}")
+        print(f"  Branch:    {workspace.get('branch', '?')}")
+
+    # Timing
+    started = timing.get("started_at")
+    finished = timing.get("finished_at")
+    duration = timing.get("duration_seconds")
+    if started or finished or duration is not None:
+        print()
+        print("  Timing")
+        if started:
+            print(f"    Started:  {started}")
+        if finished:
+            print(f"    Finished: {finished}")
+        if duration is not None:
+            mins, secs = divmod(int(duration), 60)
+            print(f"    Duration: {mins}m {secs}s ({duration:.1f}s)")
+
+    # Iterations
+    print()
+    print("  Iterations")
+    print(f"    Dev iterations: {iterations.get('dev_iterations', '?')}")
+    print(f"    Review cycles:  {iterations.get('review_cycles', '?')}")
+    print(f"    Gate decisions: {iterations.get('gate_decisions', [])}")
+
+    # Cost summary
+    print()
+    print("  Cost")
+    print(f"    Total:  ${cost.get('total_usd', 0):.4f}")
+    dev_inv = cost.get("dev_invocations", 0)
+    rev_inv = cost.get("review_invocations", 0)
+    print(f"    Dev:    ${cost.get('dev_usd', 0):.4f}  ({dev_inv} invocation(s))")
+    print(f"    Review: ${cost.get('review_usd', 0):.4f}  ({rev_inv} invocation(s))")
+
+    # Per-agent breakdown
+    agents = cost.get("agents", [])
+    if agents:
+        print()
+        print(f"  {'Role':<10} {'Profile':<20} {'Cost (USD)':>12}  {'Duration':>10}")
+        print(f"  {'-' * 10} {'-' * 20} {'-' * 12}  {'-' * 10}")
+        for a in agents:
+            role = a.get("role", "?")
+            profile = a.get("profile", "?")
+            cost_usd = a.get("cost_usd", 0.0) or 0.0
+            dur = a.get("duration_seconds")
+            dur_str = f"{dur:.0f}s" if dur is not None else "—"
+            print(f"  {role:<10} {profile:<20} ${cost_usd:>11.4f}  {dur_str:>10}")
+
+    # Reviews
     if reviews:
-        print("  Reviews:")
+        print()
+        print("  Reviews")
         for r in reviews:
-            print(
-                f"    Cycle {r.get('cycle', '?')}: {r.get('verdict', '?')} "
-                f"({r.get('p1_count', 0)} P1, {r.get('p2_count', 0)} P2) "
-                f"— {r.get('summary', '')}"
-            )
+            cycle = r.get("cycle", "?")
+            verdict = r.get("verdict", "?")
+            p1 = r.get("p1_count", 0)
+            p2 = r.get("p2_count", 0)
+            summary = r.get("summary", "")
+            print(f"    Cycle {cycle}: {verdict} ({p1} P1, {p2} P2) — {summary}")
+
+            findings = r.get("findings", [])
+            if findings:
+                for f in findings:
+                    sev = f.get("severity", "?")
+                    ffile = f.get("file", "?")
+                    line = f.get("line")
+                    loc = f"{ffile}:{line}" if line else ffile
+                    desc = f.get("description", "")
+                    print(f"      [{sev}] {loc} — {desc}")
 
     if audit.get("error"):
+        print()
         print(f"  Error: {audit['error']}")
 
+    print(f"{sep}")
     return 0
 
 
