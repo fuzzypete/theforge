@@ -198,6 +198,50 @@ dependency analyzer groups into parallel batches automatically.
 
 ---
 
+## Enhancement Queue
+
+Findings from real-world usage (dogfooding + external project testing).
+These are independent of the phased roadmap and can be picked up anytime.
+
+### Timeout Handling
+
+- **Graceful timeout warning:** Agent sessions that approach the timeout
+  limit should receive a warning (e.g. at 80% of timeout) so the agent
+  can wrap up cleanly instead of being hard-killed mid-edit.
+- **Timeout auto-tuning:** Track actual dev session durations per spec
+  complexity (file count, spec length). Surface recommendations in audit:
+  "This spec took 18min; timeout was 15min — consider increasing."
+- **Resume after timeout:** If a dev session is killed by timeout, the
+  coordinator could resume from the worktree state rather than starting
+  fresh, preserving partial progress.
+
+### Open P2s (from dogfooding)
+
+- **Merge logic 3x duplication:** `coordinator.py` has the same merge
+  block at interactive-approve, non-interactive-approve, and
+  human-approve-after-exhausted-cycles. Extract to shared helper.
+- **Frontmatter parsing duplication:** `_build_task_from_spec()` in
+  `campaign.py` duplicates `_parse_spec_frontmatter()` in `cli.py`.
+  Consolidate into a shared function.
+- **Double manifest load:** `cli.py` `cmd_campaign` loads the manifest,
+  then `run_campaign()` loads it again. Pass it through instead.
+- **Missing failed-merge campaign test:** No test for what happens when
+  auto-merge fails mid-campaign.
+
+### Cross-Project Learnings (from HDP)
+
+- **Gate command complexity:** External projects have sophisticated gate
+  commands (`make fmt && make lint && pytest`). Gate failures need better
+  diagnostics — which step failed? Currently it's just PASS/FAIL.
+- **Worktree bootstrapping:** External projects may need dependency
+  installation in the worktree (poetry install, npm install). Consider
+  a `workspace.setup_command` in forge.yaml.
+- **Large spec handling:** Specs with 30+ entities (exercises, endpoints,
+  etc.) push Sonnet sessions long. May need spec decomposition guidance
+  or automatic splitting.
+
+---
+
 ## Testing Strategy
 
 1. **Dogfood loop:** Forge develops itself. Specs in `specs/` are run
