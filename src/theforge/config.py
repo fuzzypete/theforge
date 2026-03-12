@@ -105,7 +105,7 @@ DEFAULT_VALIDATION = ValidationConfig(
 )
 
 # CLIs supported by the runner. Unsupported CLIs are rejected at config load.
-SUPPORTED_CLIS: frozenset[str] = frozenset({"claude"})
+SUPPORTED_CLIS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
 
 
 # ── Loader ────────────────────────────────────────────────────────────
@@ -277,4 +277,23 @@ profiles:
 retry:
   max_dev_iterations: 3    # retries within a review cycle
   max_review_cycles: 2     # full dev→review loops before escalation
+
+# Multi-CLI review pool example:
+# review_pool:
+#   - name: claude-reviewer
+#     cli: claude
+#     model: opus
+#     budget_usd: 1.00
+#   - name: codex-reviewer
+#     cli: codex
+#     model: o4-mini
+#     budget_usd: 1.00
+#   - name: gemini-reviewer
+#     cli: gemini
+#     model: gemini-2.5-pro
+#     budget_usd: 1.00
+# synthesis:
+#   cli: claude
+#   model: opus
+#   budget_usd: 1.00
 """
