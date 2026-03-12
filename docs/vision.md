@@ -145,6 +145,59 @@ it work for other projects proves generality.
 
 ---
 
+### Phase 9: Spec Dependency Analysis
+
+**Why before parallel:** Parallel execution is unsafe without knowing
+which specs conflict. This phase adds static analysis of `file_scope`
+across a campaign manifest to build a dependency graph.
+
+**What it means:**
+- Compare `file_scope` across all specs in a campaign manifest
+- Identify independent specs (disjoint file scopes) vs conflicting ones
+- Build an execution graph: independent specs can be grouped into
+  parallel batches, overlapping specs must be serialized
+- Warn on specs with empty `file_scope` (unrestricted = conflicts with
+  everything)
+- Output: execution plan showing which specs run in which batch
+
+---
+
+### Phase 10: Parallel Campaign Execution
+
+**Depends on:** Phase 9 (Spec Dependency Analysis)
+
+**Why after dependency analysis:** Running concurrent worktrees without
+conflict detection produces merge failures. With the dependency graph
+from Phase 9, the campaign runner can safely parallelize independent
+specs while serializing conflicting ones.
+
+**What it means:**
+- Campaign runner groups independent specs into parallel batches
+- Each batch runs specs concurrently in separate worktrees
+- Batches execute sequentially (batch 1 merges before batch 2 starts)
+- Aggregate budget enforcement across parallel specs
+- Per-spec audit still works; campaign audit shows batch structure
+
+---
+
+### Phase 11: Decompose
+
+**Depends on:** Phase 9 + 10 (dependency analysis + parallel execution)
+
+**Why last:** LLM-driven spec decomposition is the capstone. A large
+spec gets split into sub-specs with annotated `file_scope`, which the
+dependency analyzer groups into parallel batches automatically.
+
+**What it means:**
+- LLM takes a high-level spec and produces N sub-specs
+- Each sub-spec has its own `file_scope`, acceptance criteria, and slug
+- Sub-specs feed into the campaign runner (sequential or parallel)
+- Human reviews the decomposition before execution begins
+- The coordinator is still deterministic — only the decomposition step
+  uses an LLM
+
+---
+
 ## Testing Strategy
 
 1. **Dogfood loop:** Forge develops itself. Specs in `specs/` are run
