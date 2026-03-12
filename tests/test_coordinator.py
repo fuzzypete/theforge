@@ -2178,3 +2178,196 @@ class TestCoordinatorAutoMerge:
         audit = generate_audit_log(config, task, result)
 
         assert audit["merge"] is None
+
+
+# ── Exit-code gate mode + pytest_target substitution ─────────────
+
+
+def _make_exit_code_config(tmp_path: Path) -> ForgeConfig:
+    """Config with exit-code gate mode (empty handoff_file)."""
+    from theforge.config import ValidationConfig
+
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=ValidationConfig(
+            gate_command="pytest {pytest_target} -q",
+            handoff_file="",
+            gate_decision_key="",
+            gate_timeout=120,
+        ),
+        dev_profile=DEFAULT_DEV_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+    )
+
+
+def _shell_exit_code(pass_on_call: int | None = None, gate_marker: str = "pytest"):
+    """Shell side_effect for exit-code gate mode.
+
+    If pass_on_call is None, all gate calls pass.
+    If pass_on_call is N, gate fails until the Nth call.
+    gate_marker: string to detect which shell command is the gate command.
+    """
+    gate_idx = {"n": 0}
+
+    def side_effect(cmd, cwd, **kwargs):
+        if gate_marker in cmd:
+            gate_idx["n"] += 1
+            if pass_on_call is not None and gate_idx["n"] < pass_on_call:
+                return (False, "FAILED: 1 error")
+            return (True, "passed")
+        if "git status --porcelain" in cmd:
+            return (True, "")
+        return (True, "OK")
+
+    return side_effect
+
+
+class TestExitCodeGateMode:
+    """Test gate validation using exit code instead of handoff file."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Exit code 0 → PASS in exit-code mode."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_exit_code()
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_fail_then_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Exit code non-zero → FAIL, then 0 → PASS on retry."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_exit_code(pass_on_call=2)
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.dev_iteration == 2  # needed a retry
+        assert result.state.gate_decisions == ["FAIL", "PASS"]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_exhaustion(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Gate always fails → ESCALATE after max iterations."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_exit_code(pass_on_call=999)
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+
+
+class TestPytestTargetSubstitution:
+    """Test that {pytest_target} in gate_command is replaced from TaskSpec."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_pytest_target_substituted(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Gate command should contain the task's pytest_target, not the placeholder."""
+        config = _make_exit_code_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test", encoding="utf-8")
+        task = TaskSpec(
+            name="Test",
+            spec_path=spec,
+            slug="test-task",
+            file_scope=[],
+            pytest_target="tests/test_specific.py",
+        )
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured_cmds = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            captured_cmds.append(cmd)
+            if "pytest" in cmd:
+                return (True, "passed")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        # Find the gate command (contains pytest)
+        gate_cmds = [c for c in captured_cmds if "pytest" in c]
+        assert gate_cmds, "No gate command captured"
+        assert "tests/test_specific.py" in gate_cmds[0]
+        assert "{pytest_target}" not in gate_cmds[0]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_pytest_target_defaults_to_tests(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """When pytest_target is None, defaults to 'tests/'."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)  # pytest_target=None by default
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured_cmds = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            captured_cmds.append(cmd)
+            if "pytest" in cmd:
+                return (True, "passed")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        gate_cmds = [c for c in captured_cmds if "pytest" in c]
+        assert gate_cmds
+        assert "tests/" in gate_cmds[0]

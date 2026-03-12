@@ -414,23 +414,52 @@ def _read_gate_decision(
     return str(decision).upper(), None
 
 
-def _run_gate(config: ForgeConfig, workspace_path: Path) -> tuple[str | None, str | None]:
-    """Run the gate command and read the decision. Returns (decision, error)."""
-    # Delete stale handoff to prevent a prior PASS from leaking through on gate failure
-    stale_handoff = workspace_path / config.validation.handoff_file
-    if stale_handoff.exists():
-        try:
-            stale_handoff.unlink()
-        except OSError as e:
-            return None, f"Cannot remove stale handoff file: {e}"
+def _run_gate(
+    config: ForgeConfig, workspace_path: Path, task: "TaskSpec | None" = None
+) -> tuple[str | None, str | None]:
+    """Run the gate command and read the decision. Returns (decision, error).
 
-    _log(f"Running gate: {config.validation.gate_command}")
+    Supports two modes:
+    1. Handoff-based: gate_command writes a handoff file with a gate decision key.
+    2. Exit-code-based: if no handoff_file/gate_decision_key is configured,
+       gate PASS/FAIL is determined purely by the command's exit code.
+
+    The gate_command supports {pytest_target} substitution from the TaskSpec.
+    """
+    # Delete stale handoff to prevent a prior PASS from leaking through on gate failure
+    # (only relevant in handoff-based mode)
+    if config.validation.handoff_file:
+        stale_handoff = workspace_path / config.validation.handoff_file
+        if stale_handoff.exists():
+            try:
+                stale_handoff.unlink()
+            except OSError as e:
+                return None, f"Cannot remove stale handoff file: {e}"
+
+    # Substitute task-specific placeholders in the gate command
+    gate_cmd = config.validation.gate_command
+    if task is not None:
+        pytest_target = task.pytest_target or "tests/"
+        gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
+        gate_cmd = gate_cmd.replace("{slug}", task.slug)
+
+    _log(f"Running gate: {gate_cmd}")
+    gate_timeout = config.validation.gate_timeout or 600
     ok, output = _run_shell(
-        config.validation.gate_command,
+        gate_cmd,
         workspace_path,
-        timeout=300,  # gate can be slow (runs tests, lint, etc.)
+        timeout=gate_timeout,
     )
 
+    # Exit-code mode: if no handoff_file configured, use command exit code directly
+    use_exit_code = not config.validation.handoff_file
+    if use_exit_code:
+        if ok:
+            return "PASS", None
+        _log(f"Gate command failed: {output[:200]}")
+        return "FAIL", None
+
+    # Handoff-based mode: read decision from handoff file
     if not ok:
         _log(f"Gate command failed: {output[:200]}")
         # Gate may have still produced a handoff with FAIL/BLOCKED
@@ -461,6 +490,8 @@ def _get_diff(workspace_path: Path, base_branch: str = "main") -> str:
 
 def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
     """Read the handoff.yaml content as text for the reviewer."""
+    if not config.validation.handoff_file:
+        return "(exit-code gate mode — no handoff file)"
     handoff_path = workspace_path / config.validation.handoff_file
     if handoff_path.exists():
         return handoff_path.read_text(encoding="utf-8")
@@ -627,7 +658,7 @@ def run_task(
         state.phase = Phase.VALIDATE
         _log_phase(state.phase)
 
-        gate_decision, gate_err = _run_gate(config, workspace_path)
+        gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
 
         if gate_err:
             _log(f"Gate error: {gate_err}")

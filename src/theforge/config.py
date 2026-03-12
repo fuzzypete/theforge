@@ -37,11 +37,19 @@ class WorkspaceConfig:
 
 @dataclass(frozen=True)
 class ValidationConfig:
-    """How to validate agent output."""
+    """How to validate agent output.
 
-    gate_command: str  # e.g. "make gate"
-    handoff_file: str  # e.g. "handoff.yaml"
+    Two gate modes:
+    1. Handoff-based (default for theforge): gate_command writes a handoff file
+       with a gate_decision_key. Set handoff_file and gate_decision_key.
+    2. Exit-code-based: gate passes if the command exits 0, fails otherwise.
+       Set handoff_file to "" (empty) to use this mode.
+    """
+
+    gate_command: str  # e.g. "make gate" or "make fmt && pytest"
+    handoff_file: str  # e.g. "handoff.yaml", or "" for exit-code mode
     gate_decision_key: str  # YAML key to read for pass/fail
+    gate_timeout: int | None = None  # seconds; None = default 600
 
 
 @dataclass(frozen=True)
@@ -159,6 +167,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         gate_command=val_data.get("gate_command", DEFAULT_VALIDATION.gate_command),
         handoff_file=val_data.get("handoff_file", DEFAULT_VALIDATION.handoff_file),
         gate_decision_key=val_data.get("gate_decision_key", DEFAULT_VALIDATION.gate_decision_key),
+        gate_timeout=val_data.get("gate_timeout"),
     )
 
     # Profiles
