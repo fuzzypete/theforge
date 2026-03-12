@@ -201,7 +201,7 @@ def run_campaign(
             specs_failed += 1
 
         # Build display suffix
-        merged = result.merge is not None
+        merged = result.merge is not None and result.merge.get("merged", False)
         merge_label = ", merged" if merged else ""
         _log(f"[{idx}/{total}] {outcome_label} (${spec_cost:.2f}{merge_label})")
 
@@ -274,7 +274,7 @@ def _write_campaign_audit(
                 "outcome": outcome,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
-                "merge": res.merge is not None,
+                "merge": res.merge is not None and res.merge.get("merged", False),
             }
         else:
             # Skipped due to budget

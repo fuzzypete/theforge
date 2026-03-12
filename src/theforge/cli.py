@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from .campaign import load_manifest, run_campaign
+from .campaign import run_campaign
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import CoordinatorResult, generate_audit_log, run_task
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
@@ -251,22 +251,19 @@ def cmd_campaign(args: argparse.Namespace) -> int:
 
     config = load_config(config_path)
 
-    # Validate manifest before running anything
-    try:
-        load_manifest(manifest_path)
-    except ValueError as exc:
-        print(f"Invalid campaign manifest: {exc}", file=sys.stderr)
-        return 1
-
     auto_merge = getattr(args, "auto_merge", False)
     interactive = getattr(args, "interactive", False)
 
-    result = run_campaign(
-        config,
-        manifest_path,
-        auto_merge=auto_merge,
-        interactive=interactive,
-    )
+    try:
+        result = run_campaign(
+            config,
+            manifest_path,
+            auto_merge=auto_merge,
+            interactive=interactive,
+        )
+    except ValueError as exc:
+        print(f"Campaign error: {exc}", file=sys.stderr)
+        return 1
 
     return 0 if result.specs_failed == 0 else 1
 

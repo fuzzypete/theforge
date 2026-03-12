@@ -348,3 +348,35 @@ class TestRunCampaign:
         assert len(audit["specs"]) == 2
         assert audit["specs"][1]["outcome"] == "SKIPPED"
         assert audit["specs"][1]["cost_usd"] == 0.0
+
+    def test_failed_merge_not_reported_as_merged(self, tmp_path: Path) -> None:
+        """When merge fails, audit reports merge=false and log omits ', merged'."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md"])
+        config = _make_config(tmp_path)
+
+        # Simulate a merge attempt that failed (dirty root, etc.)
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        result_failed_merge = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"attempted": True, "merged": False, "error": "dirty working tree"},
+        )
+
+        with patch("theforge.campaign.run_task", return_value=result_failed_merge):
+            campaign = run_campaign(config, manifest_path, auto_merge=True)
+
+        # Campaign counts as succeeded (task itself passed), but merge did not happen
+        assert campaign.specs_succeeded == 1
+
+        audit_path = tmp_path / "campaign-audit.yaml"
+        with open(audit_path) as f:
+            audit = yaml.safe_load(f)
+
+        assert audit["specs"][0]["merge"] is False
