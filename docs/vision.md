@@ -20,169 +20,126 @@ The human stays at every decision point that matters.
 
 ---
 
-## Current State (v0.1)
+## Current State (v0.2)
 
 ```
-INIT → WORKSPACE → DEV → VALIDATE → REVIEW → DONE/ESCALATE
+INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → HUMAN_REVIEW → DONE/ESCALATE
+                                 ↑                  ↓              ↓
+                                 └──── (REQUEST_CHANGES) ◄─── (reject)
 ```
 
-- Single CLI: `claude`
-- Single reviewer (or multi-model pool with synthesis)
-- No human-in-the-loop — ESCALATE is a dead end
-- No spec validation before dev starts
-- No cross-CLI review (Codex, Gemini)
-- Progress heartbeat (30s)
+**Implemented:**
+- Multi-CLI support: Claude, Codex (OpenAI), and Gemini runners
+- Multi-model review pool with fan-out + synthesis reconciliation
+- Preflight phase: one-shot spec classification (PROCEED/ALREADY_DONE/BLOCKED)
+  before expensive dev+review cycles; fail-open design
+- Human-in-the-loop: `forge run --interactive` pauses at HUMAN_REVIEW for
+  approve/reject/escalate decisions; non-interactive mode skips to auto-behavior
+- Live activity stream: real-time tool-use visibility via stream-json Popen
+  (Claude); progress heartbeat for all CLIs (30s)
+- Budget enforcement: per-profile cumulative cost ceilings (dev + per-reviewer);
+  Claude-only for now (Codex/Gemini report cost_usd=0.0)
+- Per-agent cost breakdown in audit logs with model usage detail
+- Schema-enforced review output with cross-validation (APPROVE+P1 and
+  REQUEST_CHANGES+no-P1 are always errors)
+- Dirty-worktree detection between gate and review
+- Stale handoff deletion before re-running gate
 
 ---
 
 ## Roadmap
 
-### Phase 1: Multi-CLI Support
+### Phase 1: Multi-CLI Support ✓
 
-**Why first:** This is the single biggest unlock. The whole point of
-multi-model review is independent perspectives from different model
-families. Claude reviewing Claude's code is better than nothing, but
-Claude + Codex + Gemini reviewing Claude's code is the actual goal.
-
-**What it means:**
-- `runner.py` gains a CLI dispatch layer: given a `ModelProfile`, select
-  the right subprocess invocation
-- Each CLI has its own:
-  - Command builder (how to invoke it)
-  - Output parser (how to extract the result)
-  - Cost tracker (different billing models)
-  - Tool mapping (each CLI names tools differently)
-- `SUPPORTED_CLIS` expands: `{"claude", "codex", "gemini"}`
-- Config validation ensures the CLI is installed/available
-
-**CLI specifics:**
-
-```yaml
-# Claude: current implementation
-claude --model sonnet --max-turns 50 --budget-tokens 50000 -p "prompt"
-
-# Codex: OpenAI's CLI agent
-codex --model o4-mini --full-auto -q "prompt"
-
-# Gemini: Google's CLI agent
-gemini-cli --model gemini-2.5-pro "prompt"
-```
-
-Each has different:
-- Auth mechanisms (API keys, OAuth)
-- Output formats (stdout, files, structured JSON)
-- Tool permission models
-- Cost reporting
+**Status: Done.** Runner dispatches to Claude, Codex, and Gemini CLIs.
+Each has its own command builder, output parser, and heartbeat.
+Config validates CLI names at load time. Cost tracking is Claude-only
+for now (Codex/Gemini report 0.0).
 
 **Spec:** `specs/multi-cli-support.md`
 
 ---
 
-### Phase 2: Human-in-the-Loop
+### Phase 2: Human-in-the-Loop ✓
 
-**Why second:** Right now ESCALATE is a dead end. In practice, Paul
-IS the escalation handler — he reads the audit, gives P1/P2 findings,
-and tells the agent to fix them. This should be a first-class state.
-
-**What it means:**
-- New phase: `HUMAN_REVIEW` between REVIEW and DONE
-- `forge run --interactive` pauses at HUMAN_REVIEW and waits for input
-- Input can be:
-  - `approve` → DONE
-  - `reject <findings>` → back to DEV with findings as context
-  - `escalate` → ESCALATE (truly give up)
-- Non-interactive mode: `--auto` skips HUMAN_REVIEW (current behavior)
-- The human review prompt shows: diff, review verdict, audit summary
-
-**State machine becomes:**
-
-```
-INIT → WORKSPACE → DEV → VALIDATE → REVIEW → HUMAN_REVIEW → DONE/ESCALATE
-                    ↑                  ↓              ↓
-                    └──── (REQUEST_CHANGES) ◄─── (reject)
-```
+**Status: Done.** `forge run --interactive` pauses at HUMAN_REVIEW.
+Human can approve, reject (with findings fed back to dev), or escalate.
+Non-interactive mode skips HUMAN_REVIEW. EOF on stdin → auto-escalate.
 
 **Spec:** `specs/human-in-the-loop.md`
 
 ---
 
-### Phase 3: Orchestration Model — Task Decomposition
+### Phase 3: Multi-Model Review Pool ✓
 
-**Why third:** Once multi-CLI and human-in-the-loop work, the next
-bottleneck is that large specs require a single dev agent to do
-everything. Paul's pattern is to break work into smaller chunks
-manually. The coordinator should do this.
+**Status: Done.** `forge.yaml` `profiles.review_pool` configures N
+independent reviewers. Fan-out runs all reviewers on the same diff,
+then synthesis reconciles into a single verdict. Per-profile budget
+enforcement. Degraded mode when reviewers fail (skip synthesis if
+only 1 succeeds).
 
-**What it means:**
-- New optional pre-DEV phase: `DECOMPOSE`
-- A planning agent (Opus-class) reads the spec and produces sub-tasks
-- Each sub-task is a mini-spec with its own file_scope
-- Sub-tasks run sequentially (not parallel — git worktrees can't merge
-  themselves safely)
-- Each sub-task goes through the full DEV → VALIDATE → REVIEW cycle
-- The coordinator tracks which sub-tasks passed and which didn't
-- Final REVIEW covers the full diff, not just the last sub-task
-
-**State machine becomes:**
-
-```
-INIT → WORKSPACE → DECOMPOSE → [DEV → VALIDATE → REVIEW]* → HUMAN_REVIEW → DONE
-```
-
-**Open questions:**
-- Should sub-tasks share a worktree or get their own branches?
-- How to handle sub-task dependencies (task B needs task A's output)?
-- What if a sub-task's review rejects something that a previous sub-task
-  produced?
-
-**Spec:** `specs/task-decomposition.md`
+**Spec:** `specs/multi-model-review.md`
 
 ---
 
-### Phase 4: Spec Quality Gate
+### Phase 4: Preflight Spec Validation ✓
 
-**Why fourth:** Paul's experience shows that bad specs produce bad code
-that burns review cycles. A spec quality check before dev starts saves
-time.
-
-**What it means:**
-- New optional pre-DEV phase: `SPEC_CHECK`
-- A reviewer agent reads the spec and produces findings:
-  - Ambiguities
-  - Missing acceptance criteria
-  - Scope concerns (too large for one agent)
-  - Testability gaps
-- Findings go to the human (interactive) or fail the run (auto)
-- Can be skipped with `--skip-spec-check`
-
-**Spec:** `specs/spec-quality-gate.md`
+**Status: Done.** One-shot classification call before dev cycles.
+Verdicts: PROCEED (continue), ALREADY_DONE (skip to DONE), BLOCKED
+(escalate with reason). Fail-open: if the agent fails or output is
+unparseable, default to PROCEED. Reads file_scope contents from main
+branch and checks every acceptance criterion individually.
 
 ---
 
-### Phase 5: Live Observability
+### Phase 5: Live Activity Stream ✓
 
-**Why fifth:** The progress heartbeat is a start, but Paul wants to
-know WHAT the agent is doing, not just that it's alive.
-
-**What it means:**
-- `forge watch` command that tails the current run
-- Shows: current phase, elapsed time, cost so far, last agent action
-- For Claude: parse stderr for tool use events
-- For Codex/Gemini: parse their respective output formats
-- Optional: `forge watch --web` serves a local dashboard
-
-**Spec:** `specs/live-observability.md`
+**Status: Done.** Claude runner uses `subprocess.Popen` with
+`--output-format stream-json --verbose` for real-time JSONL events.
+Tool-use summaries printed to stderr as they happen. All CLIs have
+30s progress heartbeat.
 
 ---
 
-### Phase 6: Cross-Project Support
+### Phase 6: Auto-Merge
 
-**Why sixth:** TheForge currently works for theforge (dogfooding). Making
-it work for hdp or any other project proves generality.
+**Why next:** `forge run` produces a reviewed branch but merging is
+still manual. An `--auto-merge` flag (separate from `--auto` / interactive)
+would fast-forward merge to main after APPROVE, with safety checks
+(branch protection, CI status, clean diff).
+
+**Spec:** `specs/auto-merge.md` (planned)
+
+---
+
+### Phase 7: Campaign Mode
+
+**Why after auto-merge:** Running specs one at a time is fine for
+development, but reaching vision completion requires autonomous
+multi-spec execution. A `forge campaign` command reads a `campaign.yaml`
+manifest and runs specs sequentially, with per-spec and aggregate
+budget gates.
+
+**Key design constraints:**
+- Campaign is a deterministic outer loop — no LLM decides ordering
+- `--auto-merge` merges each spec's branch after APPROVE
+- Budget enforcement is aggregate (stop if campaign ceiling hit)
+- Claude-only for budget tracking until Codex/Gemini report costs
+- DECOMPOSE (LLM-driven task splitting) is deferred — campaign specs
+  are human-authored
+
+**Spec:** `specs/campaign-mode.md` (planned)
+
+---
+
+### Phase 8: Cross-Project Support
+
+**Why later:** TheForge currently works for theforge (dogfooding). Making
+it work for other projects proves generality.
 
 **What it means:**
 - Document the forge.yaml schema fully
-- Test with a real external project (hdp)
+- Test with a real external project
 - Handle project-specific quirks:
   - Different test runners (pytest, vitest, jest)
   - Different lint tools (ruff, eslint)
@@ -195,21 +152,23 @@ it work for hdp or any other project proves generality.
 
 ## Testing Strategy
 
-Before building more features, validate what exists:
+1. **Dogfood loop:** Forge develops itself. Specs in `specs/` are run
+   through `forge run` to implement features in TheForge. This has
+   been validated end-to-end: multi-CLI, multi-model review, HITL,
+   live activity, and preflight were all implemented or tested via
+   dogfooding.
 
-1. **Dogfood loop:** Write a spec for Phase 1 → run `forge run` on it →
-   use the result to implement Phase 1. This is the tightest test.
+2. **Preflight as regression guard:** Stale specs (already implemented)
+   are caught by PREFLIGHT → ALREADY_DONE, avoiding wasted dev+review
+   cycles. Budget-enforcement and audit-improvements specs confirmed this.
 
-2. **External project test:** Point forge at hdp with a small spec
-   (e.g., "add a utility function") and see what breaks.
+3. **Multi-model review:** `forge.yaml` configures Claude + Codex + Gemini
+   review pools. Tested with real cross-CLI reviews.
 
-3. **Multi-model review test:** Configure `forge.yaml` with a review
-   pool and run a real spec. Currently only Claude is supported, so
-   the pool would be Claude with different models (opus, sonnet).
-
-4. **Failure mode testing:** Intentionally give a bad spec and verify
-   the coordinator escalates correctly. Intentionally break the gate
-   and verify retry logic.
+4. **Unit tests:** 145+ tests in `tests/test_coordinator.py` covering all
+   state transitions, budget enforcement, preflight verdicts, pool
+   degradation, synthesis, human review, and edge cases. All tests mock
+   subprocess — no real CLI invocations.
 
 ---
 
