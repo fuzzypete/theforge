@@ -241,8 +241,8 @@ class TestRunAgentUnknownCli:
     def test_unknown_cli(self, tmp_path: Path) -> None:
         profile = ModelProfile(
             name="dev",
-            cli="gemini",
-            model="pro",
+            cli="llama",
+            model="llama3",
             budget_usd=1.0,
             timeout_seconds=60,
             allowed_tools=(),
@@ -251,7 +251,7 @@ class TestRunAgentUnknownCli:
 
         assert result.success is False
         assert "Unknown CLI" in result.output
-        assert "gemini" in result.output
+        assert "llama" in result.output
         assert result.exit_code == -1
         assert result.profile_name == "dev"
 
@@ -334,6 +334,55 @@ class TestRunAgentPool:
         assert results[0].output == "solo review"
         assert results[0].profile_name == "solo"
 
+    def test_pool_mixed_clis(self, tmp_path: Path) -> None:
+        """Pool with Claude and Gemini profiles dispatches correctly to each CLI."""
+        profiles = [
+            ModelProfile(
+                name="claude-reviewer",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="gemini-reviewer",
+                cli="gemini",
+                model="gemini-2.5-pro",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+        dispatched_clis: list[str] = []
+
+        def mock_run_agent(**kwargs):
+            profile = kwargs["profile"]
+            dispatched_clis.append(profile.cli)
+            return AgentResult(
+                success=True,
+                output=f"output from {profile.cli}",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+            results = run_agent_pool(
+                prompt="review this",
+                profiles=profiles,
+                working_dir=tmp_path,
+            )
+
+        assert len(results) == 2
+        assert dispatched_clis == ["claude", "gemini"]
+        assert results[0].profile_name == "claude-reviewer"
+        assert results[1].profile_name == "gemini-reviewer"
+        assert results[0].output == "output from claude"
+        assert results[1].output == "output from gemini"
+
     def test_pool_profile_name_set_on_results(self, tmp_path: Path) -> None:
         """Each result in the pool has profile_name matching the profile."""
         profiles = [
@@ -367,6 +416,237 @@ class TestRunAgentPool:
 
         assert results[0].profile_name == "r1"
         assert results[1].profile_name == "r2"
+
+
+@pytest.fixture
+def codex_profile() -> ModelProfile:
+    return ModelProfile(
+        name="codex-reviewer",
+        cli="codex",
+        model="o4-mini",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+
+
+@pytest.fixture
+def gemini_profile() -> ModelProfile:
+    return ModelProfile(
+        name="gemini-reviewer",
+        cli="gemini",
+        model="gemini-2.5-pro",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+
+
+class TestRunCodex:
+    """Test Codex CLI subprocess invocation."""
+
+    def test_codex_success(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="Code looks good.", stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(
+                prompt="review this code",
+                profile=codex_profile,
+                working_dir=tmp_path,
+            )
+
+        assert result.success is True
+        assert result.output == "Code looks good."
+        assert result.session_id is None
+        assert result.cost_usd == 0.0
+        assert result.exit_code == 0
+        assert result.profile_name == "codex-reviewer"
+
+    def test_codex_timeout(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
+        with patch(
+            "theforge.runner.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="npx", timeout=300),
+        ):
+            result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert "TIMEOUT" in result.output
+        assert "300" in result.output
+        assert result.exit_code == -1
+
+    def test_codex_not_found(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
+        with patch(
+            "theforge.runner.subprocess.run",
+            side_effect=FileNotFoundError(),
+        ):
+            result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert "not found" in result.output
+        assert result.exit_code == -1
+
+    def test_codex_command_structure(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
+        mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        assert "npx" in cmd
+        assert "@openai/codex" in cmd
+        assert "exec" in cmd
+        assert "--full-auto" in cmd
+        assert "-m" in cmd
+        assert "o4-mini" in cmd
+        assert "-C" in cmd
+        assert str(tmp_path) in cmd
+        assert "-o" in cmd
+
+    def test_codex_output_file_fallback(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
+        """When output file is empty, falls back to stdout."""
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="fallback stdout", stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
+
+        assert result.output == "fallback stdout"
+
+    def test_codex_nonzero_exit(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="partial work", stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.exit_code == 1
+        assert result.output == "partial work"
+        assert result.cost_usd == 0.0
+
+    def test_codex_empty_output_falls_back_to_stderr(
+        self, codex_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="codex error"
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
+
+        assert result.output == "codex error"
+
+
+class TestRunGemini:
+    """Test Gemini CLI subprocess invocation."""
+
+    def test_gemini_success(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        json_output = json.dumps({"result": "Looks good to me."})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(
+                prompt="review this code",
+                profile=gemini_profile,
+                working_dir=tmp_path,
+            )
+
+        assert result.success is True
+        assert result.output == "Looks good to me."
+        assert result.session_id is None
+        assert result.cost_usd == 0.0
+        assert result.exit_code == 0
+        assert result.profile_name == "gemini-reviewer"
+
+    def test_gemini_timeout(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        with patch(
+            "theforge.runner.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="gemini", timeout=300),
+        ):
+            result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert "TIMEOUT" in result.output
+        assert "300" in result.output
+        assert result.exit_code == -1
+
+    def test_gemini_not_found(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        with patch(
+            "theforge.runner.subprocess.run",
+            side_effect=FileNotFoundError(),
+        ):
+            result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert "not found" in result.output
+        assert result.exit_code == -1
+
+    def test_gemini_command_structure(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        json_output = json.dumps({"result": "done"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="review", profile=gemini_profile, working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        assert cmd[0] == "gemini"
+        assert "-p" in cmd
+        assert "--yolo" in cmd
+        assert "-m" in cmd
+        assert "gemini-2.5-pro" in cmd
+        assert "-o" in cmd
+        assert "json" in cmd
+
+    def test_gemini_prompt_passed_via_flag(
+        self, gemini_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """Prompt is passed via -p flag, not via stdin input=."""
+        json_output = json.dumps({"result": "done"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="my prompt", profile=gemini_profile, working_dir=tmp_path)
+
+        call_kwargs = mock_run.call_args[1]
+        assert "input" not in call_kwargs
+        cmd = mock_run.call_args[0][0]
+        p_idx = cmd.index("-p")
+        assert cmd[p_idx + 1] == "my prompt"
+
+    def test_gemini_non_json_output(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="plain text response", stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
+
+        assert result.success is True
+        assert result.output == "plain text response"
+        assert result.cost_usd == 0.0
+
+    def test_gemini_empty_output_falls_back_to_stderr(
+        self, gemini_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="gemini error"
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
+
+        assert result.output == "gemini error"
+
+    def test_gemini_cwd_set(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        """Gemini uses cwd= on subprocess.run."""
+        json_output = json.dumps({"result": "done"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
+
+        assert mock_run.call_args[1]["cwd"] == str(tmp_path)
 
 
 class TestLogAgentResult:
