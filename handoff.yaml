@@ -1,12 +1,11 @@
 gate_decision: PASS
 scope_completed:
-  - "P1 fixed: follow-up brief now constructed from divergent items only (not original brief + appendix)"
-  - "P2 fixed: extracted _extract_pytest_target(config) helper, eliminating duplication"
-  - "P2 fixed: Phase 1 and Phase 2 fanouts now route through run_agent_pool()"
-  - "P2 fixed: cmd_ideate simplified — three try/except blocks collapsed into one"
-  - "Tests updated: patch run_agent_pool for pool phases, run_agent for synthesis"
-  - "test_multiple_rounds_loop: asserts round-2 prompt is narrowed to divergent items only"
-  - "All 237 tests pass"
+  - "P1 fixed: generate_ideation_audit() added to ideate.py; forge_ideation_audit.yaml written after every run (including dry-run)"
+  - "P1 fixed: cmd_audit() extended with _cmd_audit_ideate() to display IDEATE runs via 'forge audit'"
+  - "P2 fixed: lstrip('- ') replaced with removeprefix('- ') in _parse_synthesis_output"
+  - "P2 fixed: --dry-run help text clarified (LLM agents still invoked, only spec file skipped)"
+  - "P2 fixed: single-model path deviation documented with expanded comment in run_ideation"
+  - "Tests: 4 new audit/lstrip tests added; all 241 tests pass"
 deferred_followups:
-  - "P2 (coordinator notify removal): separate concern, not blocking per reviewer"
+  - "P2 (extractor fragility in _extract_pytest_target): reviewer said 'no change required'"
 next_recommended_step: "Submit for P1/P2 review to verify all findings resolved"
