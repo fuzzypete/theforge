@@ -375,7 +375,7 @@ class TestCoordinatorEscalation:
 
 
 class TestCoordinatorSchemaErrorOverride:
-    """Test that APPROVE with schema errors is overridden to REQUEST_CHANGES."""
+    """Test that APPROVE with schema errors triggers reviewer retry (not a full dev cycle)."""
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -416,7 +416,10 @@ findings: []
         result = run_task(config, task)
 
         assert result.success is True
-        assert result.state.review_cycle == 2  # had to retry due to schema override
+        # Schema error triggers reviewer retry (not a dev cycle increment)
+        assert result.state.review_cycle == 1
+        # Parse retry was tracked in cycle metadata
+        assert result.state.review_cycle_metadata[0].parse_retries == 1
 
 
 class TestCoordinatorCostTracking:
@@ -684,12 +687,14 @@ class TestCoordinatorStaleHandoffUnlinkFailure:
 
 
 class TestCoordinatorSchemaErrorOnRequestChanges:
-    """Test that malformed REQUEST_CHANGES also gets flagged as parse error."""
+    """Test that malformed REQUEST_CHANGES triggers reviewer retry (not a full dev cycle)."""
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coordinator._run_shell")
-    def test_malformed_request_changes_flagged(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_malformed_request_changes_triggers_retry(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -728,9 +733,12 @@ test_coverage:
 
         result = run_task(config, task)
 
-        # The first review had parse errors — its summary should be prefixed
-        first_review = result.state.review_results[0]
-        assert first_review.summary.startswith("PARSE ERROR:")
+        # Schema error on REQUEST_CHANGES triggers retry — task completes on second attempt
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.review_cycle == 1
+        # Parse retry was tracked
+        assert result.state.review_cycle_metadata[0].parse_retries == 1
 
 
 class TestCoordinatorWorkspaceFailure:
@@ -2426,3 +2434,214 @@ class TestPytestTargetSubstitution:
         gate_cmds = [c for c in captured_cmds if "pytest" in c]
         assert gate_cmds
         assert "tests/" in gate_cmds[0]
+
+
+# ── Parse Retry Tests ─────────────────────────────────────────────────
+
+
+PARSE_ERROR_OUTPUT = "this is not valid yaml: {{{ completely broken"
+
+SCHEMA_ERROR_OUTPUT = """\
+```yaml
+verdict: APPROVE
+summary: "Looks good."
+findings: []
+```
+"""
+# Missing spec_compliance and test_coverage → schema errors
+
+
+class TestReviewParseRetry:
+    """Tests for reviewer retry on parse/schema errors (spec: review-parse-retry)."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_parse_error_does_not_increment_cycle(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Parse error on first review attempt → retry → APPROVE: review_cycle == 1."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=PARSE_ERROR_OUTPUT, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Parse error did NOT increment review_cycle — only the valid APPROVE did
+        assert result.state.review_cycle == 1
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_parse_error_then_request_changes(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Parse error then real REQUEST_CHANGES → cycle increments once, DEV retried."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev cycle 1
+            _make_agent_result(),  # dev cycle 2 (after REQUEST_CHANGES)
+        )
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                # Parse error — triggers retry, NOT a cycle
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=PARSE_ERROR_OUTPUT,
+                        profile_name="review",
+                        cost_usd=0.1,
+                    )
+                ]
+            if call_count["pool"] == 2:
+                # Real REQUEST_CHANGES — increments cycle to 1, DEV reruns
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=REQUEST_CHANGES_REVIEW,
+                        profile_name="review",
+                        cost_usd=0.1,
+                    )
+                ]
+            # Cycle 2: APPROVE
+            return [
+                _make_agent_result(
+                    success=True, output=APPROVE_REVIEW, profile_name="review", cost_usd=0.1
+                )
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # review_cycle == 2: cycle 1 (parse error + REQUEST_CHANGES), cycle 2 (APPROVE)
+        assert result.state.review_cycle == 2
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_all_parse_retries_exhausted(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """All parse retries exhausted → ESCALATE with 'unreliable' in message."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        # Always return parse errors (default max_parse_retries=2 → 3 total attempts)
+        # Use low cost_usd to avoid hitting the review budget before exhausting retries
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=PARSE_ERROR_OUTPUT, profile_name="review", cost_usd=0.1
+            )
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "unreliable" in result.message.lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_parse_retry_count_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Audit log records parse_retries: 1 when one retry occurred."""
+        from theforge.coordinator import generate_audit_log
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=PARSE_ERROR_OUTPUT, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        assert result.success is True
+        assert len(audit["reviews"]) == 1
+        assert audit["reviews"][0]["parse_retries"] == 1
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_schema_error_also_retried(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Schema validation error (not just YAML parse error) also triggers retry."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                # Valid YAML but invalid schema (missing spec_compliance, test_coverage)
+                return [
+                    _make_agent_result(
+                        success=True, output=SCHEMA_ERROR_OUTPUT, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Schema error triggered retry — only 1 review cycle
+        assert result.state.review_cycle == 1
+        # parse_retries tracked in metadata
+        assert result.state.review_cycle_metadata[0].parse_retries == 1

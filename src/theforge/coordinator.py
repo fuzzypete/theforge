@@ -69,6 +69,7 @@ class ReviewCycleMetadata:
     successful: list[str]  # profile names that succeeded
     failed: list[str]  # profile names that failed
     synthesized: bool  # whether synthesis ran
+    parse_retries: int = 0  # parse/schema retry count for this cycle
 
 
 @dataclass
@@ -749,9 +750,9 @@ def run_task(
 
         # ── REVIEW ────────────────────────────────────────────
         state.phase = Phase.REVIEW
-        state.review_cycle += 1
         pool_size = len(config.review_pool)
-        _log_phase(state.phase, f"cycle={state.review_cycle} pool={pool_size}")
+        max_parse_retries = getattr(config.retry, "max_review_parse_retries", 2)
+        _log_phase(state.phase, f"cycle={state.review_cycle + 1} pool={pool_size}")
 
         diff_text = _get_diff(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
@@ -763,120 +764,54 @@ def run_task(
             handoff_content=handoff_content,
         )
 
-        # Run all pool reviewers (sequentially for MVP)
-        _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
-        _pool_start = time.monotonic()
-        pool_results = run_agent_pool(
-            prompt=review_prompt,
-            profiles=config.review_pool,
-            working_dir=workspace_path,
-        )
-        _pool_elapsed = time.monotonic() - _pool_start
-        _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
-        for r in pool_results:
-            state.review_agent_results.append(r)
-            state.review_durations.append(_per_agent_dur)
-            log_agent_result(r, f"REVIEW/{r.profile_name}")
-
-        # Per-profile budget enforcement (cumulative across cycles)
-        for profile in config.review_pool:
-            profile_cost = sum(
-                r.cost_usd for r in state.review_agent_results if r.profile_name == profile.name
-            )
-            if profile_cost > profile.budget_usd:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Review budget exceeded for {profile.name}: "
-                    f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
-                )
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-
-        successful = [r for r in pool_results if r.success]
-        failed_results = [r for r in pool_results if not r.success]
-
-        for f in failed_results:
-            _log(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
-
         # Create metadata now and append immediately — mutations will be visible
-        # through the stored reference (P2 fix: metadata present on all early returns)
+        # through the stored reference (present on all early returns including budget exits)
         meta = ReviewCycleMetadata(
             pool_models=[p.name for p in config.review_pool],
-            successful=[r.profile_name for r in successful],
-            failed=[r.profile_name for r in failed_results],
+            successful=[],
+            failed=[],
             synthesized=False,
+            parse_retries=0,
         )
         state.review_cycle_metadata.append(meta)
 
-        if not successful:
-            state.phase = Phase.ESCALATE
-            failed_desc = ", ".join(
-                f"{r.profile_name} (exit={r.exit_code})" for r in failed_results
-            )
-            state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
+        parsed_review = None
+        last_parse_error: str | None = None
 
-        # Determine the output to parse as the final review verdict
-        if config.synthesis_profile is None or len(successful) == 1:
-            # Pool of 1, or degraded to 1 successful reviewer — no synthesis
-            if len(failed_results) > 0:
+        for _parse_attempt in range(max_parse_retries + 1):
+            if _parse_attempt > 0:
                 _log(
-                    f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
-                    "skipping synthesis"
+                    f"Parse retry {_parse_attempt}/{max_parse_retries} "
+                    f"for review cycle {state.review_cycle + 1}"
                 )
-            synthesis_output = successful[0].output
 
-        else:
-            # Multi-model: run synthesis over all successful outputs
-            meta.synthesized = True  # mutate in place; already in state.review_cycle_metadata
-            _log(
-                f"Synthesizing {len(successful)} review outputs "
-                f"(+{len(failed_results)} failed excluded)"
-            )
-            synthesis_prompt = build_synthesis_prompt(
-                task,
-                review_outputs=[r.output for r in successful],
-                review_names=[r.profile_name for r in successful],
-                spec_content=spec_content,
-                failed_count=len(failed_results),
-                total_count=pool_size,
-            )
-            _synth_start = time.monotonic()
-            synthesis_result = run_agent(
-                prompt=synthesis_prompt,
-                profile=config.synthesis_profile,
+            # Run all pool reviewers (sequentially for MVP)
+            _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+            _pool_start = time.monotonic()
+            pool_results = run_agent_pool(
+                prompt=review_prompt,
+                profiles=config.review_pool,
                 working_dir=workspace_path,
             )
-            _synth_elapsed = time.monotonic() - _synth_start
-            # Tag with profile name using dataclasses.replace
-            from dataclasses import replace as _replace
+            _pool_elapsed = time.monotonic() - _pool_start
+            _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
+            for r in pool_results:
+                state.review_agent_results.append(r)
+                state.review_durations.append(_per_agent_dur)
+                log_agent_result(r, f"REVIEW/{r.profile_name}")
 
-            synthesis_result = _replace(synthesis_result, profile_name="synthesis")
-
-            state.review_agent_results.append(synthesis_result)
-            state.review_durations.append(_synth_elapsed)
-            log_agent_result(synthesis_result, "SYNTHESIS")
-
-            # Synthesis budget enforcement
-            if config.synthesis_profile is not None:
-                synth_cost = sum(
-                    r.cost_usd for r in state.review_agent_results if r.profile_name == "synthesis"
+            # Per-profile budget enforcement (cumulative across cycles)
+            for profile in config.review_pool:
+                profile_cost = sum(
+                    r.cost_usd
+                    for r in state.review_agent_results
+                    if r.profile_name == profile.name
                 )
-                if synth_cost > config.synthesis_profile.budget_usd:
+                if profile_cost > profile.budget_usd:
                     state.phase = Phase.ESCALATE
                     state.error = (
-                        f"Synthesis budget exceeded: "
-                        f"spent ${synth_cost:.4f} "
-                        f"(limit ${config.synthesis_profile.budget_usd:.4f})"
+                        f"Review budget exceeded for {profile.name}: "
+                        f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
                     )
                     return CoordinatorResult(
                         success=False,
@@ -885,9 +820,21 @@ def run_task(
                         message=state.error,
                     )
 
-            if not synthesis_result.success:
+            successful = [r for r in pool_results if r.success]
+            failed_results = [r for r in pool_results if not r.success]
+
+            for f in failed_results:
+                _log(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
+
+            meta.successful = [r.profile_name for r in successful]
+            meta.failed = [r.profile_name for r in failed_results]
+
+            if not successful:
                 state.phase = Phase.ESCALATE
-                state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
+                failed_desc = ", ".join(
+                    f"{r.profile_name} (exit={r.exit_code})" for r in failed_results
+                )
+                state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -895,35 +842,119 @@ def run_task(
                     message=state.error,
                 )
 
-            synthesis_output = synthesis_result.output
+            # Determine the output to parse as the final review verdict
+            if config.synthesis_profile is None or len(successful) == 1:
+                # Pool of 1, or degraded to 1 successful reviewer — no synthesis
+                if len(failed_results) > 0:
+                    _log(
+                        f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
+                        "skipping synthesis"
+                    )
+                synthesis_output = successful[0].output
 
-        parsed_review = parse_review_output(synthesis_output)
-        state.review_results.append(parsed_review)
-
-        if parsed_review.parse_errors:
-            _log(f"Review parse errors: {parsed_review.parse_errors}")
-            # Schema violations always produce a canonical PARSE ERROR result.
-            # For APPROVE: prevents malformed output from bypassing the gate.
-            # For REQUEST_CHANGES: prevents invalid findings from driving
-            #   unnecessary retry loops — surface as protocol failure instead.
-            canonical_summary = f"PARSE ERROR: {parsed_review.summary}"
-            if parsed_review.verdict == "APPROVE":
-                _log("Overriding APPROVE → REQUEST_CHANGES due to schema errors")
             else:
-                _log("Flagging REQUEST_CHANGES as schema-invalid (parse errors present)")
-            parsed_review = ReviewResult(
-                verdict="REQUEST_CHANGES",
-                summary=canonical_summary,
-                findings=parsed_review.findings,
-                spec_matches=parsed_review.spec_matches,
-                spec_mismatches=parsed_review.spec_mismatches,
-                test_adequate=parsed_review.test_adequate,
-                test_gaps=parsed_review.test_gaps,
-                parse_errors=parsed_review.parse_errors,
-                raw_yaml=parsed_review.raw_yaml,
+                # Multi-model: run synthesis over all successful outputs
+                meta.synthesized = True  # mutate in place; already in state.review_cycle_metadata
+                _log(
+                    f"Synthesizing {len(successful)} review outputs "
+                    f"(+{len(failed_results)} failed excluded)"
+                )
+                synthesis_prompt = build_synthesis_prompt(
+                    task,
+                    review_outputs=[r.output for r in successful],
+                    review_names=[r.profile_name for r in successful],
+                    spec_content=spec_content,
+                    failed_count=len(failed_results),
+                    total_count=pool_size,
+                )
+                _synth_start = time.monotonic()
+                synthesis_result = run_agent(
+                    prompt=synthesis_prompt,
+                    profile=config.synthesis_profile,
+                    working_dir=workspace_path,
+                )
+                _synth_elapsed = time.monotonic() - _synth_start
+                # Tag with profile name using dataclasses.replace
+                from dataclasses import replace as _replace
+
+                synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+
+                state.review_agent_results.append(synthesis_result)
+                state.review_durations.append(_synth_elapsed)
+                log_agent_result(synthesis_result, "SYNTHESIS")
+
+                # Synthesis budget enforcement
+                if config.synthesis_profile is not None:
+                    synth_cost = sum(
+                        r.cost_usd
+                        for r in state.review_agent_results
+                        if r.profile_name == "synthesis"
+                    )
+                    if synth_cost > config.synthesis_profile.budget_usd:
+                        state.phase = Phase.ESCALATE
+                        state.error = (
+                            f"Synthesis budget exceeded: "
+                            f"spent ${synth_cost:.4f} "
+                            f"(limit ${config.synthesis_profile.budget_usd:.4f})"
+                        )
+                        return CoordinatorResult(
+                            success=False,
+                            phase=state.phase,
+                            state=state,
+                            message=state.error,
+                        )
+
+                if not synthesis_result.success:
+                    state.phase = Phase.ESCALATE
+                    state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+
+                synthesis_output = synthesis_result.output
+
+            _candidate = parse_review_output(synthesis_output)
+
+            if _candidate.parse_errors:
+                last_parse_error = str(_candidate.parse_errors)
+                _log(
+                    f"Review parse errors (attempt {_parse_attempt + 1}): "
+                    f"{_candidate.parse_errors}"
+                )
+                if _parse_attempt < max_parse_retries:
+                    meta.parse_retries += 1
+                    _log(
+                        f"Retrying reviewer ({meta.parse_retries}/{max_parse_retries} retries "
+                        f"used) — parse error does NOT increment review cycle"
+                    )
+                    continue
+                # All retries exhausted
+                break
+
+            # Valid verdict obtained
+            parsed_review = _candidate
+            break
+
+        if parsed_review is None:
+            # All parse retries exhausted with no valid verdict
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Review pool unreliable: all reviewers failed to produce valid output "
+                f"after {meta.parse_retries} retries. Last error: {last_parse_error}"
             )
-            # Replace the stored result with the corrected one
-            state.review_results[-1] = parsed_review
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
+
+        # Valid verdict obtained — NOW increment review cycle counter
+        state.review_cycle += 1
+        state.review_results.append(parsed_review)
 
         _log(f"Review verdict: {parsed_review.verdict}")
         _log(f"  Summary: {parsed_review.summary}")
@@ -1169,6 +1200,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "successful": meta.successful,
             "failed": meta.failed,
             "synthesized": meta.synthesized,
+            "parse_retries": meta.parse_retries,
         }
         if i < len(state.review_results):
             r = state.review_results[i]
