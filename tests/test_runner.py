@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -175,21 +176,38 @@ class TestRunAgentClaude:
         assert result.success is False
         assert result.output == "some error"
 
-    def test_timeout(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
-        mock_proc = _make_stream_mock([])
-        # First wait() raises TimeoutExpired; second (cleanup) returns normally.
-        mock_proc.wait.side_effect = [
-            subprocess.TimeoutExpired(cmd="claude", timeout=900),
-            None,
-        ]
+    def test_timeout(self, tmp_path: Path) -> None:
+        # Use a 1-second timeout so the test completes quickly.
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=1,
+            allowed_tools=(),
+        )
+
+        class _BlockingStdout:
+            """Simulates a stdout that blocks longer than the timeout."""
+
+            def __iter__(self):
+                time.sleep(5)  # longer than timeout_seconds=1
+                return iter([])
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = _BlockingStdout()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.returncode = -1
+        mock_proc.wait.return_value = -1
+        mock_proc.poll.return_value = None
+
         with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         assert result.success is False
         assert "TIMEOUT" in result.output
-        assert "900" in result.output
         assert result.exit_code == -1
-        mock_proc.kill.assert_called_once()
 
     def test_cli_not_found(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(

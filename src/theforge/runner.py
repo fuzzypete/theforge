@@ -296,6 +296,8 @@ def _run_claude(
     _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
     start = time.monotonic()
+    deadline = start + profile.timeout_seconds
+    timed_out = False
     try:
         proc = subprocess.Popen(
             cmd,
@@ -312,27 +314,47 @@ def _run_claude(
 
         lines: list[str] = []
         assert proc.stdout is not None
+
+        # Enforce wall-clock timeout on the streaming loop via a watchdog thread.
+        # proc.wait(timeout=...) only fires after stdout is drained, which never
+        # happens if the agent streams indefinitely.
+        def _watchdog() -> None:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            if proc.poll() is None:
+                proc.kill()
+
+        watchdog = threading.Thread(target=_watchdog, daemon=True)
+        watchdog.start()
+
         for line in proc.stdout:
             lines.append(line)
             _process_stream_event(line.strip(), label)
+            if time.monotonic() > deadline:
+                proc.kill()
+                timed_out = True
+                break
 
-        proc.wait(timeout=profile.timeout_seconds)
-    except subprocess.TimeoutExpired:
-        proc.kill()
         proc.wait()
+    except FileNotFoundError:
         return AgentResult(
             success=False,
-            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+            output="ERROR: 'claude' CLI not found. Is it installed?",
             session_id=None,
             cost_usd=0.0,
             exit_code=-1,
             raw={},
             profile_name=profile.name,
         )
-    except FileNotFoundError:
+
+    if timed_out or (time.monotonic() - start) >= profile.timeout_seconds * 1.05:
+        timed_out = True
+
+    if timed_out:
         return AgentResult(
             success=False,
-            output="ERROR: 'claude' CLI not found. Is it installed?",
+            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
             session_id=None,
             cost_usd=0.0,
             exit_code=-1,
