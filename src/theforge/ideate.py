@@ -292,18 +292,23 @@ def _parse_synthesis_output(
 
 
 def _validate_frontmatter(spec_text: str) -> bool:
-    """Return True if spec_text has parseable YAML frontmatter."""
-    if not spec_text.strip().startswith("---"):
+    """Return True if spec_text has parseable YAML frontmatter and a non-empty body."""
+    stripped = spec_text.strip()
+    if not stripped.startswith("---"):
         return False
-    end = spec_text.find("---", 3)
+    end = stripped.find("---", 3)
     if end == -1:
         return False
-    frontmatter = spec_text[3:end].strip()
+    frontmatter = stripped[3:end].strip()
     try:
         result = yaml.safe_load(frontmatter)
-        return isinstance(result, dict)
+        if not isinstance(result, dict):
+            return False
     except yaml.YAMLError:
         return False
+    # Require a non-empty markdown body after the closing ---
+    body = stripped[end + 3:].strip()
+    return len(body) > 0
 
 
 def _extract_slug_from_spec(spec_text: str) -> str | None:
