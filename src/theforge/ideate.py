@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .runner import run_agent
+from .runner import run_agent, run_agent_pool
 
 # ── Data structures ──────────────────────────────────────────────────
 
@@ -50,6 +50,23 @@ class IdeationResult:
 
 
 # ── Prompt builders ──────────────────────────────────────────────────
+
+
+def _extract_pytest_target(config: "ForgeConfig | None") -> str:
+    """Derive pytest target path from config gate_command, defaulting to 'tests/'."""
+    if config is None:
+        return "tests/"
+    gate_cmd = config.validation.gate_command
+    try:
+        tokens = shlex.split(gate_cmd)
+        for i, tok in enumerate(tokens):
+            if tok in ("pytest", "python", "-m") and i + 1 < len(tokens):
+                candidate = tokens[i + 1]
+                if candidate.startswith("tests") and not candidate.startswith("-"):
+                    return candidate
+    except ValueError:
+        pass
+    return "tests/"
 
 
 def _build_phase1_prompt(brief: str) -> str:
@@ -82,19 +99,7 @@ def _build_single_model_prompt(brief: str, *, config: "ForgeConfig | None" = Non
     (synthesis). For a single-model pool there is no cross-review and no
     separate synthesis step — one model produces the full spec directly.
     """
-    pytest_target = "tests/"
-    if config is not None:
-        gate_cmd = config.validation.gate_command
-        try:
-            tokens = shlex.split(gate_cmd)
-            for i, tok in enumerate(tokens):
-                if tok in ("pytest", "python", "-m") and i + 1 < len(tokens):
-                    candidate = tokens[i + 1]
-                    if candidate.startswith("tests") and not candidate.startswith("-"):
-                        pytest_target = candidate
-                        break
-        except ValueError:
-            pass
+    pytest_target = _extract_pytest_target(config)
 
     return f"""You are writing a structured implementation spec.
 
@@ -168,22 +173,7 @@ def _build_synthesis_prompt(
     *,
     config: "ForgeConfig | None" = None,
 ) -> str:
-    # Derive pytest_target hint from config validation gate_command when available.
-    # Defaults to "tests/" (the most common pytest target).
-    pytest_target = "tests/"
-    if config is not None:
-        gate_cmd = config.validation.gate_command
-        # If the gate command references a specific test path, use it as a hint.
-        try:
-            tokens = shlex.split(gate_cmd)
-            for i, tok in enumerate(tokens):
-                if tok in ("pytest", "python", "-m") and i + 1 < len(tokens):
-                    candidate = tokens[i + 1]
-                    if candidate.startswith("tests") and not candidate.startswith("-"):
-                        pytest_target = candidate
-                        break
-        except ValueError:
-            pass  # malformed gate_command — keep default
+    pytest_target = _extract_pytest_target(config)
 
     phase1_section = "\n\n".join(
         f"### {model_name} (Phase 1)\n{output}" for model_name, output in phase1_outputs.items()
@@ -458,17 +448,14 @@ def run_ideation(
             break  # single round always produces the final spec
 
         # ── Phase 1: Independent generation (multi-model) ────────────
-        # NOTE: The spec recommends run_agent_pool() here, but we use run_agent()
-        # sequentially so we can log per-agent elapsed times as they complete (R4).
         _log("  ▸ Phase 1   generating independently...")
         phase1_prompt = _build_phase1_prompt(current_brief)
         phase1_outputs: dict[str, str] = {}
 
-        for profile in pool:
-            agent_start = time.monotonic()
-            result = run_agent(prompt=phase1_prompt, profile=profile, working_dir=working_dir)
-            agent_elapsed = time.monotonic() - agent_start
-            _log(f"  ↳ {profile.name} done ({agent_elapsed:.0f}s)")
+        p1_start = time.monotonic()
+        p1_results = run_agent_pool(prompt=phase1_prompt, profiles=pool, working_dir=working_dir)
+        p1_elapsed = time.monotonic() - p1_start
+        for profile, result in zip(pool, p1_results):
             if not result.success:
                 _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
                 return _failed_result(
@@ -478,17 +465,17 @@ def run_ideation(
                 )
             phase1_outputs[profile.name] = result.output
             total_cost += result.cost_usd
+            _log(f"  ↳ {profile.name} done ({p1_elapsed:.0f}s total)")
 
         # ── Phase 2: Cross-review ─────────────────────────────────────
         phase2_outputs: dict[str, str] = {}
         _log("  ▸ Phase 2   cross-reviewing...")
         phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
 
-        for profile in pool:
-            agent_start = time.monotonic()
-            result = run_agent(prompt=phase2_prompt, profile=profile, working_dir=working_dir)
-            agent_elapsed = time.monotonic() - agent_start
-            _log(f"  ↳ {profile.name} done ({agent_elapsed:.0f}s)")
+        p2_start = time.monotonic()
+        p2_results = run_agent_pool(prompt=phase2_prompt, profiles=pool, working_dir=working_dir)
+        p2_elapsed = time.monotonic() - p2_start
+        for profile, result in zip(pool, p2_results):
             if not result.success:
                 _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
                 return _failed_result(
@@ -498,6 +485,7 @@ def run_ideation(
                 )
             phase2_outputs[profile.name] = result.output
             total_cost += result.cost_usd
+            _log(f"  ↳ {profile.name} done ({p2_elapsed:.0f}s total)")
 
         # ── Phase 3: Synthesis ────────────────────────────────────────
         _log("  ▸ Synthesis   consolidating...")
@@ -553,13 +541,15 @@ def run_ideation(
 
         residual_divergence = divergent_items
 
-        # Continue if divergence remains and rounds remain
+        # Continue if divergence remains and rounds remain.
+        # The follow-up brief is narrowed to ONLY the divergent items — the original
+        # brief is intentionally excluded so already-converged topics are not reopened.
         if divergent_items and round_num < max_rounds:
             divergence_text = "\n".join(f"- {item}" for item in divergent_items)
             current_brief = (
-                f"{brief}\n\n"
-                f"FOCUS: The following items remain in disagreement from the previous round. "
-                f"Resolve these specifically:\n{divergence_text}"
+                f"The following design questions remain unresolved from a prior "
+                f"deliberation round. Focus exclusively on resolving these items:\n\n"
+                f"{divergence_text}"
             )
         else:
             break

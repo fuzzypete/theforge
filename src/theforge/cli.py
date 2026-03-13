@@ -399,34 +399,25 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     max_rounds = args.rounds
 
     dry_run: bool = args.dry_run
-    explicit_output = args.output
 
-    # For dry-run: pass output_path=None (no file written).
-    # For explicit --output: pass the given path directly.
-    # For default output (no --output, no --dry-run): pass specs_dir so run_ideation
-    #   can derive the slug from the synthesized frontmatter and log the correct path.
-    if dry_run:
-        try:
-            result = run_ideation(config, brief, None, max_rounds=max_rounds)
-        except ValueError as exc:
-            print(f"Ideation error: {exc}", file=sys.stderr)
-            return 1
-    elif explicit_output:
-        output_path: Path = Path(explicit_output).resolve()
-        try:
-            result = run_ideation(config, brief, output_path, max_rounds=max_rounds)
-        except ValueError as exc:
-            print(f"Ideation error: {exc}", file=sys.stderr)
-            return 1
-    else:
-        # Run ideation with output_path=None and specs_dir set so that run_ideation
-        # determines the slug-based path and writes the file, keeping the log accurate.
-        specs_dir = config.project_root / "specs"
-        try:
-            result = run_ideation(config, brief, None, specs_dir=specs_dir, max_rounds=max_rounds)
-        except ValueError as exc:
-            print(f"Ideation error: {exc}", file=sys.stderr)
-            return 1
+    # Compute output_path and specs_dir once before calling run_ideation.
+    # dry-run → no file written (both None); explicit --output → output_path set;
+    # default → specs_dir set so run_ideation derives the slug-based filename.
+    run_output_path: Path | None = None
+    run_specs_dir: Path | None = None
+    if not dry_run:
+        if args.output:
+            run_output_path = Path(args.output).resolve()
+        else:
+            run_specs_dir = config.project_root / "specs"
+
+    try:
+        result = run_ideation(
+            config, brief, run_output_path, specs_dir=run_specs_dir, max_rounds=max_rounds
+        )
+    except ValueError as exc:
+        print(f"Ideation error: {exc}", file=sys.stderr)
+        return 1
 
     if dry_run:
         if not result.success:
