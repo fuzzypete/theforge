@@ -14,10 +14,35 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable
 
 from .config import ModelProfile
+
+# ── Log level ─────────────────────────────────────────────────────────
+
+
+class LogLevel(IntEnum):
+    PROGRESS = 0  # default: phase transitions, agent start/done, verdicts
+    VERBOSE = 1  # adds tool activity, heartbeats, raw output
+
+
+_LOG_LEVEL: LogLevel = LogLevel.PROGRESS
+
+
+def set_log_level(level: LogLevel) -> None:
+    global _LOG_LEVEL
+    _LOG_LEVEL = level
+
+
+def _log(msg: str) -> None:
+    print(f"[forge] {msg}", file=sys.stderr, flush=True)
+
+
+def _log_verbose(msg: str) -> None:
+    if _LOG_LEVEL >= LogLevel.VERBOSE:
+        print(f"[forge] {msg}", file=sys.stderr, flush=True)
 
 
 @dataclass(frozen=True)
@@ -69,12 +94,7 @@ def _run_with_heartbeat(
     Returns (outcome, elapsed_seconds). The caller handles interpreting
     the outcome into an AgentResult.
     """
-    print(
-        f"[forge]   Starting {label} "
-        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
-        file=sys.stderr,
-        flush=True,
-    )
+    _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
     outcome = _SubprocessOutcome()
 
@@ -92,11 +112,7 @@ def _run_with_heartbeat(
         thread.join(timeout=30)
         if thread.is_alive():
             elapsed = int(time.monotonic() - start)
-            print(
-                f"[forge]   ... {label} still running ({elapsed}s elapsed)",
-                file=sys.stderr,
-                flush=True,
-            )
+            _log_verbose(f"  ... {label} still running ({elapsed}s elapsed)")
 
     elapsed = time.monotonic() - start
     return outcome, elapsed
@@ -236,7 +252,7 @@ def _process_stream_event(line: str, label: str) -> None:
     if event_type == "tool_use_summary":
         summary = event.get("summary", "")
         if summary:
-            print(f"[forge]   ↳ {summary}", file=sys.stderr, flush=True)
+            _log_verbose(f"  ↳ {summary}")
     elif event_type == "assistant":
         message = event.get("message", {})
         content = message.get("content", [])
@@ -245,7 +261,7 @@ def _process_stream_event(line: str, label: str) -> None:
                 tool_name = item.get("name", "?")
                 inp = item.get("input", {})
                 preview = _format_tool_input_preview(inp)
-                print(f"[forge]   ↳ {tool_name}: {preview}", file=sys.stderr, flush=True)
+                _log_verbose(f"  ↳ {tool_name}: {preview}")
 
 
 def _run_claude(
@@ -277,12 +293,7 @@ def _run_claude(
     env.pop("CLAUDECODE", None)
 
     label = profile.name or f"{profile.cli}/{profile.model}"
-    print(
-        f"[forge]   Starting {label} "
-        f"(model={profile.model}, timeout={profile.timeout_seconds}s)...",
-        file=sys.stderr,
-        flush=True,
-    )
+    _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
     start = time.monotonic()
     try:
@@ -330,11 +341,7 @@ def _run_claude(
         )
 
     elapsed = time.monotonic() - start
-    print(
-        f"[forge]   ... {label} done ({elapsed:.0f}s)",
-        file=sys.stderr,
-        flush=True,
-    )
+    _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
     # Find the result line (type=result) in the JSONL stream
     result_json: dict[str, Any] = {}
@@ -446,11 +453,7 @@ def _run_codex(
 
         proc = outcome.proc
         assert proc is not None
-        print(
-            f"[forge]   ... {label} done ({elapsed:.0f}s)",
-            file=sys.stderr,
-            flush=True,
-        )
+        _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
         # Read output file; fall back to stdout then stderr
         output_text = ""
@@ -542,11 +545,7 @@ def _run_gemini(
 
     proc = outcome.proc
     assert proc is not None
-    print(
-        f"[forge]   ... {label} done ({elapsed:.0f}s)",
-        file=sys.stderr,
-        flush=True,
-    )
+    _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
     # Parse JSON output (-o json requests structured response)
     result_json: dict[str, Any] = {}
@@ -575,11 +574,10 @@ def _run_gemini(
 
 
 def log_agent_result(result: AgentResult, role: str) -> None:
-    """Print a summary of an agent result to stderr."""
+    """Print a summary of an agent result to stderr (verbose-only)."""
     status = "OK" if result.success else "FAIL"
-    print(
+    _log_verbose(
         f"  [{role}] {status} | exit={result.exit_code} | "
         f"cost=${result.cost_usd:.3f} | "
-        f"output={len(result.output)} chars",
-        file=sys.stderr,
+        f"output={len(result.output)} chars"
     )
