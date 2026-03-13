@@ -3453,3 +3453,11 @@ class TestRunFromReview:
         # run_agent was never called (no preflight, no dev)
         # We can verify by checking no dev results
         assert len(result.state.dev_results) == 0
+
+        # Spec requires: audit log records preflight_verdict as 'SKIPPED' with cost 0.0
+        from theforge.coordinator import generate_audit_log
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["preflight"] is not None
+        assert audit["preflight"]["verdict"] == "SKIPPED"
+        assert audit["preflight"]["cost_usd"] == 0.0

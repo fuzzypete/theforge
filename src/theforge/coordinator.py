@@ -29,6 +29,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
@@ -521,177 +522,74 @@ def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
 # ── State machine ────────────────────────────────────────────────────
 
 
-def run_task(
+def _coordinator_loop(
+    state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
+    spec_content: str,
+    task_start: float,
     *,
     interactive: bool = False,
     auto_merge: bool = False,
+    skip_dev_first_iter: bool = False,
 ) -> CoordinatorResult:
-    """Execute the full coordinator state machine for a single task.
+    """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
-    This is the main entry point. It creates a workspace, runs the dev agent,
-    validates output, runs the review pool (+synthesis if >1 reviewer), and
-    loops until done or exhausted.
-
-    Every transition is deterministic. No LLM makes process decisions.
+    Callers must set state.workspace_path and state.branch_name before calling.
 
     Args:
-        config: The forge configuration.
-        task: The task specification.
-        interactive: When True, pause at HUMAN_REVIEW for operator input before
-            finalizing DONE or ESCALATE. When False (default), behave as before.
-        auto_merge: When True, merge the feature branch into base_branch after
-            a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
+        skip_dev_first_iter: When True, the first loop iteration starts directly at
+            REVIEW, skipping DEV+VALIDATE. All subsequent iterations run the full
+            DEV→VALIDATE→REVIEW sequence. Used by run_from_review() to review the
+            existing worktree before invoking the dev agent for the first time.
     """
-    state = CoordinatorState()
-    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    _task_start = time.monotonic()
-    spec_content = load_spec(task.spec_path)
+    assert state.workspace_path is not None
+    assert state.branch_name is not None
+    workspace_path = state.workspace_path
+    branch_name = state.branch_name
+    _skip_dev = skip_dev_first_iter
 
-    # ── WORKSPACE ─────────────────────────────────────────────────
-    state.phase = Phase.WORKSPACE
-    _log_phase(state.phase, task.slug)
-
-    workspace_path, branch_name, err = _create_workspace(config, task)
-    if err:
-        state.phase = Phase.ESCALATE
-        state.error = err
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=f"Workspace creation failed: {err}",
-        )
-
-    assert workspace_path is not None
-    assert branch_name is not None
-    state.workspace_path = workspace_path
-    state.branch_name = branch_name
-
-    # ── PREFLIGHT ──────────────────────────────────────────────────
-    state.phase = Phase.PREFLIGHT
-    preflight_profile = config.review_pool[0]
-    _log_phase(state.phase, preflight_profile.model)
-
-    file_contents = _load_file_scope_contents(task, config.project_root)
-    preflight_prompt = build_preflight_prompt(
-        task, spec_content=spec_content, file_contents=file_contents
-    )
-
-    # Use the first review profile for preflight (read-only, lightweight)
-    _preflight_start = time.monotonic()
-    preflight_result = run_agent(
-        prompt=preflight_prompt,
-        profile=preflight_profile,
-        working_dir=workspace_path,
-    )
-    state.preflight_result = preflight_result
-    log_agent_result(preflight_result, "PREFLIGHT")
-
-    if preflight_result.success:
-        verdict, reason = _parse_preflight_verdict(preflight_result.output)
-    else:
-        # Agent failed — don't block on a broken preflight, proceed
-        verdict, reason = (
-            "PROCEED",
-            f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
-        )
-
-    state.preflight_verdict = verdict
-    state.preflight_reason = reason
-    _log(f"  ✓ PREFLIGHT   {verdict}")
-    _log_verbose(f"  Reason: {reason}")
-
-    if verdict == "ALREADY_DONE":
-        state.phase = Phase.DONE
-        elapsed = time.monotonic() - _task_start
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {elapsed:.0f}s")
-        return CoordinatorResult(
-            success=True,
-            phase=state.phase,
-            state=state,
-            message=f"Preflight: spec already implemented. {reason}",
-        )
-
-    if verdict == "BLOCKED":
-        state.phase = Phase.ESCALATE
-        state.error = f"Preflight: spec is blocked. {reason}"
-        _log(f"✗ ESCALATE   {state.error}")
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
-        )
-
-    # verdict == "PROCEED" — continue to DEV
-
-    # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
     while True:
-        # ── DEV ───────────────────────────────────────────────
-        state.phase = Phase.DEV
-        state.dev_iteration += 1
-        _log_phase(
-            state.phase,
-            f"{config.dev_profile.model}  iter={state.dev_iteration}",
-        )
-
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=workspace_path,
-            branch_name=branch_name,
-            spec_content=spec_content,
-            gate_command=config.validation.gate_command,
-            review_findings=state.last_review_findings,
-            human_feedback=state.human_feedback,
-            iteration=state.dev_iteration,
-        )
-
-        _dev_start = time.monotonic()
-        dev_result = run_agent(
-            prompt=prompt,
-            profile=config.dev_profile,
-            working_dir=workspace_path,
-            session_id=state.dev_session_id,
-        )
-        _dev_elapsed = time.monotonic() - _dev_start
-        state.dev_results.append(dev_result)
-        state.dev_durations.append(_dev_elapsed)
-        state.dev_session_id = dev_result.session_id
-        log_agent_result(dev_result, "DEV")
-        _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
-
-        if state.total_dev_cost > config.dev_profile.budget_usd:
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
-                f"(limit ${config.dev_profile.budget_usd:.4f})"
-            )
-            _log(f"✗ ESCALATE   {state.error}")
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
+        if not _skip_dev:
+            # ── DEV ───────────────────────────────────────────────
+            state.phase = Phase.DEV
+            state.dev_iteration += 1
+            _log_phase(
+                state.phase,
+                f"{config.dev_profile.model}  iter={state.dev_iteration}",
             )
 
-        if not dev_result.success:
-            _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
-            # Don't immediately escalate — try validation anyway,
-            # the agent may have committed partial work + run the gate
+            prompt = build_dev_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                spec_content=spec_content,
+                gate_command=config.validation.gate_command,
+                review_findings=state.last_review_findings,
+                human_feedback=state.human_feedback,
+                iteration=state.dev_iteration,
+            )
 
-        # ── VALIDATE ──────────────────────────────────────────
-        state.phase = Phase.VALIDATE
-        _log_phase(state.phase, "running gate...")
+            _dev_start = time.monotonic()
+            dev_result = run_agent(
+                prompt=prompt,
+                profile=config.dev_profile,
+                working_dir=workspace_path,
+                session_id=state.dev_session_id,
+            )
+            _dev_elapsed = time.monotonic() - _dev_start
+            state.dev_results.append(dev_result)
+            state.dev_durations.append(_dev_elapsed)
+            state.dev_session_id = dev_result.session_id
+            log_agent_result(dev_result, "DEV")
+            _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
 
-        gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
-
-        if gate_err:
-            _log_verbose(f"Gate error: {gate_err}")
-            if state.dev_iteration >= config.retry.max_dev_iterations:
+            if state.total_dev_cost > config.dev_profile.budget_usd:
                 state.phase = Phase.ESCALATE
-                state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                state.error = (
+                    f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
+                    f"(limit ${config.dev_profile.budget_usd:.4f})"
+                )
                 _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
@@ -699,54 +597,101 @@ def run_task(
                     state=state,
                     message=state.error,
                 )
-            # Retry dev with feedback about the gate failure
-            state.human_feedback = f"Gate validation failed: {gate_err}"
-            _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
-            continue
 
-        assert gate_decision is not None
-        state.gate_decisions.append(gate_decision)
-        _log_verbose(f"Gate decision: {gate_decision}")
+            if not dev_result.success:
+                _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
+                # Don't immediately escalate — try validation anyway,
+                # the agent may have committed partial work + run the gate
 
-        if gate_decision == "PASS":
-            _log("  ✓ VALIDATE   PASS")
-            # Verify worktree is clean — the dev agent must commit all changes.
-            # The gate runs against the working tree, so it can pass even with
-            # uncommitted files. This check catches that process violation.
-            dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
-            if dirty_ok and dirty_out.strip():
-                # Filter out handoff.yaml and other gate artifacts
-                handoff_file = config.validation.handoff_file
-                dirty_lines = [
-                    line
-                    for line in dirty_out.strip().splitlines()
-                    if not (handoff_file and line.strip().endswith(handoff_file))
-                ]
-                if dirty_lines:
-                    dirty_files = ", ".join(
-                        line.strip().split(maxsplit=1)[-1] for line in dirty_lines
+            # ── VALIDATE ──────────────────────────────────────────
+            state.phase = Phase.VALIDATE
+            _log_phase(state.phase, "running gate...")
+
+            gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
+
+            if gate_err:
+                _log_verbose(f"Gate error: {gate_err}")
+                if state.dev_iteration >= config.retry.max_dev_iterations:
+                    state.phase = Phase.ESCALATE
+                    state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                    _log(f"✗ ESCALATE   {state.error}")
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
                     )
-                    _log(f"Dirty worktree detected: {dirty_files}")
-                    if state.dev_iteration >= config.retry.max_dev_iterations:
-                        state.phase = Phase.ESCALATE
-                        state.error = f"Dev agent left uncommitted changes: {dirty_files}"
-                        _log(f"✗ ESCALATE   {state.error}")
-                        return CoordinatorResult(
-                            success=False,
-                            phase=state.phase,
-                            state=state,
-                            message=state.error,
+                # Retry dev with feedback about the gate failure
+                state.human_feedback = f"Gate validation failed: {gate_err}"
+                _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
+                continue
+
+            assert gate_decision is not None
+            state.gate_decisions.append(gate_decision)
+            _log_verbose(f"Gate decision: {gate_decision}")
+
+            if gate_decision == "PASS":
+                _log("  ✓ VALIDATE   PASS")
+                # Verify worktree is clean — the dev agent must commit all changes.
+                # The gate runs against the working tree, so it can pass even with
+                # uncommitted files. This check catches that process violation.
+                dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
+                if dirty_ok and dirty_out.strip():
+                    # Filter out handoff.yaml and other gate artifacts
+                    handoff_file = config.validation.handoff_file
+                    dirty_lines = [
+                        line
+                        for line in dirty_out.strip().splitlines()
+                        if not (handoff_file and line.strip().endswith(handoff_file))
+                    ]
+                    if dirty_lines:
+                        dirty_files = ", ".join(
+                            line.strip().split(maxsplit=1)[-1] for line in dirty_lines
                         )
-                    state.human_feedback = (
-                        "PROCESS VIOLATION: You left uncommitted changes in the "
-                        f"worktree: {dirty_files}. You MUST commit ALL modified "
-                        "files before running the gate. Stage and commit them now."
+                        _log(f"Dirty worktree detected: {dirty_files}")
+                        if state.dev_iteration >= config.retry.max_dev_iterations:
+                            state.phase = Phase.ESCALATE
+                            state.error = f"Dev agent left uncommitted changes: {dirty_files}"
+                            _log(f"✗ ESCALATE   {state.error}")
+                            return CoordinatorResult(
+                                success=False,
+                                phase=state.phase,
+                                state=state,
+                                message=state.error,
+                            )
+                        state.human_feedback = (
+                            "PROCESS VIOLATION: You left uncommitted changes in the "
+                            f"worktree: {dirty_files}. You MUST commit ALL modified "
+                            "files before running the gate. Stage and commit them now."
+                        )
+                        continue
+            elif gate_decision in ("FAIL", "BLOCKED"):
+                if state.dev_iteration >= config.retry.max_dev_iterations:
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
                     )
-                    continue
-        elif gate_decision in ("FAIL", "BLOCKED"):
-            if state.dev_iteration >= config.retry.max_dev_iterations:
+                    _log(f"✗ ESCALATE   {state.error}")
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+                # Retry dev — the gate failure details are in handoff.yaml
+                handoff_text = _get_handoff_content(config, workspace_path)
+                state.human_feedback = (
+                    f"Gate returned {gate_decision}. "
+                    f"Fix the issues and re-run the gate.\n\n"
+                    f"Current handoff:\n{handoff_text}"
+                )
+                _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
+                _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
+                continue
+            else:
+                _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
                 state.phase = Phase.ESCALATE
-                state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
+                state.error = f"Unknown gate decision: {gate_decision!r}"
                 _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
@@ -754,27 +699,8 @@ def run_task(
                     state=state,
                     message=state.error,
                 )
-            # Retry dev — the gate failure details are in handoff.yaml
-            handoff_text = _get_handoff_content(config, workspace_path)
-            state.human_feedback = (
-                f"Gate returned {gate_decision}. "
-                f"Fix the issues and re-run the gate.\n\n"
-                f"Current handoff:\n{handoff_text}"
-            )
-            _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
-            _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
-            continue
-        else:
-            _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
-            state.phase = Phase.ESCALATE
-            state.error = f"Unknown gate decision: {gate_decision!r}"
-            _log(f"✗ ESCALATE   {state.error}")
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
+
+        _skip_dev = False  # all subsequent iterations start at DEV
 
         # ── REVIEW ────────────────────────────────────────────
         state.phase = Phase.REVIEW
@@ -908,10 +834,7 @@ def run_task(
                     working_dir=workspace_path,
                 )
                 _synth_elapsed = time.monotonic() - _synth_start
-                # Tag with profile name using dataclasses.replace
-                from dataclasses import replace as _replace
-
-                synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+                synthesis_result = _dc_replace(synthesis_result, profile_name="synthesis")
 
                 state.review_agent_results.append(synthesis_result)
                 state.review_durations.append(_synth_elapsed)
@@ -1032,7 +955,7 @@ def run_task(
                             if merge_info["merged"]
                             else f" Merge failed: {merge_info['error']}"
                         )
-                    _task_elapsed = time.monotonic() - _task_start
+                    _task_elapsed = time.monotonic() - task_start
                     _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                     return CoordinatorResult(
                         success=True,
@@ -1079,7 +1002,7 @@ def run_task(
                         if merge_info["merged"]
                         else f" Merge failed: {merge_info['error']}"
                     )
-                _task_elapsed = time.monotonic() - _task_start
+                _task_elapsed = time.monotonic() - task_start
                 _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                 return CoordinatorResult(
                     success=True,
@@ -1125,7 +1048,7 @@ def run_task(
                             if merge_info["merged"]
                             else f" Merge failed: {merge_info['error']}"
                         )
-                    _task_elapsed = time.monotonic() - _task_start
+                    _task_elapsed = time.monotonic() - task_start
                     _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                     return CoordinatorResult(
                         success=True,
@@ -1176,6 +1099,124 @@ def run_task(
         _log_verbose(f"Sending {len(parsed_review.findings)} findings back to dev agent")
 
 
+def run_task(
+    config: ForgeConfig,
+    task: TaskSpec,
+    *,
+    interactive: bool = False,
+    auto_merge: bool = False,
+) -> CoordinatorResult:
+    """Execute the full coordinator state machine for a single task.
+
+    This is the main entry point. It creates a workspace, runs the dev agent,
+    validates output, runs the review pool (+synthesis if >1 reviewer), and
+    loops until done or exhausted.
+
+    Every transition is deterministic. No LLM makes process decisions.
+
+    Args:
+        config: The forge configuration.
+        task: The task specification.
+        interactive: When True, pause at HUMAN_REVIEW for operator input before
+            finalizing DONE or ESCALATE. When False (default), behave as before.
+        auto_merge: When True, merge the feature branch into base_branch after
+            a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
+    """
+    state = CoordinatorState()
+    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _task_start = time.monotonic()
+    spec_content = load_spec(task.spec_path)
+
+    # ── WORKSPACE ─────────────────────────────────────────────────
+    state.phase = Phase.WORKSPACE
+    _log_phase(state.phase, task.slug)
+
+    workspace_path, branch_name, err = _create_workspace(config, task)
+    if err:
+        state.phase = Phase.ESCALATE
+        state.error = err
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=f"Workspace creation failed: {err}",
+        )
+
+    assert workspace_path is not None
+    assert branch_name is not None
+    state.workspace_path = workspace_path
+    state.branch_name = branch_name
+
+    # ── PREFLIGHT ──────────────────────────────────────────────────
+    state.phase = Phase.PREFLIGHT
+    preflight_profile = config.review_pool[0]
+    _log_phase(state.phase, preflight_profile.model)
+
+    file_contents = _load_file_scope_contents(task, config.project_root)
+    preflight_prompt = build_preflight_prompt(
+        task, spec_content=spec_content, file_contents=file_contents
+    )
+
+    # Use the first review profile for preflight (read-only, lightweight)
+    _preflight_start = time.monotonic()
+    preflight_result = run_agent(
+        prompt=preflight_prompt,
+        profile=preflight_profile,
+        working_dir=workspace_path,
+    )
+    state.preflight_result = preflight_result
+    log_agent_result(preflight_result, "PREFLIGHT")
+
+    if preflight_result.success:
+        verdict, reason = _parse_preflight_verdict(preflight_result.output)
+    else:
+        # Agent failed — don't block on a broken preflight, proceed
+        verdict, reason = (
+            "PROCEED",
+            f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
+        )
+
+    state.preflight_verdict = verdict
+    state.preflight_reason = reason
+    _log(f"  ✓ PREFLIGHT   {verdict}")
+    _log_verbose(f"  Reason: {reason}")
+
+    if verdict == "ALREADY_DONE":
+        state.phase = Phase.DONE
+        elapsed = time.monotonic() - _task_start
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {elapsed:.0f}s")
+        return CoordinatorResult(
+            success=True,
+            phase=state.phase,
+            state=state,
+            message=f"Preflight: spec already implemented. {reason}",
+        )
+
+    if verdict == "BLOCKED":
+        state.phase = Phase.ESCALATE
+        state.error = f"Preflight: spec is blocked. {reason}"
+        _log(f"✗ ESCALATE   {state.error}")
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    # verdict == "PROCEED" — continue to DEV
+
+    # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
+    return _coordinator_loop(
+        state,
+        config,
+        task,
+        spec_content,
+        _task_start,
+        interactive=interactive,
+        auto_merge=auto_merge,
+    )
+
+
 # ── Review-from-existing-worktree mode (full iteration loop) ─────────
 
 
@@ -1222,521 +1263,30 @@ def run_from_review(
         )
 
     state.workspace_path = workspace_path
-    branch_name = config.workspace.branch_pattern.format(slug=task.slug)
+
+    # Resolve branch name from actual worktree HEAD (P1 fix: don't compute from pattern)
+    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
+        branch_name = _branch_out.strip()
+    else:
+        branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
+
     spec_content = load_spec(task.spec_path)
 
-    # First iteration starts at REVIEW; subsequent iterations start at DEV.
-    _skip_dev = True
-
-    while True:
-        if not _skip_dev:
-            # ── DEV ───────────────────────────────────────────────
-            state.phase = Phase.DEV
-            state.dev_iteration += 1
-            _log_phase(
-                state.phase,
-                f"{config.dev_profile.model}  iter={state.dev_iteration}",
-            )
-
-            prompt = build_dev_prompt(
-                task,
-                workspace_path=workspace_path,
-                branch_name=branch_name,
-                spec_content=spec_content,
-                gate_command=config.validation.gate_command,
-                review_findings=state.last_review_findings,
-                human_feedback=state.human_feedback,
-                iteration=state.dev_iteration,
-            )
-
-            _dev_start = time.monotonic()
-            dev_result = run_agent(
-                prompt=prompt,
-                profile=config.dev_profile,
-                working_dir=workspace_path,
-                session_id=state.dev_session_id,
-            )
-            _dev_elapsed = time.monotonic() - _dev_start
-            state.dev_results.append(dev_result)
-            state.dev_durations.append(_dev_elapsed)
-            state.dev_session_id = dev_result.session_id
-            log_agent_result(dev_result, "DEV")
-            _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
-
-            if state.total_dev_cost > config.dev_profile.budget_usd:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
-                    f"(limit ${config.dev_profile.budget_usd:.4f})"
-                )
-                _log(f"✗ ESCALATE   {state.error}")
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-
-            # ── VALIDATE ──────────────────────────────────────────
-            state.phase = Phase.VALIDATE
-            _log_phase(state.phase, "running gate...")
-
-            gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
-
-            if gate_err:
-                _log_verbose(f"Gate error: {gate_err}")
-                if state.dev_iteration >= config.retry.max_dev_iterations:
-                    state.phase = Phase.ESCALATE
-                    state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
-                    _log(f"✗ ESCALATE   {state.error}")
-                    return CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    )
-                state.human_feedback = f"Gate validation failed: {gate_err}"
-                _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
-                continue
-
-            assert gate_decision is not None
-            state.gate_decisions.append(gate_decision)
-            _log_verbose(f"Gate decision: {gate_decision}")
-
-            if gate_decision == "PASS":
-                _log("  ✓ VALIDATE   PASS")
-                dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
-                if dirty_ok and dirty_out.strip():
-                    handoff_file = config.validation.handoff_file
-                    dirty_lines = [
-                        line
-                        for line in dirty_out.strip().splitlines()
-                        if not (handoff_file and line.strip().endswith(handoff_file))
-                    ]
-                    if dirty_lines:
-                        dirty_files = ", ".join(
-                            line.strip().split(maxsplit=1)[-1] for line in dirty_lines
-                        )
-                        _log(f"Dirty worktree detected: {dirty_files}")
-                        if state.dev_iteration >= config.retry.max_dev_iterations:
-                            state.phase = Phase.ESCALATE
-                            state.error = f"Dev agent left uncommitted changes: {dirty_files}"
-                            _log(f"✗ ESCALATE   {state.error}")
-                            return CoordinatorResult(
-                                success=False,
-                                phase=state.phase,
-                                state=state,
-                                message=state.error,
-                            )
-                        state.human_feedback = (
-                            "PROCESS VIOLATION: You left uncommitted changes in the "
-                            f"worktree: {dirty_files}. You MUST commit ALL modified "
-                            "files before running the gate. Stage and commit them now."
-                        )
-                        continue
-            elif gate_decision in ("FAIL", "BLOCKED"):
-                if state.dev_iteration >= config.retry.max_dev_iterations:
-                    state.phase = Phase.ESCALATE
-                    state.error = (
-                        f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
-                    )
-                    _log(f"✗ ESCALATE   {state.error}")
-                    return CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    )
-                handoff_text = _get_handoff_content(config, workspace_path)
-                state.human_feedback = (
-                    f"Gate returned {gate_decision}. "
-                    f"Fix the issues and re-run the gate.\n\n"
-                    f"Current handoff:\n{handoff_text}"
-                )
-                _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
-                continue
-            else:
-                _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
-                state.phase = Phase.ESCALATE
-                state.error = f"Unknown gate decision: {gate_decision!r}"
-                _log(f"✗ ESCALATE   {state.error}")
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-
-        _skip_dev = False  # all subsequent iterations start at DEV
-
-        # ── REVIEW ────────────────────────────────────────────────
-        state.phase = Phase.REVIEW
-        pool_size = len(config.review_pool)
-        max_parse_retries = config.retry.max_review_parse_retries
-        _review_pool_start = time.monotonic()
-        _pool_model_names = "+".join(p.model for p in config.review_pool)
-        _log_phase(state.phase, f"{_pool_model_names}  cycle={state.review_cycle + 1}")
-
-        diff_text = _get_diff(workspace_path, config.workspace.base_branch)
-        handoff_content = _get_handoff_content(config, workspace_path)
-
-        review_prompt = build_review_prompt(
-            task,
-            spec_content=spec_content,
-            diff_text=diff_text,
-            handoff_content=handoff_content,
-        )
-
-        meta = ReviewCycleMetadata(
-            pool_models=[p.name for p in config.review_pool],
-            successful=[],
-            failed=[],
-            synthesized=False,
-            parse_retries=0,
-        )
-        state.review_cycle_metadata.append(meta)
-        _review_cost_before_cycle = sum(r.cost_usd for r in state.review_agent_results)
-
-        parsed_review = None
-        last_parse_error: str | None = None
-
-        for _parse_attempt in range(max_parse_retries + 1):
-            if _parse_attempt > 0:
-                _log_verbose(
-                    f"Parse retry {_parse_attempt}/{max_parse_retries} "
-                    f"for review cycle {state.review_cycle + 1}"
-                )
-
-            _log_verbose(
-                f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}"
-            )
-            _pool_start = time.monotonic()
-            pool_results = run_agent_pool(
-                prompt=review_prompt,
-                profiles=config.review_pool,
-                working_dir=workspace_path,
-            )
-            _pool_elapsed = time.monotonic() - _pool_start
-            _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
-            for r in pool_results:
-                state.review_agent_results.append(r)
-                state.review_durations.append(_per_agent_dur)
-                log_agent_result(r, f"REVIEW/{r.profile_name}")
-
-            for profile in config.review_pool:
-                profile_cost = sum(
-                    r.cost_usd
-                    for r in state.review_agent_results
-                    if r.profile_name == profile.name
-                )
-                if profile_cost > profile.budget_usd:
-                    state.phase = Phase.ESCALATE
-                    state.error = (
-                        f"Review budget exceeded for {profile.name}: "
-                        f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
-                    )
-                    return CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    )
-
-            successful = [r for r in pool_results if r.success]
-            failed_results = [r for r in pool_results if not r.success]
-
-            for f in failed_results:
-                _log_verbose(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
-
-            meta.successful = [r.profile_name for r in successful]
-            meta.failed = [r.profile_name for r in failed_results]
-            meta.failed_detail = {r.profile_name: f"exit={r.exit_code}" for r in failed_results}
-
-            if not successful:
-                state.phase = Phase.ESCALATE
-                failed_desc = ", ".join(
-                    f"{r.profile_name} (exit={r.exit_code})" for r in failed_results
-                )
-                state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-
-            if config.synthesis_profile is None or len(successful) == 1:
-                synthesis_output = successful[0].output
-            else:
-                meta.synthesized = True
-                _log_verbose(
-                    f"Synthesizing {len(successful)} review outputs "
-                    f"(+{len(failed_results)} failed excluded)"
-                )
-                synthesis_prompt = build_synthesis_prompt(
-                    task,
-                    review_outputs=[r.output for r in successful],
-                    review_names=[r.profile_name for r in successful],
-                    spec_content=spec_content,
-                    failed_count=len(failed_results),
-                    total_count=pool_size,
-                )
-                _synth_start = time.monotonic()
-                synthesis_result = run_agent(
-                    prompt=synthesis_prompt,
-                    profile=config.synthesis_profile,
-                    working_dir=workspace_path,
-                )
-                _synth_elapsed = time.monotonic() - _synth_start
-                from dataclasses import replace as _replace
-
-                synthesis_result = _replace(synthesis_result, profile_name="synthesis")
-                state.review_agent_results.append(synthesis_result)
-                state.review_durations.append(_synth_elapsed)
-                log_agent_result(synthesis_result, "SYNTHESIS")
-
-                if config.synthesis_profile is not None:
-                    synth_cost = sum(
-                        r.cost_usd
-                        for r in state.review_agent_results
-                        if r.profile_name == "synthesis"
-                    )
-                    if synth_cost > config.synthesis_profile.budget_usd:
-                        state.phase = Phase.ESCALATE
-                        state.error = (
-                            f"Synthesis budget exceeded: "
-                            f"spent ${synth_cost:.4f} "
-                            f"(limit ${config.synthesis_profile.budget_usd:.4f})"
-                        )
-                        return CoordinatorResult(
-                            success=False,
-                            phase=state.phase,
-                            state=state,
-                            message=state.error,
-                        )
-
-                if not synthesis_result.success:
-                    state.phase = Phase.ESCALATE
-                    state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
-                    return CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    )
-
-                synthesis_output = synthesis_result.output
-
-            _candidate = parse_review_output(synthesis_output)
-
-            if _candidate.parse_errors:
-                last_parse_error = str(_candidate.parse_errors)
-                _log_verbose(
-                    f"Review parse errors (attempt {_parse_attempt + 1}): "
-                    f"{_candidate.parse_errors}"
-                )
-                if _parse_attempt < max_parse_retries:
-                    meta.parse_retries += 1
-                    continue
-                break
-
-            parsed_review = _candidate
-            break
-
-        if parsed_review is None:
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Review pool unreliable: all reviewers failed to produce valid output "
-                f"after {meta.parse_retries} retries. Last error: {last_parse_error}"
-            )
-            _log(f"✗ ESCALATE   {state.error}")
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
-
-        state.review_cycle += 1
-        state.review_results.append(parsed_review)
-
-        _review_elapsed = time.monotonic() - _review_pool_start
-        _p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
-        _p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
-        _review_cost = (
-            sum(r.cost_usd for r in state.review_agent_results) - _review_cost_before_cycle
-        )
-
-        if parsed_review.verdict == "APPROVE":
-            _log(
-                f"  ✓ REVIEW   APPROVE  {_p1_count} P1  {_p2_count} P2"
-                f"  ${_review_cost:.2f}  {_review_elapsed:.0f}s"
-            )
-            if interactive:
-                state.phase = Phase.HUMAN_REVIEW
-                _log_phase(state.phase)
-                decision, feedback = _human_review(
-                    state, parsed_review, workspace_path, branch_name
-                )
-                state.human_review_decision = decision
-                state.human_review_feedback = feedback
-                if decision == "approve":
-                    state.phase = Phase.DONE
-                    merge_info: dict | None = None
-                    merge_suffix = ""
-                    if auto_merge:
-                        merge_info = _merge_branch(
-                            config.project_root,
-                            config.workspace.base_branch,
-                            branch_name,
-                            task.slug,
-                            workspace_path,
-                        )
-                        merge_suffix = (
-                            " Merged."
-                            if merge_info["merged"]
-                            else f" Merge failed: {merge_info['error']}"
-                        )
-                    _task_elapsed = time.monotonic() - _task_start
-                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
-                    return CoordinatorResult(
-                        success=True,
-                        phase=state.phase,
-                        state=state,
-                        message=(
-                            f"Task '{task.name}' completed (from-review). "
-                            f"Human approved after {state.review_cycle} cycle(s), "
-                            f"{state.dev_iteration} dev iteration(s). "
-                            f"Branch: {branch_name}{merge_suffix}"
-                        ),
-                        merge=merge_info,
-                    )
-                if decision == "escalate":
-                    state.phase = Phase.ESCALATE
-                    state.error = "Human chose to escalate after APPROVE."
-                    _log(f"✗ ESCALATE   {state.error}")
-                    return CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    )
-                # decision == "reject" — loop back to dev with human feedback
-                state.human_feedback = feedback
-                state.last_review_findings = None
-                state.dev_iteration = 0
-                _log("Human rejected — looping back to dev with feedback")
-                continue
-            else:
-                state.phase = Phase.DONE
-                merge_info = None
-                merge_suffix = ""
-                if auto_merge:
-                    merge_info = _merge_branch(
-                        config.project_root,
-                        config.workspace.base_branch,
-                        branch_name,
-                        task.slug,
-                        workspace_path,
-                    )
-                    merge_suffix = (
-                        " Merged."
-                        if merge_info["merged"]
-                        else f" Merge failed: {merge_info['error']}"
-                    )
-                _task_elapsed = time.monotonic() - _task_start
-                _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
-                return CoordinatorResult(
-                    success=True,
-                    phase=state.phase,
-                    state=state,
-                    message=(
-                        f"Task '{task.name}' completed (from-review). "
-                        f"Review approved after {state.review_cycle} cycle(s), "
-                        f"{state.dev_iteration} dev iteration(s). "
-                        f"Branch: {branch_name}{merge_suffix}"
-                    ),
-                    merge=merge_info,
-                )
-
-        # REQUEST_CHANGES — loop back to dev
-        _log(
-            f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1"
-            f"  ${_review_cost:.2f}  {_review_elapsed:.0f}s"
-        )
-        if state.review_cycle >= config.retry.max_review_cycles:
-            if interactive:
-                state.phase = Phase.HUMAN_REVIEW
-                _log_phase(state.phase, "cycles exhausted")
-                decision, feedback = _human_review(
-                    state, parsed_review, workspace_path, branch_name
-                )
-                state.human_review_decision = decision
-                state.human_review_feedback = feedback
-                if decision == "approve":
-                    state.phase = Phase.DONE
-                    merge_info = None
-                    merge_suffix = ""
-                    if auto_merge:
-                        merge_info = _merge_branch(
-                            config.project_root,
-                            config.workspace.base_branch,
-                            branch_name,
-                            task.slug,
-                            workspace_path,
-                        )
-                        merge_suffix = (
-                            " Merged."
-                            if merge_info["merged"]
-                            else f" Merge failed: {merge_info['error']}"
-                        )
-                    _task_elapsed = time.monotonic() - _task_start
-                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
-                    return CoordinatorResult(
-                        success=True,
-                        phase=state.phase,
-                        state=state,
-                        message=(
-                            f"Task '{task.name}' completed (from-review). "
-                            f"Human approved after {state.review_cycle} cycle(s). "
-                            f"Branch: {branch_name}{merge_suffix}"
-                        ),
-                        merge=merge_info,
-                    )
-                if decision == "reject":
-                    state.human_feedback = feedback
-                    state.last_review_findings = None
-                    state.dev_iteration = 0
-                    _log("Human rejected — looping back to dev with feedback")
-                    continue
-                state.phase = Phase.ESCALATE
-                state.error = "Human chose to escalate after exhausted cycles."
-                _log(f"✗ ESCALATE   {state.error}")
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-            else:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Review requested changes after {state.review_cycle} cycles. "
-                    f"Max cycles ({config.retry.max_review_cycles}) exhausted."
-                )
-                _log(f"✗ ESCALATE   {state.error}")
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-
-        # Feed findings back to dev agent
-        state.last_review_findings = findings_to_markdown(parsed_review.findings)
-        state.dev_iteration = 0
-        state.human_feedback = None
+    # ── REVIEW→DEV→VALIDATE→REVIEW loop ─────────────────────────
+    # First iteration starts at REVIEW (skip DEV+VALIDATE for existing worktree).
+    # Subsequent iterations run the full DEV→VALIDATE→REVIEW sequence.
+    return _coordinator_loop(
+        state,
+        config,
+        task,
+        spec_content,
+        _task_start,
+        interactive=interactive,
+        auto_merge=auto_merge,
+        skip_dev_first_iter=True,
+    )
 
 
 # ── Review-only mode ─────────────────────────────────────────────────
@@ -1853,9 +1403,7 @@ def run_review_only(
             working_dir=workspace_path,
         )
         _synth_elapsed = time.monotonic() - _synth_start
-        from dataclasses import replace as _replace
-
-        synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+        synthesis_result = _dc_replace(synthesis_result, profile_name="synthesis")
         state.review_agent_results.append(synthesis_result)
         state.review_durations.append(_synth_elapsed)
         log_agent_result(synthesis_result, "SYNTHESIS")
