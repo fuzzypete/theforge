@@ -391,6 +391,9 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
+    if getattr(args, "verbose", False):
+        runner_set_log_level(LogLevel.VERBOSE)
+
     # Validate and cap rounds: must be in the inclusive range 1..3.
     if args.rounds < 1 or args.rounds > 3:
         print(
@@ -744,6 +747,13 @@ def main() -> None:
             "LLM agents are still invoked; only the output spec file is skipped. "
             "An audit record is always written."
         ),
+    )
+    ideate_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
     )
 
     # forge audit

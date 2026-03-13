@@ -374,6 +374,44 @@ def test_single_model_synthesis_produces_valid_spec(tmp_path: Path) -> None:
     assert "Test Feature" in content
 
 
+def test_single_model_preserves_human_decisions_section(tmp_path: Path) -> None:
+    """Single-model output with ## Human Decisions Required is preserved, not stripped."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+
+    spec_with_decisions = (
+        _VALID_SPEC + "\n## Human Decisions Required\n- Which cache backend to use\n"
+    )
+    # Single-model prompts emit a SPEC: block; simulate that wrapping.
+    single_model_output = f"SPEC:\n{spec_with_decisions}"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(single_model_output, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success
+    assert result.human_decision_required is True
+    assert "Which cache backend to use" in result.residual_divergence
+    assert "Human Decisions Required" in result.final_synthesis
+    assert "Which cache backend to use" in result.final_synthesis
+
+
+def test_single_model_no_human_decisions_section_gives_empty_divergence(tmp_path: Path) -> None:
+    """Single-model output without ## Human Decisions Required → residual_divergence = []."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success
+    assert result.human_decision_required is False
+    assert result.residual_divergence == []
+
+
 def test_max_rounds_respected(tmp_path: Path) -> None:
     """max_rounds=1 with divergence → human_decision_required=True, spec still written."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)

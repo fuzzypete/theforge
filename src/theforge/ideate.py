@@ -53,7 +53,14 @@ class IdeationResult:
 
 
 def _extract_pytest_target(config: "ForgeConfig | None") -> str:
-    """Derive pytest target path from config gate_command, defaulting to 'tests/'."""
+    """Derive pytest target path from config gate_command, defaulting to 'tests/'.
+
+    This is a best-effort heuristic. Gate commands like 'make test' or 'make gate'
+    silently fall back to 'tests/'. The '-m' token can also match ambiguously
+    (e.g. 'python -m pytest tests/'). The spec hardcodes 'pytest_target: tests/'
+    but this heuristic reflects the actual project configuration when it can be
+    inferred from the gate command.
+    """
     if config is None:
         return "tests/"
     gate_cmd = config.validation.gate_command
@@ -448,7 +455,19 @@ def run_ideation(
                 )
             )
             final_synthesis = spec_text
-            residual_divergence = []
+            # Parse any Human Decisions Required section the model emitted.
+            # Forcing [] would silently drop legitimate unresolved items.
+            _hdr = "## Human Decisions Required"
+            if _hdr in spec_text:
+                _section_start = spec_text.index(_hdr) + len(_hdr)
+                _section_text = spec_text[_section_start:].strip()
+                residual_divergence = [
+                    line.strip().removeprefix("- ")
+                    for line in _section_text.splitlines()
+                    if line.strip().startswith("-")
+                ]
+            else:
+                residual_divergence = []
             break  # single round always produces the final spec
 
         # ── Phase 1: Independent generation (multi-model) ────────────
@@ -459,17 +478,25 @@ def run_ideation(
         p1_start = time.monotonic()
         p1_results = run_agent_pool(prompt=phase1_prompt, profiles=pool, working_dir=working_dir)
         p1_elapsed = time.monotonic() - p1_start
+        # Accumulate all pool costs before checking failures so partial runs
+        # are fully accounted for in total_cost_usd.
+        for r in p1_results:
+            total_cost += r.cost_usd
+        failed_p1 = next(
+            ((profile, r) for profile, r in zip(pool, p1_results) if not r.success), None
+        )
+        if failed_p1 is not None:
+            profile, r = failed_p1
+            _log(f"  ✗ {profile.name} failed: {r.output[:120]}")
+            return _failed_result(
+                f"Phase 1 agent {profile.name!r} failed: {r.output}",
+                all_rounds,
+                total_cost,
+            )
         for profile, result in zip(pool, p1_results):
-            if not result.success:
-                _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
-                return _failed_result(
-                    f"Phase 1 agent {profile.name!r} failed: {result.output}",
-                    all_rounds,
-                    total_cost + result.cost_usd,
-                )
             phase1_outputs[profile.name] = result.output
-            total_cost += result.cost_usd
-            _log(f"  ↳ {profile.name} done ({p1_elapsed:.0f}s total)")
+            _log(f"  ↳ {profile.name} done")
+        _log(f"  Phase 1 total: {p1_elapsed:.0f}s")
 
         # ── Phase 2: Cross-review ─────────────────────────────────────
         phase2_outputs: dict[str, str] = {}
@@ -479,17 +506,24 @@ def run_ideation(
         p2_start = time.monotonic()
         p2_results = run_agent_pool(prompt=phase2_prompt, profiles=pool, working_dir=working_dir)
         p2_elapsed = time.monotonic() - p2_start
+        # Accumulate all pool costs before checking failures.
+        for r in p2_results:
+            total_cost += r.cost_usd
+        failed_p2 = next(
+            ((profile, r) for profile, r in zip(pool, p2_results) if not r.success), None
+        )
+        if failed_p2 is not None:
+            profile, r = failed_p2
+            _log(f"  ✗ {profile.name} failed: {r.output[:120]}")
+            return _failed_result(
+                f"Phase 2 agent {profile.name!r} failed: {r.output}",
+                all_rounds,
+                total_cost,
+            )
         for profile, result in zip(pool, p2_results):
-            if not result.success:
-                _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
-                return _failed_result(
-                    f"Phase 2 agent {profile.name!r} failed: {result.output}",
-                    all_rounds,
-                    total_cost + result.cost_usd,
-                )
             phase2_outputs[profile.name] = result.output
-            total_cost += result.cost_usd
-            _log(f"  ↳ {profile.name} done ({p2_elapsed:.0f}s total)")
+            _log(f"  ↳ {profile.name} done")
+        _log(f"  Phase 2 total: {p2_elapsed:.0f}s")
 
         # ── Phase 3: Synthesis ────────────────────────────────────────
         _log("  ▸ Synthesis   consolidating...")
