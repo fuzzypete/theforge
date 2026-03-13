@@ -287,6 +287,7 @@ def _write_campaign_audit(
                     "pool": meta.pool_models,
                     "successful": meta.successful,
                     "failed": meta.failed,
+                    "synthesized": meta.synthesized,
                     "parse_retries": meta.parse_retries,
                 }
                 if i < len(res.state.review_results):
