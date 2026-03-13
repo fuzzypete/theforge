@@ -202,6 +202,15 @@ def _notify(title: str, body: str) -> None:
         pass
 
 
+def _escalate_notify(task: "TaskSpec", state: "CoordinatorState", notify: bool) -> None:
+    """Send an escalation notification if notify is enabled."""
+    if notify:
+        _notify(
+            f"TheForge: escalated — {task.slug}",
+            (state.error or "")[:120],
+        )
+
+
 # ── Human review ─────────────────────────────────────────────────────
 
 
@@ -637,11 +646,7 @@ def _coordinator_loop(
                     f"(limit ${config.dev_profile.budget_usd:.4f})"
                 )
                 _log(f"✗ ESCALATE   {state.error}")
-                if notify:
-                    _notify(
-                        f"TheForge: escalated — {task.slug}",
-                        (state.error or "")[:120],
-                    )
+                _escalate_notify(task, state, notify)
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -666,11 +671,7 @@ def _coordinator_loop(
                     state.phase = Phase.ESCALATE
                     state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
                     _log(f"✗ ESCALATE   {state.error}")
-                    if notify:
-                        _notify(
-                            f"TheForge: escalated — {task.slug}",
-                            (state.error or "")[:120],
-                        )
+                    _escalate_notify(task, state, notify)
                     return CoordinatorResult(
                         success=False,
                         phase=state.phase,
@@ -709,11 +710,7 @@ def _coordinator_loop(
                             state.phase = Phase.ESCALATE
                             state.error = f"Dev agent left uncommitted changes: {dirty_files}"
                             _log(f"✗ ESCALATE   {state.error}")
-                            if notify:
-                                _notify(
-                                    f"TheForge: escalated — {task.slug}",
-                                    (state.error or "")[:120],
-                                )
+                            _escalate_notify(task, state, notify)
                             return CoordinatorResult(
                                 success=False,
                                 phase=state.phase,
@@ -733,11 +730,7 @@ def _coordinator_loop(
                         f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
                     )
                     _log(f"✗ ESCALATE   {state.error}")
-                    if notify:
-                        _notify(
-                            f"TheForge: escalated — {task.slug}",
-                            (state.error or "")[:120],
-                        )
+                    _escalate_notify(task, state, notify)
                     return CoordinatorResult(
                         success=False,
                         phase=state.phase,
@@ -759,11 +752,7 @@ def _coordinator_loop(
                 state.phase = Phase.ESCALATE
                 state.error = f"Unknown gate decision: {gate_decision!r}"
                 _log(f"✗ ESCALATE   {state.error}")
-                if notify:
-                    _notify(
-                        f"TheForge: escalated — {task.slug}",
-                        (state.error or "")[:120],
-                    )
+                _escalate_notify(task, state, notify)
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -843,11 +832,7 @@ def _coordinator_loop(
                         f"Review budget exceeded for {profile.name}: "
                         f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
                     )
-                    if notify:
-                        _notify(
-                            f"TheForge: escalated — {task.slug}",
-                            (state.error or "")[:120],
-                        )
+                    _escalate_notify(task, state, notify)
                     return CoordinatorResult(
                         success=False,
                         phase=state.phase,
@@ -871,11 +856,7 @@ def _coordinator_loop(
                     f"{r.profile_name} (exit={r.exit_code})" for r in failed_results
                 )
                 state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
-                if notify:
-                    _notify(
-                        f"TheForge: escalated — {task.slug}",
-                        (state.error or "")[:120],
-                    )
+                _escalate_notify(task, state, notify)
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -935,11 +916,7 @@ def _coordinator_loop(
                             f"spent ${synth_cost:.4f} "
                             f"(limit ${config.synthesis_profile.budget_usd:.4f})"
                         )
-                        if notify:
-                            _notify(
-                                f"TheForge: escalated — {task.slug}",
-                                (state.error or "")[:120],
-                            )
+                        _escalate_notify(task, state, notify)
                         return CoordinatorResult(
                             success=False,
                             phase=state.phase,
@@ -950,11 +927,7 @@ def _coordinator_loop(
                 if not synthesis_result.success:
                     state.phase = Phase.ESCALATE
                     state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
-                    if notify:
-                        _notify(
-                            f"TheForge: escalated — {task.slug}",
-                            (state.error or "")[:120],
-                        )
+                    _escalate_notify(task, state, notify)
                     return CoordinatorResult(
                         success=False,
                         phase=state.phase,
@@ -994,11 +967,7 @@ def _coordinator_loop(
                 f"after {meta.parse_retries} retries. Last error: {last_parse_error}"
             )
             _log(f"✗ ESCALATE   {state.error}")
-            if notify:
-                _notify(
-                    f"TheForge: escalated — {task.slug}",
-                    (state.error or "")[:120],
-                )
+            _escalate_notify(task, state, notify)
             return CoordinatorResult(
                 success=False,
                 phase=state.phase,
@@ -1069,11 +1038,7 @@ def _coordinator_loop(
                     state.phase = Phase.ESCALATE
                     state.error = "Human chose to escalate after APPROVE."
                     _log(f"✗ ESCALATE   {state.error}")
-                    if notify:
-                        _notify(
-                            f"TheForge: escalated — {task.slug}",
-                            (state.error or "")[:120],
-                        )
+                    _escalate_notify(task, state, notify)
                     return CoordinatorResult(
                         success=False,
                         phase=state.phase,
@@ -1173,11 +1138,7 @@ def _coordinator_loop(
                 state.phase = Phase.ESCALATE
                 state.error = "Human chose to escalate after exhausted cycles."
                 _log(f"✗ ESCALATE   {state.error}")
-                if notify:
-                    _notify(
-                        f"TheForge: escalated — {task.slug}",
-                        (state.error or "")[:120],
-                    )
+                _escalate_notify(task, state, notify)
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -1191,11 +1152,7 @@ def _coordinator_loop(
                     f"Max cycles ({config.retry.max_review_cycles}) exhausted."
                 )
                 _log(f"✗ ESCALATE   {state.error}")
-                if notify:
-                    _notify(
-                        f"TheForge: escalated — {task.slug}",
-                        (state.error or "")[:120],
-                    )
+                _escalate_notify(task, state, notify)
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -1247,11 +1204,7 @@ def run_task(
     if err:
         state.phase = Phase.ESCALATE
         state.error = err
-        if notify:
-            _notify(
-                f"TheForge: escalated — {task.slug}",
-                (state.error or "")[:120],
-            )
+        _escalate_notify(task, state, notify)
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -1312,11 +1265,7 @@ def run_task(
         state.phase = Phase.ESCALATE
         state.error = f"Preflight: spec is blocked. {reason}"
         _log(f"✗ ESCALATE   {state.error}")
-        if notify:
-            _notify(
-                f"TheForge: escalated — {task.slug}",
-                (state.error or "")[:120],
-            )
+        _escalate_notify(task, state, notify)
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -1378,11 +1327,7 @@ def run_from_review(
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE
         state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
-        if notify:
-            _notify(
-                f"TheForge: escalated — {task.slug}",
-                (state.error or "")[:120],
-            )
+        _escalate_notify(task, state, notify)
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -1441,11 +1386,7 @@ def run_review_only(
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE
         state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
-        if notify:
-            _notify(
-                f"TheForge: escalated — {task.slug}",
-                (state.error or "")[:120],
-            )
+        _escalate_notify(task, state, notify)
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -1511,11 +1452,7 @@ def run_review_only(
         failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
         state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
         _log(f"✗ ESCALATE   {state.error}")
-        if notify:
-            _notify(
-                f"TheForge: escalated — {task.slug}",
-                (state.error or "")[:120],
-            )
+        _escalate_notify(task, state, notify)
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -1552,11 +1489,7 @@ def run_review_only(
         if not synthesis_result.success:
             state.phase = Phase.ESCALATE
             state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
-            if notify:
-                _notify(
-                    f"TheForge: escalated — {task.slug}",
-                    (state.error or "")[:120],
-                )
+            _escalate_notify(task, state, notify)
             return CoordinatorResult(
                 success=False,
                 phase=state.phase,
@@ -1612,11 +1545,7 @@ def run_review_only(
     )
     _log(f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  ${_ro_cost:.2f}  {_fmt_dur(_ro_elapsed)}")
     _log(f"✗ ESCALATE   {state.error}")
-    if notify:
-        _notify(
-            f"TheForge: escalated — {task.slug}",
-            (state.error or "")[:120],
-        )
+    _escalate_notify(task, state, notify)
     return CoordinatorResult(
         success=False,
         phase=state.phase,
