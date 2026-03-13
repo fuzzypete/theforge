@@ -455,7 +455,7 @@ def _is_stale_worktree(path: Path, base_branch: str, config: "ForgeConfig") -> t
     - 0 commits ahead of base branch (prior run escalated with no work done)
     - Last commit is older than stale_worktree_days days
     """
-    stale_days: int = getattr(config.workspace, "stale_worktree_days", 1)
+    stale_days: int = config.workspace.stale_worktree_days
 
     # Get branch name from the worktree's HEAD
     ok, branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", path)
@@ -511,7 +511,7 @@ def _is_stale_worktree(path: Path, base_branch: str, config: "ForgeConfig") -> t
     )
 
 
-def _remove_worktree(path: Path, branch: str, project_root: Path) -> None:
+def _remove_worktree(path: Path, branch: str, project_root: Path, info_line: str = "") -> None:
     """Remove a stale worktree and its branch. Logs warnings but does not raise.
 
     Both commands are best-effort — failures are logged but do not prevent
@@ -519,17 +519,20 @@ def _remove_worktree(path: Path, branch: str, project_root: Path) -> None:
     if cleanup was incomplete).
     """
     _log(f"⚠ WORKSPACE  stale worktree detected — removing {branch}")
-    _log("  (last run escalated or was interrupted)")
+    if info_line:
+        _log(f"  {info_line}")
 
     ok, out = _run_shell(f"git worktree remove --force {path}", project_root)
     if not ok:
         _log(f"  Warning: git worktree remove failed: {out}")
     else:
-        _log(f"  Removed stale worktree and branch {branch}")
+        _log(f"  Removed stale worktree: {path}")
 
     ok2, out2 = _run_shell(f"git branch -D {branch}", project_root)
     if not ok2:
         _log(f"  Warning: git branch -D failed: {out2}")
+    else:
+        _log(f"  Deleted branch {branch}")
 
 
 def _create_workspace(
@@ -553,7 +556,7 @@ def _create_workspace(
         )
         _log(f"  {info_line}")
         if is_stale:
-            _remove_worktree(workspace_path, branch_name, config.project_root)
+            _remove_worktree(workspace_path, branch_name, config.project_root, info_line)
             # Fall through to recreate the workspace below
         else:
             _log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")

@@ -34,6 +34,7 @@ class WorkspaceConfig:
     path_pattern: str  # path template, {slug} is replaced
     branch_pattern: str  # branch name template, {slug} is replaced
     base_branch: str = "main"  # base branch for diff comparison
+    stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
 
 
 @dataclass(frozen=True)
@@ -179,6 +180,9 @@ def load_config(config_path: Path) -> ForgeConfig:
         path_pattern=ws_data.get("path_pattern", DEFAULT_WORKSPACE.path_pattern),
         branch_pattern=ws_data.get("branch_pattern", DEFAULT_WORKSPACE.branch_pattern),
         base_branch=ws_data.get("base_branch", DEFAULT_WORKSPACE.base_branch),
+        stale_worktree_days=ws_data.get(
+            "stale_worktree_days", DEFAULT_WORKSPACE.stale_worktree_days
+        ),
     )
 
     # Validation

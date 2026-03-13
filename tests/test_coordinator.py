@@ -3540,23 +3540,8 @@ def test_fmt_dur_hours():
 
 
 def _make_stale_config(tmp_path: Path, stale_worktree_days: int = 1) -> ForgeConfig:
-    """Create a test ForgeConfig with a WorkspaceConfig that has stale_worktree_days.
-
-    Uses a SimpleNamespace for WorkspaceConfig so we can set stale_worktree_days
-    without modifying the frozen WorkspaceConfig dataclass (which lives in config.py,
-    outside this spec's file_scope).
-    """
-    import types
-
-    ws = types.SimpleNamespace(
-        create_command="mkdir -p {slug}",
-        path_pattern="{slug}",
-        branch_pattern="feat/{slug}",
-        base_branch="main",
-        stale_worktree_days=stale_worktree_days,
-    )
-    # Build a real ForgeConfig but swap out workspace with our namespace
-    cfg = ForgeConfig(
+    """Create a test ForgeConfig with a WorkspaceConfig that has stale_worktree_days."""
+    return ForgeConfig(
         project="test",
         project_root=tmp_path,
         workspace=WorkspaceConfig(
@@ -3564,6 +3549,7 @@ def _make_stale_config(tmp_path: Path, stale_worktree_days: int = 1) -> ForgeCon
             path_pattern="{slug}",
             branch_pattern="feat/{slug}",
             base_branch="main",
+            stale_worktree_days=stale_worktree_days,
         ),
         validation=DEFAULT_VALIDATION,
         dev_profile=DEFAULT_DEV_PROFILE,
@@ -3572,9 +3558,6 @@ def _make_stale_config(tmp_path: Path, stale_worktree_days: int = 1) -> ForgeCon
         synthesis_profile=None,
         retry=RetryPolicy(),
     )
-    # Patch workspace with our namespace that includes stale_worktree_days
-    object.__setattr__(cfg, "workspace", ws)
-    return cfg
 
 
 class TestStaleWorktree:
@@ -3831,3 +3814,31 @@ class TestStaleWorktree:
         calls = [c[0][0] for c in mock_shell.call_args_list]
         assert not any("worktree remove" in c for c in calls)
         assert not any("branch -D" in c for c in calls)
+
+    def test_stale_worktree_days_parsed_from_forge_yaml(self, tmp_path):
+        """stale_worktree_days in forge.yaml is parsed into WorkspaceConfig."""
+        from theforge.config import load_config
+
+        config_file = tmp_path / "forge.yaml"
+        config_file.write_text(
+            """\
+project: myproject
+workspace:
+  create_command: "git worktree add {slug}"
+  path_pattern: ".forge/worktrees/{slug}"
+  branch_pattern: "feat/{slug}"
+  stale_worktree_days: 3
+""",
+            encoding="utf-8",
+        )
+        cfg = load_config(config_file)
+        assert cfg.workspace.stale_worktree_days == 3
+
+    def test_stale_worktree_days_defaults_to_1(self, tmp_path):
+        """stale_worktree_days defaults to 1 when not set in forge.yaml."""
+        from theforge.config import load_config
+
+        config_file = tmp_path / "forge.yaml"
+        config_file.write_text("project: myproject\n", encoding="utf-8")
+        cfg = load_config(config_file)
+        assert cfg.workspace.stale_worktree_days == 1
