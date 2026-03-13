@@ -411,6 +411,10 @@ def _run_codex(
         "--full-auto",
         "-m",
         profile.model,
+    ]
+    if profile.reasoning_effort:
+        cmd += ["-c", f'model_reasoning_effort="{profile.reasoning_effort}"']
+    cmd += [
         "-C",
         str(working_dir),
         "-o",
