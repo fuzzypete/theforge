@@ -1,18 +1,12 @@
 gate_decision: PASS
 scope_completed:
-  - "P1: Eliminated ~1050 lines of duplicated DEV→VALIDATE→REVIEW logic — run_task()
-    and run_from_review() now both delegate to the shared _coordinator_loop() helper.
-    The _coordinator_loop() function already existed from iter-1 but was never
-    wired up; both callers now use it."
-  - "P1: run_from_review() resolves branch name from actual worktree HEAD via
-    'git rev-parse --abbrev-ref HEAD' with fallback to pattern-based derivation,
-    fixing incorrect branch name used in auto-merge with --worktree flag."
-  - "P2: Removed all inline 'from dataclasses import replace as _replace' imports
-    (were inside loop bodies in both duplicate loops and run_review_only()); the
-    module-level _dc_replace alias is used throughout."
-  - "P2: test_run_from_review_skips_preflight extended to call generate_audit_log()
-    and assert audit['preflight']['verdict'] == 'SKIPPED' and cost_usd == 0.0,
-    satisfying the spec's explicit audit log verification requirement."
+  - "P1: single-model path parses ## Human Decisions Required from model output
+    instead of forcing residual_divergence=[] — unresolved items no longer dropped"
+  - "P2: Phase 1/Phase 2 accumulate all pool costs before failure check"
+  - "P2: replaced per-model duplicate timing log with single pool total time log"
+  - "P2: added rationale comment to _extract_pytest_target documenting fallback cases"
+  - "P2: added --verbose/-v flag to ideate subparser with runner_set_log_level wiring"
+  - "tests: added test_single_model_preserves_human_decisions_section and
+    test_single_model_no_human_decisions_section_gives_empty_divergence"
 deferred_followups: []
-next_recommended_step: "Submit for code review — all P1 and P2 findings addressed,
-  209/209 tests pass, coordinator.py reduced by 444 net lines."
+next_recommended_step: "Submit for review — all 248 tests pass, all P1/P2 findings addressed"

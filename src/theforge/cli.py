@@ -9,7 +9,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import sys
+import time
 from pathlib import Path
 
 import yaml
@@ -24,6 +26,7 @@ from .coordinator import (
     run_task,
 )
 from .coordinator import set_log_level as coordinator_set_log_level
+from .ideate import generate_ideation_audit, run_ideation
 from .runner import LogLevel
 from .runner import set_log_level as runner_set_log_level
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
@@ -366,6 +369,156 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     return 0 if result.specs_failed == 0 else 1
 
 
+def cmd_ideate(args: argparse.Namespace) -> int:
+    """Run multi-LLM deliberation to generate a spec from a brief."""
+    # Load brief from file or inline string
+    brief_arg = args.brief
+    brief_path = Path(brief_arg)
+    brief_is_file = brief_path.suffix in (".md", ".txt") and brief_path.exists()
+    if brief_is_file:
+        brief = brief_path.read_text(encoding="utf-8")
+    else:
+        brief = brief_arg
+
+    # Find config — search from brief file's directory when brief is a file,
+    # mirroring how cmd_run/cmd_campaign search relative to their input files.
+    config_path: Path | None = None
+    if args.config:
+        config_path = Path(args.config).resolve()
+    elif brief_is_file:
+        config_path = _find_config(brief_path.parent)
+    else:
+        config_path = _find_config()
+
+    if config_path is None or not config_path.exists():
+        print(
+            "forge.yaml not found. Run 'forge init' to create one, "
+            "or pass --config path/to/forge.yaml",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        config = load_config(config_path)
+    except ValueError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 1
+
+    if getattr(args, "verbose", False):
+        runner_set_log_level(LogLevel.VERBOSE)
+
+    # Validate and cap rounds: must be in the inclusive range 1..3.
+    if args.rounds < 1 or args.rounds > 3:
+        print(
+            f"--rounds must be between 1 and 3 (got {args.rounds})",
+            file=sys.stderr,
+        )
+        return 1
+    max_rounds = args.rounds
+
+    dry_run: bool = args.dry_run
+
+    # Compute output_path and specs_dir once before calling run_ideation.
+    # dry-run → no file written (both None); explicit --output → output_path set;
+    # default → specs_dir set so run_ideation derives the slug-based filename.
+    run_output_path: Path | None = None
+    run_specs_dir: Path | None = None
+    if not dry_run:
+        if args.output:
+            run_output_path = Path(args.output).resolve()
+        else:
+            run_specs_dir = config.project_root / "specs"
+
+    ideation_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    ideation_start_mono = time.monotonic()
+
+    try:
+        result = run_ideation(
+            config, brief, run_output_path, specs_dir=run_specs_dir, max_rounds=max_rounds
+        )
+    except ValueError as exc:
+        print(f"Ideation error: {exc}", file=sys.stderr)
+        return 1
+
+    duration_seconds = time.monotonic() - ideation_start_mono
+    ideation_finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    if dry_run:
+        if not result.success:
+            print(f"Ideation failed: {result.final_synthesis}", file=sys.stderr)
+            return 1
+        print(result.final_synthesis)
+        return 0
+
+    # Write audit record only for real (non-dry-run) runs.
+    audit = generate_ideation_audit(
+        config,
+        brief,
+        result,
+        started_at=ideation_started_at,
+        finished_at=ideation_finished_at,
+        duration_seconds=duration_seconds,
+    )
+    audit_path = config.project_root / "forge_ideation_audit.yaml"
+    with open(audit_path, "w", encoding="utf-8") as f:
+        yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+    print(f"[forge] Audit log: {audit_path}", file=sys.stderr)
+
+    return 0 if result.success else 1
+
+
+def _cmd_audit_ideate(audit: dict) -> int:
+    """Print a human-readable summary of an ideation audit record."""
+    sep = "=" * 60
+    icon = "✓" if audit.get("success") else "✗"
+    brief_preview = (audit.get("brief", "") or "")[:80].replace("\n", " ")
+    spec_path = audit.get("spec_path") or "(none)"
+    print(sep)
+    print(f"{icon} IDEATE  →  {spec_path}")
+    print(sep)
+    print(f"  Brief:   {brief_preview!r}")
+
+    pool = audit.get("model_pool", [])
+    synth = audit.get("synthesis_profile")
+    print(f"  Pool:    {'+'.join(pool) or '?'}  synthesis={synth or '—'}")
+
+    if audit.get("human_decision_required"):
+        print("  ⚠ Human decisions required")
+        for item in audit.get("residual_divergence", []):
+            print(f"    - {item}")
+
+    timing = audit.get("timing", {})
+    duration = timing.get("duration_seconds")
+    started = timing.get("started_at")
+    if started or duration is not None:
+        print()
+        print("  Timing")
+        if started:
+            print(f"    Started:  {started}")
+        if duration is not None:
+            mins, secs = divmod(int(duration), 60)
+            print(f"    Duration: {mins}m {secs}s ({duration:.1f}s)")
+
+    cost = audit.get("cost", {})
+    print()
+    print(f"  Cost:  ${cost.get('total_usd', 0):.4f}")
+
+    rounds = audit.get("rounds", [])
+    if rounds:
+        print()
+        print("  Rounds")
+        for r in rounds:
+            rn = r.get("round_number", "?")
+            conv = r.get("converged_count", 0)
+            div = r.get("divergent_count", 0)
+            print(f"    Round {rn}:  converged={conv}  divergent={div}")
+            for item in r.get("divergent_items", []):
+                print(f"      ✗ {item}")
+
+    print(sep)
+    return 0
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     """Print a human-readable summary of an audit file."""
     audit_path = Path(args.file).resolve()
@@ -375,6 +528,10 @@ def cmd_audit(args: argparse.Namespace) -> int:
 
     with open(audit_path, encoding="utf-8") as f:
         audit = yaml.safe_load(f) or {}
+
+    # Dispatch to ideation display for ideation audit records.
+    if audit.get("type") == "ideate":
+        return _cmd_audit_ideate(audit)
 
     task = audit.get("task", {})
     outcome = audit.get("outcome", {})
@@ -587,6 +744,49 @@ def main() -> None:
         help="Suppress OS notifications",
     )
 
+    # forge ideate
+    ideate_parser = subparsers.add_parser(
+        "ideate", help="Run multi-LLM deliberation to generate a spec from a brief"
+    )
+    ideate_parser.add_argument(
+        "brief",
+        help=(
+            "Brief text or path to a .md/.txt file containing the brief. "
+            "If the argument ends in .md or .txt and the file exists, it is read as a file; "
+            "otherwise it is treated as inline text."
+        ),
+    )
+    ideate_parser.add_argument(
+        "--output",
+        help="Output path for generated spec (default: specs/<slug>.md)",
+    )
+    ideate_parser.add_argument(
+        "--rounds",
+        type=int,
+        default=2,
+        help="Max deliberation rounds before surfacing residual divergence (default: 2, max: 3)",
+    )
+    ideate_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+    ideate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Run deliberation and print synthesized spec to stdout without writing a spec file. "
+            "LLM agents are still invoked; only the output spec file is skipped. "
+            "An audit record is always written."
+        ),
+    )
+    ideate_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
+    )
+
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
     audit_parser.add_argument("file", help="Path to forge_audit.yaml")
@@ -598,6 +798,7 @@ def main() -> None:
         "run": cmd_run,
         "review": cmd_review,
         "campaign": cmd_campaign,
+        "ideate": cmd_ideate,
         "audit": cmd_audit,
     }
 

@@ -1,6 +1,23 @@
 """Tests for CLI: spec frontmatter parsing and config discovery."""
 
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 from theforge.cli import _build_task, _find_config, _parse_spec_frontmatter
+from theforge.config import (
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_VALIDATION,
+    ForgeConfig,
+    ModelProfile,
+    RetryPolicy,
+    WorkspaceConfig,
+)
+
+# ── Helpers (kept for TestBuildTask / TestFindConfig) ─────────────────
+
 
 
 class TestParseFrontmatter:
@@ -95,3 +112,5 @@ class TestFindConfig:
         # Either None or found somewhere above — both are valid behaviors
         # The important thing is it doesn't crash
         assert result is None or result.name == "forge.yaml"
+
+
