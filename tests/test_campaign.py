@@ -14,6 +14,7 @@ from theforge.campaign import (
 )
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
+    DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
     ForgeConfig,
@@ -36,6 +37,7 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         ),
         validation=DEFAULT_VALIDATION,
         dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),

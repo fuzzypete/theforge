@@ -71,6 +71,7 @@ class ForgeConfig:
     workspace: WorkspaceConfig
     validation: ValidationConfig
     dev_profile: ModelProfile
+    preflight_profile: ModelProfile  # read-only gap analysis; defaults to sonnet
     review_pool: list[ModelProfile]  # all reviewers; at least 1
     synthesis_profile: ModelProfile | None  # None when pool size <= 1
     retry: RetryPolicy
@@ -97,6 +98,15 @@ DEFAULT_REVIEW_PROFILE = ModelProfile(
     name="review",
     cli="claude",
     model="opus",
+    budget_usd=1.00,
+    timeout_seconds=300,
+    allowed_tools=("Read", "Bash", "Glob", "Grep"),
+)
+
+DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
+    name="preflight",
+    cli="claude",
+    model="sonnet",
     budget_usd=1.00,
     timeout_seconds=300,
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
@@ -187,6 +197,11 @@ def load_config(config_path: Path) -> ForgeConfig:
         if "dev" in profiles
         else DEFAULT_DEV_PROFILE
     )
+    preflight_profile = (
+        _parse_profile("preflight", profiles["preflight"], role="review")
+        if "preflight" in profiles
+        else DEFAULT_PREFLIGHT_PROFILE
+    )
 
     # review_pool precedence: review_pool > review > default
     if "review_pool" in profiles:
@@ -254,6 +269,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         workspace=workspace,
         validation=validation,
         dev_profile=dev_profile,
+        preflight_profile=preflight_profile,
         review_pool=review_pool,
         synthesis_profile=synthesis_profile,
         retry=retry,

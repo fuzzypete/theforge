@@ -24,6 +24,16 @@ profiles:
       - Bash
       - Glob
       - Grep
+  preflight:
+    cli: claude
+    model: sonnet
+    budget_usd: 1.00
+    timeout_seconds: 300
+    allowed_tools:
+      - Read
+      - Bash
+      - Glob
+      - Grep
   review_pool:
     - name: opus
       cli: claude

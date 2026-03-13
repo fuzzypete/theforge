@@ -571,7 +571,7 @@ def run_task(
 
     # ── PREFLIGHT ──────────────────────────────────────────────────
     state.phase = Phase.PREFLIGHT
-    preflight_profile = config.review_pool[0]
+    preflight_profile = config.preflight_profile
     _log_phase(state.phase, preflight_profile.model)
 
     file_contents = _load_file_scope_contents(task, config.project_root)
@@ -579,7 +579,6 @@ def run_task(
         task, spec_content=spec_content, file_contents=file_contents
     )
 
-    # Use the first review profile for preflight (read-only, lightweight)
     _preflight_start = time.monotonic()
     preflight_result = run_agent(
         prompt=preflight_prompt,
@@ -994,7 +993,9 @@ def run_task(
         _review_elapsed = time.monotonic() - _review_pool_start
         _p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
         _p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
-        _review_cost = sum(r.cost_usd for r in state.review_agent_results) - _review_cost_before_cycle
+        _review_cost = (
+            sum(r.cost_usd for r in state.review_agent_results) - _review_cost_before_cycle
+        )
 
         _log_verbose(f"Review verdict: {parsed_review.verdict}")
         _log_verbose(f"  Summary: {parsed_review.summary}")
