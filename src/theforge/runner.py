@@ -508,9 +508,10 @@ def _run_gemini(
     working_dir: Path,
     session_id: str | None = None,
 ) -> AgentResult:
-    """Invoke `gemini -p <prompt> --yolo -m <model> -o json` as a subprocess."""
+    """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess."""
     cmd: list[str] = [
-        "gemini",
+        "npx",
+        "@google/gemini-cli",
         "-p",
         prompt,
         "--yolo",
@@ -565,7 +566,7 @@ def _run_gemini(
 
     return AgentResult(
         success=proc.returncode == 0,
-        output=result_json.get("result", proc.stdout),
+        output=result_json.get("response", result_json.get("result", proc.stdout)),
         session_id=None,
         cost_usd=0.0,
         exit_code=proc.returncode,

@@ -37,8 +37,17 @@ profiles:
         - Grep
     - name: codex
       cli: codex
-      model: o4-mini
-      reasoning_effort: medium
+      model: gpt-5.4
+      budget_usd: 1.00
+      timeout_seconds: 600
+      allowed_tools:
+        - Read
+        - Bash
+        - Glob
+        - Grep
+    - name: gemini
+      cli: gemini
+      model: gemini-2.5-pro
       budget_usd: 1.00
       timeout_seconds: 600
       allowed_tools:
@@ -57,4 +66,4 @@ profiles:
 
 retry:
   max_dev_iterations: 3
-  max_review_cycles: 2
+  max_review_cycles: 3

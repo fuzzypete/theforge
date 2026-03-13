@@ -767,7 +767,8 @@ class TestRunGemini:
             run_agent(prompt="review", profile=gemini_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "gemini"
+        assert cmd[0] == "npx"
+        assert "@google/gemini-cli" in cmd
         assert "-p" in cmd
         assert "--yolo" in cmd
         assert "-m" in cmd
