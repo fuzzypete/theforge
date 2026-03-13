@@ -586,7 +586,7 @@ def _coordinator_loop(
     interactive: bool = False,
     auto_merge: bool = False,
     skip_dev_first_iter: bool = False,
-    notify: bool = True,
+    notify: bool = False,
 ) -> CoordinatorResult:
     """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
@@ -1173,7 +1173,7 @@ def run_task(
     *,
     interactive: bool = False,
     auto_merge: bool = False,
-    notify: bool = True,
+    notify: bool = False,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -1298,7 +1298,7 @@ def run_from_review(
     *,
     interactive: bool = False,
     auto_merge: bool = False,
-    notify: bool = True,
+    notify: bool = False,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1371,7 +1371,7 @@ def run_review_only(
     task: TaskSpec,
     workspace_path: Path,
     *,
-    notify: bool = True,
+    notify: bool = False,
 ) -> CoordinatorResult:
     """Run only the REVIEW phase on an existing worktree.
 
