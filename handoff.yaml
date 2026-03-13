@@ -1,11 +1,10 @@
 gate_decision: PASS
 scope_completed:
-  - "P1 fixed: generate_ideation_audit() added to ideate.py; forge_ideation_audit.yaml written after every run (including dry-run)"
-  - "P1 fixed: cmd_audit() extended with _cmd_audit_ideate() to display IDEATE runs via 'forge audit'"
-  - "P2 fixed: lstrip('- ') replaced with removeprefix('- ') in _parse_synthesis_output"
-  - "P2 fixed: --dry-run help text clarified (LLM agents still invoked, only spec file skipped)"
-  - "P2 fixed: single-model path deviation documented with expanded comment in run_ideation"
-  - "Tests: 4 new audit/lstrip tests added; all 241 tests pass"
-deferred_followups:
-  - "P2 (extractor fragility in _extract_pytest_target): reviewer said 'no change required'"
-next_recommended_step: "Submit for P1/P2 review to verify all findings resolved"
+  - "P1: moved audit generation before dry-run early return in cmd_ideate so
+    forge_ideation_audit.yaml is always written (even on --dry-run)"
+  - "P2: replaced dead synthesis_profile fallback with assert in ideate.py line 498"
+  - "P2: added TestCmdIdeate in tests/test_cli.py with 5 CLI-level integration tests
+    covering dry-run audit behavior, --output flag, brief file input, rounds validation,
+    and default specs_dir invocation"
+deferred_followups: []
+next_recommended_step: "Submit for review — all 246 tests pass, all P1/P2 findings addressed"
