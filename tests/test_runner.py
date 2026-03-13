@@ -9,8 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import theforge.runner as runner_mod
 from theforge.config import ModelProfile
-from theforge.runner import AgentResult, log_agent_result, run_agent, run_agent_pool
+from theforge.runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agent_pool
 
 
 @pytest.fixture
@@ -214,7 +215,7 @@ class TestRunAgentClaude:
     def test_activity_printed(
         self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        """tool_use_summary events must be printed to stderr."""
+        """tool_use_summary events must be printed to stderr in verbose mode."""
         summary_line = (
             json.dumps(
                 {
@@ -227,8 +228,12 @@ class TestRunAgentClaude:
         mock_proc = _make_stream_mock(
             [summary_line, _result_line(result="done", total_cost_usd=0.01)]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
-            run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        runner_mod.set_log_level(LogLevel.VERBOSE)
+        try:
+            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        finally:
+            runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
         assert "↳ Read src/theforge/runner.py (240 lines)" in captured.err
@@ -257,8 +262,12 @@ class TestRunAgentClaude:
         mock_proc = _make_stream_mock(
             [assistant_line, _result_line(result="done", total_cost_usd=0.01)]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
-            run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        runner_mod.set_log_level(LogLevel.VERBOSE)
+        try:
+            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        finally:
+            runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
         assert "↳ Bash: pytest tests/ -q" in captured.err
@@ -838,7 +847,11 @@ class TestLogAgentResult:
             exit_code=0,
             raw={},
         )
-        log_agent_result(result, "dev")
+        runner_mod.set_log_level(LogLevel.VERBOSE)
+        try:
+            log_agent_result(result, "dev")
+        finally:
+            runner_mod.set_log_level(LogLevel.PROGRESS)
         captured = capsys.readouterr()
         assert "OK" in captured.err
         assert "dev" in captured.err
@@ -853,7 +866,11 @@ class TestLogAgentResult:
             exit_code=1,
             raw={},
         )
-        log_agent_result(result, "review")
+        runner_mod.set_log_level(LogLevel.VERBOSE)
+        try:
+            log_agent_result(result, "review")
+        finally:
+            runner_mod.set_log_level(LogLevel.PROGRESS)
         captured = capsys.readouterr()
         assert "FAIL" in captured.err
         assert "review" in captured.err
