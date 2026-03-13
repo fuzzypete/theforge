@@ -1092,6 +1092,181 @@ def run_task(
         _log(f"Sending {len(parsed_review.findings)} findings back to dev agent")
 
 
+# ── Review-only mode ─────────────────────────────────────────────────
+
+
+def run_review_only(
+    config: ForgeConfig,
+    task: TaskSpec,
+    workspace_path: Path,
+) -> CoordinatorResult:
+    """Run only the REVIEW phase on an existing worktree.
+
+    Skips WORKSPACE, PREFLIGHT, DEV, VALIDATE.
+    Returns a CoordinatorResult with phase=DONE (APPROVE) or ESCALATE
+    (REQUEST_CHANGES — no DEV retry in review-only mode).
+    """
+    state = CoordinatorState()
+    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # ── Verify workspace exists ───────────────────────────────────────
+    if not workspace_path.exists():
+        state.phase = Phase.ESCALATE
+        state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    state.workspace_path = workspace_path
+    branch_name = config.workspace.branch_pattern.format(slug=task.slug)
+    state.branch_name = branch_name
+
+    spec_content = load_spec(task.spec_path)
+
+    # ── REVIEW ────────────────────────────────────────────────────────
+    state.phase = Phase.REVIEW
+    state.review_cycle = 1
+    state.dev_iteration = 0
+    pool_size = len(config.review_pool)
+    _log_phase(state.phase, f"review-only pool={pool_size}")
+
+    diff_text = _get_diff(workspace_path, config.workspace.base_branch)
+    handoff_content = _get_handoff_content(config, workspace_path)
+
+    review_prompt = build_review_prompt(
+        task,
+        spec_content=spec_content,
+        diff_text=diff_text,
+        handoff_content=handoff_content,
+    )
+
+    _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+    _pool_start = time.monotonic()
+    pool_results = run_agent_pool(
+        prompt=review_prompt,
+        profiles=config.review_pool,
+        working_dir=workspace_path,
+    )
+    _pool_elapsed = time.monotonic() - _pool_start
+    _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
+    for r in pool_results:
+        state.review_agent_results.append(r)
+        state.review_durations.append(_per_agent_dur)
+        log_agent_result(r, f"REVIEW/{r.profile_name}")
+
+    successful = [r for r in pool_results if r.success]
+    failed_results = [r for r in pool_results if not r.success]
+
+    for f in failed_results:
+        _log(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
+
+    meta = ReviewCycleMetadata(
+        pool_models=[p.name for p in config.review_pool],
+        successful=[r.profile_name for r in successful],
+        failed=[r.profile_name for r in failed_results],
+        synthesized=False,
+    )
+    state.review_cycle_metadata.append(meta)
+
+    if not successful:
+        state.phase = Phase.ESCALATE
+        failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
+        state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    # Synthesis if multi-model pool
+    if config.synthesis_profile is None or len(successful) == 1:
+        synthesis_output = successful[0].output
+    else:
+        meta.synthesized = True
+        _log(f"Synthesizing {len(successful)} review outputs")
+        synthesis_prompt = build_synthesis_prompt(
+            task,
+            review_outputs=[r.output for r in successful],
+            review_names=[r.profile_name for r in successful],
+            spec_content=spec_content,
+            failed_count=len(failed_results),
+            total_count=pool_size,
+        )
+        _synth_start = time.monotonic()
+        synthesis_result = run_agent(
+            prompt=synthesis_prompt,
+            profile=config.synthesis_profile,
+            working_dir=workspace_path,
+        )
+        _synth_elapsed = time.monotonic() - _synth_start
+        from dataclasses import replace as _replace
+
+        synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+        state.review_agent_results.append(synthesis_result)
+        state.review_durations.append(_synth_elapsed)
+        log_agent_result(synthesis_result, "SYNTHESIS")
+
+        if not synthesis_result.success:
+            state.phase = Phase.ESCALATE
+            state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
+        synthesis_output = synthesis_result.output
+
+    parsed_review = parse_review_output(synthesis_output)
+    state.review_results.append(parsed_review)
+
+    if parsed_review.parse_errors:
+        _log(f"Review parse errors: {parsed_review.parse_errors}")
+        canonical_summary = f"PARSE ERROR: {parsed_review.summary}"
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary=canonical_summary,
+            findings=parsed_review.findings,
+            spec_matches=parsed_review.spec_matches,
+            spec_mismatches=parsed_review.spec_mismatches,
+            test_adequate=parsed_review.test_adequate,
+            test_gaps=parsed_review.test_gaps,
+            parse_errors=parsed_review.parse_errors,
+            raw_yaml=parsed_review.raw_yaml,
+        )
+        state.review_results[-1] = parsed_review
+
+    _log(f"Review verdict: {parsed_review.verdict}")
+    _log(f"  Summary: {parsed_review.summary}")
+
+    if parsed_review.verdict == "APPROVE":
+        state.phase = Phase.DONE
+        _log_phase(state.phase, "Review approved")
+        return CoordinatorResult(
+            success=True,
+            phase=state.phase,
+            state=state,
+            message=(f"Task '{task.name}' review-only: APPROVE. Branch: {branch_name}"),
+        )
+
+    # REQUEST_CHANGES — no DEV retry in review-only mode
+    state.phase = Phase.ESCALATE
+    p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    state.error = (
+        f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
+    )
+    return CoordinatorResult(
+        success=False,
+        phase=state.phase,
+        state=state,
+        message=state.error,
+    )
+
+
 # ── Audit ────────────────────────────────────────────────────────────
 
 

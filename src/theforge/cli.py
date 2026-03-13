@@ -16,7 +16,7 @@ import yaml
 
 from .campaign import run_campaign
 from .config import ForgeConfig, generate_default_config, load_config
-from .coordinator import CoordinatorResult, generate_audit_log, run_task
+from .coordinator import CoordinatorResult, generate_audit_log, run_review_only, run_task
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 
@@ -227,6 +227,66 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.success else 1
 
 
+def cmd_review(args: argparse.Namespace) -> int:
+    """Run only the review pool on an existing worktree."""
+    spec_path = Path(args.spec).resolve()
+    if not spec_path.exists():
+        print(f"Spec file not found: {spec_path}", file=sys.stderr)
+        return 1
+
+    # Find config
+    config_path: Path | None = None
+    if args.config:
+        config_path = Path(args.config).resolve()
+    else:
+        config_path = _find_config(spec_path.parent)
+
+    if config_path is None or not config_path.exists():
+        print(
+            "forge.yaml not found. Run 'forge init' to create one, "
+            "or pass --config path/to/forge.yaml",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = load_config(config_path)
+    task = _build_task(spec_path, slug=args.slug)
+
+    # Resolve workspace path
+    if args.worktree:
+        workspace_path = Path(args.worktree).resolve()
+    else:
+        workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+
+    print("TheForge v0.1.0 — review-only mode", file=sys.stderr)
+    print(f"  Project:    {config.project}", file=sys.stderr)
+    print(f"  Task:       {task.name}", file=sys.stderr)
+    print(f"  Slug:       {task.slug}", file=sys.stderr)
+    print(f"  Workspace:  {workspace_path}", file=sys.stderr)
+    if len(config.review_pool) == 1:
+        print(f"  Rev model:  {config.review_pool[0].model}", file=sys.stderr)
+    else:
+        pool_info = ", ".join(f"{p.name}({p.model})" for p in config.review_pool)
+        print(f"  Rev pool:   {pool_info}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    result = run_review_only(config, task, workspace_path)
+
+    # Write audit log
+    audit_path = _write_audit(result, config, task)
+
+    # Summary
+    print(file=sys.stderr)
+    print(f"{'=' * 60}", file=sys.stderr)
+    icon = "✓" if result.success else "✗"
+    print(f"  {icon} {result.message}", file=sys.stderr)
+    print(f"  Audit log: {audit_path}", file=sys.stderr)
+    print(f"  Total cost: ${result.state.total_cost:.3f}", file=sys.stderr)
+    print(f"{'=' * 60}", file=sys.stderr)
+
+    return 0 if result.success else 1
+
+
 def cmd_campaign(args: argparse.Namespace) -> int:
     """Run multiple specs sequentially via a campaign manifest."""
     manifest_path = Path(args.manifest).resolve()
@@ -420,6 +480,18 @@ def main() -> None:
         help="Merge feature branch into base branch after review APPROVE",
     )
 
+    # forge review
+    review_parser = subparsers.add_parser(
+        "review", help="Run only the review pool on an existing worktree"
+    )
+    review_parser.add_argument("spec", help="Path to the spec file")
+    review_parser.add_argument("--slug", help="Workspace slug (default: spec filename stem)")
+    review_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    review_parser.add_argument(
+        "--worktree",
+        help="Explicit worktree path (default: derived from slug)",
+    )
+
     # forge campaign
     campaign_parser = subparsers.add_parser(
         "campaign", help="Run multiple specs sequentially from a campaign manifest"
@@ -448,6 +520,7 @@ def main() -> None:
     commands = {
         "init": cmd_init,
         "run": cmd_run,
+        "review": cmd_review,
         "campaign": cmd_campaign,
         "audit": cmd_audit,
     }
