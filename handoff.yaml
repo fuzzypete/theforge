@@ -1,17 +1,13 @@
 gate_decision: PASS
 
 scope_completed:
-  - "P1: --rounds validation in CLI (range 1..3) + max_rounds defensive clamp in run_ideation"
-  - "P1: docs/vision.md Phase 11 updated to note forge ideate as DECOMPOSE implementation path"
-  - "P2: run_ideation docstring fixed (single-model is Phase 1 + synthesis, not Phase 1 only)"
-  - "P2: specs_dir parameter added to run_ideation; default-output write moved into run_ideation so logged path matches written file"
-  - "P2: misleading CLI comment corrected (was 'dry_run=True first to get slug')"
-  - "P2: _build_synthesis_prompt now accepts ForgeConfig and derives pytest_target hint from gate_command"
-  - "P2: new tests for max_rounds=0 clamping and specs_dir slug-based write (235 tests total, all pass)"
-  - "P2: handoff.yaml updated with scope_completed and deferred_followups"
+  - "P1: ## Human Decisions Required section unconditionally normalized after final round — strips synthesis-emitted content and rewrites from authoritative residual_divergence list"
+  - "P2: shlex import moved to module level"
+  - "P2: sequential run_agent() loops documented with comment explaining why run_agent_pool() was not used (per-agent elapsed time logging)"
+  - "P2: config discovery for 'forge ideate <brief-file>' now searches from brief_path.parent, matching cmd_run/cmd_campaign behavior"
+  - "New tests: test_human_decisions_section_overrides_synthesis_version, test_no_divergence_strips_human_decisions_section (237 total, all pass)"
 
 deferred_followups:
-  - "file_scope in synthesis template still hardcoded as [] — ForgeConfig has no default file_scope field; accurate config injection requires a new forge.yaml field"
-  - "pytest_target derivation from gate_command is best-effort; accurate only when gate_command directly invokes pytest with an explicit target path (e.g. 'make gate' yields no extraction)"
+  - "None — all P1 and P2 findings from this iteration addressed"
 
-next_recommended_step: "Human review of the synthesized spec output before any forge run is invoked"
+next_recommended_step: "Human review of synthesized spec before any forge run is invoked (mandatory gate per the ideation design)"
