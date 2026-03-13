@@ -20,7 +20,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .runner import AgentResult, run_agent, run_agent_pool
+from .runner import run_agent
 
 # ── Data structures ──────────────────────────────────────────────────
 
@@ -321,20 +321,16 @@ def run_ideation(
         _log(f"▸ IDEATE   {pool_names}  round={round_num}{divergence_suffix}")
 
         # ── Phase 1: Independent generation ──────────────────────────
+        # Run each agent individually to record accurate per-agent elapsed times.
         _log("  ▸ Phase 1   generating independently...")
-        phase1_start = time.monotonic()
         phase1_prompt = _build_phase1_prompt(current_brief)
-
-        phase1_results: list[AgentResult] = run_agent_pool(
-            prompt=phase1_prompt,
-            profiles=pool,
-            working_dir=working_dir,
-        )
-
         phase1_outputs: dict[str, str] = {}
-        for profile, result in zip(pool, phase1_results):
-            elapsed = time.monotonic() - phase1_start
-            _log(f"  ↳ {profile.name} done ({elapsed:.0f}s)")
+
+        for profile in pool:
+            agent_start = time.monotonic()
+            result = run_agent(prompt=phase1_prompt, profile=profile, working_dir=working_dir)
+            agent_elapsed = time.monotonic() - agent_start
+            _log(f"  ↳ {profile.name} done ({agent_elapsed:.0f}s)")
             if not result.success:
                 _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
                 return _failed_result(
@@ -345,59 +341,42 @@ def run_ideation(
             phase1_outputs[profile.name] = result.output
             total_cost += result.cost_usd
 
-        # ── Single-model fast path: no cross-review or synthesis ─────
-        if len(pool) == 1:
-            # Phase 1 output IS the spec for single-model pools
-            spec_text = list(phase1_outputs.values())[0]
-            round_result = IdeationRound(
-                round_number=round_num,
-                phase1_outputs=phase1_outputs,
-                phase2_outputs={},
-                converged_items=[],
-                divergent_items=[],
-                synthesis_output=spec_text,
-            )
-            all_rounds.append(round_result)
-            final_synthesis = spec_text
-            residual_divergence = []
-            break
-
-        # ── Phase 2: Cross-review ────────────────────────────────────
+        # ── Phase 2: Cross-review (skipped for single-model pool) ────
+        # Single-model pool: skip cross-review but still run synthesis so
+        # Phase 1 ideas are converted into a valid spec with frontmatter.
         phase2_outputs: dict[str, str] = {}
 
-        _log("  ▸ Phase 2   cross-reviewing...")
-        phase2_start = time.monotonic()
-        phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
+        if len(pool) > 1:
+            _log("  ▸ Phase 2   cross-reviewing...")
+            phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
 
-        phase2_results: list[AgentResult] = run_agent_pool(
-            prompt=phase2_prompt,
-            profiles=pool,
-            working_dir=working_dir,
-        )
-
-        for profile, result in zip(pool, phase2_results):
-            elapsed = time.monotonic() - phase2_start
-            _log(f"  ↳ {profile.name} done ({elapsed:.0f}s)")
-            if not result.success:
-                _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
-                return _failed_result(
-                    f"Phase 2 agent {profile.name!r} failed: {result.output}",
-                    all_rounds,
-                    total_cost + result.cost_usd,
-                )
-            phase2_outputs[profile.name] = result.output
-            total_cost += result.cost_usd
+            for profile in pool:
+                agent_start = time.monotonic()
+                result = run_agent(prompt=phase2_prompt, profile=profile, working_dir=working_dir)
+                agent_elapsed = time.monotonic() - agent_start
+                _log(f"  ↳ {profile.name} done ({agent_elapsed:.0f}s)")
+                if not result.success:
+                    _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
+                    return _failed_result(
+                        f"Phase 2 agent {profile.name!r} failed: {result.output}",
+                        all_rounds,
+                        total_cost + result.cost_usd,
+                    )
+                phase2_outputs[profile.name] = result.output
+                total_cost += result.cost_usd
 
         # ── Phase 3: Synthesis ────────────────────────────────────────
+        # For single-model pool: use the lone model as the synthesis agent.
+        # For multi-model pool: use the dedicated synthesis profile.
         _log("  ▸ Synthesis   consolidating...")
         synth_start = time.monotonic()
 
-        assert synthesis_profile is not None  # guaranteed by check at top for len > 1
+        synth_profile = synthesis_profile if synthesis_profile is not None else pool[0]
         synth_prompt = _build_synthesis_prompt(current_brief, phase1_outputs, phase2_outputs)
 
         synth_result = run_agent(
             prompt=synth_prompt,
-            profile=synthesis_profile,
+            profile=synth_profile,
             working_dir=working_dir,
         )
         synth_elapsed = time.monotonic() - synth_start

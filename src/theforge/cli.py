@@ -24,7 +24,7 @@ from .coordinator import (
     run_task,
 )
 from .coordinator import set_log_level as coordinator_set_log_level
-from .ideate import run_ideation
+from .ideate import _extract_slug_from_spec, run_ideation
 from .runner import LogLevel
 from .runner import set_log_level as runner_set_log_level
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
@@ -412,8 +412,6 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             return 1
 
         if result.success:
-            from .ideate import _extract_slug_from_spec
-
             slug = _extract_slug_from_spec(result.final_synthesis) or "ideated-spec"
             output_path = config.project_root / "specs" / f"{slug}.md"
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,6 +419,9 @@ def cmd_ideate(args: argparse.Namespace) -> int:
             result.spec_path = output_path
 
     if dry_run:
+        if not result.success:
+            print(f"Ideation failed: {result.final_synthesis}", file=sys.stderr)
+            return 1
         print(result.final_synthesis)
         return 0
 
@@ -636,7 +637,11 @@ def main() -> None:
     )
     ideate_parser.add_argument(
         "brief",
-        help="Brief text or path to a .md/.txt file containing the brief",
+        help=(
+            "Brief text or path to a .md/.txt file containing the brief. "
+            "If the argument ends in .md or .txt and the file exists, it is read as a file; "
+            "otherwise it is treated as inline text."
+        ),
     )
     ideate_parser.add_argument(
         "--output",

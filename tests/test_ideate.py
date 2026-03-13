@@ -205,74 +205,85 @@ def test_validate_frontmatter_invalid() -> None:
 
 # ── run_ideation tests ────────────────────────────────────────────────
 
+# Helper: build a run_agent side_effect for a 2-model pool.
+# Call order per round: P1-A, P1-B, P2-A, P2-B, Synthesis.
+_P2_PROMPT_MARKER = "Cross-review"  # appears in phase2 prompt, not phase1
+
+
+def _multi_model_agent(
+    phase1_a: str = "p1 A",
+    phase1_b: str = "p1 B",
+    phase2_a: str = "p2 A",
+    phase2_b: str = "p2 B",
+    synth: str = _SYNTHESIS_OUTPUT,
+):
+    """Returns a run_agent side_effect for a 2-model pool single-round test."""
+    outputs = [phase1_a, phase1_b, phase2_a, phase2_b, synth]
+    costs = [0.10, 0.10, 0.10, 0.10, 0.10]
+    call_count = 0
+
+    def _agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        idx = call_count
+        call_count += 1
+        out = outputs[idx] if idx < len(outputs) else synth
+        return _ok_result(out, profile.name, cost=costs[idx] if idx < len(costs) else 0.10)
+
+    return _agent
+
 
 def test_phase1_fanout(tmp_path: Path) -> None:
     """Phase 1 prompt must be sent to all models without cross-contamination."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    pool_results = [
-        _ok_result("phase1 output A", "reviewer-a"),
-        _ok_result("phase1 output B", "reviewer-b"),
-    ]
-    synth_result = _ok_result(_SYNTHESIS_OUTPUT, "synthesis")
+    captured_calls: list[dict] = []
 
-    captured_pool_calls: list[dict] = []
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        captured_calls.append({"prompt": prompt, "profile": profile})
+        idx = len(captured_calls) - 1
+        outputs = ["phase1 output A", "phase1 output B", "p2 A", "p2 B", _SYNTHESIS_OUTPUT]
+        return _ok_result(outputs[idx], profile.name)
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        captured_pool_calls.append({"prompt": prompt, "profiles": profiles})
-        if captured_pool_calls and len(captured_pool_calls) == 1:
-            return pool_results
-        return [_ok_result("phase2 out A"), _ok_result("phase2 out B")]
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "Test brief", None, max_rounds=1)
 
     assert result.success
-    # Phase 1 call is first
-    assert len(captured_pool_calls) >= 1
-    phase1_call = captured_pool_calls[0]
-    # Phase 1 prompt should contain the brief but NOT other models' outputs
-    assert "Test brief" in phase1_call["prompt"]
-    assert "phase1 output A" not in phase1_call["prompt"]
-    assert "phase1 output B" not in phase1_call["prompt"]
-    # Both profiles in the pool
-    assert len(phase1_call["profiles"]) == 2
+    # Phase 1 calls (calls 0 and 1) must contain the brief but NOT other models' outputs
+    p1_call_a = captured_calls[0]
+    p1_call_b = captured_calls[1]
+    assert "Test brief" in p1_call_a["prompt"]
+    assert "Test brief" in p1_call_b["prompt"]
+    assert "phase1 output A" not in p1_call_a["prompt"]
+    assert "phase1 output B" not in p1_call_a["prompt"]
+    assert "phase1 output A" not in p1_call_b["prompt"]
+    assert "phase1 output B" not in p1_call_b["prompt"]
 
 
 def test_phase2_includes_all_phase1_outputs(tmp_path: Path) -> None:
     """Phase 2 prompt must contain all Phase 1 outputs by model name."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    pool_call_count = 0
-    captured_phase2_prompt: list[str] = []
+    captured_phase2_prompts: list[str] = []
+    call_count = 0
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        nonlocal pool_call_count
-        pool_call_count += 1
-        if pool_call_count == 1:
-            # Phase 1
-            return [
-                _ok_result("unique phase1 alpha content", "reviewer-a"),
-                _ok_result("unique phase1 beta content", "reviewer-b"),
-            ]
-        else:
-            # Phase 2
-            captured_phase2_prompt.append(prompt)
-            return [_ok_result("phase2 out A"), _ok_result("phase2 out B")]
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _ok_result("unique phase1 alpha content", "reviewer-a")
+        if call_count == 2:
+            return _ok_result("unique phase1 beta content", "reviewer-b")
+        if call_count in (3, 4):
+            # Phase 2 calls — capture the prompt
+            captured_phase2_prompts.append(prompt)
+            return _ok_result("phase2 out", profile.name)
+        return _ok_result(_SYNTHESIS_OUTPUT, "synthesis")
 
-    synth_result = _ok_result(_SYNTHESIS_OUTPUT, "synthesis")
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         run_ideation(config, "Test brief", None, max_rounds=1)
 
-    assert captured_phase2_prompt, "Phase 2 was not called"
-    p2 = captured_phase2_prompt[0]
+    assert captured_phase2_prompts, "Phase 2 was not called"
+    p2 = captured_phase2_prompts[0]
     assert "reviewer-a" in p2
     assert "reviewer-b" in p2
     assert "unique phase1 alpha content" in p2
@@ -284,14 +295,8 @@ def test_synthesis_writes_spec_file(tmp_path: Path) -> None:
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
     output_path = tmp_path / "specs" / "test-feature.md"
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("phase output"), _ok_result("phase output 2")]
-
-    synth_result = _ok_result(_SYNTHESIS_OUTPUT, "synthesis")
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
+    with patch(
+        "theforge.ideate.run_agent", side_effect=_multi_model_agent(synth=_SYNTHESIS_OUTPUT)
     ):
         result = run_ideation(config, "Build a feature", output_path, max_rounds=1)
 
@@ -303,30 +308,55 @@ def test_synthesis_writes_spec_file(tmp_path: Path) -> None:
 
 
 def test_single_model_pool_skips_crossreview(tmp_path: Path) -> None:
-    """Pool of 1 → Phase 2 and synthesis both skipped; Phase 1 output is the result."""
+    """Pool of 1 → Phase 2 skipped; synthesis runs with lone model to produce valid spec."""
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
 
-    pool_call_count = 0
+    agent_call_prompts: list[str] = []
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        nonlocal pool_call_count
-        pool_call_count += 1
-        return [_ok_result("single model phase1 output")]
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        agent_call_prompts.append(prompt)
+        if len(agent_call_prompts) == 1:
+            # Phase 1 call
+            return _ok_result("single model phase1 output")
+        # Synthesis call
+        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent") as mock_synth,
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
-    # Only Phase 1 pool call; no Phase 2, no synthesis
-    assert pool_call_count == 1
-    mock_synth.assert_not_called()
+    # Phase 1 prompt should NOT include cross-review content
+    assert "single model phase1 output" not in agent_call_prompts[0]
+    # Synthesis was called (second call)
+    assert len(agent_call_prompts) == 2
     assert result.success
-    # rounds has phase2_outputs as empty dict
+    # rounds has phase2_outputs as empty dict (no cross-review)
     assert result.rounds[0].phase2_outputs == {}
-    # Phase 1 output is used as the spec text
-    assert "single model phase1 output" in result.final_synthesis
+    # Final synthesis is valid spec from synthesis step
+    assert "---" in result.final_synthesis
+
+
+def test_single_model_synthesis_produces_valid_spec(tmp_path: Path) -> None:
+    """Single-model synthesis output must contain valid YAML frontmatter."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    output_path = tmp_path / "specs" / "solo-spec.md"
+
+    call_count = 0
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _ok_result("## Core Ideas\nIdea A\nIdea B")
+        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", output_path, max_rounds=1)
+
+    assert result.success
+    assert output_path.exists()
+    content = output_path.read_text(encoding="utf-8")
+    assert "---" in content
+    assert "Test Feature" in content
 
 
 def test_max_rounds_respected(tmp_path: Path) -> None:
@@ -334,14 +364,9 @@ def test_max_rounds_respected(tmp_path: Path) -> None:
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
     output_path = tmp_path / "specs" / "my-spec.md"
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("pool output A"), _ok_result("pool output B")]
-
-    synth_result = _ok_result(_SYNTHESIS_OUTPUT, "synthesis")  # has divergent items
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
+    # _SYNTHESIS_OUTPUT has divergent items; max_rounds=1 stops here
+    with patch(
+        "theforge.ideate.run_agent", side_effect=_multi_model_agent(synth=_SYNTHESIS_OUTPUT)
     ):
         result = run_ideation(config, "Build a feature", output_path, max_rounds=1)
 
@@ -357,14 +382,8 @@ def test_dry_run_no_file_written(tmp_path: Path) -> None:
     """output_path=None → spec printed to stdout, no file created."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("pool output A"), _ok_result("pool output B")]
-
-    synth_result = _ok_result(_SYNTHESIS_OUTPUT, "synthesis")
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
+    with patch(
+        "theforge.ideate.run_agent", side_effect=_multi_model_agent(synth=_SYNTHESIS_OUTPUT)
     ):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
@@ -383,24 +402,24 @@ def test_no_synthesis_profile_raises(tmp_path: Path) -> None:
 
 
 def test_ideation_result_cost_accumulates(tmp_path: Path) -> None:
-    """total_cost_usd sums across all pool invocations and synthesis."""
+    """total_cost_usd sums across all agent invocations (2 phase1 + 2 phase2 + synthesis)."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("output A", cost=0.10), _ok_result("output B", cost=0.20)]
+    # Call order: P1-A(0.10), P1-B(0.20), P2-A(0.10), P2-B(0.20), Synthesis(0.50)
+    costs = [0.10, 0.20, 0.10, 0.20, 0.50]
+    call_count = 0
 
-    synth_result = _ok_result(_SYNTHESIS_OUTPUT, "synthesis", cost=0.50)
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        cost = costs[call_count]
+        call_count += 1
+        output = _SYNTHESIS_OUTPUT if call_count == 5 else "output"
+        return _ok_result(output, profile.name, cost=cost)
 
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "Build a feature", None, max_rounds=1)
 
-    # Phase 1: 0.10 + 0.20 = 0.30
-    # Phase 2: 0.10 + 0.20 = 0.30
-    # Synthesis: 0.50
-    # Total: 1.10
+    # 0.10 + 0.20 + 0.10 + 0.20 + 0.50 = 1.10
     assert abs(result.total_cost_usd - 1.10) < 1e-6
 
 
@@ -419,19 +438,20 @@ DIVERGENT_ITEMS:
 SPEC:
 {_VALID_SPEC}"""
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("output"), _ok_result("output")]
+    # Round 1: 5 calls (P1-A, P1-B, P2-A, P2-B, Synth divergent)
+    # Round 2: 5 calls (P1-A, P1-B, P2-A, P2-B, Synth clean)
+    synth_outputs = iter([_SYNTHESIS_OUTPUT, clean_synthesis])
+    call_count = 0
 
-    synth_results = [
-        _ok_result(_SYNTHESIS_OUTPUT, "synthesis"),  # round 1 — has divergence
-        _ok_result(clean_synthesis, "synthesis"),  # round 2 — no divergence
-    ]
-    synth_iter = iter(synth_results)
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        call_count += 1
+        # Every 5th call within a round is synthesis
+        if call_count % 5 == 0:
+            return _ok_result(next(synth_outputs), "synthesis")
+        return _ok_result("output", profile.name)
 
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", side_effect=lambda **kw: next(synth_iter)),
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "Build feature", None, max_rounds=2)
 
     assert len(result.rounds) == 2
@@ -443,56 +463,74 @@ def test_phase1_agent_failure_returns_failed_result(tmp_path: Path) -> None:
     """A failed Phase 1 agent should return a failed IdeationResult immediately."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [
-            AgentResult(
-                success=False,
-                output="TIMEOUT: exceeded limit",
-                session_id=None,
-                cost_usd=0.0,
-                exit_code=-1,
-                raw={},
-                profile_name="reviewer-a",
-            ),
-            _ok_result("phase1 B"),
-        ]
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        # First call (Phase 1, reviewer-a) fails
+        return AgentResult(
+            success=False,
+            output="TIMEOUT: exceeded limit",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+        )
 
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent") as mock_synth,
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent) as mock_run:
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
     assert result.success is False
     assert "reviewer-a" in result.final_synthesis
-    mock_synth.assert_not_called()
+    # Should stop after the first failure
+    assert mock_run.call_count == 1
 
 
 def test_synthesis_failure_returns_failed_result(tmp_path: Path) -> None:
     """A failed synthesis agent should return a failed IdeationResult."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("pool output A"), _ok_result("pool output B")]
+    call_count = 0
 
-    failed_synth = AgentResult(
-        success=False,
-        output="ERROR: synthesis agent crashed",
-        session_id=None,
-        cost_usd=0.0,
-        exit_code=1,
-        raw={},
-        profile_name="synthesis",
-    )
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 5:
+            return _ok_result("output", profile.name)
+        # 5th call = synthesis — fail it
+        return AgentResult(
+            success=False,
+            output="ERROR: synthesis agent crashed",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="synthesis",
+        )
 
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=failed_synth),
-    ):
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
     assert result.success is False
     assert "synthesis" in result.final_synthesis.lower()
+
+
+def test_single_model_no_pool_calls(tmp_path: Path) -> None:
+    """Single-model pool uses run_agent directly for all phases."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+
+    call_count = 0
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _ok_result("phase1 output")
+        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success
+    assert call_count == 2  # Phase 1 + synthesis
 
 
 def test_synthesis_invalid_frontmatter_returns_failed_result(tmp_path: Path) -> None:
@@ -509,14 +547,9 @@ This is just prose with no YAML frontmatter at all.
 No triple-dash delimiters here.
 """
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
-        return [_ok_result("pool output A"), _ok_result("pool output B")]
-
-    synth_result = _ok_result(malformed_synthesis, "synthesis")
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=mock_pool),
-        patch("theforge.ideate.run_agent", return_value=synth_result),
+    with patch(
+        "theforge.ideate.run_agent",
+        side_effect=_multi_model_agent(synth=malformed_synthesis),
     ):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
