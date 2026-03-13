@@ -1,10 +1,12 @@
 gate_decision: PASS
 scope_completed:
-  - "P1: moved audit generation before dry-run early return in cmd_ideate so
-    forge_ideation_audit.yaml is always written (even on --dry-run)"
-  - "P2: replaced dead synthesis_profile fallback with assert in ideate.py line 498"
-  - "P2: added TestCmdIdeate in tests/test_cli.py with 5 CLI-level integration tests
-    covering dry-run audit behavior, --output flag, brief file input, rounds validation,
-    and default specs_dir invocation"
+  - "P1: single-model path parses ## Human Decisions Required from model output
+    instead of forcing residual_divergence=[] — unresolved items no longer dropped"
+  - "P2: Phase 1/Phase 2 accumulate all pool costs before failure check"
+  - "P2: replaced per-model duplicate timing log with single pool total time log"
+  - "P2: added rationale comment to _extract_pytest_target documenting fallback cases"
+  - "P2: added --verbose/-v flag to ideate subparser with runner_set_log_level wiring"
+  - "tests: added test_single_model_preserves_human_decisions_section and
+    test_single_model_no_human_decisions_section_gives_empty_divergence"
 deferred_followups: []
-next_recommended_step: "Submit for review — all 246 tests pass, all P1/P2 findings addressed"
+next_recommended_step: "Submit for review — all 248 tests pass, all P1/P2 findings addressed"
