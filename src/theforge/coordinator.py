@@ -751,7 +751,7 @@ def run_task(
         # ── REVIEW ────────────────────────────────────────────
         state.phase = Phase.REVIEW
         pool_size = len(config.review_pool)
-        max_parse_retries = getattr(config.retry, "max_review_parse_retries", 2)
+        max_parse_retries = config.retry.max_review_parse_retries
         _log_phase(state.phase, f"cycle={state.review_cycle + 1} pool={pool_size}")
 
         diff_text = _get_diff(workspace_path, config.workspace.base_branch)
