@@ -1,1 +1,23 @@
 gate_decision: PASS
+scope_completed:
+  - Added LogLevel(IntEnum) with PROGRESS=0 and VERBOSE=1 to runner.py
+  - Added _log(), _log_verbose(), set_log_level() to runner.py and coordinator.py
+  - Tool activity, heartbeats, and done lines moved to verbose-only in runner.py
+  - log_agent_result() moved to verbose-only in runner.py
+  - Phase transition lines upgraded to structured progress format in coordinator.py
+  - Completion lines added at PROGRESS level (DEV, VALIDATE, REVIEW, DONE, ESCALATE)
+  - Campaign spec headers [N/total] slug added in campaign.py
+  - Campaign completion summaries with icon, cost, and time added
+  - --verbose / -v flags added to forge run and forge campaign in cli.py
+  - 3 new tests added to tests/test_coordinator.py (all pass)
+  - 76/76 tests in tests/test_coordinator.py pass
+deferred_followups:
+  - tests/test_runner.py has 4 failing tests (test_activity_printed,
+    test_activity_assistant_fallback, test_success_log, test_failure_log)
+    that verify old always-on behavior. These tests are outside the declared
+    file_scope and need to be updated to set LogLevel.VERBOSE before asserting
+    tool line output. Scope expansion to tests/test_runner.py is required.
+next_recommended_step: >
+  Expand file scope to include tests/test_runner.py and update the 4 failing
+  tests to set runner_mod.set_log_level(LogLevel.VERBOSE) before asserting
+  tool activity output, then reset to PROGRESS in a finally block.
