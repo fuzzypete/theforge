@@ -1,13 +1,12 @@
 gate_decision: PASS
-
 scope_completed:
-  - "P1: ## Human Decisions Required section unconditionally normalized after final round — strips synthesis-emitted content and rewrites from authoritative residual_divergence list"
-  - "P2: shlex import moved to module level"
-  - "P2: sequential run_agent() loops documented with comment explaining why run_agent_pool() was not used (per-agent elapsed time logging)"
-  - "P2: config discovery for 'forge ideate <brief-file>' now searches from brief_path.parent, matching cmd_run/cmd_campaign behavior"
-  - "New tests: test_human_decisions_section_overrides_synthesis_version, test_no_divergence_strips_human_decisions_section (237 total, all pass)"
-
+  - "P1 fixed: follow-up brief now constructed from divergent items only (not original brief + appendix)"
+  - "P2 fixed: extracted _extract_pytest_target(config) helper, eliminating duplication"
+  - "P2 fixed: Phase 1 and Phase 2 fanouts now route through run_agent_pool()"
+  - "P2 fixed: cmd_ideate simplified — three try/except blocks collapsed into one"
+  - "Tests updated: patch run_agent_pool for pool phases, run_agent for synthesis"
+  - "test_multiple_rounds_loop: asserts round-2 prompt is narrowed to divergent items only"
+  - "All 237 tests pass"
 deferred_followups:
-  - "None — all P1 and P2 findings from this iteration addressed"
-
-next_recommended_step: "Human review of synthesized spec before any forge run is invoked (mandatory gate per the ideation design)"
+  - "P2 (coordinator notify removal): separate concern, not blocking per reviewer"
+next_recommended_step: "Submit for P1/P2 review to verify all findings resolved"
