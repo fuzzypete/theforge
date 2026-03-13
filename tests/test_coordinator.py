@@ -18,7 +18,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import Phase, run_review_only, run_task
+from theforge.coordinator import Phase, generate_audit_log, run_review_only, run_task
 from theforge.runner import AgentResult
 from theforge.task import TaskSpec
 
@@ -2579,6 +2579,7 @@ class TestReviewParseRetry:
     def test_parse_retry_count_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Audit log records parse_retries: 1 when one retry occurred."""
         from theforge.coordinator import generate_audit_log
+
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -2733,3 +2734,313 @@ class TestReviewOnly:
             result = run_review_only(config, task, workspace)
             assert result.state.dev_iteration == 0
             assert len(result.state.dev_results) == 0
+
+
+class TestAuditReviewPoolFields:
+    """Tests for generate_audit_log() review pool field serialization."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_review_pool_fields_populated(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """When pool has 2 reviewers and one fails, audit has correct pool/successful/failed."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        # opus succeeds, codex fails
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        reviews = audit["reviews"]
+        assert len(reviews) == 1
+        cycle = reviews[0]
+        assert set(cycle["pool_models"]) == {"opus", "codex"}
+        assert cycle["successful"] == ["opus"]
+        assert cycle["failed"] == ["codex"]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_failed_reviewer_detail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Failed reviewer includes exit code in failed_detail."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        cycle = audit["reviews"][0]
+        assert "failed_detail" in cycle
+        assert "codex" in cycle["failed_detail"]
+        assert "exit=1" in cycle["failed_detail"]["codex"]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_synthesized_flag_true(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """synthesized=True when synthesis agent ran (both reviewers succeeded)."""
+        synthesis_profile = ModelProfile(
+            name="synthesis",
+            cli="claude",
+            model="claude-sonnet-4-6",
+            budget_usd=5.0,
+            timeout_seconds=300,
+            allowed_tools=[],
+        )
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="gemini",
+                    cli="gemini",
+                    model="gemini-pro",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=synthesis_profile,
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        synthesis_result = AgentResult(
+            success=True,
+            output=APPROVE_REVIEW,
+            session_id=None,
+            cost_usd=0.05,
+            exit_code=0,
+            raw={},
+            profile_name="synthesis",
+        )
+
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        # Both reviewers succeed → synthesis runs
+        mock_pool.side_effect = [
+            # First call: review pool
+            [
+                AgentResult(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id=None,
+                    cost_usd=0.10,
+                    exit_code=0,
+                    raw={},
+                    profile_name="opus",
+                ),
+                AgentResult(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id=None,
+                    cost_usd=0.10,
+                    exit_code=0,
+                    raw={},
+                    profile_name="gemini",
+                ),
+            ],
+        ]
+
+        # Intercept the synthesis agent call
+        preflight_result = _PREFLIGHT_RESULT
+        dev_result = _make_agent_result(success=True, output="Done.")
+        call_idx = {"n": 0}
+        call_order = [preflight_result, dev_result, synthesis_result]
+
+        def ordered_agent(**kwargs):
+            idx = min(call_idx["n"], len(call_order) - 1)
+            call_idx["n"] += 1
+            return call_order[idx]
+
+        mock_agent.side_effect = ordered_agent
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        assert len(audit["reviews"]) == 1
+        assert audit["reviews"][0]["synthesized"] is True
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_synthesized_flag_false_degraded(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """synthesized=False when degraded to single reviewer (one failed)."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        # One fails → degraded, no synthesis
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["reviews"][0]["synthesized"] is False

@@ -70,6 +70,7 @@ class ReviewCycleMetadata:
     failed: list[str]  # profile names that failed
     synthesized: bool  # whether synthesis ran
     parse_retries: int = 0  # parse/schema retry count for this cycle
+    failed_detail: dict[str, str] = field(default_factory=dict)  # profile → "exit=N"
 
 
 @dataclass
@@ -828,6 +829,7 @@ def run_task(
 
             meta.successful = [r.profile_name for r in successful]
             meta.failed = [r.profile_name for r in failed_results]
+            meta.failed_detail = {r.profile_name: f"exit={r.exit_code}" for r in failed_results}
 
             if not successful:
                 state.phase = Phase.ESCALATE
@@ -1199,6 +1201,7 @@ def run_review_only(
         successful=[r.profile_name for r in successful],
         failed=[r.profile_name for r in failed_results],
         synthesized=False,
+        failed_detail={r.profile_name: f"exit={r.exit_code}" for r in failed_results},
     )
     state.review_cycle_metadata.append(meta)
 
@@ -1374,6 +1377,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "pool_models": meta.pool_models,
             "successful": meta.successful,
             "failed": meta.failed,
+            "failed_detail": meta.failed_detail,
             "synthesized": meta.synthesized,
             "parse_retries": meta.parse_retries,
         }

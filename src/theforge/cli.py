@@ -85,11 +85,16 @@ def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:
 
 
 def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec) -> Path:
-    """Write the audit log to forge_audit.yaml in the project root."""
+    """Write the audit log to forge_audit.yaml in the project root and worktree."""
     audit = generate_audit_log(config, task, result)
     audit_path = config.project_root / "forge_audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+    # Also write to worktree for per-spec persistence (not overwritten by next run)
+    if result.state.workspace_path and result.state.workspace_path.exists():
+        worktree_audit_path = result.state.workspace_path / "forge_audit.yaml"
+        with open(worktree_audit_path, "w", encoding="utf-8") as f:
+            yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     return audit_path
 
 
