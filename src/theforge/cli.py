@@ -16,7 +16,12 @@ import yaml
 
 from .campaign import run_campaign
 from .config import ForgeConfig, generate_default_config, load_config
-from .coordinator import CoordinatorResult, generate_audit_log, run_review_only, run_task
+from .coordinator import (
+    CoordinatorResult,
+    generate_audit_log,
+    run_from_review,
+    run_task,
+)
 from .coordinator import set_log_level as coordinator_set_log_level
 from .runner import LogLevel
 from .runner import set_log_level as runner_set_log_level
@@ -284,7 +289,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         print(f"  Rev pool:   {pool_info}", file=sys.stderr)
     print(file=sys.stderr)
 
-    result = run_review_only(config, task, workspace_path)
+    auto_merge = getattr(args, "auto_merge", False)
+    result = run_from_review(config, task, workspace_path, auto_merge=auto_merge)
 
     # Write audit log
     audit_path = _write_audit(result, config, task)
@@ -515,6 +521,12 @@ def main() -> None:
     review_parser.add_argument(
         "--worktree",
         help="Explicit worktree path (default: derived from slug)",
+    )
+    review_parser.add_argument(
+        "--auto-merge",
+        action="store_true",
+        default=False,
+        help="Merge feature branch into base branch after review APPROVE",
     )
 
     # forge campaign
