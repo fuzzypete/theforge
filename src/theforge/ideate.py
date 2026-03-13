@@ -75,6 +75,63 @@ Structure your response as:
 [your single strongest recommendation]"""
 
 
+def _build_single_model_prompt(brief: str, *, config: "ForgeConfig | None" = None) -> str:
+    """Combined ideation + spec-writing prompt for single-model pools.
+
+    Multi-model pools use Phase 1 (ideas) → Phase 2 (cross-review) → Phase 3
+    (synthesis). For a single-model pool there is no cross-review and no
+    separate synthesis step — one model produces the full spec directly.
+    """
+    pytest_target = "tests/"
+    if config is not None:
+        gate_cmd = config.validation.gate_command
+        try:
+            tokens = shlex.split(gate_cmd)
+            for i, tok in enumerate(tokens):
+                if tok in ("pytest", "python", "-m") and i + 1 < len(tokens):
+                    candidate = tokens[i + 1]
+                    if candidate.startswith("tests") and not candidate.startswith("-"):
+                        pytest_target = candidate
+                        break
+        except ValueError:
+            pass
+
+    return f"""You are writing a structured implementation spec.
+
+BRIEF:
+{brief}
+
+Think through the brief and produce a complete spec ready for a developer
+agent to implement. Use this exact format:
+
+SPEC:
+---
+name: "<derived from brief>"
+slug: "<kebab-case slug>"
+file_scope:
+  - <primary files this change touches>
+pytest_target: {pytest_target}
+---
+
+# <Spec Title>
+
+## Problem
+<What is broken or missing>
+
+## Requirements
+<Numbered list of requirements>
+
+## Acceptance Criteria
+- [ ] <criterion>
+
+## Out of Scope
+<What this spec does NOT address>
+
+## Human Decisions Required
+<Any design choices left to the human, or "None">
+"""
+
+
 def _build_phase2_prompt(brief: str, phase1_outputs: dict[str, str]) -> str:
     outputs_section = "\n\n".join(
         f"### {model_name}\n{output}" for model_name, output in phase1_outputs.items()
@@ -355,12 +412,54 @@ def run_ideation(
         )
         _log(f"▸ IDEATE   {pool_names}  round={round_num}{divergence_suffix}")
 
-        # ── Phase 1: Independent generation ──────────────────────────
+        # ── Single-model fast path ────────────────────────────────────
+        # A single-model pool skips cross-review (Phase 2) AND synthesis
+        # (Phase 3). Instead, one combined prompt asks the model to ideate
+        # AND produce a valid spec in a single call. Using the Phase 1 ideas
+        # prompt here would yield raw ideas with no frontmatter — not a spec.
+        if len(pool) == 1:
+            _log("  ▸ Phase 1   generating spec (single-model)...")
+            single_prompt = _build_single_model_prompt(current_brief, config=config)
+            agent_start = time.monotonic()
+            result = run_agent(prompt=single_prompt, profile=pool[0], working_dir=working_dir)
+            agent_elapsed = time.monotonic() - agent_start
+            total_cost += result.cost_usd
+            _log(f"  ↳ {pool[0].name} done ({agent_elapsed:.0f}s)")
+            if not result.success:
+                _log(f"  ✗ {pool[0].name} failed: {result.output[:120]}")
+                return _failed_result(
+                    f"Single-model agent failed: {result.output}",
+                    all_rounds,
+                    total_cost,
+                )
+            spec_text = result.output
+            # Extract the SPEC: block if the model wrapped it.
+            if "SPEC:" in spec_text:
+                spec_text = spec_text.split("SPEC:", 1)[1].strip()
+            if not _validate_frontmatter(spec_text):
+                _log("  ✗ single-model output missing valid frontmatter")
+                return _failed_result(
+                    "Single-model output does not contain valid YAML frontmatter.",
+                    all_rounds,
+                    total_cost,
+                )
+            all_rounds.append(
+                IdeationRound(
+                    round_number=round_num,
+                    phase1_outputs={pool[0].name: result.output},
+                    phase2_outputs={},
+                    converged_items=[],
+                    divergent_items=[],
+                    synthesis_output=spec_text,
+                )
+            )
+            final_synthesis = spec_text
+            residual_divergence = []
+            break  # single round always produces the final spec
+
+        # ── Phase 1: Independent generation (multi-model) ────────────
         # NOTE: The spec recommends run_agent_pool() here, but we use run_agent()
         # sequentially so we can log per-agent elapsed times as they complete (R4).
-        # run_agent_pool() runs sequentially too (no parallelism today), so the
-        # functional result is identical. If run_agent_pool() gains true parallel
-        # execution in the future, this loop should be refactored to use it.
         _log("  ▸ Phase 1   generating independently...")
         phase1_prompt = _build_phase1_prompt(current_brief)
         phase1_outputs: dict[str, str] = {}
@@ -380,34 +479,27 @@ def run_ideation(
             phase1_outputs[profile.name] = result.output
             total_cost += result.cost_usd
 
-        # ── Phase 2: Cross-review (skipped for single-model pool) ────
-        # Single-model pool: skip cross-review but still run synthesis so
-        # Phase 1 ideas are converted into a valid spec with frontmatter.
-        # NOTE: Same sequential/timing rationale as Phase 1 (see comment above).
+        # ── Phase 2: Cross-review ─────────────────────────────────────
         phase2_outputs: dict[str, str] = {}
+        _log("  ▸ Phase 2   cross-reviewing...")
+        phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
 
-        if len(pool) > 1:
-            _log("  ▸ Phase 2   cross-reviewing...")
-            phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
-
-            for profile in pool:
-                agent_start = time.monotonic()
-                result = run_agent(prompt=phase2_prompt, profile=profile, working_dir=working_dir)
-                agent_elapsed = time.monotonic() - agent_start
-                _log(f"  ↳ {profile.name} done ({agent_elapsed:.0f}s)")
-                if not result.success:
-                    _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
-                    return _failed_result(
-                        f"Phase 2 agent {profile.name!r} failed: {result.output}",
-                        all_rounds,
-                        total_cost + result.cost_usd,
-                    )
-                phase2_outputs[profile.name] = result.output
-                total_cost += result.cost_usd
+        for profile in pool:
+            agent_start = time.monotonic()
+            result = run_agent(prompt=phase2_prompt, profile=profile, working_dir=working_dir)
+            agent_elapsed = time.monotonic() - agent_start
+            _log(f"  ↳ {profile.name} done ({agent_elapsed:.0f}s)")
+            if not result.success:
+                _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
+                return _failed_result(
+                    f"Phase 2 agent {profile.name!r} failed: {result.output}",
+                    all_rounds,
+                    total_cost + result.cost_usd,
+                )
+            phase2_outputs[profile.name] = result.output
+            total_cost += result.cost_usd
 
         # ── Phase 3: Synthesis ────────────────────────────────────────
-        # For single-model pool: use the lone model as the synthesis agent.
-        # For multi-model pool: use the dedicated synthesis profile.
         _log("  ▸ Synthesis   consolidating...")
         synth_start = time.monotonic()
 

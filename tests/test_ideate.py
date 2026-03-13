@@ -308,45 +308,34 @@ def test_synthesis_writes_spec_file(tmp_path: Path) -> None:
 
 
 def test_single_model_pool_skips_crossreview(tmp_path: Path) -> None:
-    """Pool of 1 → Phase 2 skipped; synthesis runs with lone model to produce valid spec."""
+    """Pool of 1 → single combined call; no Phase 2, no separate synthesis."""
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
 
     agent_call_prompts: list[str] = []
 
     def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
         agent_call_prompts.append(prompt)
-        if len(agent_call_prompts) == 1:
-            # Phase 1 call
-            return _ok_result("single model phase1 output")
-        # Synthesis call
+        # Single combined call — returns a spec with SPEC: block directly
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
-    # Phase 1 prompt should NOT include cross-review content
-    assert "single model phase1 output" not in agent_call_prompts[0]
-    # Synthesis was called (second call)
-    assert len(agent_call_prompts) == 2
+    # Exactly one agent call — no Phase 2 and no separate synthesis
+    assert len(agent_call_prompts) == 1
     assert result.success
-    # rounds has phase2_outputs as empty dict (no cross-review)
+    # Round has no phase2_outputs (no cross-review for single-model)
     assert result.rounds[0].phase2_outputs == {}
-    # Final synthesis is valid spec from synthesis step
+    # Final synthesis is valid spec extracted from the single call
     assert "---" in result.final_synthesis
 
 
 def test_single_model_synthesis_produces_valid_spec(tmp_path: Path) -> None:
-    """Single-model synthesis output must contain valid YAML frontmatter."""
+    """Single-model combined call must produce a spec with valid YAML frontmatter."""
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
     output_path = tmp_path / "specs" / "solo-spec.md"
 
-    call_count = 0
-
     def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            return _ok_result("## Core Ideas\nIdea A\nIdea B")
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -576,7 +565,7 @@ def test_synthesis_failure_returns_failed_result(tmp_path: Path) -> None:
 
 
 def test_single_model_no_pool_calls(tmp_path: Path) -> None:
-    """Single-model pool uses run_agent directly for all phases."""
+    """Single-model pool makes exactly one run_agent call (combined prompt)."""
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
 
     call_count = 0
@@ -584,15 +573,13 @@ def test_single_model_no_pool_calls(tmp_path: Path) -> None:
     def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
-            return _ok_result("phase1 output")
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
     assert result.success
-    assert call_count == 2  # Phase 1 + synthesis
+    assert call_count == 1  # single combined call, no Phase 2 or synthesis
 
 
 def test_max_rounds_zero_clamped_to_one(tmp_path: Path) -> None:
