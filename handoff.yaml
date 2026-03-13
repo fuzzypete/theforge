@@ -1,21 +1,23 @@
 gate_decision: PASS
 scope_completed:
-  - "src/theforge/ideate.py: IdeationRound/IdeationResult dataclasses, prompt builders
-    for all 3 phases, _parse_synthesis_output, _validate_frontmatter, run_ideation()
-    orchestrator with full deliberation loop (Phase 1 fan-out, Phase 2 cross-review,
-    Phase 3 synthesis, convergence detection, multi-round iteration)"
-  - "src/theforge/cli.py: forge ideate subcommand with --output, --rounds (max 3),
-    --config, --dry-run flags; brief-or-file argument; validation of pool+synthesis config"
-  - "tests/test_ideate.py: 16 tests covering prompt builders, synthesis parsing,
-    Phase 1 fanout (no cross-contamination), Phase 2 all-outputs included, synthesis
-    file write, single-model pool (Phase 2 skipped), max_rounds respected,
-    dry-run (no file), no-synthesis-profile error, cost accumulation, multi-round loop"
+  - "P1: run_ideation() checks AgentResult.success for every phase; failed agent
+    returns IdeationResult(success=False) immediately"
+  - "P1: _validate_frontmatter() called before writing spec; invalid frontmatter
+    returns failed IdeationResult with descriptive message"
+  - "P1: single-model pool exits after Phase 1 with no synthesis call; run_agent()
+    never invoked for single-model pools"
+  - "P1: load_config() wrapped in try/except ValueError in cmd_ideate() — config
+    errors surface as clean user messages instead of tracebacks"
+  - "P2: _extract_slug_from_spec() wired into cmd_ideate default output path;
+    generates specs/<slug>.md from synthesized frontmatter"
+  - "P2: args.rounds/args.dry_run used directly (no redundant getattr)"
+  - "P2: total elapsed time included in final IDEATE log line"
+  - "New tests: test_phase1_agent_failure, test_synthesis_failure,
+    test_synthesis_invalid_frontmatter — all 231 tests pass"
 
 deferred_followups:
-  - "docs/vision.md Phase 11 (Decompose) update is out of file_scope — would note
-    that forge ideate is the implementation path for DECOMPOSE"
+  - "docs/vision.md Phase 11 (Decompose) update remains out of file_scope"
   - "Storing Phase 1/Phase 2 raw outputs in audit log (noted as out of scope in spec)"
-  - "Campaign manifest generation from ideation output (Phase 11 / DECOMPOSE)"
 
 next_recommended_step: >
   Run forge review on feat/forge-ideate to get multi-model sign-off before
