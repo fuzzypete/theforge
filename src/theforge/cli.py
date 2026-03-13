@@ -90,8 +90,10 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
     audit_path = config.project_root / "forge_audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-    # Also write to worktree for per-spec persistence (not overwritten by next run)
-    if result.state.workspace_path and result.state.workspace_path.exists():
+    # Also write to worktree for per-spec persistence (not overwritten by next run).
+    # Skip for ALREADY_DONE — no real work was done, worktree is just a checkout.
+    already_done = result.state.preflight_verdict == "ALREADY_DONE"
+    if not already_done and result.state.workspace_path and result.state.workspace_path.exists():
         worktree_audit_path = result.state.workspace_path / "forge_audit.yaml"
         with open(worktree_audit_path, "w", encoding="utf-8") as f:
             yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
