@@ -18,7 +18,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import Phase, run_task
+from theforge.coordinator import Phase, run_review_only, run_task
 from theforge.runner import AgentResult
 from theforge.task import TaskSpec
 
@@ -2579,7 +2579,6 @@ class TestReviewParseRetry:
     def test_parse_retry_count_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Audit log records parse_retries: 1 when one retry occurred."""
         from theforge.coordinator import generate_audit_log
-
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -2645,3 +2644,92 @@ class TestReviewParseRetry:
         assert result.state.review_cycle == 1
         # parse_retries tracked in metadata
         assert result.state.review_cycle_metadata[0].parse_retries == 1
+
+
+# ── Tests: run_review_only ────────────────────────────────────────────
+
+
+class TestReviewOnly:
+    """Tests for run_review_only — skips WORKSPACE/PREFLIGHT/DEV/VALIDATE."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator._run_shell")
+    def test_review_only_approve(self, mock_shell, mock_pool, tmp_path):
+        """APPROVE → success, phase=DONE, dev_iteration=0."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "")  # git diff returns empty
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.dev_iteration == 0
+        assert result.state.review_cycle == 1
+        assert len(result.state.review_results) == 1
+        assert result.state.review_results[0].verdict == "APPROVE"
+        # No dev agents were invoked
+        assert len(result.state.dev_results) == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator._run_shell")
+    def test_review_only_request_changes(self, mock_shell, mock_pool, tmp_path):
+        """REQUEST_CHANGES → failure, phase=ESCALATE, findings in result."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.dev_iteration == 0
+        # Findings are present in review results
+        assert len(result.state.review_results) == 1
+        assert result.state.review_results[0].verdict == "REQUEST_CHANGES"
+        assert len(result.state.review_results[0].findings) > 0
+
+    def test_review_only_missing_worktree(self, tmp_path):
+        """Missing workspace_path → error result with clear message."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        missing = tmp_path / "does-not-exist"
+
+        result = run_review_only(config, task, missing)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "Worktree not found" in result.message
+        assert "forge run" in result.message
+        assert str(missing) in result.message
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator._run_shell")
+    def test_review_only_no_dev_cycles(self, mock_shell, mock_pool, tmp_path):
+        """dev_iteration == 0 in all cases (APPROVE and REQUEST_CHANGES)."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "")
+
+        for review_output in [APPROVE_REVIEW, REQUEST_CHANGES_REVIEW]:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=review_output, profile_name="review")
+            ]
+            result = run_review_only(config, task, workspace)
+            assert result.state.dev_iteration == 0
+            assert len(result.state.dev_results) == 0
