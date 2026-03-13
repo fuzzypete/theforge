@@ -2579,6 +2579,7 @@ class TestReviewParseRetry:
     def test_parse_retry_count_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Audit log records parse_retries: 1 when one retry occurred."""
         from theforge.coordinator import generate_audit_log
+
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
