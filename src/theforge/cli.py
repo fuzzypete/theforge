@@ -24,6 +24,7 @@ from .coordinator import (
     run_task,
 )
 from .coordinator import set_log_level as coordinator_set_log_level
+from .ideate import run_ideation
 from .runner import LogLevel
 from .runner import set_log_level as runner_set_log_level
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
@@ -353,6 +354,72 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     return 0 if result.specs_failed == 0 else 1
 
 
+def cmd_ideate(args: argparse.Namespace) -> int:
+    """Run multi-LLM deliberation to generate a spec from a brief."""
+    # Load brief from file or inline string
+    brief_arg = args.brief
+    brief_path = Path(brief_arg)
+    if brief_path.suffix in (".md", ".txt") and brief_path.exists():
+        brief = brief_path.read_text(encoding="utf-8")
+    else:
+        brief = brief_arg
+
+    # Find config
+    config_path: Path | None = None
+    if args.config:
+        config_path = Path(args.config).resolve()
+    else:
+        config_path = _find_config()
+
+    if config_path is None or not config_path.exists():
+        print(
+            "forge.yaml not found. Run 'forge init' to create one, "
+            "or pass --config path/to/forge.yaml",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = load_config(config_path)
+
+    # Validate pool + synthesis
+    if len(config.review_pool) > 1 and config.synthesis_profile is None:
+        print(
+            "Error: synthesis profile is required when review_pool has more than 1 entry. "
+            "Configure profiles.synthesis in forge.yaml.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Determine max rounds (cap at 3)
+    max_rounds = min(getattr(args, "rounds", 2), 3)
+
+    # Determine output path (None for dry-run)
+    dry_run = getattr(args, "dry_run", False)
+    output_path: Path | None = None
+    if not dry_run:
+        if args.output:
+            output_path = Path(args.output).resolve()
+        else:
+            output_path = config.project_root / "specs" / "ideated-spec.md"
+
+    try:
+        result = run_ideation(
+            config,
+            brief,
+            output_path,
+            max_rounds=max_rounds,
+        )
+    except ValueError as exc:
+        print(f"Ideation error: {exc}", file=sys.stderr)
+        return 1
+
+    if dry_run:
+        print(result.final_synthesis)
+        return 0
+
+    return 0 if result.success else 1
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     """Print a human-readable summary of an audit file."""
     audit_path = Path(args.file).resolve()
@@ -556,6 +623,34 @@ def main() -> None:
         help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
     )
 
+    # forge ideate
+    ideate_parser = subparsers.add_parser(
+        "ideate", help="Run multi-LLM deliberation to generate a spec from a brief"
+    )
+    ideate_parser.add_argument(
+        "brief",
+        help="Brief text or path to a .md/.txt file containing the brief",
+    )
+    ideate_parser.add_argument(
+        "--output",
+        help="Output path for generated spec (default: specs/<slug>.md)",
+    )
+    ideate_parser.add_argument(
+        "--rounds",
+        type=int,
+        default=2,
+        help="Max deliberation rounds before surfacing residual divergence (default: 2, max: 3)",
+    )
+    ideate_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+    ideate_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run deliberation and print synthesized spec to stdout without writing a file",
+    )
+
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
     audit_parser.add_argument("file", help="Path to forge_audit.yaml")
@@ -567,6 +662,7 @@ def main() -> None:
         "run": cmd_run,
         "review": cmd_review,
         "campaign": cmd_campaign,
+        "ideate": cmd_ideate,
         "audit": cmd_audit,
     }
 
