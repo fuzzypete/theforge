@@ -256,7 +256,7 @@ def _parse_synthesis_output(
             synthesis_text[start:end].strip() if end != -1 else synthesis_text[start:].strip()
         )
         converged = [
-            line.lstrip("- ").strip()
+            line.strip().removeprefix("- ")
             for line in section.splitlines()
             if line.strip().startswith("-")
         ]
@@ -269,7 +269,7 @@ def _parse_synthesis_output(
             synthesis_text[start:end].strip() if end != -1 else synthesis_text[start:].strip()
         )
         divergent = [
-            line.lstrip("- ").strip()
+            line.strip().removeprefix("- ")
             for line in section.splitlines()
             if line.strip().startswith("-")
         ]
@@ -403,10 +403,14 @@ def run_ideation(
         _log(f"▸ IDEATE   {pool_names}  round={round_num}{divergence_suffix}")
 
         # ── Single-model fast path ────────────────────────────────────
-        # A single-model pool skips cross-review (Phase 2) AND synthesis
-        # (Phase 3). Instead, one combined prompt asks the model to ideate
-        # AND produce a valid spec in a single call. Using the Phase 1 ideas
-        # prompt here would yield raw ideas with no frontmatter — not a spec.
+        # Intentional design deviation from the spec's "Phase 1 only" wording:
+        # The spec says single-model runs use "Phase 1 only", but Phase 1's
+        # prompt (ideas/constraints/risks) deliberately avoids frontmatter and
+        # cannot produce a valid spec file. Instead we use a combined prompt
+        # (_build_single_model_prompt) that merges ideation and spec-writing
+        # into one call. This achieves the spec's intent (AC7: "single-model
+        # pool produces a spec") via a better mechanism. Cross-review and
+        # synthesis are still skipped — only one LLM call is made.
         if len(pool) == 1:
             _log("  ▸ Phase 1   generating spec (single-model)...")
             single_prompt = _build_single_model_prompt(current_brief, config=config)
@@ -605,3 +609,52 @@ def run_ideation(
         total_cost_usd=total_cost,
         human_decision_required=human_decision_required,
     )
+
+
+# ── Audit generation ─────────────────────────────────────────────────
+
+
+def generate_ideation_audit(
+    config: ForgeConfig,
+    brief: str,
+    result: IdeationResult,
+    *,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    duration_seconds: float | None = None,
+) -> dict:
+    """Return a serialisable audit record for an ideation run.
+
+    The returned dict can be written directly to YAML and read back by
+    ``forge audit``. The ``type: ideate`` field lets ``cmd_audit`` detect
+    and display ideation-specific sections instead of the coordinator fields.
+    """
+    rounds_data = [
+        {
+            "round_number": r.round_number,
+            "converged_count": len(r.converged_items),
+            "divergent_count": len(r.divergent_items),
+            "converged_items": r.converged_items,
+            "divergent_items": r.divergent_items,
+        }
+        for r in result.rounds
+    ]
+    return {
+        "type": "ideate",
+        "brief": brief[:500],  # truncate very long briefs for readability
+        "spec_path": str(result.spec_path) if result.spec_path else None,
+        "success": result.success,
+        "human_decision_required": result.human_decision_required,
+        "residual_divergence": result.residual_divergence,
+        "rounds": rounds_data,
+        "cost": {
+            "total_usd": result.total_cost_usd,
+        },
+        "timing": {
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_seconds": duration_seconds,
+        },
+        "model_pool": [p.name for p in config.review_pool],
+        "synthesis_profile": (config.synthesis_profile.name if config.synthesis_profile else None),
+    }

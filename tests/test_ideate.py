@@ -21,6 +21,7 @@ from theforge.ideate import (
     _build_synthesis_prompt,
     _parse_synthesis_output,
     _validate_frontmatter,
+    generate_ideation_audit,
     run_ideation,
 )
 from theforge.runner import AgentResult
@@ -661,3 +662,98 @@ No triple-dash delimiters here.
 
     assert result.success is False
     assert result.spec_path is None
+
+
+# ── Audit tests ───────────────────────────────────────────────────────
+
+
+def test_generate_ideation_audit_structure(tmp_path: Path) -> None:
+    """generate_ideation_audit returns a dict with type=ideate and expected fields."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        result = run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    audit = generate_ideation_audit(
+        config,
+        "Build a feature",
+        result,
+        started_at="2026-01-01T00:00:00+00:00",
+        finished_at="2026-01-01T00:01:00+00:00",
+        duration_seconds=60.0,
+    )
+
+    assert audit["type"] == "ideate"
+    assert audit["brief"] == "Build a feature"
+    assert audit["success"] == result.success
+    assert audit["human_decision_required"] == result.human_decision_required
+    assert "rounds" in audit
+    assert "cost" in audit
+    assert "timing" in audit
+    assert audit["timing"]["started_at"] == "2026-01-01T00:00:00+00:00"
+    assert audit["timing"]["duration_seconds"] == 60.0
+    assert "reviewer-a" in audit["model_pool"]
+    assert "reviewer-b" in audit["model_pool"]
+    assert audit["synthesis_profile"] == "synthesis"
+
+
+def test_generate_ideation_audit_rounds_data(tmp_path: Path) -> None:
+    """Rounds data in audit contains converged/divergent counts and items."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        result = run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    audit = generate_ideation_audit(config, "Build a feature", result)
+
+    assert len(audit["rounds"]) == 1
+    r = audit["rounds"][0]
+    assert r["round_number"] == 1
+    assert r["converged_count"] == 2  # "Use async IO" + "Add unit tests"
+    assert r["divergent_count"] == 1  # "Whether to use Redis or in-memory cache"
+    assert "Whether to use Redis or in-memory cache" in r["divergent_items"]
+
+
+def test_generate_ideation_audit_brief_truncated(tmp_path: Path) -> None:
+    """Briefs longer than 500 chars are truncated in the audit record."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        result = run_ideation(config, "x" * 600, None, max_rounds=1)
+
+    audit = generate_ideation_audit(config, "x" * 600, result)
+    assert len(audit["brief"]) == 500
+
+
+def test_parse_synthesis_output_lstrip_safe(tmp_path: Path) -> None:
+    """Items starting with '-- ' or '-verbose' are not over-stripped."""
+    synthesis = """CONVERGED_ITEMS:
+- --verbose flag should be added
+- normal item
+
+DIVERGENT_ITEMS:
+- --debug mode
+
+SPEC:
+---
+name: "Test"
+slug: test
+file_scope: []
+pytest_target: tests/
+---
+# Test
+"""
+    converged, divergent, _ = _parse_synthesis_output(synthesis)
+    # With removeprefix("- "), "- --verbose flag" becomes "--verbose flag" (correct)
+    # With the old lstrip("- "), it would have become "verbose flag" (wrong)
+    assert any("--verbose" in item for item in converged)
+    assert any("--debug" in item for item in divergent)
