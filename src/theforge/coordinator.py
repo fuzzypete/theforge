@@ -141,6 +141,21 @@ def set_log_level(level: LogLevel) -> None:
     _LOG_LEVEL = level
 
 
+def _fmt_dur(seconds: float) -> str:
+    """Format a duration as a human-readable string.
+
+    Examples: 45s, 3m 12s, 1h 2m 34s
+    """
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m {s:02d}s"
+
+
 def _log(msg: str) -> None:
     """Print coordinator status to stderr (always shown)."""
     print(f"[forge] {msg}", file=sys.stderr, flush=True)
@@ -582,7 +597,7 @@ def _coordinator_loop(
             state.dev_durations.append(_dev_elapsed)
             state.dev_session_id = dev_result.session_id
             log_agent_result(dev_result, "DEV")
-            _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
+            _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_dur(_dev_elapsed)}")
 
             if state.total_dev_cost > config.dev_profile.budget_usd:
                 state.phase = Phase.ESCALATE
@@ -928,7 +943,7 @@ def _coordinator_loop(
         if parsed_review.verdict == "APPROVE":
             _log(
                 f"  ✓ REVIEW   APPROVE  {_p1_count} P1  {_p2_count} P2"
-                f"  ${_review_cost:.2f}  {_review_elapsed:.0f}s"
+                f"  ${_review_cost:.2f}  {_fmt_dur(_review_elapsed)}"
             )
             if interactive:
                 state.phase = Phase.HUMAN_REVIEW
@@ -956,7 +971,7 @@ def _coordinator_loop(
                             else f" Merge failed: {merge_info['error']}"
                         )
                     _task_elapsed = time.monotonic() - task_start
-                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
+                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_dur(_task_elapsed)}")
                     return CoordinatorResult(
                         success=True,
                         phase=state.phase,
@@ -1003,7 +1018,7 @@ def _coordinator_loop(
                         else f" Merge failed: {merge_info['error']}"
                     )
                 _task_elapsed = time.monotonic() - task_start
-                _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
+                _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_dur(_task_elapsed)}")
                 return CoordinatorResult(
                     success=True,
                     phase=state.phase,
@@ -1020,7 +1035,7 @@ def _coordinator_loop(
         # REQUEST_CHANGES — loop back to dev
         _log(
             f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1"
-            f"  ${_review_cost:.2f}  {_review_elapsed:.0f}s"
+            f"  ${_review_cost:.2f}  {_fmt_dur(_review_elapsed)}"
         )
         if state.review_cycle >= config.retry.max_review_cycles:
             if interactive:
@@ -1049,7 +1064,7 @@ def _coordinator_loop(
                             else f" Merge failed: {merge_info['error']}"
                         )
                     _task_elapsed = time.monotonic() - task_start
-                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
+                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_dur(_task_elapsed)}")
                     return CoordinatorResult(
                         success=True,
                         phase=state.phase,
@@ -1183,7 +1198,7 @@ def run_task(
     if verdict == "ALREADY_DONE":
         state.phase = Phase.DONE
         elapsed = time.monotonic() - _task_start
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {elapsed:.0f}s")
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_dur(elapsed)}")
         return CoordinatorResult(
             success=True,
             phase=state.phase,
@@ -1447,10 +1462,9 @@ def run_review_only(
 
     if parsed_review.verdict == "APPROVE":
         state.phase = Phase.DONE
-        _log(
-            f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_ro_elapsed:.0f}s"
-        )
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_ro_elapsed:.0f}s")
+        _dur = _fmt_dur(_ro_elapsed)
+        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_dur}")
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_dur(_ro_elapsed)}")
         return CoordinatorResult(
             success=True,
             phase=state.phase,
@@ -1464,7 +1478,7 @@ def run_review_only(
     state.error = (
         f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
     )
-    _log(f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  ${_ro_cost:.2f}  {_ro_elapsed:.0f}s")
+    _log(f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  ${_ro_cost:.2f}  {_fmt_dur(_ro_elapsed)}")
     _log(f"✗ ESCALATE   {state.error}")
     return CoordinatorResult(
         success=False,

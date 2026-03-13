@@ -21,6 +21,7 @@ from theforge.config import (
 )
 from theforge.coordinator import (
     Phase,
+    _fmt_dur,
     generate_audit_log,
     run_from_review,
     run_review_only,
@@ -3468,3 +3469,26 @@ class TestRunFromReview:
         assert audit["preflight"] is not None
         assert audit["preflight"]["verdict"] == "SKIPPED"
         assert audit["preflight"]["cost_usd"] == 0.0
+
+
+# ── _fmt_dur ──────────────────────────────────────────────────────────
+
+
+def test_fmt_dur_seconds():
+    assert _fmt_dur(0) == "0s"
+    assert _fmt_dur(1) == "1s"
+    assert _fmt_dur(59) == "59s"
+    assert _fmt_dur(59.9) == "59s"
+
+
+def test_fmt_dur_minutes():
+    assert _fmt_dur(60) == "1m 00s"
+    assert _fmt_dur(61) == "1m 01s"
+    assert _fmt_dur(90) == "1m 30s"
+    assert _fmt_dur(3599) == "59m 59s"
+
+
+def test_fmt_dur_hours():
+    assert _fmt_dur(3600) == "1h 00m 00s"
+    assert _fmt_dur(3661) == "1h 01m 01s"
+    assert _fmt_dur(7384) == "2h 03m 04s"

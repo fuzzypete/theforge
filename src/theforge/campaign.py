@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .coordinator import CoordinatorResult, generate_audit_log, run_task
+from .coordinator import CoordinatorResult, _fmt_dur, generate_audit_log, run_task
 from .task import TaskSpec
 
 
@@ -225,7 +225,7 @@ def run_campaign(
 
         # Emit spec completion summary
         icon = "✓" if result.success else "✗"
-        _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {_spec_elapsed:.0f}s")
+        _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {_fmt_dur(_spec_elapsed)}")
 
         # Stop campaign if budget exceeded after this run
         if accumulated_cost >= manifest.budget_usd and idx < total:
@@ -253,9 +253,10 @@ def run_campaign(
         stopped_reason=stopped_reason,
     )
 
+    _campaign_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
     _log(
         f"Campaign complete: {specs_succeeded} succeeded, {specs_failed} failed, "
-        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}"
+        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_fmt_dur(_campaign_elapsed)}"
     )
 
     # Write campaign-audit.yaml
