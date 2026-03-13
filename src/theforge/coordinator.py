@@ -803,6 +803,7 @@ def run_task(
             parse_retries=0,
         )
         state.review_cycle_metadata.append(meta)
+        _review_cost_before_cycle = sum(r.cost_usd for r in state.review_agent_results)
 
         parsed_review = None
         last_parse_error: str | None = None
@@ -991,7 +992,7 @@ def run_task(
         _review_elapsed = time.monotonic() - _review_pool_start
         _p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
         _p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
-        _review_cost = sum(r.cost_usd for r in state.review_agent_results)
+        _review_cost = sum(r.cost_usd for r in state.review_agent_results) - _review_cost_before_cycle
 
         _log_verbose(f"Review verdict: {parsed_review.verdict}")
         _log_verbose(f"  Summary: {parsed_review.summary}")
