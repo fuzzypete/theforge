@@ -427,7 +427,14 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     duration_seconds = time.monotonic() - ideation_start_mono
     ideation_finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    # Write audit record (even for dry-run, so the deliberation is logged).
+    if dry_run:
+        if not result.success:
+            print(f"Ideation failed: {result.final_synthesis}", file=sys.stderr)
+            return 1
+        print(result.final_synthesis)
+        return 0
+
+    # Write audit record only for real (non-dry-run) runs.
     audit = generate_ideation_audit(
         config,
         brief,
@@ -440,13 +447,6 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     print(f"[forge] Audit log: {audit_path}", file=sys.stderr)
-
-    if dry_run:
-        if not result.success:
-            print(f"Ideation failed: {result.final_synthesis}", file=sys.stderr)
-            return 1
-        print(result.final_synthesis)
-        return 0
 
     return 0 if result.success else 1
 
