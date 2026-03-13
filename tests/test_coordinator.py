@@ -18,7 +18,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import Phase, run_review_only, run_task
+from theforge.coordinator import Phase, generate_audit_log, run_review_only, run_task
 from theforge.runner import AgentResult
 from theforge.task import TaskSpec
 
@@ -2734,3 +2734,461 @@ class TestReviewOnly:
             result = run_review_only(config, task, workspace)
             assert result.state.dev_iteration == 0
             assert len(result.state.dev_results) == 0
+
+
+class TestAuditReviewPoolFields:
+    """Tests for generate_audit_log() review pool field serialization."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_review_pool_fields_populated(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """When pool has 2 reviewers and one fails, audit has correct pool/successful/failed."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        # opus succeeds, codex fails
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        reviews = audit["reviews"]
+        assert len(reviews) == 1
+        cycle = reviews[0]
+        assert set(cycle["pool_models"]) == {"opus", "codex"}
+        assert cycle["successful"] == ["opus"]
+        assert cycle["failed"] == ["codex"]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_failed_reviewer_detail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Failed reviewer includes exit code in failed_detail."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        cycle = audit["reviews"][0]
+        assert "failed_detail" in cycle
+        assert "codex" in cycle["failed_detail"]
+        assert "exit=1" in cycle["failed_detail"]["codex"]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_synthesized_flag_true(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """synthesized=True when synthesis agent ran (both reviewers succeeded)."""
+        synthesis_profile = ModelProfile(
+            name="synthesis",
+            cli="claude",
+            model="claude-sonnet-4-6",
+            budget_usd=5.0,
+            timeout_seconds=300,
+            allowed_tools=[],
+        )
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="gemini",
+                    cli="gemini",
+                    model="gemini-pro",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=synthesis_profile,
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        synthesis_result = AgentResult(
+            success=True,
+            output=APPROVE_REVIEW,
+            session_id=None,
+            cost_usd=0.05,
+            exit_code=0,
+            raw={},
+            profile_name="synthesis",
+        )
+
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        # Both reviewers succeed → synthesis runs
+        mock_pool.side_effect = [
+            # First call: review pool
+            [
+                AgentResult(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id=None,
+                    cost_usd=0.10,
+                    exit_code=0,
+                    raw={},
+                    profile_name="opus",
+                ),
+                AgentResult(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id=None,
+                    cost_usd=0.10,
+                    exit_code=0,
+                    raw={},
+                    profile_name="gemini",
+                ),
+            ],
+        ]
+
+        # Intercept the synthesis agent call
+        preflight_result = _PREFLIGHT_RESULT
+        dev_result = _make_agent_result(success=True, output="Done.")
+        call_idx = {"n": 0}
+        call_order = [preflight_result, dev_result, synthesis_result]
+
+        def ordered_agent(**kwargs):
+            idx = min(call_idx["n"], len(call_order) - 1)
+            call_idx["n"] += 1
+            return call_order[idx]
+
+        mock_agent.side_effect = ordered_agent
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        assert len(audit["reviews"]) == 1
+        assert audit["reviews"][0]["synthesized"] is True
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_audit_synthesized_flag_false_degraded(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """synthesized=False when degraded to single reviewer (one failed)."""
+        config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                ModelProfile(
+                    name="opus",
+                    cli="claude",
+                    model="claude-opus-4-6",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+                ModelProfile(
+                    name="codex",
+                    cli="codex",
+                    model="codex",
+                    budget_usd=5.0,
+                    timeout_seconds=300,
+                    allowed_tools=[],
+                ),
+            ],
+            synthesis=ModelProfile(
+                name="synthesis",
+                cli="claude",
+                model="claude-sonnet-4-6",
+                budget_usd=5.0,
+                timeout_seconds=300,
+                allowed_tools=[],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        # One fails → degraded, no synthesis
+        mock_pool.return_value = [
+            AgentResult(
+                success=True,
+                output=APPROVE_REVIEW,
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name="opus",
+            ),
+            AgentResult(
+                success=False,
+                output="",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=1,
+                raw={},
+                profile_name="codex",
+            ),
+        ]
+
+        result = run_task(config, task)
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["reviews"][0]["synthesized"] is False
+
+
+class TestCampaignAuditWrites:
+    """Tests for campaign audit writing behavior.
+
+    These tests cover campaign.py behavior within the allowed file scope
+    (tests/test_coordinator.py). Campaign-specific tests for run_campaign()
+    audit writes are placed here since tests/test_campaign.py is out of scope.
+    """
+
+    def _make_manifest(self, tmp_path: Path, spec_rel_paths: list[str]) -> Path:
+        """Create a campaign manifest YAML in tmp_path."""
+        manifest = {
+            "name": "Test Campaign",
+            "budget_usd": 100.0,
+            "specs": spec_rel_paths,
+        }
+        manifest_path = tmp_path / "campaign.yaml"
+        manifest_path.write_text(yaml.dump(manifest), encoding="utf-8")
+        return manifest_path
+
+    def _make_fake_result(self, tmp_path: Path) -> object:
+        """Build a fake CoordinatorResult with one APPROVE review cycle."""
+        from theforge.coordinator import CoordinatorResult, CoordinatorState, ReviewCycleMetadata
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        meta = ReviewCycleMetadata(
+            pool_models=["opus", "codex"],
+            successful=["opus"],
+            failed=["codex"],
+            synthesized=False,
+            failed_detail={"codex": "exit=1"},
+        )
+        state.review_cycle_metadata.append(meta)
+        state.review_cycle = 1
+        rr = ReviewResult(
+            verdict="APPROVE",
+            summary="Looks good.",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        state.review_results.append(rr)
+        return CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done",
+        )
+
+    @patch("theforge.campaign.run_task")
+    def test_campaign_writes_worktree_audit(self, mock_run_task, tmp_path):
+        """After run_campaign(), the spec worktree contains forge_audit.yaml."""
+        from theforge.campaign import run_campaign
+
+        config = _make_config(tmp_path)
+
+        # Create a spec file
+        spec = tmp_path / "spec.md"
+        spec.write_text("---\nslug: my-spec\nname: My Spec\n---\n# Spec", encoding="utf-8")
+
+        # Pre-create the workspace (simulates coordinator having created it)
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+
+        fake_result = self._make_fake_result(tmp_path)
+        mock_run_task.return_value = fake_result
+
+        manifest_path = self._make_manifest(tmp_path, ["spec.md"])
+        run_campaign(config, manifest_path)
+
+        audit_path = workspace / "forge_audit.yaml"
+        assert audit_path.exists(), "forge_audit.yaml not written to worktree"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
+        assert "reviews" in audit
+        assert len(audit["reviews"]) == 1
+        assert audit["reviews"][0]["failed"] == ["codex"]
+        assert audit["reviews"][0].get("failed_detail", {}).get("codex") == "exit=1"
+
+    @patch("theforge.campaign.run_task")
+    def test_campaign_audit_includes_review_summary(self, mock_run_task, tmp_path):
+        """campaign-audit.yaml has reviews list per spec with pool/successful/failed fields."""
+        from theforge.campaign import run_campaign
+
+        config = _make_config(tmp_path)
+
+        spec = tmp_path / "spec.md"
+        spec.write_text("---\nslug: my-spec\nname: My Spec\n---\n# Spec", encoding="utf-8")
+
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+
+        fake_result = self._make_fake_result(tmp_path)
+        mock_run_task.return_value = fake_result
+
+        manifest_path = self._make_manifest(tmp_path, ["spec.md"])
+        run_campaign(config, manifest_path)
+
+        campaign_audit_path = tmp_path / "campaign-audit.yaml"
+        assert campaign_audit_path.exists(), "campaign-audit.yaml not written"
+        audit = yaml.safe_load(campaign_audit_path.read_text(encoding="utf-8")) or {}
+        specs = audit.get("specs", [])
+        assert len(specs) == 1
+        spec_entry = specs[0]
+        assert "reviews" in spec_entry
+        reviews = spec_entry["reviews"]
+        assert len(reviews) == 1
+        cycle = reviews[0]
+        assert set(cycle["pool"]) == {"opus", "codex"}
+        assert cycle["successful"] == ["opus"]
+        assert cycle["failed"] == ["codex"]
+        assert cycle["verdict"] == "APPROVE"
+        assert cycle["p1_count"] == 0
+        assert cycle["p2_count"] == 0
+
+    @patch("theforge.campaign.run_task")
+    def test_campaign_already_done_no_worktree_audit(self, mock_run_task, tmp_path):
+        """ALREADY_DONE specs do not write a worktree audit (no worktree was created)."""
+        from theforge.campaign import run_campaign
+        from theforge.coordinator import CoordinatorResult, CoordinatorState
+
+        config = _make_config(tmp_path)
+
+        spec = tmp_path / "spec.md"
+        spec.write_text("---\nslug: done-spec\nname: Done Spec\n---\n# Spec", encoding="utf-8")
+
+        # No workspace created — ALREADY_DONE path
+        state = CoordinatorState()
+        state.preflight_verdict = "ALREADY_DONE"
+        fake_result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Already done",
+        )
+        mock_run_task.return_value = fake_result
+
+        manifest_path = self._make_manifest(tmp_path, ["spec.md"])
+        run_campaign(config, manifest_path)
+
+        # No workspace dir → no forge_audit.yaml written there
+        workspace = tmp_path / "done-spec"
+        assert not workspace.exists() or not (workspace / "forge_audit.yaml").exists()

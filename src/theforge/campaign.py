@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .coordinator import CoordinatorResult, run_task
+from .coordinator import CoordinatorResult, generate_audit_log, run_task
 from .task import TaskSpec
 
 
@@ -185,6 +185,15 @@ def run_campaign(
         result = run_task(config, task, interactive=interactive, auto_merge=auto_merge)
         results.append((spec_str, result))
 
+        # Write per-spec audit to worktree for diagnostics
+        workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+        if workspace_path.exists():
+            audit = generate_audit_log(config, task, result)
+            audit_path = workspace_path / "forge_audit.yaml"
+            with open(audit_path, "w", encoding="utf-8") as f:
+                yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+            _log(f"[{idx}/{total}] Per-spec audit written: {audit_path}")
+
         spec_cost = result.state.total_cost
         accumulated_cost += spec_cost
 
@@ -269,12 +278,32 @@ def _write_campaign_audit(
             res = results_by_spec[spec_str]
             preflight = res.state.preflight_verdict or "PROCEED"
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
+
+            # Build reviews summary for this spec
+            reviews_summary = []
+            for i, meta in enumerate(res.state.review_cycle_metadata):
+                cycle_entry: dict = {
+                    "cycle": i + 1,
+                    "pool": meta.pool_models,
+                    "successful": meta.successful,
+                    "failed": meta.failed,
+                    "synthesized": meta.synthesized,
+                    "parse_retries": meta.parse_retries,
+                }
+                if i < len(res.state.review_results):
+                    r = res.state.review_results[i]
+                    cycle_entry["verdict"] = r.verdict
+                    cycle_entry["p1_count"] = sum(1 for f in r.findings if f.severity == "P1")
+                    cycle_entry["p2_count"] = sum(1 for f in r.findings if f.severity == "P2")
+                reviews_summary.append(cycle_entry)
+
             entry = {
                 "path": spec_str,
                 "outcome": outcome,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
                 "merge": res.merge is not None and res.merge.get("merged", False),
+                "reviews": reviews_summary,
             }
         else:
             # Skipped due to budget
@@ -284,6 +313,7 @@ def _write_campaign_audit(
                 "cost_usd": 0.0,
                 "preflight": None,
                 "merge": False,
+                "reviews": [],
             }
         spec_entries.append(entry)
 
