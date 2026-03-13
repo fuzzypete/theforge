@@ -36,7 +36,7 @@ import yaml
 
 from .config import ForgeConfig
 from .review import ReviewResult, findings_to_markdown, parse_review_output
-from .runner import AgentResult, log_agent_result, run_agent, run_agent_pool
+from .runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agent_pool
 from .task import (
     TaskSpec,
     build_dev_prompt,
@@ -132,14 +132,27 @@ class CoordinatorResult:
 
 # ── Logging ──────────────────────────────────────────────────────────
 
+_LOG_LEVEL: LogLevel = LogLevel.PROGRESS
+
+
+def set_log_level(level: LogLevel) -> None:
+    global _LOG_LEVEL
+    _LOG_LEVEL = level
+
 
 def _log(msg: str) -> None:
-    """Print coordinator status to stderr."""
-    print(f"[forge] {msg}", file=sys.stderr)
+    """Print coordinator status to stderr (always shown)."""
+    print(f"[forge] {msg}", file=sys.stderr, flush=True)
+
+
+def _log_verbose(msg: str) -> None:
+    """Print coordinator detail to stderr (verbose mode only)."""
+    if _LOG_LEVEL >= LogLevel.VERBOSE:
+        print(f"[forge] {msg}", file=sys.stderr, flush=True)
 
 
 def _log_phase(phase: Phase, detail: str = "") -> None:
-    suffix = f" — {detail}" if detail else ""
+    suffix = f"   {detail}" if detail else ""
     _log(f"▸ {phase.name}{suffix}")
 
 
@@ -445,7 +458,7 @@ def _run_gate(
         gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
         gate_cmd = gate_cmd.replace("{slug}", task.slug)
 
-    _log(f"Running gate: {gate_cmd}")
+    _log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
     ok, output = _run_shell(
         gate_cmd,
@@ -463,12 +476,12 @@ def _run_gate(
         # so the coordinator escalates immediately rather than burning dev retries.
         if output.startswith("TIMEOUT") or output.startswith("ERROR"):
             return None, f"Gate infrastructure failure: {output[:300]}"
-        _log(f"Gate command failed: {output[:200]}")
+        _log_verbose(f"Gate command failed: {output[:200]}")
         return "FAIL", None
 
     # Handoff-based mode: read decision from handoff file
     if not ok:
-        _log(f"Gate command failed: {output[:200]}")
+        _log_verbose(f"Gate command failed: {output[:200]}")
         # Gate may have still produced a handoff with FAIL/BLOCKED
         decision, err = _read_gate_decision(config, workspace_path)
         if decision:
@@ -533,11 +546,12 @@ def run_task(
     """
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _task_start = time.monotonic()
     spec_content = load_spec(task.spec_path)
 
     # ── WORKSPACE ─────────────────────────────────────────────────
     state.phase = Phase.WORKSPACE
-    _log_phase(state.phase, f"slug={task.slug}")
+    _log_phase(state.phase, task.slug)
 
     workspace_path, branch_name, err = _create_workspace(config, task)
     if err:
@@ -557,7 +571,8 @@ def run_task(
 
     # ── PREFLIGHT ──────────────────────────────────────────────────
     state.phase = Phase.PREFLIGHT
-    _log_phase(state.phase)
+    preflight_profile = config.review_pool[0]
+    _log_phase(state.phase, preflight_profile.model)
 
     file_contents = _load_file_scope_contents(task, config.project_root)
     preflight_prompt = build_preflight_prompt(
@@ -565,7 +580,6 @@ def run_task(
     )
 
     # Use the first review profile for preflight (read-only, lightweight)
-    preflight_profile = config.review_pool[0]
     _preflight_start = time.monotonic()
     preflight_result = run_agent(
         prompt=preflight_prompt,
@@ -586,11 +600,13 @@ def run_task(
 
     state.preflight_verdict = verdict
     state.preflight_reason = reason
-    _log(f"Preflight verdict: {verdict}")
-    _log(f"  Reason: {reason}")
+    _log(f"  ✓ PREFLIGHT   {verdict}")
+    _log_verbose(f"  Reason: {reason}")
 
     if verdict == "ALREADY_DONE":
         state.phase = Phase.DONE
+        elapsed = time.monotonic() - _task_start
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {elapsed:.0f}s")
         return CoordinatorResult(
             success=True,
             phase=state.phase,
@@ -601,6 +617,7 @@ def run_task(
     if verdict == "BLOCKED":
         state.phase = Phase.ESCALATE
         state.error = f"Preflight: spec is blocked. {reason}"
+        _log(f"✗ ESCALATE   {state.error}")
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -617,7 +634,7 @@ def run_task(
         state.dev_iteration += 1
         _log_phase(
             state.phase,
-            f"cycle={state.review_cycle + 1} iter={state.dev_iteration}",
+            f"{config.dev_profile.model}  iter={state.dev_iteration}",
         )
 
         prompt = build_dev_prompt(
@@ -638,10 +655,12 @@ def run_task(
             working_dir=workspace_path,
             session_id=state.dev_session_id,
         )
+        _dev_elapsed = time.monotonic() - _dev_start
         state.dev_results.append(dev_result)
-        state.dev_durations.append(time.monotonic() - _dev_start)
+        state.dev_durations.append(_dev_elapsed)
         state.dev_session_id = dev_result.session_id
         log_agent_result(dev_result, "DEV")
+        _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
 
         if state.total_dev_cost > config.dev_profile.budget_usd:
             state.phase = Phase.ESCALATE
@@ -649,6 +668,7 @@ def run_task(
                 f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
                 f"(limit ${config.dev_profile.budget_usd:.4f})"
             )
+            _log(f"✗ ESCALATE   {state.error}")
             return CoordinatorResult(
                 success=False,
                 phase=state.phase,
@@ -657,21 +677,22 @@ def run_task(
             )
 
         if not dev_result.success:
-            _log(f"Dev agent failed (exit={dev_result.exit_code})")
+            _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
             # Don't immediately escalate — try validation anyway,
             # the agent may have committed partial work + run the gate
 
         # ── VALIDATE ──────────────────────────────────────────
         state.phase = Phase.VALIDATE
-        _log_phase(state.phase)
+        _log_phase(state.phase, "running gate...")
 
         gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
 
         if gate_err:
-            _log(f"Gate error: {gate_err}")
+            _log_verbose(f"Gate error: {gate_err}")
             if state.dev_iteration >= config.retry.max_dev_iterations:
                 state.phase = Phase.ESCALATE
                 state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -680,13 +701,15 @@ def run_task(
                 )
             # Retry dev with feedback about the gate failure
             state.human_feedback = f"Gate validation failed: {gate_err}"
+            _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
             continue
 
         assert gate_decision is not None
         state.gate_decisions.append(gate_decision)
-        _log(f"Gate decision: {gate_decision}")
+        _log_verbose(f"Gate decision: {gate_decision}")
 
         if gate_decision == "PASS":
+            _log("  ✓ VALIDATE   PASS")
             # Verify worktree is clean — the dev agent must commit all changes.
             # The gate runs against the working tree, so it can pass even with
             # uncommitted files. This check catches that process violation.
@@ -707,6 +730,7 @@ def run_task(
                     if state.dev_iteration >= config.retry.max_dev_iterations:
                         state.phase = Phase.ESCALATE
                         state.error = f"Dev agent left uncommitted changes: {dirty_files}"
+                        _log(f"✗ ESCALATE   {state.error}")
                         return CoordinatorResult(
                             success=False,
                             phase=state.phase,
@@ -723,6 +747,7 @@ def run_task(
             if state.dev_iteration >= config.retry.max_dev_iterations:
                 state.phase = Phase.ESCALATE
                 state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
+                _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -736,12 +761,14 @@ def run_task(
                 f"Fix the issues and re-run the gate.\n\n"
                 f"Current handoff:\n{handoff_text}"
             )
+            _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
             _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
             continue
         else:
             _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
             state.phase = Phase.ESCALATE
             state.error = f"Unknown gate decision: {gate_decision!r}"
+            _log(f"✗ ESCALATE   {state.error}")
             return CoordinatorResult(
                 success=False,
                 phase=state.phase,
@@ -753,7 +780,9 @@ def run_task(
         state.phase = Phase.REVIEW
         pool_size = len(config.review_pool)
         max_parse_retries = config.retry.max_review_parse_retries
-        _log_phase(state.phase, f"cycle={state.review_cycle + 1} pool={pool_size}")
+        _review_pool_start = time.monotonic()
+        _pool_model_names = "+".join(p.model for p in config.review_pool)
+        _log_phase(state.phase, f"{_pool_model_names}  cycle={state.review_cycle + 1}")
 
         diff_text = _get_diff(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
@@ -775,19 +804,22 @@ def run_task(
             parse_retries=0,
         )
         state.review_cycle_metadata.append(meta)
+        _review_cost_before_cycle = sum(r.cost_usd for r in state.review_agent_results)
 
         parsed_review = None
         last_parse_error: str | None = None
 
         for _parse_attempt in range(max_parse_retries + 1):
             if _parse_attempt > 0:
-                _log(
+                _log_verbose(
                     f"Parse retry {_parse_attempt}/{max_parse_retries} "
                     f"for review cycle {state.review_cycle + 1}"
                 )
 
             # Run all pool reviewers (sequentially for MVP)
-            _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+            _log_verbose(
+                f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}"
+            )
             _pool_start = time.monotonic()
             pool_results = run_agent_pool(
                 prompt=review_prompt,
@@ -825,7 +857,7 @@ def run_task(
             failed_results = [r for r in pool_results if not r.success]
 
             for f in failed_results:
-                _log(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
+                _log_verbose(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
 
             meta.successful = [r.profile_name for r in successful]
             meta.failed = [r.profile_name for r in failed_results]
@@ -848,7 +880,7 @@ def run_task(
             if config.synthesis_profile is None or len(successful) == 1:
                 # Pool of 1, or degraded to 1 successful reviewer — no synthesis
                 if len(failed_results) > 0:
-                    _log(
+                    _log_verbose(
                         f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
                         "skipping synthesis"
                     )
@@ -857,7 +889,7 @@ def run_task(
             else:
                 # Multi-model: run synthesis over all successful outputs
                 meta.synthesized = True  # mutate in place; already in state.review_cycle_metadata
-                _log(
+                _log_verbose(
                     f"Synthesizing {len(successful)} review outputs "
                     f"(+{len(failed_results)} failed excluded)"
                 )
@@ -922,13 +954,13 @@ def run_task(
 
             if _candidate.parse_errors:
                 last_parse_error = str(_candidate.parse_errors)
-                _log(
+                _log_verbose(
                     f"Review parse errors (attempt {_parse_attempt + 1}): "
                     f"{_candidate.parse_errors}"
                 )
                 if _parse_attempt < max_parse_retries:
                     meta.parse_retries += 1
-                    _log(
+                    _log_verbose(
                         f"Retrying reviewer ({meta.parse_retries}/{max_parse_retries} retries "
                         f"used) — parse error does NOT increment review cycle"
                     )
@@ -947,6 +979,7 @@ def run_task(
                 f"Review pool unreliable: all reviewers failed to produce valid output "
                 f"after {meta.parse_retries} retries. Last error: {last_parse_error}"
             )
+            _log(f"✗ ESCALATE   {state.error}")
             return CoordinatorResult(
                 success=False,
                 phase=state.phase,
@@ -958,14 +991,20 @@ def run_task(
         state.review_cycle += 1
         state.review_results.append(parsed_review)
 
-        _log(f"Review verdict: {parsed_review.verdict}")
-        _log(f"  Summary: {parsed_review.summary}")
-        _log(
-            f"  Findings: {len(parsed_review.findings)} "
-            f"({sum(1 for f in parsed_review.findings if f.severity == 'P1')} P1)"
-        )
+        _review_elapsed = time.monotonic() - _review_pool_start
+        _p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
+        _p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
+        _review_cost = sum(r.cost_usd for r in state.review_agent_results) - _review_cost_before_cycle
+
+        _log_verbose(f"Review verdict: {parsed_review.verdict}")
+        _log_verbose(f"  Summary: {parsed_review.summary}")
+        _log_verbose(f"  Findings: {len(parsed_review.findings)} ({_p1_count} P1)")
 
         if parsed_review.verdict == "APPROVE":
+            _log(
+                f"  ✓ REVIEW   APPROVE  {_p1_count} P1  {_p2_count} P2"
+                f"  ${_review_cost:.2f}  {_review_elapsed:.0f}s"
+            )
             if interactive:
                 state.phase = Phase.HUMAN_REVIEW
                 _log_phase(state.phase)
@@ -976,7 +1015,6 @@ def run_task(
                 state.human_review_feedback = feedback
                 if decision == "approve":
                     state.phase = Phase.DONE
-                    _log_phase(state.phase, "Human approved — ready to merge")
                     merge_info: dict | None = None
                     merge_suffix = ""
                     if auto_merge:
@@ -992,6 +1030,8 @@ def run_task(
                             if merge_info["merged"]
                             else f" Merge failed: {merge_info['error']}"
                         )
+                    _task_elapsed = time.monotonic() - _task_start
+                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                     return CoordinatorResult(
                         success=True,
                         phase=state.phase,
@@ -1007,6 +1047,7 @@ def run_task(
                 if decision == "escalate":
                     state.phase = Phase.ESCALATE
                     state.error = "Human chose to escalate after APPROVE."
+                    _log(f"✗ ESCALATE   {state.error}")
                     return CoordinatorResult(
                         success=False,
                         phase=state.phase,
@@ -1021,7 +1062,6 @@ def run_task(
                 continue
             else:
                 state.phase = Phase.DONE
-                _log_phase(state.phase, "Review approved — ready for human merge")
                 merge_info = None
                 merge_suffix = ""
                 if auto_merge:
@@ -1037,6 +1077,8 @@ def run_task(
                         if merge_info["merged"]
                         else f" Merge failed: {merge_info['error']}"
                     )
+                _task_elapsed = time.monotonic() - _task_start
+                _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                 return CoordinatorResult(
                     success=True,
                     phase=state.phase,
@@ -1051,6 +1093,10 @@ def run_task(
                 )
 
         # REQUEST_CHANGES — loop back to dev
+        _log(
+            f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1"
+            f"  ${_review_cost:.2f}  {_review_elapsed:.0f}s"
+        )
         if state.review_cycle >= config.retry.max_review_cycles:
             if interactive:
                 state.phase = Phase.HUMAN_REVIEW
@@ -1062,7 +1108,6 @@ def run_task(
                 state.human_review_feedback = feedback
                 if decision == "approve":
                     state.phase = Phase.DONE
-                    _log_phase(state.phase, "Human approved despite exhausted cycles")
                     merge_info = None
                     merge_suffix = ""
                     if auto_merge:
@@ -1078,6 +1123,8 @@ def run_task(
                             if merge_info["merged"]
                             else f" Merge failed: {merge_info['error']}"
                         )
+                    _task_elapsed = time.monotonic() - _task_start
+                    _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                     return CoordinatorResult(
                         success=True,
                         phase=state.phase,
@@ -1099,6 +1146,7 @@ def run_task(
                 # escalate
                 state.phase = Phase.ESCALATE
                 state.error = "Human chose to escalate after exhausted cycles."
+                _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -1111,6 +1159,7 @@ def run_task(
                     f"Review requested changes after {state.review_cycle} cycles. "
                     f"Max cycles ({config.retry.max_review_cycles}) exhausted."
                 )
+                _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
                     phase=state.phase,
@@ -1122,7 +1171,7 @@ def run_task(
         state.last_review_findings = findings_to_markdown(parsed_review.findings)
         state.dev_iteration = 0  # reset iteration count for new review cycle
         state.human_feedback = None  # clear any gate feedback
-        _log(f"Sending {len(parsed_review.findings)} findings back to dev agent")
+        _log_verbose(f"Sending {len(parsed_review.findings)} findings back to dev agent")
 
 
 # ── Review-only mode ─────────────────────────────────────────────────
@@ -1164,7 +1213,8 @@ def run_review_only(
     state.review_cycle = 1
     state.dev_iteration = 0
     pool_size = len(config.review_pool)
-    _log_phase(state.phase, f"review-only pool={pool_size}")
+    _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
+    _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
 
     diff_text = _get_diff(workspace_path, config.workspace.base_branch)
     handoff_content = _get_handoff_content(config, workspace_path)
@@ -1176,7 +1226,7 @@ def run_review_only(
         handoff_content=handoff_content,
     )
 
-    _log(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+    _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
     _pool_start = time.monotonic()
     pool_results = run_agent_pool(
         prompt=review_prompt,
@@ -1194,7 +1244,7 @@ def run_review_only(
     failed_results = [r for r in pool_results if not r.success]
 
     for f in failed_results:
-        _log(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
+        _log_verbose(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
 
     meta = ReviewCycleMetadata(
         pool_models=[p.name for p in config.review_pool],
@@ -1209,6 +1259,7 @@ def run_review_only(
         state.phase = Phase.ESCALATE
         failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
         state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
+        _log(f"✗ ESCALATE   {state.error}")
         return CoordinatorResult(
             success=False,
             phase=state.phase,
@@ -1221,7 +1272,7 @@ def run_review_only(
         synthesis_output = successful[0].output
     else:
         meta.synthesized = True
-        _log(f"Synthesizing {len(successful)} review outputs")
+        _log_verbose(f"Synthesizing {len(successful)} review outputs")
         synthesis_prompt = build_synthesis_prompt(
             task,
             review_outputs=[r.output for r in successful],
@@ -1259,7 +1310,7 @@ def run_review_only(
     state.review_results.append(parsed_review)
 
     if parsed_review.parse_errors:
-        _log(f"Review parse errors: {parsed_review.parse_errors}")
+        _log_verbose(f"Review parse errors: {parsed_review.parse_errors}")
         canonical_summary = f"PARSE ERROR: {parsed_review.summary}"
         parsed_review = ReviewResult(
             verdict="REQUEST_CHANGES",
@@ -1274,12 +1325,20 @@ def run_review_only(
         )
         state.review_results[-1] = parsed_review
 
-    _log(f"Review verdict: {parsed_review.verdict}")
-    _log(f"  Summary: {parsed_review.summary}")
+    _log_verbose(f"Review verdict: {parsed_review.verdict}")
+    _log_verbose(f"  Summary: {parsed_review.summary}")
+
+    _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
+    _ro_cost = sum(r.cost_usd for r in state.review_agent_results)
+    _ro_elapsed = _pool_elapsed
 
     if parsed_review.verdict == "APPROVE":
         state.phase = Phase.DONE
-        _log_phase(state.phase, "Review approved")
+        _log(
+            f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_ro_elapsed:.0f}s"
+        )
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_ro_elapsed:.0f}s")
         return CoordinatorResult(
             success=True,
             phase=state.phase,
@@ -1293,6 +1352,8 @@ def run_review_only(
     state.error = (
         f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
     )
+    _log(f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  ${_ro_cost:.2f}  {_ro_elapsed:.0f}s")
+    _log(f"✗ ESCALATE   {state.error}")
     return CoordinatorResult(
         success=False,
         phase=state.phase,

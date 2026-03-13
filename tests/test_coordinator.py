@@ -19,7 +19,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator import Phase, generate_audit_log, run_review_only, run_task
-from theforge.runner import AgentResult
+from theforge.runner import AgentResult, LogLevel
 from theforge.task import TaskSpec
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -1193,6 +1193,130 @@ class TestCoordinatorAuditAgentBreakdown:
 
         synth_entry = next(a for a in agents if a["role"] == "synthesis")
         assert synth_entry["profile"] == "synthesis"
+
+
+# ── Structured logging tests ──────────────────────────────────────────
+
+
+class TestVerboseFlagEnablesToolLines:
+    """Tool activity is printed in VERBOSE mode and suppressed in PROGRESS mode."""
+
+    def test_verbose_prints_tool_lines(self, capsys):
+        import theforge.runner as runner_mod
+
+        runner_mod.set_log_level(LogLevel.VERBOSE)
+        try:
+            # Simulate a tool_use assistant event
+            tool_event = (
+                '{"type": "assistant", "message": {"content": '
+                '[{"type": "tool_use", "name": "Read", "input": {"file_path": "/foo.py"}}]}}'
+            )
+            runner_mod._process_stream_event(tool_event, "test-label")
+            captured = capsys.readouterr()
+            assert "↳ Read" in captured.err
+        finally:
+            runner_mod.set_log_level(LogLevel.PROGRESS)
+
+    def test_progress_suppresses_tool_lines(self, capsys):
+        import theforge.runner as runner_mod
+
+        runner_mod.set_log_level(LogLevel.PROGRESS)
+        tool_event = (
+            '{"type": "assistant", "message": {"content": '
+            '[{"type": "tool_use", "name": "Read", "input": {"file_path": "/foo.py"}}]}}'
+        )
+        runner_mod._process_stream_event(tool_event, "test-label")
+        captured = capsys.readouterr()
+        assert "↳ Read" not in captured.err
+
+
+class TestProgressShowsPhaseTransitions:
+    """Phase transition lines always appear at PROGRESS level."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_phase_transitions_always_shown(
+        self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
+    ):
+        import theforge.coordinator as coord_mod
+        import theforge.runner as runner_mod
+
+        # Ensure we are at PROGRESS level
+        coord_mod.set_log_level(LogLevel.PROGRESS)
+        runner_mod.set_log_level(LogLevel.PROGRESS)
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        captured = capsys.readouterr()
+        # Phase transitions must appear even at PROGRESS level
+        assert "▸ WORKSPACE" in captured.err
+        assert "▸ DEV" in captured.err
+        assert "▸ VALIDATE" in captured.err
+        assert "▸ REVIEW" in captured.err
+        assert "✓ DONE" in captured.err
+
+
+class TestCampaignSpecHeaderPrinted:
+    """Campaign emits [N/total] slug header before each spec."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_spec_header_emitted(self, mock_shell, mock_agent, mock_pool, tmp_path, capsys):
+        import yaml as _yaml
+
+        from theforge.campaign import run_campaign
+
+        # Write a minimal forge.yaml
+        config = _make_config(tmp_path)
+
+        # Write a spec file with frontmatter
+        spec_path = tmp_path / "test-spec.md"
+        spec_path.write_text(
+            "---\nname: Test Spec\nslug: test-spec\n---\n# Test\n",
+            encoding="utf-8",
+        )
+
+        # Write a campaign manifest
+        manifest_path = tmp_path / "campaign.yaml"
+        manifest_path.write_text(
+            _yaml.dump(
+                {
+                    "name": "test campaign",
+                    "budget_usd": 10.0,
+                    "specs": ["test-spec.md"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        workspace = tmp_path / "test-spec"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_campaign(config, manifest_path)
+
+        captured = capsys.readouterr()
+        # Header banner for spec [1/1] must appear
+        assert "[1/1]" in captured.err
+        assert "test-spec" in captured.err
 
 
 class TestCoordinatorAuditFindings:

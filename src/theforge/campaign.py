@@ -124,7 +124,14 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
 
 
 def _log(msg: str) -> None:
-    print(f"[campaign] {msg}", file=sys.stderr)
+    print(f"[campaign] {msg}", file=sys.stderr, flush=True)
+
+
+def _spec_header(idx: int, total: int, slug: str) -> str:
+    """Format a spec header line: [N/total] slug ─────... (fills to 60 chars)."""
+    prefix = f"[{idx}/{total}] {slug} "
+    dashes = "─" * max(0, 60 - len(prefix))
+    return prefix + dashes
 
 
 def run_campaign(
@@ -153,7 +160,11 @@ def run_campaign(
 
     total = len(spec_paths)
     plural = "s" if total != 1 else ""
-    _log(f'Starting "{manifest.name}" ({total} spec{plural}, budget=${manifest.budget_usd:.2f})')
+    print(
+        f'[campaign] "{manifest.name}"  {total} spec{plural}  budget=${manifest.budget_usd:.2f}',
+        file=sys.stderr,
+        flush=True,
+    )
     _log("⚠ Budget tracks Claude costs only (Codex/Gemini report $0.00)")
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
@@ -166,7 +177,7 @@ def run_campaign(
 
     for idx, spec_path in enumerate(spec_paths, start=1):
         spec_str = manifest.specs[idx - 1]
-        _log(f"[{idx}/{total}] {spec_str}")
+        task = _build_task_from_spec(spec_path)
 
         # Budget check before starting
         if accumulated_cost >= manifest.budget_usd:
@@ -181,8 +192,14 @@ def run_campaign(
                 specs_skipped += 1
             break
 
-        task = _build_task_from_spec(spec_path)
+        # Emit spec header banner
+        print(_spec_header(idx, total, task.slug), file=sys.stderr, flush=True)
+
+        _spec_start = datetime.datetime.now(datetime.timezone.utc)
         result = run_task(config, task, interactive=interactive, auto_merge=auto_merge)
+        _spec_elapsed = (
+            datetime.datetime.now(datetime.timezone.utc) - _spec_start
+        ).total_seconds()
         results.append((spec_str, result))
 
         # Write per-spec audit to worktree for diagnostics
@@ -200,19 +217,15 @@ def run_campaign(
         # Classify outcome
         preflight_verdict = result.state.preflight_verdict
         if preflight_verdict == "ALREADY_DONE":
-            outcome_label = "ALREADY_DONE"
             specs_skipped += 1
         elif result.success:
-            outcome_label = "DONE"
             specs_succeeded += 1
         else:
-            outcome_label = result.phase.name  # ESCALATE or similar
             specs_failed += 1
 
-        # Build display suffix
-        merged = result.merge is not None and result.merge.get("merged", False)
-        merge_label = ", merged" if merged else ""
-        _log(f"[{idx}/{total}] {outcome_label} (${spec_cost:.2f}{merge_label})")
+        # Emit spec completion summary
+        icon = "✓" if result.success else "✗"
+        _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {_spec_elapsed:.0f}s")
 
         # Stop campaign if budget exceeded after this run
         if accumulated_cost >= manifest.budget_usd and idx < total:

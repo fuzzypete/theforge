@@ -17,6 +17,9 @@ import yaml
 from .campaign import run_campaign
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import CoordinatorResult, generate_audit_log, run_review_only, run_task
+from .coordinator import set_log_level as coordinator_set_log_level
+from .runner import LogLevel
+from .runner import set_log_level as runner_set_log_level
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 
@@ -211,6 +214,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"  Max iters:  {config.retry.max_dev_iterations}", file=sys.stderr)
     print(file=sys.stderr)
 
+    if getattr(args, "verbose", False):
+        coordinator_set_log_level(LogLevel.VERBOSE)
+        runner_set_log_level(LogLevel.VERBOSE)
+
     if getattr(args, "dry_run", False):
         return _cmd_dry_run(config, task, spec_path)
 
@@ -317,6 +324,10 @@ def cmd_campaign(args: argparse.Namespace) -> int:
         return 1
 
     config = load_config(config_path)
+
+    if getattr(args, "verbose", False):
+        coordinator_set_log_level(LogLevel.VERBOSE)
+        runner_set_log_level(LogLevel.VERBOSE)
 
     auto_merge = getattr(args, "auto_merge", False)
     interactive = getattr(args, "interactive", False)
@@ -486,6 +497,13 @@ def main() -> None:
         default=False,
         help="Merge feature branch into base branch after review APPROVE",
     )
+    run_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
+    )
 
     # forge review
     review_parser = subparsers.add_parser(
@@ -516,6 +534,13 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Pause for human review at each spec",
+    )
+    campaign_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
     )
 
     # forge audit
