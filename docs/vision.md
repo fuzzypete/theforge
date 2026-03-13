@@ -240,6 +240,54 @@ These are independent of the phased roadmap and can be picked up anytime.
   etc.) push Sonnet sessions long. May need spec decomposition guidance
   or automatic splitting.
 
+### Multi-Model Dev: Fallback Escalation
+
+Current: dev agent is a single model. When it exhausts retries, it
+escalates to human. A smarter retry policy: escalate to a stronger
+model before involving the human.
+
+```
+iter 1-2: Sonnet (fast, cheap)
+iter 3:   Codex or Opus (stronger, slower)
+escalate: human
+```
+
+Configurable in forge.yaml as a `dev_fallback` profile. Coordinator
+switches profiles on retry exhaustion, not on every iteration.
+
+### Multi-Model Ideation (IDEATE stage)
+
+Multi-model competition is most valuable upstream of implementation,
+proportional to spec ambiguity. The pattern that works:
+
+```
+Phase 1: each model produces ideas independently (no cross-contamination)
+Phase 2: each model reviews all other models' outputs
+Phase 3: coordinator detects convergence (same conclusion in N of M)
+         → converged items become spec inputs
+         → divergent items iterate again
+         → residual divergence → human executive decision
+```
+
+This is structurally identical to the review pool — Phase 2 is
+cross-review, Phase 3 is synthesis. The difference is the output:
+IDEATE produces structured ideas/constraints, not code.
+
+**Where it fits in the pipeline:**
+
+| Stage | Ambiguity | Multi-model value |
+|-------|-----------|-------------------|
+| Ideation | High | Maximum — deliberation protocol |
+| Spec writing | Medium | Moderate — single model fine if IDEATE was thorough |
+| Implementation (DEV) | Low | Low — single strong model + gate |
+| Review | Zero (what was built) | Maximum — independent blind-spot coverage |
+
+**Relationship to DECOMPOSE (Phase 11):** IDEATE is DECOMPOSE done
+right. Instead of one LLM splitting a spec, the deliberation protocol
+runs on "what are the sub-problems", converges, then emits the spec
+list for the campaign runner. The coordinator remains deterministic —
+only the ideation agents are LLMs.
+
 ---
 
 ## Testing Strategy
