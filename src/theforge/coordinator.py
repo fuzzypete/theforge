@@ -456,6 +456,11 @@ def _run_gate(
     if use_exit_code:
         if ok:
             return "PASS", None
+        # Distinguish infrastructure failures (timeout, shell error) from code failures.
+        # _run_shell prefixes these with "TIMEOUT" or "ERROR" — surface them as errors
+        # so the coordinator escalates immediately rather than burning dev retries.
+        if output.startswith("TIMEOUT") or output.startswith("ERROR"):
+            return None, f"Gate infrastructure failure: {output[:300]}"
         _log(f"Gate command failed: {output[:200]}")
         return "FAIL", None
 
@@ -686,10 +691,11 @@ def run_task(
             dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
             if dirty_ok and dirty_out.strip():
                 # Filter out handoff.yaml and other gate artifacts
+                handoff_file = config.validation.handoff_file
                 dirty_lines = [
                     line
                     for line in dirty_out.strip().splitlines()
-                    if not line.strip().endswith(config.validation.handoff_file)
+                    if not (handoff_file and line.strip().endswith(handoff_file))
                 ]
                 if dirty_lines:
                     dirty_files = ", ".join(

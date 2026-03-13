@@ -2294,6 +2294,61 @@ class TestExitCodeGateMode:
         assert result.success is False
         assert result.phase == Phase.ESCALATE
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_infrastructure_failure_escalates_immediately(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """TIMEOUT/ERROR in exit-code mode escalates immediately (not retried as FAIL)."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "pytest" in cmd:
+                return (False, "TIMEOUT after 120s: pytest tests/ -q")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "infrastructure" in result.message.lower() or "timeout" in result.message.lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_dirty_worktree_blocked_in_exit_code_mode(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Dirty worktree is still caught in exit-code mode (empty handoff_file)."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "pytest" in cmd:
+                return (True, "passed")
+            if "git status --porcelain" in cmd:
+                return (True, " M src/theforge/coordinator.py\n M tests/test_something.py")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase != Phase.DONE
+
 
 class TestPytestTargetSubstitution:
     """Test that {pytest_target} in gate_command is replaced from TaskSpec."""
