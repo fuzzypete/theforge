@@ -3,6 +3,8 @@
 Uses mocked runner to test all state transitions without real agent calls.
 """
 
+import datetime
+import time as _time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +24,8 @@ from theforge.config import (
 from theforge.coordinator import (
     Phase,
     _fmt_dur,
+    _is_stale_worktree,
+    _remove_worktree,
     generate_audit_log,
     run_from_review,
     run_review_only,
@@ -134,11 +138,30 @@ def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
     (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 
 
+# Stale-worktree detection commands need specific responses so that pre-created
+# workspaces in existing tests are treated as "fresh" (reused rather than removed).
+_RECENT_COMMIT_TS = str(int(_time.time()) - 60)  # 1 minute ago
+
+
+def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
+    """Return a mock response for stale-worktree detection git commands, or None if not matched."""
+    if "rev-parse --abbrev-ref HEAD" in cmd:
+        return (True, "forge/test-task")
+    if "--oneline" in cmd and "git log" in cmd:
+        return (True, "abc123 a recent commit")
+    if "--format=%ct" in cmd:
+        return (True, _RECENT_COMMIT_TS)
+    return None
+
+
 def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
     """Create a _run_shell side_effect that writes handoff.yaml during gate execution.
 
     With the stale-handoff fix, _run_gate() deletes handoff before running the gate
     command, so tests must produce handoff *during* (not before) gate execution.
+
+    Also handles stale-worktree detection commands by returning a "fresh" worktree
+    (recent commit, commits ahead of base) so pre-created workspaces are reused.
     """
     if isinstance(decisions, str):
         decisions_list = [decisions] * 20
@@ -154,6 +177,9 @@ def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
             return (True, "OK")
         if "git status --porcelain" in cmd:
             return (True, "")  # clean worktree
+        stale_resp = _handle_stale_check_cmd(cmd)
+        if stale_resp is not None:
+            return stale_resp
         return (True, "OK")
 
     return side_effect
@@ -1693,6 +1719,9 @@ class TestCoordinatorHumanReview:
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
             return (True, "OK")
 
         return side_effect
@@ -2030,6 +2059,10 @@ class TestCoordinatorAutoMerge:
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")  # clean
+            # Stale-worktree detection commands (must come before generic git log checks)
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
             if "git branch --list" in cmd:
                 return (True, "main")  # base branch exists
             if "git log" in cmd and ".." in cmd:
@@ -2371,6 +2404,9 @@ def _shell_exit_code(pass_on_call: int | None = None, gate_marker: str = "pytest
             return (True, "passed")
         if "git status --porcelain" in cmd:
             return (True, "")
+        stale_resp = _handle_stale_check_cmd(cmd)
+        if stale_resp is not None:
+            return stale_resp
         return (True, "OK")
 
     return side_effect
@@ -2521,7 +2557,10 @@ class TestPytestTargetSubstitution:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             captured_cmds.append(cmd)
-            if "pytest" in cmd:
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "pytest" in cmd and "worktree" not in cmd:
                 return (True, "passed")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -2535,8 +2574,8 @@ class TestPytestTargetSubstitution:
 
         run_task(config, task)
 
-        # Find the gate command (contains pytest)
-        gate_cmds = [c for c in captured_cmds if "pytest" in c]
+        # Find the gate command: contains pytest but is NOT a git worktree command
+        gate_cmds = [c for c in captured_cmds if "pytest" in c and "worktree" not in c]
         assert gate_cmds, "No gate command captured"
         assert "tests/test_specific.py" in gate_cmds[0]
         assert "{pytest_target}" not in gate_cmds[0]
@@ -2555,7 +2594,10 @@ class TestPytestTargetSubstitution:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             captured_cmds.append(cmd)
-            if "pytest" in cmd:
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "pytest" in cmd and "worktree" not in cmd:
                 return (True, "passed")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -2569,7 +2611,7 @@ class TestPytestTargetSubstitution:
 
         run_task(config, task)
 
-        gate_cmds = [c for c in captured_cmds if "pytest" in c]
+        gate_cmds = [c for c in captured_cmds if "pytest" in c and "worktree" not in c]
         assert gate_cmds
         assert "tests/" in gate_cmds[0]
 
@@ -3492,3 +3534,300 @@ def test_fmt_dur_hours():
     assert _fmt_dur(3600) == "1h 00m 00s"
     assert _fmt_dur(3661) == "1h 01m 01s"
     assert _fmt_dur(7384) == "2h 03m 04s"
+
+
+# ── TestStaleWorktree ─────────────────────────────────────────────────
+
+
+def _make_stale_config(tmp_path: Path, stale_worktree_days: int = 1) -> ForgeConfig:
+    """Create a test ForgeConfig with a WorkspaceConfig that has stale_worktree_days.
+
+    Uses a SimpleNamespace for WorkspaceConfig so we can set stale_worktree_days
+    without modifying the frozen WorkspaceConfig dataclass (which lives in config.py,
+    outside this spec's file_scope).
+    """
+    import types
+
+    ws = types.SimpleNamespace(
+        create_command="mkdir -p {slug}",
+        path_pattern="{slug}",
+        branch_pattern="feat/{slug}",
+        base_branch="main",
+        stale_worktree_days=stale_worktree_days,
+    )
+    # Build a real ForgeConfig but swap out workspace with our namespace
+    cfg = ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="feat/{slug}",
+            base_branch="main",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+    )
+    # Patch workspace with our namespace that includes stale_worktree_days
+    object.__setattr__(cfg, "workspace", ws)
+    return cfg
+
+
+class TestStaleWorktree:
+    """Tests for stale worktree detection (R1–R6 from spec)."""
+
+    # ── _is_stale_worktree unit tests ────────────────────────────────
+
+    @patch("theforge.coordinator._run_shell")
+    def test_stale_zero_commits_ahead(self, mock_shell, tmp_path):
+        """Branch has 0 commits ahead of base → stale."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "git log main..feat/my-spec --oneline" in cmd:
+                return (True, "")  # empty → 0 commits ahead
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is True
+        assert "0 commits ahead" in info
+
+    @patch("theforge.coordinator._run_shell")
+    def test_stale_old_commit(self, mock_shell, tmp_path):
+        """Branch has commits but last commit is >1 day old → stale."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        # Timestamp 3 days ago
+        old_ts = int(
+            (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).timestamp()
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "--oneline" in cmd:
+                return (True, "abc123 some commit")
+            if "--format=%ct" in cmd:
+                return (True, str(old_ts))
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is True
+        assert "stale" in info
+
+    @patch("theforge.coordinator._run_shell")
+    def test_fresh_worktree_reused(self, mock_shell, tmp_path):
+        """Branch has commits ahead, last commit recent → not stale (safe to reuse)."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        # Timestamp 12 minutes ago
+        recent_ts = int(
+            (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=12)
+            ).timestamp()
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "--oneline" in cmd:
+                return (True, "abc123 commit one\ndef456 commit two\nghi789 commit three")
+            if "--format=%ct" in cmd:
+                return (True, str(recent_ts))
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is False
+        assert "3 commits ahead" in info
+        assert "stale" not in info
+
+    @patch("theforge.coordinator._run_shell")
+    def test_stale_worktree_days_zero_always_removes(self, mock_shell, tmp_path):
+        """stale_worktree_days=0 → always stale regardless of commit state."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=0)
+
+        # Even with a recent commit, stale_days=0 means always remove
+        recent_ts = int(
+            (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)
+            ).timestamp()
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "--oneline" in cmd:
+                return (True, "abc123 recent commit")
+            if "--format=%ct" in cmd:
+                return (True, str(recent_ts))
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is True
+        assert "stale_worktree_days=0" in info
+
+    @patch("theforge.coordinator._run_shell")
+    def test_stale_branch_not_found(self, mock_shell, tmp_path):
+        """Worktree dir exists but branch is gone (corrupted state) → stale."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        mock_shell.return_value = (False, "fatal: not a git repository")
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is True
+
+    # ── _remove_worktree unit tests ──────────────────────────────────
+
+    @patch("theforge.coordinator._run_shell")
+    def test_remove_worktree_logs_warning(self, mock_shell, tmp_path, capsys):
+        """Warning is logged before removal."""
+        mock_shell.return_value = (True, "")
+
+        _remove_worktree(tmp_path / "my-spec", "feat/my-spec", tmp_path)
+
+        captured = capsys.readouterr()
+        assert "stale worktree detected" in captured.err
+        assert "feat/my-spec" in captured.err
+
+    @patch("theforge.coordinator._run_shell")
+    def test_remove_failure_does_not_raise(self, mock_shell, tmp_path, capsys):
+        """git worktree remove failure is logged but does not raise."""
+        mock_shell.return_value = (False, "error: not a git worktree")
+
+        # Must not raise
+        _remove_worktree(tmp_path / "my-spec", "feat/my-spec", tmp_path)
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+
+    # ── Integration: _create_workspace stale detection ───────────────
+
+    @patch("theforge.coordinator._run_shell")
+    def test_no_existing_worktree(self, mock_shell, tmp_path):
+        """Path doesn't exist → no staleness check, normal workspace creation."""
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+
+        # Workspace does NOT exist initially
+        assert not workspace.exists()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "mkdir" in cmd:
+                workspace.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        from theforge.coordinator import _create_workspace
+
+        path, branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace
+        # rev-parse should NOT have been called (no stale check needed)
+        for call in mock_shell.call_args_list:
+            cmd_arg = call[0][0]
+            assert "rev-parse" not in cmd_arg
+
+    @patch("theforge.coordinator._run_shell")
+    def test_stale_worktree_removed_on_create(self, mock_shell, tmp_path):
+        """Stale worktree (0 commits ahead) is removed and workspace recreated."""
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()  # Pre-existing stale worktree
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/test-task")
+            if "--oneline" in cmd:
+                return (True, "")  # 0 commits ahead
+            if "worktree remove" in cmd:
+                # Simulate removal
+                import shutil
+
+                if workspace.exists():
+                    shutil.rmtree(workspace)
+                return (True, "")
+            if "branch -D" in cmd:
+                return (True, "")
+            if "mkdir" in cmd:
+                workspace.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        from theforge.coordinator import _create_workspace
+
+        path, branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace
+
+        # Verify git worktree remove was called
+        calls = [c[0][0] for c in mock_shell.call_args_list]
+        assert any("worktree remove" in c for c in calls)
+
+    @patch("theforge.coordinator._run_shell")
+    def test_fresh_worktree_not_removed(self, mock_shell, tmp_path):
+        """Fresh worktree (recent commits ahead) is reused without removal."""
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()  # Pre-existing fresh worktree
+
+        recent_ts = int(
+            (
+                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+            ).timestamp()
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/test-task")
+            if "--oneline" in cmd:
+                return (True, "abc123 a commit")
+            if "--format=%ct" in cmd:
+                return (True, str(recent_ts))
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        from theforge.coordinator import _create_workspace
+
+        path, branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace
+
+        # Verify git worktree remove was NOT called
+        calls = [c[0][0] for c in mock_shell.call_args_list]
+        assert not any("worktree remove" in c for c in calls)
+        assert not any("branch -D" in c for c in calls)

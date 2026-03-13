@@ -431,18 +431,133 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
 # ── Workspace ────────────────────────────────────────────────────────
 
 
+def _fmt_age(seconds: int) -> str:
+    """Format an age in seconds as a human-readable string (e.g. '3 days', '12 minutes')."""
+    if seconds < 3600:
+        m = max(0, seconds // 60)
+        return f"{m} minute{'s' if m != 1 else ''}"
+    if seconds < 86400:
+        h = seconds // 3600
+        return f"{h} hour{'s' if h != 1 else ''}"
+    d = seconds // 86400
+    return f"{d} day{'s' if d != 1 else ''}"
+
+
+def _is_stale_worktree(path: Path, base_branch: str, config: "ForgeConfig") -> tuple[bool, str]:
+    """Check whether an existing worktree is stale and should be removed.
+
+    Returns (is_stale, info_line) where info_line is a human-readable description
+    of the staleness decision suitable for log output.
+
+    A worktree is stale (returns True) when ANY of:
+    - Branch not found / detached HEAD (corrupted state)
+    - stale_worktree_days == 0 (always remove)
+    - 0 commits ahead of base branch (prior run escalated with no work done)
+    - Last commit is older than stale_worktree_days days
+    """
+    stale_days: int = getattr(config.workspace, "stale_worktree_days", 1)
+
+    # Get branch name from the worktree's HEAD
+    ok, branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", path)
+    if not ok or not branch_out.strip() or branch_out.strip() == "HEAD":
+        return True, "branch not found or detached HEAD — removing (corrupted state)"
+
+    branch_name = branch_out.strip()
+
+    # stale_worktree_days=0 → always remove any existing worktree
+    if stale_days == 0:
+        return True, "stale_worktree_days=0 — always removing (CI/automated mode)"
+
+    # Check commits ahead of base
+    ok, log_out = _run_shell(
+        f"git log {base_branch}..{branch_name} --oneline",
+        config.project_root,
+    )
+    commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok else []
+
+    if not commits_ahead:
+        return True, f"0 commits ahead of {base_branch} — removing (stale)"
+
+    # Check last commit age
+    ok, ts_out = _run_shell(
+        f"git log -1 --format=%ct {branch_name}",
+        config.project_root,
+    )
+    if not ok or not ts_out.strip():
+        return True, "could not determine last commit timestamp — removing (stale)"
+
+    try:
+        last_commit_ts = int(ts_out.strip())
+    except ValueError:
+        return True, "could not parse commit timestamp — removing (stale)"
+
+    now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    age_seconds = max(0, now_ts - last_commit_ts)
+    age_days_float = age_seconds / 86400
+    n_commits = len(commits_ahead)
+    age_str = _fmt_age(age_seconds)
+
+    if age_days_float > stale_days:
+        return (
+            True,
+            f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}, "
+            f"last commit {age_str} ago — removing (stale)",
+        )
+
+    return (
+        False,
+        f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}, "
+        f"last commit {age_str} ago",
+    )
+
+
+def _remove_worktree(path: Path, branch: str, project_root: Path) -> None:
+    """Remove a stale worktree and its branch. Logs warnings but does not raise.
+
+    Both commands are best-effort — failures are logged but do not prevent
+    the subsequent git worktree add from running (which will fail clearly
+    if cleanup was incomplete).
+    """
+    _log(f"⚠ WORKSPACE  stale worktree detected — removing {branch}")
+    _log("  (last run escalated or was interrupted)")
+
+    ok, out = _run_shell(f"git worktree remove --force {path}", project_root)
+    if not ok:
+        _log(f"  Warning: git worktree remove failed: {out}")
+    else:
+        _log(f"  Removed stale worktree and branch {branch}")
+
+    ok2, out2 = _run_shell(f"git branch -D {branch}", project_root)
+    if not ok2:
+        _log(f"  Warning: git branch -D failed: {out2}")
+
+
 def _create_workspace(
     config: ForgeConfig, task: TaskSpec
 ) -> tuple[Path | None, str | None, str | None]:
-    """Create an isolated workspace. Returns (path, branch, error)."""
+    """Create an isolated workspace. Returns (path, branch, error).
+
+    Before creating the workspace, checks whether a worktree already exists
+    for this slug. If it does, determines whether it is safe to reuse (recent
+    commits ahead of base) or stale (should be removed and recreated).
+    """
     slug = task.slug
     cmd = config.workspace.create_command.format(slug=slug)
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=slug)
     branch_name = config.workspace.branch_pattern.format(slug=slug)
 
     if workspace_path.exists():
-        _log(f"Workspace already exists: {workspace_path}")
-        return workspace_path, branch_name, None
+        _log(f"⚠ WORKSPACE  existing worktree found: {workspace_path}")
+        is_stale, info_line = _is_stale_worktree(
+            workspace_path, config.workspace.base_branch, config
+        )
+        _log(f"  {info_line}")
+        if is_stale:
+            _remove_worktree(workspace_path, branch_name, config.project_root)
+            # Fall through to recreate the workspace below
+        else:
+            _log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
+            return workspace_path, branch_name, None
 
     _log(f"Creating workspace: {cmd}")
     ok, output = _run_shell(cmd, config.project_root)
