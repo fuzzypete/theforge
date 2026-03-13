@@ -1,0 +1,7 @@
+name: "TheForge hardening sprint"
+budget_usd: 40.00
+specs:
+  - specs/gate-hardening.md
+  - specs/reasoning-effort.md
+  - specs/review-parse-retry.md
+  - specs/forge-review.md
