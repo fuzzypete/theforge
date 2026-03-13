@@ -12,6 +12,7 @@ The coordinator remains fully deterministic. Only the ideation agents are LLMs.
 
 from __future__ import annotations
 
+import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -116,8 +117,6 @@ def _build_synthesis_prompt(
     if config is not None:
         gate_cmd = config.validation.gate_command
         # If the gate command references a specific test path, use it as a hint.
-        import shlex
-
         try:
             tokens = shlex.split(gate_cmd)
             for i, tok in enumerate(tokens):
@@ -357,7 +356,11 @@ def run_ideation(
         _log(f"▸ IDEATE   {pool_names}  round={round_num}{divergence_suffix}")
 
         # ── Phase 1: Independent generation ──────────────────────────
-        # Run each agent individually to record accurate per-agent elapsed times.
+        # NOTE: The spec recommends run_agent_pool() here, but we use run_agent()
+        # sequentially so we can log per-agent elapsed times as they complete (R4).
+        # run_agent_pool() runs sequentially too (no parallelism today), so the
+        # functional result is identical. If run_agent_pool() gains true parallel
+        # execution in the future, this loop should be refactored to use it.
         _log("  ▸ Phase 1   generating independently...")
         phase1_prompt = _build_phase1_prompt(current_brief)
         phase1_outputs: dict[str, str] = {}
@@ -380,6 +383,7 @@ def run_ideation(
         # ── Phase 2: Cross-review (skipped for single-model pool) ────
         # Single-model pool: skip cross-review but still run synthesis so
         # Phase 1 ideas are converted into a valid spec with frontmatter.
+        # NOTE: Same sequential/timing rationale as Phase 1 (see comment above).
         phase2_outputs: dict[str, str] = {}
 
         if len(pool) > 1:
@@ -469,12 +473,19 @@ def run_ideation(
             break
 
     # ── Output ───────────────────────────────────────────────────────
-    # Append Human Decisions Required section if residual divergence
-    if residual_divergence and "## Human Decisions Required" not in final_synthesis:
+    # Unconditionally normalize the ## Human Decisions Required section.
+    # The synthesis model may have emitted a partial, empty, or malformed
+    # section. We strip any existing section and rewrite it from the
+    # authoritative residual_divergence list so the written spec always
+    # reflects the actual unresolved items.
+    hdr = "## Human Decisions Required"
+    # Strip any existing section (and everything after it) then reappend.
+    if hdr in final_synthesis:
+        final_synthesis = final_synthesis[: final_synthesis.index(hdr)].rstrip()
+
+    if residual_divergence:
         decisions = "\n".join(f"- {item}" for item in residual_divergence)
-        final_synthesis = (
-            final_synthesis.rstrip() + f"\n\n## Human Decisions Required\n{decisions}\n"
-        )
+        final_synthesis = final_synthesis + f"\n\n{hdr}\n{decisions}\n"
 
     human_decision_required = bool(residual_divergence)
 

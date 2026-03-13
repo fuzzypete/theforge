@@ -359,15 +359,19 @@ def cmd_ideate(args: argparse.Namespace) -> int:
     # Load brief from file or inline string
     brief_arg = args.brief
     brief_path = Path(brief_arg)
-    if brief_path.suffix in (".md", ".txt") and brief_path.exists():
+    brief_is_file = brief_path.suffix in (".md", ".txt") and brief_path.exists()
+    if brief_is_file:
         brief = brief_path.read_text(encoding="utf-8")
     else:
         brief = brief_arg
 
-    # Find config
+    # Find config — search from brief file's directory when brief is a file,
+    # mirroring how cmd_run/cmd_campaign search relative to their input files.
     config_path: Path | None = None
     if args.config:
         config_path = Path(args.config).resolve()
+    elif brief_is_file:
+        config_path = _find_config(brief_path.parent)
     else:
         config_path = _find_config()
 

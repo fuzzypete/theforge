@@ -378,6 +378,68 @@ def test_max_rounds_respected(tmp_path: Path) -> None:
     assert len(result.rounds) == 1
 
 
+def test_human_decisions_section_overrides_synthesis_version(tmp_path: Path) -> None:
+    """Residual divergence rewrites Human Decisions Required, overriding synthesis content."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    # Synthesis emits a Human Decisions Required section with wrong/extra content.
+    synthesis_with_bad_section = f"""\
+CONVERGED_ITEMS:
+- Use async IO
+
+DIVERGENT_ITEMS:
+- Whether to use Redis or in-memory cache
+
+SPEC:
+{_VALID_SPEC}
+## Human Decisions Required
+- stale item that should be replaced
+- another stale entry
+"""
+
+    with patch(
+        "theforge.ideate.run_agent",
+        side_effect=_multi_model_agent(synth=synthesis_with_bad_section),
+    ):
+        result = run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert result.human_decision_required is True
+    assert "Whether to use Redis or in-memory cache" in result.residual_divergence
+    # The stale section content should be stripped and rewritten from residual_divergence
+    assert "stale item that should be replaced" not in result.final_synthesis
+    assert "Whether to use Redis or in-memory cache" in result.final_synthesis
+    assert result.final_synthesis.count("## Human Decisions Required") == 1
+
+
+def test_no_divergence_strips_human_decisions_section(tmp_path: Path) -> None:
+    """No divergent items → spurious Human Decisions Required section is stripped."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    # Synthesis has no divergent items but erroneously emits the section.
+    clean_synthesis_with_spurious_section = f"""\
+CONVERGED_ITEMS:
+- Use async IO
+- Add unit tests
+
+DIVERGENT_ITEMS:
+
+SPEC:
+{_VALID_SPEC}
+## Human Decisions Required
+- spurious item that should disappear
+"""
+
+    with patch(
+        "theforge.ideate.run_agent",
+        side_effect=_multi_model_agent(synth=clean_synthesis_with_spurious_section),
+    ):
+        result = run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert result.human_decision_required is False
+    assert "Human Decisions Required" not in result.final_synthesis
+    assert "spurious item" not in result.final_synthesis
+
+
 def test_dry_run_no_file_written(tmp_path: Path) -> None:
     """output_path=None → spec printed to stdout, no file created."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
