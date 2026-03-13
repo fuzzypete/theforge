@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .coordinator import CoordinatorResult, _fmt_dur, generate_audit_log, run_task
+from .coordinator import CoordinatorResult, _fmt_dur, _notify, generate_audit_log, run_task
 from .task import TaskSpec
 
 
@@ -140,6 +140,7 @@ def run_campaign(
     *,
     auto_merge: bool = False,
     interactive: bool = False,
+    notify: bool = True,
 ) -> CampaignResult:
     """Run all specs in a campaign manifest sequentially.
 
@@ -196,7 +197,9 @@ def run_campaign(
         print(_spec_header(idx, total, task.slug), file=sys.stderr, flush=True)
 
         _spec_start = datetime.datetime.now(datetime.timezone.utc)
-        result = run_task(config, task, interactive=interactive, auto_merge=auto_merge)
+        result = run_task(
+            config, task, interactive=interactive, auto_merge=auto_merge, notify=notify
+        )
         _spec_elapsed = (
             datetime.datetime.now(datetime.timezone.utc) - _spec_start
         ).total_seconds()
@@ -258,6 +261,12 @@ def run_campaign(
         f"Campaign complete: {specs_succeeded} succeeded, {specs_failed} failed, "
         f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_fmt_dur(_campaign_elapsed)}"
     )
+    if notify:
+        _notify(
+            f"TheForge: {manifest.name}",
+            f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
+            f" — ${accumulated_cost:.2f}  {_fmt_dur(_campaign_elapsed)}",
+        )
 
     # Write campaign-audit.yaml
     _write_campaign_audit(

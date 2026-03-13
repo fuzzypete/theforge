@@ -230,7 +230,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     # --auto disables human review; default (no flag) is interactive
     interactive = not getattr(args, "auto", False)
     auto_merge = getattr(args, "auto_merge", False)
-    result = run_task(config, task, interactive=interactive, auto_merge=auto_merge)
+    result = run_task(
+        config,
+        task,
+        interactive=interactive,
+        auto_merge=auto_merge,
+        notify=not args.no_notify,
+    )
 
     # Write audit log
     audit_path = _write_audit(result, config, task)
@@ -291,7 +297,13 @@ def cmd_review(args: argparse.Namespace) -> int:
     print(file=sys.stderr)
 
     auto_merge = getattr(args, "auto_merge", False)
-    result = run_from_review(config, task, workspace_path, auto_merge=auto_merge)
+    result = run_from_review(
+        config,
+        task,
+        workspace_path,
+        auto_merge=auto_merge,
+        notify=not args.no_notify,
+    )
 
     # Write audit log
     audit_path = _write_audit(result, config, task)
@@ -345,6 +357,7 @@ def cmd_campaign(args: argparse.Namespace) -> int:
             manifest_path,
             auto_merge=auto_merge,
             interactive=interactive,
+            notify=not args.no_notify,
         )
     except ValueError as exc:
         print(f"Campaign error: {exc}", file=sys.stderr)
@@ -511,6 +524,12 @@ def main() -> None:
         default=False,
         help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
     )
+    run_parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        default=False,
+        help="Suppress OS notifications",
+    )
 
     # forge review
     review_parser = subparsers.add_parser(
@@ -528,6 +547,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Merge feature branch into base branch after review APPROVE",
+    )
+    review_parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        default=False,
+        help="Suppress OS notifications",
     )
 
     # forge campaign
@@ -554,6 +579,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
+    )
+    campaign_parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        default=False,
+        help="Suppress OS notifications",
     )
 
     # forge audit

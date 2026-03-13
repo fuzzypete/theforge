@@ -21,7 +21,14 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator import (
+    CoordinatorResult,
+    CoordinatorState,
+    Phase,
+    _notify,
+    _osa_quote,
+    run_task,
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -382,3 +389,104 @@ class TestRunCampaign:
             audit = yaml.safe_load(f)
 
         assert audit["specs"][0]["merge"] is False
+
+
+# ── Notification tests ────────────────────────────────────────────────
+
+
+class TestCampaignNotifications:
+    def test_campaign_notification_sent(self, tmp_path: Path) -> None:
+        """Campaign completion sends exactly one notification with name in title."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=2.0)
+
+        with patch("theforge.campaign._notify") as mock_notify:
+            with patch("theforge.campaign.run_task", return_value=result_a):
+                run_campaign(config, manifest_path, notify=True)
+
+        mock_notify.assert_called_once()
+        title, body = mock_notify.call_args[0]
+        assert "Test Campaign" in title
+        assert "1" in body  # specs_succeeded count
+
+    def test_campaign_notification_skipped_with_no_notify(self, tmp_path: Path) -> None:
+        """notify=False suppresses campaign completion notification."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=2.0)
+
+        with patch("theforge.campaign._notify") as mock_notify:
+            with patch("theforge.campaign.run_task", return_value=result_a):
+                run_campaign(config, manifest_path, notify=False)
+
+        mock_notify.assert_not_called()
+
+
+class TestEscalationNotifications:
+    def test_escalation_notification_sent(self, tmp_path: Path) -> None:
+        """Workspace creation failure triggers an escalation notification."""
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text("---\nslug: my-slug\n---\n# Spec", encoding="utf-8")
+        config = _make_config(tmp_path)
+
+        from theforge.task import TaskSpec
+
+        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
+
+        with patch("theforge.coordinator._notify") as mock_notify:
+            with patch(
+                "theforge.coordinator._create_workspace",
+                return_value=(None, None, "disk full"),
+            ):
+                result = run_task(config, task, notify=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        mock_notify.assert_called_once()
+        title, body = mock_notify.call_args[0]
+        assert "escalated" in title
+        assert "my-slug" in title
+
+    def test_escalation_no_notification_when_notify_false(self, tmp_path: Path) -> None:
+        """notify=False suppresses escalation notifications."""
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text("---\nslug: my-slug\n---\n# Spec", encoding="utf-8")
+        config = _make_config(tmp_path)
+
+        from theforge.task import TaskSpec
+
+        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
+
+        with patch("theforge.coordinator._notify") as mock_notify:
+            with patch(
+                "theforge.coordinator._create_workspace",
+                return_value=(None, None, "disk full"),
+            ):
+                run_task(config, task, notify=False)
+
+        mock_notify.assert_not_called()
+
+
+class TestNotifyFunction:
+    def test_notify_fail_silent(self) -> None:
+        """_notify swallows subprocess errors and never raises."""
+        with patch("theforge.coordinator.shutil.which", return_value="/usr/bin/osascript"):
+            with patch("theforge.coordinator.subprocess.run", side_effect=OSError("broken pipe")):
+                # Must not raise
+                _notify("Title", "Body")
+
+    def test_notify_noop_without_osascript(self) -> None:
+        """_notify does nothing when osascript is not available."""
+        with patch("theforge.coordinator.shutil.which", return_value=None):
+            with patch("theforge.coordinator.subprocess.run") as mock_run:
+                _notify("Title", "Body")
+
+        mock_run.assert_not_called()
+
+    def test_osa_quote_escapes_backslash_and_quote(self) -> None:
+        """_osa_quote wraps in double quotes and escapes special chars."""
+        result = _osa_quote('say "hello\\world"')
+        assert result == '"say \\"hello\\\\world\\""'
