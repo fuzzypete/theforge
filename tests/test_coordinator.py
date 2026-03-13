@@ -19,7 +19,13 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator import Phase, generate_audit_log, run_review_only, run_task
+from theforge.coordinator import (
+    Phase,
+    generate_audit_log,
+    run_from_review,
+    run_review_only,
+    run_task,
+)
 from theforge.runner import AgentResult, LogLevel
 from theforge.task import TaskSpec
 
@@ -3323,3 +3329,142 @@ class TestCampaignAuditWrites:
         # No workspace dir → no forge_audit.yaml written there
         workspace = tmp_path / "done-spec"
         assert not workspace.exists() or not (workspace / "forge_audit.yaml").exists()
+
+
+# ── run_from_review tests ─────────────────────────────────────────────
+
+
+class TestRunFromReview:
+    """Tests for the run_from_review() full iteration loop entry point."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator._run_shell")
+    def test_run_from_review_approve_merges(self, mock_shell, mock_pool, tmp_path):
+        """APPROVE on first review → DONE; auto_merge triggers merge attempt."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # _run_shell: git diff (OK), git status --porcelain (clean), merge safety checks
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "git branch --list" in cmd:
+                return (True, "main")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            if "git log" in cmd:
+                return (True, "abc123 feat: something")
+            if "git checkout" in cmd or "git merge" in cmd or "git worktree" in cmd:
+                return (True, "OK")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_from_review(config, task, workspace, auto_merge=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.review_cycle == 1
+        assert result.state.dev_iteration == 0
+        # No dev agent invoked
+        assert len(result.state.dev_results) == 0
+        # auto_merge attempted
+        assert result.merge is not None
+        assert result.merge["attempted"] is True
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_run_from_review_request_changes_iterates(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """REQUEST_CHANGES → dev cycle → re-review → APPROVE → DONE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output="Fixed.")
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.review_cycle == 2
+        # One dev iteration ran
+        assert result.state.dev_iteration == 1
+        assert len(result.state.dev_results) == 1
+        # preflight was skipped
+        assert result.state.preflight_verdict == "SKIPPED"
+        assert result.state.preflight_result is None
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_run_from_review_exhausts_cycles(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """REQUEST_CHANGES × max_review_cycles → ESCALATE."""
+        config = _make_config(tmp_path)  # max_review_cycles=2
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output="Attempted fix.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "cycles" in result.message.lower() or "exhausted" in result.message.lower()
+        assert result.state.review_cycle == config.retry.max_review_cycles
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator._run_shell")
+    def test_run_from_review_skips_preflight(self, mock_shell, mock_pool, tmp_path):
+        """preflight_verdict is 'SKIPPED' and no preflight agent is ever invoked."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.state.preflight_verdict == "SKIPPED"
+        assert result.state.preflight_result is None
+        # run_agent was never called (no preflight, no dev)
+        # We can verify by checking no dev results
+        assert len(result.state.dev_results) == 0
+
+        # Spec requires: audit log records preflight_verdict as 'SKIPPED' with cost 0.0
+        from theforge.coordinator import generate_audit_log
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["preflight"] is not None
+        assert audit["preflight"]["verdict"] == "SKIPPED"
+        assert audit["preflight"]["cost_usd"] == 0.0

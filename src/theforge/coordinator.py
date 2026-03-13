@@ -29,6 +29,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
@@ -521,176 +522,74 @@ def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
 # ── State machine ────────────────────────────────────────────────────
 
 
-def run_task(
+def _coordinator_loop(
+    state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
+    spec_content: str,
+    task_start: float,
     *,
     interactive: bool = False,
     auto_merge: bool = False,
+    skip_dev_first_iter: bool = False,
 ) -> CoordinatorResult:
-    """Execute the full coordinator state machine for a single task.
+    """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
-    This is the main entry point. It creates a workspace, runs the dev agent,
-    validates output, runs the review pool (+synthesis if >1 reviewer), and
-    loops until done or exhausted.
-
-    Every transition is deterministic. No LLM makes process decisions.
+    Callers must set state.workspace_path and state.branch_name before calling.
 
     Args:
-        config: The forge configuration.
-        task: The task specification.
-        interactive: When True, pause at HUMAN_REVIEW for operator input before
-            finalizing DONE or ESCALATE. When False (default), behave as before.
-        auto_merge: When True, merge the feature branch into base_branch after
-            a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
+        skip_dev_first_iter: When True, the first loop iteration starts directly at
+            REVIEW, skipping DEV+VALIDATE. All subsequent iterations run the full
+            DEV→VALIDATE→REVIEW sequence. Used by run_from_review() to review the
+            existing worktree before invoking the dev agent for the first time.
     """
-    state = CoordinatorState()
-    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    _task_start = time.monotonic()
-    spec_content = load_spec(task.spec_path)
+    assert state.workspace_path is not None
+    assert state.branch_name is not None
+    workspace_path = state.workspace_path
+    branch_name = state.branch_name
+    _skip_dev = skip_dev_first_iter
 
-    # ── WORKSPACE ─────────────────────────────────────────────────
-    state.phase = Phase.WORKSPACE
-    _log_phase(state.phase, task.slug)
-
-    workspace_path, branch_name, err = _create_workspace(config, task)
-    if err:
-        state.phase = Phase.ESCALATE
-        state.error = err
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=f"Workspace creation failed: {err}",
-        )
-
-    assert workspace_path is not None
-    assert branch_name is not None
-    state.workspace_path = workspace_path
-    state.branch_name = branch_name
-
-    # ── PREFLIGHT ──────────────────────────────────────────────────
-    state.phase = Phase.PREFLIGHT
-    preflight_profile = config.preflight_profile
-    _log_phase(state.phase, preflight_profile.model)
-
-    file_contents = _load_file_scope_contents(task, config.project_root)
-    preflight_prompt = build_preflight_prompt(
-        task, spec_content=spec_content, file_contents=file_contents
-    )
-
-    _preflight_start = time.monotonic()
-    preflight_result = run_agent(
-        prompt=preflight_prompt,
-        profile=preflight_profile,
-        working_dir=workspace_path,
-    )
-    state.preflight_result = preflight_result
-    log_agent_result(preflight_result, "PREFLIGHT")
-
-    if preflight_result.success:
-        verdict, reason = _parse_preflight_verdict(preflight_result.output)
-    else:
-        # Agent failed — don't block on a broken preflight, proceed
-        verdict, reason = (
-            "PROCEED",
-            f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
-        )
-
-    state.preflight_verdict = verdict
-    state.preflight_reason = reason
-    _log(f"  ✓ PREFLIGHT   {verdict}")
-    _log_verbose(f"  Reason: {reason}")
-
-    if verdict == "ALREADY_DONE":
-        state.phase = Phase.DONE
-        elapsed = time.monotonic() - _task_start
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {elapsed:.0f}s")
-        return CoordinatorResult(
-            success=True,
-            phase=state.phase,
-            state=state,
-            message=f"Preflight: spec already implemented. {reason}",
-        )
-
-    if verdict == "BLOCKED":
-        state.phase = Phase.ESCALATE
-        state.error = f"Preflight: spec is blocked. {reason}"
-        _log(f"✗ ESCALATE   {state.error}")
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
-        )
-
-    # verdict == "PROCEED" — continue to DEV
-
-    # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
     while True:
-        # ── DEV ───────────────────────────────────────────────
-        state.phase = Phase.DEV
-        state.dev_iteration += 1
-        _log_phase(
-            state.phase,
-            f"{config.dev_profile.model}  iter={state.dev_iteration}",
-        )
-
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=workspace_path,
-            branch_name=branch_name,
-            spec_content=spec_content,
-            gate_command=config.validation.gate_command,
-            review_findings=state.last_review_findings,
-            human_feedback=state.human_feedback,
-            iteration=state.dev_iteration,
-        )
-
-        _dev_start = time.monotonic()
-        dev_result = run_agent(
-            prompt=prompt,
-            profile=config.dev_profile,
-            working_dir=workspace_path,
-            session_id=state.dev_session_id,
-        )
-        _dev_elapsed = time.monotonic() - _dev_start
-        state.dev_results.append(dev_result)
-        state.dev_durations.append(_dev_elapsed)
-        state.dev_session_id = dev_result.session_id
-        log_agent_result(dev_result, "DEV")
-        _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
-
-        if state.total_dev_cost > config.dev_profile.budget_usd:
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
-                f"(limit ${config.dev_profile.budget_usd:.4f})"
-            )
-            _log(f"✗ ESCALATE   {state.error}")
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
+        if not _skip_dev:
+            # ── DEV ───────────────────────────────────────────────
+            state.phase = Phase.DEV
+            state.dev_iteration += 1
+            _log_phase(
+                state.phase,
+                f"{config.dev_profile.model}  iter={state.dev_iteration}",
             )
 
-        if not dev_result.success:
-            _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
-            # Don't immediately escalate — try validation anyway,
-            # the agent may have committed partial work + run the gate
+            prompt = build_dev_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                spec_content=spec_content,
+                gate_command=config.validation.gate_command,
+                review_findings=state.last_review_findings,
+                human_feedback=state.human_feedback,
+                iteration=state.dev_iteration,
+            )
 
-        # ── VALIDATE ──────────────────────────────────────────
-        state.phase = Phase.VALIDATE
-        _log_phase(state.phase, "running gate...")
+            _dev_start = time.monotonic()
+            dev_result = run_agent(
+                prompt=prompt,
+                profile=config.dev_profile,
+                working_dir=workspace_path,
+                session_id=state.dev_session_id,
+            )
+            _dev_elapsed = time.monotonic() - _dev_start
+            state.dev_results.append(dev_result)
+            state.dev_durations.append(_dev_elapsed)
+            state.dev_session_id = dev_result.session_id
+            log_agent_result(dev_result, "DEV")
+            _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_dev_elapsed:.0f}s")
 
-        gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
-
-        if gate_err:
-            _log_verbose(f"Gate error: {gate_err}")
-            if state.dev_iteration >= config.retry.max_dev_iterations:
+            if state.total_dev_cost > config.dev_profile.budget_usd:
                 state.phase = Phase.ESCALATE
-                state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                state.error = (
+                    f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
+                    f"(limit ${config.dev_profile.budget_usd:.4f})"
+                )
                 _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
@@ -698,54 +597,101 @@ def run_task(
                     state=state,
                     message=state.error,
                 )
-            # Retry dev with feedback about the gate failure
-            state.human_feedback = f"Gate validation failed: {gate_err}"
-            _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
-            continue
 
-        assert gate_decision is not None
-        state.gate_decisions.append(gate_decision)
-        _log_verbose(f"Gate decision: {gate_decision}")
+            if not dev_result.success:
+                _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
+                # Don't immediately escalate — try validation anyway,
+                # the agent may have committed partial work + run the gate
 
-        if gate_decision == "PASS":
-            _log("  ✓ VALIDATE   PASS")
-            # Verify worktree is clean — the dev agent must commit all changes.
-            # The gate runs against the working tree, so it can pass even with
-            # uncommitted files. This check catches that process violation.
-            dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
-            if dirty_ok and dirty_out.strip():
-                # Filter out handoff.yaml and other gate artifacts
-                handoff_file = config.validation.handoff_file
-                dirty_lines = [
-                    line
-                    for line in dirty_out.strip().splitlines()
-                    if not (handoff_file and line.strip().endswith(handoff_file))
-                ]
-                if dirty_lines:
-                    dirty_files = ", ".join(
-                        line.strip().split(maxsplit=1)[-1] for line in dirty_lines
+            # ── VALIDATE ──────────────────────────────────────────
+            state.phase = Phase.VALIDATE
+            _log_phase(state.phase, "running gate...")
+
+            gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
+
+            if gate_err:
+                _log_verbose(f"Gate error: {gate_err}")
+                if state.dev_iteration >= config.retry.max_dev_iterations:
+                    state.phase = Phase.ESCALATE
+                    state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                    _log(f"✗ ESCALATE   {state.error}")
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
                     )
-                    _log(f"Dirty worktree detected: {dirty_files}")
-                    if state.dev_iteration >= config.retry.max_dev_iterations:
-                        state.phase = Phase.ESCALATE
-                        state.error = f"Dev agent left uncommitted changes: {dirty_files}"
-                        _log(f"✗ ESCALATE   {state.error}")
-                        return CoordinatorResult(
-                            success=False,
-                            phase=state.phase,
-                            state=state,
-                            message=state.error,
+                # Retry dev with feedback about the gate failure
+                state.human_feedback = f"Gate validation failed: {gate_err}"
+                _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
+                continue
+
+            assert gate_decision is not None
+            state.gate_decisions.append(gate_decision)
+            _log_verbose(f"Gate decision: {gate_decision}")
+
+            if gate_decision == "PASS":
+                _log("  ✓ VALIDATE   PASS")
+                # Verify worktree is clean — the dev agent must commit all changes.
+                # The gate runs against the working tree, so it can pass even with
+                # uncommitted files. This check catches that process violation.
+                dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
+                if dirty_ok and dirty_out.strip():
+                    # Filter out handoff.yaml and other gate artifacts
+                    handoff_file = config.validation.handoff_file
+                    dirty_lines = [
+                        line
+                        for line in dirty_out.strip().splitlines()
+                        if not (handoff_file and line.strip().endswith(handoff_file))
+                    ]
+                    if dirty_lines:
+                        dirty_files = ", ".join(
+                            line.strip().split(maxsplit=1)[-1] for line in dirty_lines
                         )
-                    state.human_feedback = (
-                        "PROCESS VIOLATION: You left uncommitted changes in the "
-                        f"worktree: {dirty_files}. You MUST commit ALL modified "
-                        "files before running the gate. Stage and commit them now."
+                        _log(f"Dirty worktree detected: {dirty_files}")
+                        if state.dev_iteration >= config.retry.max_dev_iterations:
+                            state.phase = Phase.ESCALATE
+                            state.error = f"Dev agent left uncommitted changes: {dirty_files}"
+                            _log(f"✗ ESCALATE   {state.error}")
+                            return CoordinatorResult(
+                                success=False,
+                                phase=state.phase,
+                                state=state,
+                                message=state.error,
+                            )
+                        state.human_feedback = (
+                            "PROCESS VIOLATION: You left uncommitted changes in the "
+                            f"worktree: {dirty_files}. You MUST commit ALL modified "
+                            "files before running the gate. Stage and commit them now."
+                        )
+                        continue
+            elif gate_decision in ("FAIL", "BLOCKED"):
+                if state.dev_iteration >= config.retry.max_dev_iterations:
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
                     )
-                    continue
-        elif gate_decision in ("FAIL", "BLOCKED"):
-            if state.dev_iteration >= config.retry.max_dev_iterations:
+                    _log(f"✗ ESCALATE   {state.error}")
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+                # Retry dev — the gate failure details are in handoff.yaml
+                handoff_text = _get_handoff_content(config, workspace_path)
+                state.human_feedback = (
+                    f"Gate returned {gate_decision}. "
+                    f"Fix the issues and re-run the gate.\n\n"
+                    f"Current handoff:\n{handoff_text}"
+                )
+                _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
+                _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
+                continue
+            else:
+                _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
                 state.phase = Phase.ESCALATE
-                state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
+                state.error = f"Unknown gate decision: {gate_decision!r}"
                 _log(f"✗ ESCALATE   {state.error}")
                 return CoordinatorResult(
                     success=False,
@@ -753,27 +699,8 @@ def run_task(
                     state=state,
                     message=state.error,
                 )
-            # Retry dev — the gate failure details are in handoff.yaml
-            handoff_text = _get_handoff_content(config, workspace_path)
-            state.human_feedback = (
-                f"Gate returned {gate_decision}. "
-                f"Fix the issues and re-run the gate.\n\n"
-                f"Current handoff:\n{handoff_text}"
-            )
-            _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
-            _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
-            continue
-        else:
-            _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
-            state.phase = Phase.ESCALATE
-            state.error = f"Unknown gate decision: {gate_decision!r}"
-            _log(f"✗ ESCALATE   {state.error}")
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
+
+        _skip_dev = False  # all subsequent iterations start at DEV
 
         # ── REVIEW ────────────────────────────────────────────
         state.phase = Phase.REVIEW
@@ -907,10 +834,7 @@ def run_task(
                     working_dir=workspace_path,
                 )
                 _synth_elapsed = time.monotonic() - _synth_start
-                # Tag with profile name using dataclasses.replace
-                from dataclasses import replace as _replace
-
-                synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+                synthesis_result = _dc_replace(synthesis_result, profile_name="synthesis")
 
                 state.review_agent_results.append(synthesis_result)
                 state.review_durations.append(_synth_elapsed)
@@ -1031,7 +955,7 @@ def run_task(
                             if merge_info["merged"]
                             else f" Merge failed: {merge_info['error']}"
                         )
-                    _task_elapsed = time.monotonic() - _task_start
+                    _task_elapsed = time.monotonic() - task_start
                     _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                     return CoordinatorResult(
                         success=True,
@@ -1078,7 +1002,7 @@ def run_task(
                         if merge_info["merged"]
                         else f" Merge failed: {merge_info['error']}"
                     )
-                _task_elapsed = time.monotonic() - _task_start
+                _task_elapsed = time.monotonic() - task_start
                 _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                 return CoordinatorResult(
                     success=True,
@@ -1124,7 +1048,7 @@ def run_task(
                             if merge_info["merged"]
                             else f" Merge failed: {merge_info['error']}"
                         )
-                    _task_elapsed = time.monotonic() - _task_start
+                    _task_elapsed = time.monotonic() - task_start
                     _log(f"✓ DONE   total=${state.total_cost:.2f}  {_task_elapsed:.0f}s")
                     return CoordinatorResult(
                         success=True,
@@ -1173,6 +1097,195 @@ def run_task(
         state.dev_iteration = 0  # reset iteration count for new review cycle
         state.human_feedback = None  # clear any gate feedback
         _log_verbose(f"Sending {len(parsed_review.findings)} findings back to dev agent")
+
+
+def run_task(
+    config: ForgeConfig,
+    task: TaskSpec,
+    *,
+    interactive: bool = False,
+    auto_merge: bool = False,
+) -> CoordinatorResult:
+    """Execute the full coordinator state machine for a single task.
+
+    This is the main entry point. It creates a workspace, runs the dev agent,
+    validates output, runs the review pool (+synthesis if >1 reviewer), and
+    loops until done or exhausted.
+
+    Every transition is deterministic. No LLM makes process decisions.
+
+    Args:
+        config: The forge configuration.
+        task: The task specification.
+        interactive: When True, pause at HUMAN_REVIEW for operator input before
+            finalizing DONE or ESCALATE. When False (default), behave as before.
+        auto_merge: When True, merge the feature branch into base_branch after
+            a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
+    """
+    state = CoordinatorState()
+    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _task_start = time.monotonic()
+    spec_content = load_spec(task.spec_path)
+
+    # ── WORKSPACE ─────────────────────────────────────────────────
+    state.phase = Phase.WORKSPACE
+    _log_phase(state.phase, task.slug)
+
+    workspace_path, branch_name, err = _create_workspace(config, task)
+    if err:
+        state.phase = Phase.ESCALATE
+        state.error = err
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=f"Workspace creation failed: {err}",
+        )
+
+    assert workspace_path is not None
+    assert branch_name is not None
+    state.workspace_path = workspace_path
+    state.branch_name = branch_name
+
+    # ── PREFLIGHT ──────────────────────────────────────────────────
+    state.phase = Phase.PREFLIGHT
+    preflight_profile = config.preflight_profile
+    _log_phase(state.phase, preflight_profile.model)
+
+    file_contents = _load_file_scope_contents(task, config.project_root)
+    preflight_prompt = build_preflight_prompt(
+        task, spec_content=spec_content, file_contents=file_contents
+    )
+
+    _preflight_start = time.monotonic()
+    preflight_result = run_agent(
+        prompt=preflight_prompt,
+        profile=preflight_profile,
+        working_dir=workspace_path,
+    )
+    state.preflight_result = preflight_result
+    log_agent_result(preflight_result, "PREFLIGHT")
+
+    if preflight_result.success:
+        verdict, reason = _parse_preflight_verdict(preflight_result.output)
+    else:
+        # Agent failed — don't block on a broken preflight, proceed
+        verdict, reason = (
+            "PROCEED",
+            f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
+        )
+
+    state.preflight_verdict = verdict
+    state.preflight_reason = reason
+    _log(f"  ✓ PREFLIGHT   {verdict}")
+    _log_verbose(f"  Reason: {reason}")
+
+    if verdict == "ALREADY_DONE":
+        state.phase = Phase.DONE
+        elapsed = time.monotonic() - _task_start
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {elapsed:.0f}s")
+        return CoordinatorResult(
+            success=True,
+            phase=state.phase,
+            state=state,
+            message=f"Preflight: spec already implemented. {reason}",
+        )
+
+    if verdict == "BLOCKED":
+        state.phase = Phase.ESCALATE
+        state.error = f"Preflight: spec is blocked. {reason}"
+        _log(f"✗ ESCALATE   {state.error}")
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    # verdict == "PROCEED" — continue to DEV
+
+    # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
+    return _coordinator_loop(
+        state,
+        config,
+        task,
+        spec_content,
+        _task_start,
+        interactive=interactive,
+        auto_merge=auto_merge,
+    )
+
+
+# ── Review-from-existing-worktree mode (full iteration loop) ─────────
+
+
+def run_from_review(
+    config: ForgeConfig,
+    task: TaskSpec,
+    workspace_path: Path,
+    *,
+    interactive: bool = False,
+    auto_merge: bool = False,
+) -> CoordinatorResult:
+    """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
+
+    This is a first-class entry point that behaves identically to run_task but:
+    - Skips WORKSPACE creation and PREFLIGHT (workspace already exists)
+    - Begins with an immediate REVIEW of the current worktree state
+    - If APPROVE: done (auto-merge if requested)
+    - If REQUEST_CHANGES: iterates through DEV→VALIDATE→REVIEW exactly as run_task does
+
+    Args:
+        config: The forge configuration.
+        task: The task specification.
+        workspace_path: Path to the existing worktree.
+        interactive: When True, pause at HUMAN_REVIEW for operator input.
+        auto_merge: When True, merge the feature branch after APPROVE.
+    """
+    state = CoordinatorState(
+        phase=Phase.REVIEW,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _task_start = time.monotonic()
+
+    if not workspace_path.exists():
+        state.phase = Phase.ESCALATE
+        state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    state.workspace_path = workspace_path
+
+    # Resolve branch name from actual worktree HEAD (P1 fix: don't compute from pattern)
+    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
+        branch_name = _branch_out.strip()
+    else:
+        branch_name = config.workspace.branch_pattern.format(slug=task.slug)
+    state.branch_name = branch_name
+
+    spec_content = load_spec(task.spec_path)
+
+    # ── REVIEW→DEV→VALIDATE→REVIEW loop ─────────────────────────
+    # First iteration starts at REVIEW (skip DEV+VALIDATE for existing worktree).
+    # Subsequent iterations run the full DEV→VALIDATE→REVIEW sequence.
+    return _coordinator_loop(
+        state,
+        config,
+        task,
+        spec_content,
+        _task_start,
+        interactive=interactive,
+        auto_merge=auto_merge,
+        skip_dev_first_iter=True,
+    )
 
 
 # ── Review-only mode ─────────────────────────────────────────────────
@@ -1289,9 +1402,7 @@ def run_review_only(
             working_dir=workspace_path,
         )
         _synth_elapsed = time.monotonic() - _synth_start
-        from dataclasses import replace as _replace
-
-        synthesis_result = _replace(synthesis_result, profile_name="synthesis")
+        synthesis_result = _dc_replace(synthesis_result, profile_name="synthesis")
         state.review_agent_results.append(synthesis_result)
         state.review_durations.append(_synth_elapsed)
         log_agent_result(synthesis_result, "SYNTHESIS")
