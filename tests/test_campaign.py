@@ -411,6 +411,33 @@ class TestCampaignNotifications:
         assert "Test Campaign" in title
         assert "1" in body  # specs_succeeded count
 
+    def test_campaign_forwards_notify_true_to_run_task(self, tmp_path: Path) -> None:
+        """run_campaign() passes notify=True down to each run_task() call."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=2.0)
+
+        with patch("theforge.campaign._notify"):
+            with patch("theforge.campaign.run_task", return_value=result_a) as mock_run_task:
+                run_campaign(config, manifest_path, notify=True)
+
+        _, kwargs = mock_run_task.call_args
+        assert kwargs.get("notify") is True
+
+    def test_campaign_forwards_notify_false_to_run_task(self, tmp_path: Path) -> None:
+        """run_campaign() passes notify=False down to each run_task() call."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=2.0)
+
+        with patch("theforge.campaign.run_task", return_value=result_a) as mock_run_task:
+            run_campaign(config, manifest_path, notify=False)
+
+        _, kwargs = mock_run_task.call_args
+        assert kwargs.get("notify") is False
+
     def test_campaign_notification_skipped_with_no_notify(self, tmp_path: Path) -> None:
         """notify=False suppresses campaign completion notification."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -449,6 +476,30 @@ class TestEscalationNotifications:
         title, body = mock_notify.call_args[0]
         assert "escalated" in title
         assert "my-slug" in title
+        assert body == "disk full"
+
+    def test_escalation_notification_body_truncated_at_120(self, tmp_path: Path) -> None:
+        """Escalation notification body is truncated to 120 chars per R2."""
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text("---\nslug: my-slug\n---\n# Spec", encoding="utf-8")
+        config = _make_config(tmp_path)
+
+        from theforge.task import TaskSpec
+
+        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
+        long_error = "x" * 200
+
+        with patch("theforge.coordinator._notify") as mock_notify:
+            with patch(
+                "theforge.coordinator._create_workspace",
+                return_value=(None, None, long_error),
+            ):
+                run_task(config, task, notify=True)
+
+        mock_notify.assert_called_once()
+        _, body = mock_notify.call_args[0]
+        assert body == long_error[:120]
+        assert len(body) == 120
 
     def test_escalation_no_notification_when_notify_false(self, tmp_path: Path) -> None:
         """notify=False suppresses escalation notifications."""
