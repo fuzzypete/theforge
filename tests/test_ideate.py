@@ -533,6 +533,37 @@ def test_single_model_no_pool_calls(tmp_path: Path) -> None:
     assert call_count == 2  # Phase 1 + synthesis
 
 
+def test_max_rounds_zero_clamped_to_one(tmp_path: Path) -> None:
+    """max_rounds=0 is clamped to 1 defensively — at least one round must run."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    with patch(
+        "theforge.ideate.run_agent", side_effect=_multi_model_agent(synth=_SYNTHESIS_OUTPUT)
+    ):
+        result = run_ideation(config, "A brief", None, max_rounds=0)
+
+    # Should complete exactly one round (clamped from 0 to 1)
+    assert len(result.rounds) == 1
+    assert result.success
+
+
+def test_specs_dir_writes_slug_based_file(tmp_path: Path) -> None:
+    """When specs_dir is provided and output_path is None, spec is written to specs_dir/slug.md."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    specs_dir = tmp_path / "specs"
+
+    with patch(
+        "theforge.ideate.run_agent", side_effect=_multi_model_agent(synth=_SYNTHESIS_OUTPUT)
+    ):
+        result = run_ideation(config, "Build a feature", None, specs_dir=specs_dir, max_rounds=1)
+
+    assert result.success
+    assert result.spec_path is not None
+    assert result.spec_path.parent == specs_dir
+    assert result.spec_path.name == "test-feature.md"  # slug from _VALID_SPEC
+    assert result.spec_path.exists()
+
+
 def test_synthesis_invalid_frontmatter_returns_failed_result(tmp_path: Path) -> None:
     """Synthesis output without valid frontmatter should return a failed IdeationResult."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)

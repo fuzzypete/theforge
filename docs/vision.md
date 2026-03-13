@@ -188,13 +188,29 @@ specs while serializing conflicting ones.
 spec gets split into sub-specs with annotated `file_scope`, which the
 dependency analyzer groups into parallel batches automatically.
 
+**Implementation path:** `forge ideate` is the implementation of DECOMPOSE
+done right. Instead of a single LLM splitting a spec, the multi-model
+deliberation protocol in `forge ideate` is applied to the question "what
+sub-problems does this spec contain?" The converged output feeds directly
+into a campaign manifest. To use `forge ideate` for decomposition:
+
+```
+forge ideate "What sub-problems should <high-level spec> be split into?"
+```
+
+The synthesized spec becomes the campaign manifest template. Human reviews
+the ideation output before any `forge campaign` run is invoked — this is
+the mandatory human gate in the decompose flow. The coordinator remains
+fully deterministic; only the ideation agents are LLMs.
+
 **What it means:**
-- LLM takes a high-level spec and produces N sub-specs
-- Each sub-spec has its own `file_scope`, acceptance criteria, and slug
+- `forge ideate` applied to "what sub-problems does this spec contain?"
+  produces a decomposition that the campaign runner can execute
+- Each sub-spec in the ideation output has its own `file_scope`,
+  acceptance criteria, and slug
 - Sub-specs feed into the campaign runner (sequential or parallel)
-- Human reviews the decomposition before execution begins
-- The coordinator is still deterministic — only the decomposition step
-  uses an LLM
+- Human reviews the ideation output (mandatory gate) before execution
+- The coordinator is still deterministic — only the ideation agents are LLMs
 
 ---
 

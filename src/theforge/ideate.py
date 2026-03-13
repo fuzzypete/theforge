@@ -107,7 +107,28 @@ def _build_synthesis_prompt(
     brief: str,
     phase1_outputs: dict[str, str],
     phase2_outputs: dict[str, str],
+    *,
+    config: "ForgeConfig | None" = None,
 ) -> str:
+    # Derive pytest_target hint from config validation gate_command when available.
+    # Defaults to "tests/" (the most common pytest target).
+    pytest_target = "tests/"
+    if config is not None:
+        gate_cmd = config.validation.gate_command
+        # If the gate command references a specific test path, use it as a hint.
+        import shlex
+
+        try:
+            tokens = shlex.split(gate_cmd)
+            for i, tok in enumerate(tokens):
+                if tok in ("pytest", "python", "-m") and i + 1 < len(tokens):
+                    candidate = tokens[i + 1]
+                    if candidate.startswith("tests") and not candidate.startswith("-"):
+                        pytest_target = candidate
+                        break
+        except ValueError:
+            pass  # malformed gate_command — keep default
+
     phase1_section = "\n\n".join(
         f"### {model_name} (Phase 1)\n{output}" for model_name, output in phase1_outputs.items()
     )
@@ -149,7 +170,7 @@ SPEC:
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
 file_scope: []
-pytest_target: tests/
+pytest_target: {pytest_target}
 ---
 
 # <title>
@@ -278,6 +299,7 @@ def run_ideation(
     brief: str,
     output_path: Path | None,
     *,
+    specs_dir: Path | None = None,
     max_rounds: int = 2,
 ) -> IdeationResult:
     """Execute the full deliberation protocol.
@@ -285,14 +307,28 @@ def run_ideation(
     Phases:
       1. Fan out phase1 prompt to all models in review_pool independently.
       2. Fan out phase2 prompt (includes all phase1 outputs) to all models.
-         (Skipped for single-model pool — Phase 1 output goes directly to result.)
-      3. Run synthesis model to consolidate into a draft spec.
-         (Skipped for single-model pool — Phase 1 output is the spec.)
+         (Skipped for single-model pool — no cross-review for a single model.)
+      3. Run synthesis model to consolidate Phase 1 (and Phase 2) into a draft spec.
+         Single-model pool: lone model acts as synthesizer (Phase 1 + synthesis,
+         no cross-review).
       4. If divergent items remain and rounds remain, loop with narrowed brief.
 
-    Single-model pool: Phase 1 only, no cross-review or synthesis.
+    Args:
+        config: ForgeConfig with review pool and synthesis profile.
+        brief: The ideation brief (text).
+        output_path: Where to write the generated spec. Pass None to skip writing
+            (caller handles output, or use specs_dir for auto-naming).
+        specs_dir: When output_path is None and specs_dir is provided, the spec
+            is written to specs_dir/<slug>.md after synthesis (slug derived from
+            the synthesized frontmatter). Ignored when output_path is given.
+        max_rounds: Maximum deliberation rounds before surfacing residual divergence.
+            Must be >= 1; values < 1 are clamped to 1.
+
     Pool > 1 without synthesis_profile: raises ValueError.
     """
+    if max_rounds < 1:
+        max_rounds = 1
+
     pool = config.review_pool
     synthesis_profile = config.synthesis_profile
 
@@ -372,7 +408,9 @@ def run_ideation(
         synth_start = time.monotonic()
 
         synth_profile = synthesis_profile if synthesis_profile is not None else pool[0]
-        synth_prompt = _build_synthesis_prompt(current_brief, phase1_outputs, phase2_outputs)
+        synth_prompt = _build_synthesis_prompt(
+            current_brief, phase1_outputs, phase2_outputs, config=config
+        )
 
         synth_result = run_agent(
             prompt=synth_prompt,
@@ -440,18 +478,24 @@ def run_ideation(
 
     human_decision_required = bool(residual_divergence)
 
-    # Write spec file
+    # Resolve output path: explicit path takes precedence; fall back to specs_dir + slug.
     written_path: Path | None = None
     if output_path is not None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(final_synthesis, encoding="utf-8")
         written_path = output_path
+    elif specs_dir is not None:
+        slug = _extract_slug_from_spec(final_synthesis) or "ideated-spec"
+        written_path = specs_dir / f"{slug}.md"
+
+    # Write spec file
+    if written_path is not None:
+        written_path.parent.mkdir(parents=True, exist_ok=True)
+        written_path.write_text(final_synthesis, encoding="utf-8")
 
     # Log final result
     elapsed_total = time.monotonic() - ideation_start
     mins, secs = divmod(int(elapsed_total), 60)
     dur_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
-    spec_label = str(written_path) if written_path else "(dry run)"
+    spec_label = str(written_path) if written_path else "(no output)"
     _log(f"✓ IDEATE   spec written: {spec_label}  ${total_cost:.2f}  {dur_str}")
     if human_decision_required:
         _log(
