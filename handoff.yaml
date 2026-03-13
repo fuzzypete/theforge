@@ -1,18 +1,22 @@
 gate_decision: PASS
 scope_completed:
-  - "P1: Eliminated ~1050 lines of duplicated DEV→VALIDATE→REVIEW logic — run_task()
-    and run_from_review() now both delegate to the shared _coordinator_loop() helper.
-    The _coordinator_loop() function already existed from iter-1 but was never
-    wired up; both callers now use it."
-  - "P1: run_from_review() resolves branch name from actual worktree HEAD via
-    'git rev-parse --abbrev-ref HEAD' with fallback to pattern-based derivation,
-    fixing incorrect branch name used in auto-merge with --worktree flag."
-  - "P2: Removed all inline 'from dataclasses import replace as _replace' imports
-    (were inside loop bodies in both duplicate loops and run_review_only()); the
-    module-level _dc_replace alias is used throughout."
-  - "P2: test_run_from_review_skips_preflight extended to call generate_audit_log()
-    and assert audit['preflight']['verdict'] == 'SKIPPED' and cost_usd == 0.0,
-    satisfying the spec's explicit audit log verification requirement."
-deferred_followups: []
-next_recommended_step: "Submit for code review — all P1 and P2 findings addressed,
-  209/209 tests pass, coordinator.py reduced by 444 net lines."
+  - "src/theforge/ideate.py: IdeationRound/IdeationResult dataclasses, prompt builders
+    for all 3 phases, _parse_synthesis_output, _validate_frontmatter, run_ideation()
+    orchestrator with full deliberation loop (Phase 1 fan-out, Phase 2 cross-review,
+    Phase 3 synthesis, convergence detection, multi-round iteration)"
+  - "src/theforge/cli.py: forge ideate subcommand with --output, --rounds (max 3),
+    --config, --dry-run flags; brief-or-file argument; validation of pool+synthesis config"
+  - "tests/test_ideate.py: 16 tests covering prompt builders, synthesis parsing,
+    Phase 1 fanout (no cross-contamination), Phase 2 all-outputs included, synthesis
+    file write, single-model pool (Phase 2 skipped), max_rounds respected,
+    dry-run (no file), no-synthesis-profile error, cost accumulation, multi-round loop"
+
+deferred_followups:
+  - "docs/vision.md Phase 11 (Decompose) update is out of file_scope — would note
+    that forge ideate is the implementation path for DECOMPOSE"
+  - "Storing Phase 1/Phase 2 raw outputs in audit log (noted as out of scope in spec)"
+  - "Campaign manifest generation from ideation output (Phase 11 / DECOMPOSE)"
+
+next_recommended_step: >
+  Run forge review on feat/forge-ideate to get multi-model sign-off before
+  merging to main.
