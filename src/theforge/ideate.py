@@ -495,7 +495,8 @@ def run_ideation(
         _log("  ▸ Synthesis   consolidating...")
         synth_start = time.monotonic()
 
-        synth_profile = synthesis_profile if synthesis_profile is not None else pool[0]
+        assert synthesis_profile is not None  # guaranteed by ValueError check above
+        synth_profile = synthesis_profile
         synth_prompt = _build_synthesis_prompt(
             current_brief, phase1_outputs, phase2_outputs, config=config
         )
