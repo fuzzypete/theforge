@@ -256,6 +256,23 @@ def _log(msg: str) -> None:
     print(f"[forge] {msg}", file=sys.stderr, flush=True)
 
 
+def _failed_result(
+    msg: str,
+    rounds: list[IdeationRound],
+    total_cost: float,
+) -> IdeationResult:
+    """Return a failed IdeationResult with an error message in final_synthesis."""
+    return IdeationResult(
+        success=False,
+        spec_path=None,
+        rounds=rounds,
+        final_synthesis=msg,
+        residual_divergence=[],
+        total_cost_usd=total_cost,
+        human_decision_required=False,
+    )
+
+
 def run_ideation(
     config: ForgeConfig,
     brief: str,
@@ -268,10 +285,12 @@ def run_ideation(
     Phases:
       1. Fan out phase1 prompt to all models in review_pool independently.
       2. Fan out phase2 prompt (includes all phase1 outputs) to all models.
+         (Skipped for single-model pool — Phase 1 output goes directly to result.)
       3. Run synthesis model to consolidate into a draft spec.
+         (Skipped for single-model pool — Phase 1 output is the spec.)
       4. If divergent items remain and rounds remain, loop with narrowed brief.
 
-    Single-model pool: skips Phase 2 (cross-review), Phase 1 → synthesis directly.
+    Single-model pool: Phase 1 only, no cross-review or synthesis.
     Pool > 1 without synthesis_profile: raises ValueError.
     """
     pool = config.review_pool
@@ -285,6 +304,7 @@ def run_ideation(
 
     pool_names = "+".join(p.name for p in pool)
     working_dir = config.project_root
+    ideation_start = time.monotonic()
 
     all_rounds: list[IdeationRound] = []
     total_cost = 0.0
@@ -315,47 +335,95 @@ def run_ideation(
         for profile, result in zip(pool, phase1_results):
             elapsed = time.monotonic() - phase1_start
             _log(f"  ↳ {profile.name} done ({elapsed:.0f}s)")
+            if not result.success:
+                _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
+                return _failed_result(
+                    f"Phase 1 agent {profile.name!r} failed: {result.output}",
+                    all_rounds,
+                    total_cost + result.cost_usd,
+                )
             phase1_outputs[profile.name] = result.output
             total_cost += result.cost_usd
 
-        # ── Phase 2: Cross-review (skipped for single-model pool) ────
+        # ── Single-model fast path: no cross-review or synthesis ─────
+        if len(pool) == 1:
+            # Phase 1 output IS the spec for single-model pools
+            spec_text = list(phase1_outputs.values())[0]
+            round_result = IdeationRound(
+                round_number=round_num,
+                phase1_outputs=phase1_outputs,
+                phase2_outputs={},
+                converged_items=[],
+                divergent_items=[],
+                synthesis_output=spec_text,
+            )
+            all_rounds.append(round_result)
+            final_synthesis = spec_text
+            residual_divergence = []
+            break
+
+        # ── Phase 2: Cross-review ────────────────────────────────────
         phase2_outputs: dict[str, str] = {}
 
-        if len(pool) > 1:
-            _log("  ▸ Phase 2   cross-reviewing...")
-            phase2_start = time.monotonic()
-            phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
+        _log("  ▸ Phase 2   cross-reviewing...")
+        phase2_start = time.monotonic()
+        phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
 
-            phase2_results: list[AgentResult] = run_agent_pool(
-                prompt=phase2_prompt,
-                profiles=pool,
-                working_dir=working_dir,
-            )
+        phase2_results: list[AgentResult] = run_agent_pool(
+            prompt=phase2_prompt,
+            profiles=pool,
+            working_dir=working_dir,
+        )
 
-            for profile, result in zip(pool, phase2_results):
-                elapsed = time.monotonic() - phase2_start
-                _log(f"  ↳ {profile.name} done ({elapsed:.0f}s)")
-                phase2_outputs[profile.name] = result.output
-                total_cost += result.cost_usd
+        for profile, result in zip(pool, phase2_results):
+            elapsed = time.monotonic() - phase2_start
+            _log(f"  ↳ {profile.name} done ({elapsed:.0f}s)")
+            if not result.success:
+                _log(f"  ✗ {profile.name} failed: {result.output[:120]}")
+                return _failed_result(
+                    f"Phase 2 agent {profile.name!r} failed: {result.output}",
+                    all_rounds,
+                    total_cost + result.cost_usd,
+                )
+            phase2_outputs[profile.name] = result.output
+            total_cost += result.cost_usd
 
         # ── Phase 3: Synthesis ────────────────────────────────────────
         _log("  ▸ Synthesis   consolidating...")
         synth_start = time.monotonic()
 
-        synth_profile = synthesis_profile if synthesis_profile is not None else pool[0]
+        assert synthesis_profile is not None  # guaranteed by check at top for len > 1
         synth_prompt = _build_synthesis_prompt(current_brief, phase1_outputs, phase2_outputs)
 
         synth_result = run_agent(
             prompt=synth_prompt,
-            profile=synth_profile,
+            profile=synthesis_profile,
             working_dir=working_dir,
         )
         synth_elapsed = time.monotonic() - synth_start
         _log(f"  ↳ synthesis done ({synth_elapsed:.0f}s)")
         total_cost += synth_result.cost_usd
 
+        if not synth_result.success:
+            _log(f"  ✗ synthesis failed: {synth_result.output[:120]}")
+            return _failed_result(
+                f"Synthesis agent failed: {synth_result.output}",
+                all_rounds,
+                total_cost,
+            )
+
         # ── Parse synthesis output ────────────────────────────────────
         converged_items, divergent_items, spec_text = _parse_synthesis_output(synth_result.output)
+
+        if not _validate_frontmatter(spec_text):
+            _log("  ✗ synthesis produced invalid frontmatter")
+            return _failed_result(
+                f"Synthesis output does not contain valid YAML frontmatter. "
+                f"Raw output:\n{synth_result.output}",
+                all_rounds,
+                total_cost,
+            )
+
         final_synthesis = spec_text
 
         _log(f"  Converged: {len(converged_items)} items  Divergent: {len(divergent_items)} items")
@@ -401,8 +469,11 @@ def run_ideation(
         written_path = output_path
 
     # Log final result
+    elapsed_total = time.monotonic() - ideation_start
+    mins, secs = divmod(int(elapsed_total), 60)
+    dur_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
     spec_label = str(written_path) if written_path else "(dry run)"
-    _log(f"✓ IDEATE   spec written: {spec_label}  ${total_cost:.2f}")
+    _log(f"✓ IDEATE   spec written: {spec_label}  ${total_cost:.2f}  {dur_str}")
     if human_decision_required:
         _log(
             f"⚠ {len(residual_divergence)} item(s) require human decision "

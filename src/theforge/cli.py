@@ -379,39 +379,46 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         )
         return 1
 
-    config = load_config(config_path)
-
-    # Validate pool + synthesis
-    if len(config.review_pool) > 1 and config.synthesis_profile is None:
-        print(
-            "Error: synthesis profile is required when review_pool has more than 1 entry. "
-            "Configure profiles.synthesis in forge.yaml.",
-            file=sys.stderr,
-        )
+    try:
+        config = load_config(config_path)
+    except ValueError as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
         return 1
 
     # Determine max rounds (cap at 3)
-    max_rounds = min(getattr(args, "rounds", 2), 3)
+    max_rounds = min(args.rounds, 3)
 
-    # Determine output path (None for dry-run)
-    dry_run = getattr(args, "dry_run", False)
-    output_path: Path | None = None
-    if not dry_run:
-        if args.output:
-            output_path = Path(args.output).resolve()
-        else:
-            output_path = config.project_root / "specs" / "ideated-spec.md"
+    # Run ideation with dry_run=True first to get the slug, then write if needed.
+    # For --dry-run or explicit --output, skip slug detection.
+    dry_run: bool = args.dry_run
 
-    try:
-        result = run_ideation(
-            config,
-            brief,
-            output_path,
-            max_rounds=max_rounds,
-        )
-    except ValueError as exc:
-        print(f"Ideation error: {exc}", file=sys.stderr)
-        return 1
+    # For dry-run or explicit output, pass output_path directly.
+    # For default output, run ideation first (output_path=None), then write using slug.
+    explicit_output = args.output
+
+    if dry_run or explicit_output:
+        output_path: Path | None = None if dry_run else Path(explicit_output).resolve()
+        try:
+            result = run_ideation(config, brief, output_path, max_rounds=max_rounds)
+        except ValueError as exc:
+            print(f"Ideation error: {exc}", file=sys.stderr)
+            return 1
+    else:
+        # Run ideation without writing, then determine slug-based path
+        try:
+            result = run_ideation(config, brief, None, max_rounds=max_rounds)
+        except ValueError as exc:
+            print(f"Ideation error: {exc}", file=sys.stderr)
+            return 1
+
+        if result.success:
+            from .ideate import _extract_slug_from_spec
+
+            slug = _extract_slug_from_spec(result.final_synthesis) or "ideated-spec"
+            output_path = config.project_root / "specs" / f"{slug}.md"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(result.final_synthesis, encoding="utf-8")
+            result.spec_path = output_path
 
     if dry_run:
         print(result.final_synthesis)
