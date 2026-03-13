@@ -1,8 +1,1 @@
 gate_decision: PASS
-scope_completed:
-  - "P1: fixed merge detection (result.merge.get('merged', False)) in run_campaign log and campaign-audit.yaml"
-  - "P2: removed double manifest load in cmd_campaign; run_campaign ValueError now caught cleanly"
-  - "P2: added test_failed_merge_not_reported_as_merged test"
-deferred_followups:
-  - "P2: extract _build_task_from_spec into task.py to avoid CLI/campaign divergence (task.py outside file scope)"
-next_recommended_step: "Review and merge feat/campaign-mode branch"
