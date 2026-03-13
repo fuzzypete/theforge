@@ -663,6 +663,55 @@ class TestRunCodex:
 
         assert result.output == "codex error"
 
+    def test_codex_reasoning_effort_high(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="o4-mini",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            reasoning_effort="high",
+        )
+        mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="review", profile=profile, working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        assert "-c" in cmd
+        c_idx = cmd.index("-c")
+        assert cmd[c_idx + 1] == 'model_reasoning_effort="high"'
+
+    def test_codex_reasoning_effort_none(
+        self, codex_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        assert "-c" not in cmd
+
+    def test_codex_reasoning_effort_in_command_position(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="o4-mini",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            reasoning_effort="medium",
+        )
+        mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+            run_agent(prompt="review", profile=profile, working_dir=tmp_path)
+
+        cmd = mock_run.call_args[0][0]
+        m_idx = cmd.index("-m")
+        c_idx = cmd.index("-c")
+        C_idx = cmd.index("-C")
+        assert m_idx < c_idx < C_idx
+
 
 class TestRunGemini:
     """Test Gemini CLI subprocess invocation."""

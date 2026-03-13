@@ -23,6 +23,7 @@ class ModelProfile:
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
+    reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,13 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
     """
     default = DEFAULT_DEV_PROFILE if role == "dev" else DEFAULT_REVIEW_PROFILE
     tools = data.get("allowed_tools")
+    reasoning_effort = data.get("reasoning_effort")
+    _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
+    if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
+            f"got {reasoning_effort!r} in profile {name!r}"
+        )
     return ModelProfile(
         name=name,
         cli=data.get("cli", default.cli),
@@ -136,6 +144,7 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
         budget_usd=float(data.get("budget_usd", default.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
         allowed_tools=tuple(tools) if tools is not None else default.allowed_tools,
+        reasoning_effort=reasoning_effort,
     )
 
 
