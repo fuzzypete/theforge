@@ -1,0 +1,17 @@
+name: "TheForge UX polish"
+budget_usd: 60.00
+
+# UX and observability improvements — operator quality of life.
+# Run after hardening campaign is fully merged.
+#
+# Suggested order matters:
+#   1. notifications     — standalone, no dependencies
+#   2. audit-improvements — standalone, expands audit YAML + display
+#   3. log-clarity       — depends on structured-logging (already merged)
+#   4. human-in-the-loop — complex; run last so reviewer can exercise the
+#                          interactive flow manually before merging
+
+specs:
+  - specs/notifications.md
+  - specs/audit-improvements.md
+  - specs/human-in-the-loop.md
