@@ -800,12 +800,21 @@ pytest_target: tests/
 # ── cmd_ideate CLI integration tests (moved from test_cli.py) ─────────
 
 import argparse
-from unittest.mock import MagicMock
+
 from theforge.cli import cmd_ideate
-from theforge.config import DEFAULT_PREFLIGHT_PROFILE, DEFAULT_VALIDATION, ForgeConfig, ModelProfile, RetryPolicy, WorkspaceConfig
+from theforge.config import (
+    ModelProfile,
+)
 from theforge.ideate import IdeationResult, IdeationRound
 
-_SOLO_PROFILE = ModelProfile(name="solo", cli="claude", model="sonnet", budget_usd=1.0, timeout_seconds=300, allowed_tools=("Read",))
+_SOLO_PROFILE = ModelProfile(
+    name="solo",
+    cli="claude",
+    model="sonnet",
+    budget_usd=1.0,
+    timeout_seconds=300,
+    allowed_tools=("Read",),
+)
 _VALID_SPEC = """\
 ---
 name: "Test Feature"
@@ -820,16 +829,48 @@ pytest_target: tests/
 A test problem.
 """
 
+
 def _make_forge_config_ideate(tmp_path: Path) -> ForgeConfig:
-    return ForgeConfig(project="test", project_root=tmp_path, workspace=WorkspaceConfig(create_command="mkdir -p {slug}", path_pattern="{slug}", branch_pattern="forge/{slug}"), validation=DEFAULT_VALIDATION, dev_profile=_SOLO_PROFILE, preflight_profile=DEFAULT_PREFLIGHT_PROFILE, review_pool=[_SOLO_PROFILE], synthesis_profile=None, retry=RetryPolicy())
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}", path_pattern="{slug}", branch_pattern="forge/{slug}"
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=_SOLO_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[_SOLO_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+    )
+
 
 def _make_ideation_result_cli(tmp_path: Path, *, write_spec: bool = True) -> IdeationResult:
     spec_path = (tmp_path / "specs" / "test-feature.md") if write_spec else None
-    round_ = IdeationRound(round_number=1, phase1_outputs={"solo": "ideas"}, phase2_outputs={}, converged_items=["item1"], divergent_items=[], synthesis_output=_VALID_SPEC)
-    return IdeationResult(success=True, spec_path=spec_path, rounds=[round_], final_synthesis=_VALID_SPEC, residual_divergence=[], total_cost_usd=0.42, human_decision_required=False)
+    round_ = IdeationRound(
+        round_number=1,
+        phase1_outputs={"solo": "ideas"},
+        phase2_outputs={},
+        converged_items=["item1"],
+        divergent_items=[],
+        synthesis_output=_VALID_SPEC,
+    )
+    return IdeationResult(
+        success=True,
+        spec_path=spec_path,
+        rounds=[round_],
+        final_synthesis=_VALID_SPEC,
+        residual_divergence=[],
+        total_cost_usd=0.42,
+        human_decision_required=False,
+    )
+
 
 def _make_ideate_args(brief="build a thing", *, output=None, rounds=2, dry_run=False, config=None):
-    return argparse.Namespace(brief=brief, output=output, rounds=rounds, dry_run=dry_run, config=config)
+    return argparse.Namespace(
+        brief=brief, output=output, rounds=rounds, dry_run=dry_run, config=config
+    )
 
 
 class TestCmdIdeate:
@@ -842,7 +883,11 @@ class TestCmdIdeate:
         config_file = tmp_path / "forge.yaml"
         config_file.write_text("project: test\n", encoding="utf-8")
         args.config = str(config_file)
-        with (patch("theforge.cli.load_config", return_value=config), patch("theforge.cli.run_ideation", return_value=ideation_result) as mock_run, patch("theforge.cli._find_config", return_value=config_file)):
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_ideation", return_value=ideation_result) as mock_run,
+            patch("theforge.cli._find_config", return_value=config_file),
+        ):
             rc = cmd_ideate(args)
         return rc, mock_run
 
@@ -882,6 +927,9 @@ class TestCmdIdeate:
         config_file.write_text("project: test\n", encoding="utf-8")
         args = _make_ideate_args(rounds=5)
         args.config = str(config_file)
-        with (patch("theforge.cli.load_config", return_value=config), patch("theforge.cli._find_config", return_value=config_file)):
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli._find_config", return_value=config_file),
+        ):
             rc = cmd_ideate(args)
         assert rc == 1

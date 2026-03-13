@@ -307,7 +307,7 @@ def _validate_frontmatter(spec_text: str) -> bool:
     except yaml.YAMLError:
         return False
     # Require a non-empty markdown body after the closing ---
-    body = stripped[end + 3:].strip()
+    body = stripped[end + 3 :].strip()
     return len(body) > 0
 
 
