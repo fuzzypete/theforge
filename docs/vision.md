@@ -116,12 +116,12 @@ audit log.
 
 ### Phase 7: Campaign Mode ✓
 
-**Status: Done.** `forge campaign campaign.yaml` runs specs sequentially
+**Status: Done.** `forge sprint campaign.yaml` runs specs sequentially
 through the full pipeline. `campaign.yaml` manifest defines ordered spec
 list and aggregate budget ceiling. Budget enforcement is Claude-only
 (Codex/Gemini report $0.00) — warning logged at start. Continues after
 individual spec failures. ALREADY_DONE specs counted as skipped.
-Writes `campaign-audit.yaml` with per-spec outcomes and costs.
+Writes `sprint-audit.yaml` with per-spec outcomes and costs.
 
 **Spec:** `specs/campaign-mode.md`
 
@@ -199,7 +199,7 @@ forge ideate "What sub-problems should <high-level spec> be split into?"
 ```
 
 The synthesized spec becomes the campaign manifest template. Human reviews
-the ideation output before any `forge campaign` run is invoked — this is
+the ideation output before any `forge sprint` run is invoked — this is
 the mandatory human gate in the decompose flow. The coordinator remains
 fully deterministic; only the ideation agents are LLMs.
 
@@ -239,8 +239,8 @@ These are independent of the phased roadmap and can be picked up anytime.
 - **Frontmatter parsing duplication:** `_build_task_from_spec()` in
   `campaign.py` duplicates `_parse_spec_frontmatter()` in `cli.py`.
   Consolidate into a shared function.
-- **Double manifest load:** `cli.py` `cmd_campaign` loads the manifest,
-  then `run_campaign()` loads it again. Pass it through instead.
+- **Double manifest load:** `cli.py` `cmd_sprint` loads the manifest,
+  then `run_sprint()` loads it again. Pass it through instead.
 - **Missing failed-merge campaign test:** No test for what happens when
   auto-merge fails mid-campaign.
 

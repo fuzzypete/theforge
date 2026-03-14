@@ -4,8 +4,11 @@ slug: notifications
 file_scope:
   - src/theforge/campaign.py
   - src/theforge/coordinator.py
+  - src/theforge/config.py
   - src/theforge/cli.py
   - tests/test_campaign.py
+  - tests/test_coordinator.py
+  - tests/test_config.py
 pytest_target: tests/
 ---
 
@@ -13,128 +16,230 @@ pytest_target: tests/
 
 ## Problem
 
-Long-running campaigns take 30–90 minutes. The operator has no way to
-know when a campaign finishes (or fails) without actively tailing the
-log. A native OS notification at key events would allow the operator to
-walk away and come back when work is done.
+Long-running campaigns take 30–90 minutes. The operator is often away from
+the machine and has no way to know when a campaign finishes or escalates.
+A local macOS notification is useless when you're not at your desk. The
+operator needs a signal that reaches their phone.
+
+## Design
+
+Notifications are configured in `forge.yaml` under `notifications:` and
+are **opt-in from the CLI** (`--notify` flag). The backend is pluggable:
+`ntfy`, `email`, `script`, or `none`. The default backend is `none`.
+
+`ntfy` is the recommended backend — it sends push notifications to the
+ntfy iOS/Android app and Apple Watch with nothing more than an HTTP POST.
+No API key required for basic use (public server). Self-hostable.
+
+---
 
 ## Requirements
 
-### R1: Notification on campaign completion
+### R1: `NotificationConfig` in `config.py`
 
-When `run_campaign()` finishes (any outcome), send a native OS
-notification with:
-
-- **Title**: `TheForge: <campaign name>`
-- **Body**: `✓ <N> passed, ✗ <M> failed — $<cost>  <duration>`
-  e.g. `✓ 7 passed, ✗ 0 failed — $6.89  37m 02s`
-- **Sound**: default system alert sound
-
-### R2: Notification on individual spec escalation
-
-When `run_task()` transitions to ESCALATE (not ALREADY_DONE), send:
-
-- **Title**: `TheForge: escalated — <slug>`
-- **Body**: The `state.error` message (truncated to 120 chars)
-
-This fires whether the escalation is from a standalone `forge run` or
-from within a campaign. It's the one signal that requires immediate
-human attention.
-
-### R3: Notification backend — macOS only, fail silent
-
-Use `osascript` to send notifications:
+Add to the config dataclasses:
 
 ```python
-import subprocess, shutil
+@dataclass(frozen=True)
+class NtfyConfig:
+    url: str                    # e.g. "https://ntfy.sh/my-secret-topic"
+    priority: str = "default"   # "min" | "low" | "default" | "high" | "urgent"
 
-def _notify(title: str, body: str) -> None:
-    """Send a native OS notification. Fails silently on unsupported platforms."""
-    if shutil.which("osascript") is None:
-        return
-    script = (
-        f'display notification {_osa_quote(body)} '
-        f'with title {_osa_quote(title)} '
-        f'sound name "default"'
-    )
+@dataclass(frozen=True)
+class EmailConfig:
+    to: str                     # recipient address
+    smtp_host: str = "localhost"
+    smtp_port: int = 25
+    from_addr: str = "theforge@localhost"
+
+@dataclass(frozen=True)
+class NotificationConfig:
+    backend: str = "none"       # "none" | "ntfy" | "email" | "script"
+    ntfy: NtfyConfig | None = None
+    email: EmailConfig | None = None
+    script: str | None = None   # shell command; FORGE_TITLE and FORGE_BODY env vars set
+```
+
+Add `notifications: NotificationConfig` to `ForgeConfig` with a default
+of `NotificationConfig()` (backend="none", everything else None).
+
+Parse from `forge.yaml`:
+```yaml
+notifications:
+  backend: ntfy
+  ntfy:
+    url: https://ntfy.sh/my-secret-topic
+    priority: high
+```
+
+```yaml
+notifications:
+  backend: email
+  email:
+    to: paul@example.com
+    smtp_host: smtp.example.com
+    smtp_port: 587
+```
+
+```yaml
+notifications:
+  backend: script
+  script: "curl -d '$FORGE_BODY' ntfy.sh/my-topic"
+```
+
+If `notifications:` is absent, `NotificationConfig()` is used (no-op).
+
+### R2: `_notify()` dispatch function
+
+In `coordinator.py`, add:
+
+```python
+def _notify(config: NotificationConfig, title: str, body: str) -> None:
+    """Send a remote notification. Always fails silently."""
     try:
-        subprocess.run(
-            ["osascript", "-e", script],
-            timeout=5,
-            check=False,
-            capture_output=True,
-        )
+        if config.backend == "ntfy":
+            _notify_ntfy(config.ntfy, title, body)
+        elif config.backend == "email":
+            _notify_email(config.email, title, body)
+        elif config.backend == "script":
+            _notify_script(config.script, title, body)
+        # backend == "none": no-op
     except Exception:
         pass
 ```
 
-Where `_osa_quote(s)` escapes backslashes and double-quotes and wraps
-in double-quotes for AppleScript string literals.
+#### `_notify_ntfy`
 
-The function must:
-- Never raise (all errors are swallowed)
-- Never block for more than 5 seconds
-- Do nothing on Linux/Windows (no `osascript`)
+```python
+import urllib.request
 
-### R4: Placement
+def _notify_ntfy(cfg: NtfyConfig, title: str, body: str) -> None:
+    req = urllib.request.Request(
+        cfg.url,
+        data=body.encode(),
+        headers={
+            "Title": title,
+            "Priority": cfg.priority,
+            "Content-Type": "text/plain",
+        },
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=10)
+```
 
-- Campaign notification: called in `run_campaign()` immediately after
-  the `"Campaign complete: ..."` log line.
-- Escalation notification: called in `_coordinator_loop()` (and
-  `run_review_only()`) at the point where `state.phase = Phase.ESCALATE`
-  is set and the run is about to return a failure result. Only fire on
-  terminal escalations (not mid-loop budget checks that eventually
-  succeed — only when we're about to `return CoordinatorResult(success=False, ...)`).
+Use `urllib` (stdlib only — no `requests` dependency).
 
-### R5: `--no-notify` flag
+#### `_notify_email`
 
-Add `--no-notify` to `forge run`, `forge campaign`, and `forge review`
-subparsers. When passed, skip all notifications. Default is to notify.
+```python
+import smtplib
+from email.message import EmailMessage
 
-Wire through:
-- `cmd_run` → `run_task(..., notify=not args.no_notify)`
-- `cmd_campaign` → `run_campaign(..., notify=not args.no_notify)`
-- `cmd_review` → `run_from_review(..., notify=not args.no_notify)`
+def _notify_email(cfg: EmailConfig, title: str, body: str) -> None:
+    msg = EmailMessage()
+    msg["Subject"] = f"[TheForge] {title}"
+    msg["From"] = cfg.from_addr
+    msg["To"] = cfg.to
+    msg.set_content(body)
+    with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=10) as smtp:
+        smtp.send_message(msg)
+```
 
-Add `notify: bool = True` keyword parameter to `run_task()`,
-`run_campaign()`, and `run_from_review()`. Pass it down to `_notify()`
-call sites as a guard.
+#### `_notify_script`
+
+```python
+import subprocess, os
+
+def _notify_script(script: str, title: str, body: str) -> None:
+    env = {**os.environ, "FORGE_TITLE": title, "FORGE_BODY": body}
+    subprocess.run(script, shell=True, env=env, timeout=10, check=False,
+                   capture_output=True)
+```
+
+All three helpers must be called only from within `_notify()`'s try/except.
+
+### R3: Notification events
+
+**Campaign completion** — called in `run_campaign()` immediately after
+the "Campaign complete: ..." log line:
+
+- Title: `TheForge: <campaign name>`
+- Body: `✓ N passed, ✗ M failed — $X.XX  <duration>`
+
+**Spec escalation** — called at every terminal `Phase.ESCALATE`
+transition in `run_task()` and `run_from_review()`, immediately before
+`return CoordinatorResult(success=False, ...)`:
+
+- Title: `TheForge: escalated — <slug>`
+- Body: `state.error` truncated to 120 chars
+
+Only fire on terminal escalations. Do not fire for ALREADY_DONE.
+
+### R4: `--notify` CLI flag (opt-in)
+
+Notifications only fire when `--notify` is passed. This guards against
+accidental notifications during iterative testing even when forge.yaml
+has a backend configured.
+
+Add `--notify` (`store_true`, default `False`) to `forge run`,
+`forge campaign`, and `forge review` subparsers.
+
+Add `notify: bool = False` to `run_task()`, `run_campaign()`, and
+`run_from_review()` signatures. Guard every `_notify()` call: `if notify:`.
+
+### R5: Duration formatting
+
+Add `_fmt_duration(seconds: float) -> str`:
+
+```python
+def _fmt_duration(seconds: float) -> str:
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {sec:02d}s"
+    if m:
+        return f"{m}m {sec:02d}s"
+    return f"{sec}s"
+```
+
+Use it everywhere duration is currently printed as raw seconds — campaign
+per-spec lines, DONE summary, per-agent timing lines.
 
 ### R6: Tests
 
-Add to `tests/test_campaign.py`:
+`tests/test_config.py`:
+- `test_notification_config_ntfy`: forge.yaml with ntfy block → backend=="ntfy", url set
+- `test_notification_config_absent`: no `notifications:` key → backend=="none"
+- `test_notification_config_script`: script backend parses correctly
 
-- `test_campaign_notification_sent`: mock `_notify`, run a campaign to
-  completion, verify `_notify` was called once with the campaign name
-  in the title and the success count in the body.
-- `test_campaign_notification_skipped_with_no_notify`: pass
-  `notify=False`, verify `_notify` is never called.
+`tests/test_coordinator.py`:
+- `test_escalation_notification_sent`: mock `_notify`, trigger terminal escalation, verify called with "escalated" in title
+- `test_escalation_no_notification_when_notify_false`: notify=False → `_notify` never called
+- `test_notify_ntfy_posts`: mock `urllib.request.urlopen`, call `_notify_ntfy`, verify URL and headers
+- `test_notify_fail_silent`: patch `_notify_ntfy` to raise, call `_notify(...)`, verify no exception propagates
+- `test_fmt_duration_hours`: `_fmt_duration(3723)` → `"1h 02m 03s"`
+- `test_fmt_duration_minutes`: `_fmt_duration(125)` → `"2m 05s"`
+- `test_fmt_duration_seconds`: `_fmt_duration(45)` → `"45s"`
 
-Add to `tests/test_coordinator.py`:
-
-- `test_escalation_notification_sent`: mock `_notify`, trigger an
-  escalation (e.g. workspace creation failure), verify `_notify` called
-  with "escalated" in the title.
-- `test_escalation_no_notification_when_notify_false`: `notify=False`,
-  verify `_notify` never called.
-- `test_notify_fail_silent`: patch `subprocess.run` to raise
-  `OSError`, call `_notify(...)`, verify no exception propagates.
-- `test_notify_noop_without_osascript`: patch `shutil.which` to return
-  `None`, verify subprocess is never called.
+`tests/test_campaign.py`:
+- `test_campaign_notification_sent`: mock `_notify`, complete campaign, verify called once with campaign name in title
+- `test_campaign_notification_not_sent_without_flag`: notify=False → `_notify` never called
 
 ## Out of scope
 
-- Linux notifications (`notify-send`, `libnotify`)
-- Email or Slack notifications
-- Per-spec success notifications (too noisy for campaigns)
+- Slack / webhook backends
+- Per-spec success notifications in campaigns (too noisy)
 - Campaign progress notifications ("3/7 done")
+- macOS `osascript` local notifications
+- SMTP authentication
 
 ## Acceptance criteria
 
-1. Running a campaign sends exactly one notification on completion
-2. A spec escalation sends a notification from both `forge run` and
-   within `forge campaign`
-3. `--no-notify` suppresses all notifications
-4. `_notify()` never raises; failure is always silent
-5. All existing tests pass
-6. New tests cover notification sending, suppression, and silent failure
+1. `forge campaign campaigns/hardening.yaml --notify` sends one push notification
+   on completion, visible on iPhone via ntfy app
+2. Terminal escalation sends notification from both `forge run --notify` and within campaign
+3. Without `--notify`, nothing fires regardless of forge.yaml config
+4. `_notify()` never raises; all errors silently swallowed
+5. All existing tests pass unchanged
+6. `_fmt_duration` used for all duration output (hours/mins/secs)

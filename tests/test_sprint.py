@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from theforge.campaign import (
-    load_manifest,
-    run_campaign,
+from theforge.sprint import (
+    load_sprint_manifest,
+    run_sprint,
 )
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -97,7 +97,7 @@ def _make_coordinator_result(
     )
 
 
-# ── load_manifest ─────────────────────────────────────────────────────
+# ── load_sprint_manifest ─────────────────────────────────────────────────────
 
 
 class TestLoadManifest:
@@ -107,26 +107,26 @@ class TestLoadManifest:
             yaml.dump({"name": "My Campaign", "budget_usd": 5.0, "specs": ["a.md", "b.md"]}),
             encoding="utf-8",
         )
-        manifest = load_manifest(path)
+        manifest = load_sprint_manifest(path)
         assert manifest.name == "My Campaign"
         assert manifest.budget_usd == 5.0
         assert manifest.specs == ["a.md", "b.md"]
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="not found"):
-            load_manifest(tmp_path / "nonexistent.yaml")
+            load_sprint_manifest(tmp_path / "nonexistent.yaml")
 
     def test_missing_name(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(yaml.dump({"budget_usd": 5.0, "specs": ["a.md"]}), encoding="utf-8")
         with pytest.raises(ValueError, match="name"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_missing_budget(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(yaml.dump({"name": "X", "specs": ["a.md"]}), encoding="utf-8")
         with pytest.raises(ValueError, match="budget_usd"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_zero_budget(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
@@ -134,7 +134,7 @@ class TestLoadManifest:
             yaml.dump({"name": "X", "budget_usd": 0.0, "specs": ["a.md"]}), encoding="utf-8"
         )
         with pytest.raises(ValueError, match="budget_usd.*> 0"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_negative_budget(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
@@ -142,19 +142,19 @@ class TestLoadManifest:
             yaml.dump({"name": "X", "budget_usd": -1.0, "specs": ["a.md"]}), encoding="utf-8"
         )
         with pytest.raises(ValueError, match="budget_usd.*> 0"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_missing_specs(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(yaml.dump({"name": "X", "budget_usd": 5.0}), encoding="utf-8")
         with pytest.raises(ValueError, match="specs"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_empty_specs(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(yaml.dump({"name": "X", "budget_usd": 5.0, "specs": []}), encoding="utf-8")
         with pytest.raises(ValueError, match="specs"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_non_string_spec_entry(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
@@ -162,16 +162,16 @@ class TestLoadManifest:
             yaml.dump({"name": "X", "budget_usd": 5.0, "specs": [123]}), encoding="utf-8"
         )
         with pytest.raises(ValueError, match="strings"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
     def test_not_a_mapping(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text("- item1\n- item2\n", encoding="utf-8")
         with pytest.raises(ValueError, match="mapping"):
-            load_manifest(path)
+            load_sprint_manifest(path)
 
 
-# ── run_campaign ──────────────────────────────────────────────────────
+# ── run_sprint ──────────────────────────────────────────────────────
 
 
 class TestRunCampaign:
@@ -185,8 +185,8 @@ class TestRunCampaign:
         result_a = _make_coordinator_result(success=True, cost=2.0)
         result_b = _make_coordinator_result(success=True, cost=3.0)
 
-        with patch("theforge.campaign.run_task", side_effect=[result_a, result_b]):
-            campaign = run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]):
+            campaign = run_sprint(config, manifest_path)
 
         assert campaign.specs_total == 2
         assert campaign.specs_succeeded == 2
@@ -197,12 +197,12 @@ class TestRunCampaign:
         assert len(campaign.results) == 2
 
         # Audit file should exist
-        audit_path = tmp_path / "campaign-audit.yaml"
+        audit_path = tmp_path / "sprint-audit.yaml"
         assert audit_path.exists()
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
-        assert audit["campaign"]["specs_succeeded"] == 2
-        assert audit["campaign"]["total_cost_usd"] == pytest.approx(5.0)
+        assert audit["sprint"]["specs_succeeded"] == 2
+        assert audit["sprint"]["total_cost_usd"] == pytest.approx(5.0)
         assert len(audit["specs"]) == 2
 
     def test_spec_failure_continues(self, tmp_path: Path) -> None:
@@ -215,8 +215,8 @@ class TestRunCampaign:
         result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
         result_b = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.campaign.run_task", side_effect=[result_a, result_b]):
-            campaign = run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]):
+            campaign = run_sprint(config, manifest_path)
 
         assert campaign.specs_succeeded == 1
         assert campaign.specs_failed == 1
@@ -233,8 +233,8 @@ class TestRunCampaign:
             success=True, cost=0.15, preflight_verdict="ALREADY_DONE", phase=Phase.DONE
         )
 
-        with patch("theforge.campaign.run_task", return_value=result):
-            campaign = run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", return_value=result):
+            campaign = run_sprint(config, manifest_path)
 
         assert campaign.specs_succeeded == 0
         assert campaign.specs_skipped == 1
@@ -253,8 +253,8 @@ class TestRunCampaign:
         # First spec costs 6.0, which exceeds the $5 budget
         result_a = _make_coordinator_result(success=True, cost=6.0)
 
-        with patch("theforge.campaign.run_task", side_effect=[result_a]) as mock_run:
-            campaign = run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            campaign = run_sprint(config, manifest_path)
 
         # Only spec A ran; B and C were skipped
         assert mock_run.call_count == 1
@@ -276,8 +276,8 @@ class TestRunCampaign:
         # First spec costs exactly the budget
         result_a = _make_coordinator_result(success=True, cost=3.0)
 
-        with patch("theforge.campaign.run_task", side_effect=[result_a]) as mock_run:
-            campaign = run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            campaign = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
         assert campaign.specs_skipped == 1  # spec B skipped
@@ -289,8 +289,8 @@ class TestRunCampaign:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.campaign.run_task", return_value=result_a) as mock_run:
-            run_campaign(config, manifest_path, auto_merge=True)
+        with patch("theforge.sprint.run_task", return_value=result_a) as mock_run:
+            run_sprint(config, manifest_path, auto_merge=True)
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("auto_merge") is True
@@ -302,39 +302,39 @@ class TestRunCampaign:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.campaign.run_task", return_value=result_a) as mock_run:
-            run_campaign(config, manifest_path, interactive=True)
+        with patch("theforge.sprint.run_task", return_value=result_a) as mock_run:
+            run_sprint(config, manifest_path, interactive=True)
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("interactive") is True
 
     def test_manifest_missing_spec_file_raises(self, tmp_path: Path) -> None:
-        """run_campaign raises ValueError if spec files don't exist."""
+        """run_sprint raises ValueError if spec files don't exist."""
         manifest_path = _make_manifest(tmp_path, ["nonexistent.md"])
         config = _make_config(tmp_path)
 
         with pytest.raises(ValueError, match="missing"):
-            run_campaign(config, manifest_path)
+            run_sprint(config, manifest_path)
 
     def test_audit_yaml_written(self, tmp_path: Path) -> None:
-        """campaign-audit.yaml is written to project root."""
+        """sprint-audit.yaml is written to project root."""
         _make_spec_file(tmp_path, "Spec A", "spec-a")
         manifest_path = _make_manifest(tmp_path, ["spec-a.md"])
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.5, merged=True)
 
-        with patch("theforge.campaign.run_task", return_value=result_a):
-            run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", return_value=result_a):
+            run_sprint(config, manifest_path)
 
-        audit_path = tmp_path / "campaign-audit.yaml"
+        audit_path = tmp_path / "sprint-audit.yaml"
         assert audit_path.exists()
 
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
 
-        assert audit["campaign"]["name"] == "Test Campaign"
-        assert audit["campaign"]["budget_usd"] == pytest.approx(10.0)
-        assert "Claude" in audit["campaign"]["budget_note"]
+        assert audit["sprint"]["name"] == "Test Campaign"
+        assert audit["sprint"]["budget_usd"] == pytest.approx(10.0)
+        assert "Claude" in audit["sprint"]["budget_note"]
         assert audit["specs"][0]["path"] == "spec-a.md"
         assert audit["specs"][0]["merge"] is True
 
@@ -347,10 +347,10 @@ class TestRunCampaign:
 
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.campaign.run_task", return_value=result_a):
-            run_campaign(config, manifest_path)
+        with patch("theforge.sprint.run_task", return_value=result_a):
+            run_sprint(config, manifest_path)
 
-        audit_path = tmp_path / "campaign-audit.yaml"
+        audit_path = tmp_path / "sprint-audit.yaml"
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
 
@@ -378,13 +378,13 @@ class TestRunCampaign:
             merge={"attempted": True, "merged": False, "error": "dirty working tree"},
         )
 
-        with patch("theforge.campaign.run_task", return_value=result_failed_merge):
-            campaign = run_campaign(config, manifest_path, auto_merge=True)
+        with patch("theforge.sprint.run_task", return_value=result_failed_merge):
+            campaign = run_sprint(config, manifest_path, auto_merge=True)
 
         # Campaign counts as succeeded (task itself passed), but merge did not happen
         assert campaign.specs_succeeded == 1
 
-        audit_path = tmp_path / "campaign-audit.yaml"
+        audit_path = tmp_path / "sprint-audit.yaml"
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
 
@@ -402,9 +402,9 @@ class TestCampaignNotifications:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.campaign._notify") as mock_notify:
-            with patch("theforge.campaign.run_task", return_value=result_a):
-                run_campaign(config, manifest_path, notify=True)
+        with patch("theforge.sprint._notify") as mock_notify:
+            with patch("theforge.sprint.run_task", return_value=result_a):
+                run_sprint(config, manifest_path, notify=True)
 
         mock_notify.assert_called_once()
         title, body = mock_notify.call_args[0]
@@ -412,28 +412,28 @@ class TestCampaignNotifications:
         assert "1" in body  # specs_succeeded count
 
     def test_campaign_forwards_notify_true_to_run_task(self, tmp_path: Path) -> None:
-        """run_campaign() passes notify=True down to each run_task() call."""
+        """run_sprint() passes notify=True down to each run_task() call."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.campaign._notify"):
-            with patch("theforge.campaign.run_task", return_value=result_a) as mock_run_task:
-                run_campaign(config, manifest_path, notify=True)
+        with patch("theforge.sprint._notify"):
+            with patch("theforge.sprint.run_task", return_value=result_a) as mock_run_task:
+                run_sprint(config, manifest_path, notify=True)
 
         _, kwargs = mock_run_task.call_args
         assert kwargs.get("notify") is True
 
     def test_campaign_forwards_notify_false_to_run_task(self, tmp_path: Path) -> None:
-        """run_campaign() passes notify=False down to each run_task() call."""
+        """run_sprint() passes notify=False down to each run_task() call."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.campaign.run_task", return_value=result_a) as mock_run_task:
-            run_campaign(config, manifest_path, notify=False)
+        with patch("theforge.sprint.run_task", return_value=result_a) as mock_run_task:
+            run_sprint(config, manifest_path, notify=False)
 
         _, kwargs = mock_run_task.call_args
         assert kwargs.get("notify") is False
@@ -445,9 +445,9 @@ class TestCampaignNotifications:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.campaign._notify") as mock_notify:
-            with patch("theforge.campaign.run_task", return_value=result_a):
-                run_campaign(config, manifest_path, notify=False)
+        with patch("theforge.sprint._notify") as mock_notify:
+            with patch("theforge.sprint.run_task", return_value=result_a):
+                run_sprint(config, manifest_path, notify=False)
 
         mock_notify.assert_not_called()
 

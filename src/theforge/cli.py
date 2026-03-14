@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from .campaign import run_campaign
+from .sprint import run_sprint
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import (
     CoordinatorResult,
@@ -323,8 +323,8 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0 if result.success else 1
 
 
-def cmd_campaign(args: argparse.Namespace) -> int:
-    """Run multiple specs sequentially via a campaign manifest."""
+def cmd_sprint(args: argparse.Namespace) -> int:
+    """Run multiple specs sequentially via a sprint manifest."""
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():
         print(f"Campaign manifest not found: {manifest_path}", file=sys.stderr)
@@ -355,7 +355,7 @@ def cmd_campaign(args: argparse.Namespace) -> int:
     interactive = getattr(args, "interactive", False)
 
     try:
-        result = run_campaign(
+        result = run_sprint(
             config,
             manifest_path,
             auto_merge=auto_merge,
@@ -381,7 +381,7 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         brief = brief_arg
 
     # Find config — search from brief file's directory when brief is a file,
-    # mirroring how cmd_run/cmd_campaign search relative to their input files.
+    # mirroring how cmd_run/cmd_sprint search relative to their input files.
     config_path: Path | None = None
     if args.config:
         config_path = Path(args.config).resolve()
@@ -712,32 +712,32 @@ def main() -> None:
         help="Suppress OS notifications",
     )
 
-    # forge campaign
-    campaign_parser = subparsers.add_parser(
-        "campaign", help="Run multiple specs sequentially from a campaign manifest"
+    # forge sprint
+    sprint_parser = subparsers.add_parser(
+        "sprint", help="Run multiple specs sequentially from a sprint manifest"
     )
-    campaign_parser.add_argument("manifest", help="Path to campaign.yaml manifest")
-    campaign_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
-    campaign_parser.add_argument(
+    sprint_parser.add_argument("manifest", help="Path to sprint.yaml manifest")
+    sprint_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    sprint_parser.add_argument(
         "--auto-merge",
         action="store_true",
         default=False,
         help="Merge each spec's branch after APPROVE",
     )
-    campaign_parser.add_argument(
+    sprint_parser.add_argument(
         "--interactive",
         action="store_true",
         default=False,
         help="Pause for human review at each spec",
     )
-    campaign_parser.add_argument(
+    sprint_parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
         default=False,
         help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
     )
-    campaign_parser.add_argument(
+    sprint_parser.add_argument(
         "--no-notify",
         action="store_true",
         default=False,
@@ -797,7 +797,7 @@ def main() -> None:
         "init": cmd_init,
         "run": cmd_run,
         "review": cmd_review,
-        "campaign": cmd_campaign,
+        "sprint": cmd_sprint,
         "ideate": cmd_ideate,
         "audit": cmd_audit,
     }

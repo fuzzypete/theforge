@@ -48,6 +48,7 @@ profiles:
     - name: codex
       cli: codex
       model: gpt-5.4
+      reasoning_effort: medium
       budget_usd: 1.00
       timeout_seconds: 600
       allowed_tools:
@@ -77,3 +78,9 @@ profiles:
 retry:
   max_dev_iterations: 3
   max_review_cycles: 3
+
+notifications:
+  backend: ntfy
+  ntfy:
+    url: https://ntfy.sh/theforge-pwickersham
+    priority: high

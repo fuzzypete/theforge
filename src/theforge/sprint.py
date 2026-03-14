@@ -1,6 +1,6 @@
 """Campaign mode: run multiple specs sequentially through the full pipeline.
 
-A campaign is defined by a YAML manifest listing spec paths to run in order,
+A sprint is defined by a YAML manifest listing spec paths to run in order,
 with an aggregate budget ceiling (Claude costs only).
 """
 
@@ -19,8 +19,8 @@ from .task import TaskSpec
 
 
 @dataclass
-class CampaignManifest:
-    """Parsed campaign.yaml manifest."""
+class SprintManifest:
+    """Parsed sprint.yaml manifest."""
 
     name: str
     budget_usd: float
@@ -28,7 +28,7 @@ class CampaignManifest:
 
 
 @dataclass
-class CampaignResult:
+class SprintResult:
     """Aggregate result from running a campaign."""
 
     name: str
@@ -42,8 +42,8 @@ class CampaignResult:
     stopped_reason: str | None = None  # why campaign stopped early, if it did
 
 
-def load_manifest(manifest_path: Path) -> CampaignManifest:
-    """Load and validate a campaign.yaml manifest.
+def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
+    """Load and validate a sprint.yaml manifest.
 
     Raises ValueError if the manifest is invalid.
     """
@@ -76,10 +76,10 @@ def load_manifest(manifest_path: Path) -> CampaignManifest:
     if not all(isinstance(s, str) for s in specs):
         raise ValueError("All entries in 'specs' must be strings (file paths)")
 
-    return CampaignManifest(name=name, budget_usd=budget_usd, specs=specs)
+    return SprintManifest(name=name, budget_usd=budget_usd, specs=specs)
 
 
-def _validate_spec_paths(manifest: CampaignManifest, project_root: Path) -> list[Path]:
+def _validate_spec_paths(manifest: SprintManifest, project_root: Path) -> list[Path]:
     """Resolve and validate all spec paths. Raises ValueError if any are missing."""
     resolved: list[Path] = []
     missing: list[str] = []
@@ -124,7 +124,7 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
 
 
 def _log(msg: str) -> None:
-    print(f"[campaign] {msg}", file=sys.stderr, flush=True)
+    print(f"[sprint] {msg}", file=sys.stderr, flush=True)
 
 
 def _spec_header(idx: int, total: int, slug: str) -> str:
@@ -134,35 +134,35 @@ def _spec_header(idx: int, total: int, slug: str) -> str:
     return prefix + dashes
 
 
-def run_campaign(
+def run_sprint(
     config: ForgeConfig,
     manifest_path: Path,
     *,
     auto_merge: bool = False,
     interactive: bool = False,
     notify: bool = True,
-) -> CampaignResult:
-    """Run all specs in a campaign manifest sequentially.
+) -> SprintResult:
+    """Run all specs in a sprint manifest sequentially.
 
     Budget enforcement tracks Claude costs only; Codex/Gemini invocations
     report $0.00 and do not count toward the ceiling.
 
     Args:
         config: Loaded ForgeConfig for the project.
-        manifest_path: Path to the campaign.yaml manifest.
+        manifest_path: Path to the sprint.yaml manifest.
         auto_merge: If True, merge each spec's branch after APPROVE.
         interactive: If True, pause for human review at each spec.
 
     Returns:
-        CampaignResult with per-spec outcomes and aggregate stats.
+        SprintResult with per-spec outcomes and aggregate stats.
     """
-    manifest = load_manifest(manifest_path)
+    manifest = load_sprint_manifest(manifest_path)
     spec_paths = _validate_spec_paths(manifest, config.project_root)
 
     total = len(spec_paths)
     plural = "s" if total != 1 else ""
     print(
-        f'[campaign] "{manifest.name}"  {total} spec{plural}  budget=${manifest.budget_usd:.2f}',
+        f'[sprint] "{manifest.name}"  {total} spec{plural}  budget=${manifest.budget_usd:.2f}',
         file=sys.stderr,
         flush=True,
     )
@@ -230,7 +230,7 @@ def run_campaign(
         icon = "✓" if result.success else "✗"
         _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {_fmt_dur(_spec_elapsed)}")
 
-        # Stop campaign if budget exceeded after this run
+        # Stop sprint if budget exceeded after this run
         if accumulated_cost >= manifest.budget_usd and idx < total:
             acc = accumulated_cost
             bud = manifest.budget_usd
@@ -238,13 +238,13 @@ def run_campaign(
             for remaining_idx in range(idx + 1, total + 1):
                 _log(f"[{remaining_idx}/{total}] SKIPPED (budget exceeded)")
                 specs_skipped += 1
-            _log(f"Stopping campaign: {stopped_reason}")
+            _log(f"Stopping sprint: {stopped_reason}")
             break
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     duration = (finished_at - started_at).total_seconds()
 
-    campaign_result = CampaignResult(
+    campaign_result = SprintResult(
         name=manifest.name,
         specs_total=total,
         specs_succeeded=specs_succeeded,
@@ -256,20 +256,20 @@ def run_campaign(
         stopped_reason=stopped_reason,
     )
 
-    _campaign_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
+    _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
     _log(
         f"Campaign complete: {specs_succeeded} succeeded, {specs_failed} failed, "
-        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_fmt_dur(_campaign_elapsed)}"
+        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_fmt_dur(_sprint_elapsed)}"
     )
     if notify:
         _notify(
             f"TheForge: {manifest.name}",
             f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
-            f" — ${accumulated_cost:.2f}  {_fmt_dur(_campaign_elapsed)}",
+            f" — ${accumulated_cost:.2f}  {_fmt_dur(_sprint_elapsed)}",
         )
 
-    # Write campaign-audit.yaml
-    _write_campaign_audit(
+    # Write sprint-audit.yaml
+    _write_sprint_audit(
         manifest=manifest,
         result=campaign_result,
         spec_paths=spec_paths,
@@ -282,16 +282,16 @@ def run_campaign(
     return campaign_result
 
 
-def _write_campaign_audit(
-    manifest: CampaignManifest,
-    result: CampaignResult,
+def _write_sprint_audit(
+    manifest: SprintManifest,
+    result: SprintResult,
     spec_paths: list[Path],
     started_at: datetime.datetime,
     finished_at: datetime.datetime,
     duration: float,
     project_root: Path,
 ) -> None:
-    """Write campaign-audit.yaml to the project root."""
+    """Write sprint-audit.yaml to the project root."""
     # Build per-spec entries
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
@@ -341,7 +341,7 @@ def _write_campaign_audit(
         spec_entries.append(entry)
 
     audit = {
-        "campaign": {
+        "sprint": {
             "name": manifest.name,
             "budget_usd": manifest.budget_usd,
             "total_cost_usd": round(result.total_cost_usd, 4),
@@ -358,7 +358,7 @@ def _write_campaign_audit(
         "specs": spec_entries,
     }
 
-    audit_path = project_root / "campaign-audit.yaml"
+    audit_path = project_root / "sprint-audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     _log(f"Audit written: {audit_path}")

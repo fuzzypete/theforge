@@ -238,8 +238,12 @@ forge ideate <brief-or-file> [--output specs/<slug>.md] [--rounds N] [--dry-run]
   without writing a file
 
 If the pool has only one model (no synthesis), `forge ideate` runs a
-single-model spec-generation pass (Phase 1 only, no cross-review). It
-still produces a valid spec but without the deliberation benefit.
+single-model spec-generation pass using a combined ideation+spec prompt
+(no separate Phase 1/Phase 2/synthesis steps, no cross-review). A single
+LLM call produces ideas, constraints, and a valid spec with frontmatter
+in one shot. This is equivalent to "Phase 1 only" in that no other model
+is consulted, but the prompt is purpose-built for direct spec output rather
+than the multi-model Phase 1 ideas format.
 
 If the pool has no synthesis profile configured and `len(review_pool) > 1`,
 raise an error: synthesis is required for the cross-review consolidation step.
@@ -303,7 +307,8 @@ feeding directly into a campaign manifest.
 4. Synthesis produces valid frontmatter + markdown
 5. Residual divergence appears in a `## Human Decisions Required` section
 6. `--dry-run` prints to stdout without writing
-7. Single-model pool produces a spec via Phase 1 only (no error)
+7. Single-model pool produces a valid spec via one combined ideation+spec
+   call (no cross-review, no synthesis, one LLM invocation total)
 8. Pool > 1 without synthesis profile raises a clear error
 9. All existing tests pass
 10. New tests cover all deliberation phases and edge cases
