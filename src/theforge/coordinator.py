@@ -666,9 +666,9 @@ def _merge_branch(
 
     # Worktree cleanup (best-effort)
     worktree_rel = f".forge/worktrees/{slug}"
-    ok_rm, rm_out = _run_shell(f"git worktree remove {worktree_rel}", project_root)
+    ok_rm, rm_out = _run_shell(f"git worktree remove --force {worktree_rel}", project_root)
     if not ok_rm:
-        _log(f"Warning: worktree cleanup failed (harmless): {rm_out}")
+        _log(f"Warning: worktree cleanup failed: {rm_out}")
     else:
         _log(f"Worktree removed: {worktree_rel}")
 
