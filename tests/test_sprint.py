@@ -663,7 +663,7 @@ class TestTriageSpec:
 
 class TestResumeSprintIntegration:
     def test_resume_sprint_skips_merged(self, tmp_path: Path) -> None:
-        """End-to-end resume: merged spec is skipped, not passed to run_task."""
+        """End-to-end resume: merged spec counts as succeeded (work is done)."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
         config = _make_config(tmp_path)
@@ -680,8 +680,8 @@ class TestResumeSprintIntegration:
                 result = run_sprint(config, manifest_path, resume=True)
 
         mock_run.assert_not_called()
-        assert result.specs_skipped == 1
-        assert result.specs_succeeded == 0
+        assert result.specs_succeeded == 1  # already-merged = success
+        assert result.specs_skipped == 0
 
     def test_resume_sprint_enters_review(self, tmp_path: Path) -> None:
         """End-to-end resume: gate-passing worktree uses run_from_review."""
@@ -736,6 +736,36 @@ class TestResumeSprintIntegration:
 
         # total should be prior (3.50) + new (1.00)
         assert result.total_cost_usd == pytest.approx(4.50)
+
+    def test_resume_prior_cost_exceeds_budget(self, tmp_path: Path) -> None:
+        """When prior cost already meets/exceeds budget, first spec is skipped."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
+        config = _make_config(tmp_path)
+
+        # Prior run already spent $6 (over the $5 budget)
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        prior_audit = {"sprint": {"total_cost_usd": 6.0}}
+        with open(audits_dir / "sprint-audit.yaml", "w") as f:
+            yaml.dump(prior_audit, f)
+
+        full_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+
+        with patch("theforge.sprint._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.run_task") as mock_run:
+                result = run_sprint(config, manifest_path, resume=True)
+
+        # Spec should be skipped — prior cost alone exceeds budget
+        mock_run.assert_not_called()
+        assert result.specs_skipped == 1
+        assert result.stopped_reason is not None
+        assert "budget" in result.stopped_reason.lower()
 
     def test_no_resume_flag_unchanged(self, tmp_path: Path) -> None:
         """Without --resume, behavior is unchanged (run_task called normally)."""

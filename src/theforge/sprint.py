@@ -223,11 +223,13 @@ def _triage_spec(
         commits_ahead = []
 
     if not commits_ahead:
+        # Stale worktree: 0 commits ahead of base. run_task WORKSPACE phase will
+        # recreate it from scratch. Pass worktree_path=None so callers don't reuse it.
         return SpecTriage(
             spec_path=spec_path,
             action="full",
             reason=f"worktree exists but 0 commits ahead of {base_branch} (stale)",
-            worktree_path=worktree_path,
+            worktree_path=None,
         )
 
     # 4. Gate pre-check to decide REVIEW vs DEV entry
@@ -327,9 +329,10 @@ def run_sprint(
         spec_str = manifest.specs[idx - 1]
         task = _build_task_from_spec(spec_path)
 
-        # Budget check before starting
-        if accumulated_cost >= manifest.budget_usd:
-            acc = accumulated_cost
+        # Budget check before starting (cumulative: prior + current run)
+        cumulative_cost = prior_cost + accumulated_cost
+        if cumulative_cost >= manifest.budget_usd:
+            acc = cumulative_cost
             bud = manifest.budget_usd
             _log(f"[{idx}/{total}] SKIPPED (budget exhausted: ${acc:.2f} >= ${bud:.2f})")
             specs_skipped += 1
@@ -340,12 +343,12 @@ def run_sprint(
                 specs_skipped += 1
             break
 
-        # Resume mode: skip already-merged specs
+        # Resume mode: skip already-merged specs (count as succeeded — work is done)
         if resume:
             triage = triages.get(spec_str)
             if triage and triage.action == "skip_merged":
                 _log(f"[{idx}/{total}] SKIP {task.slug} (already merged to main)")
-                specs_skipped += 1
+                specs_succeeded += 1
                 continue
 
         # Emit spec header banner
@@ -413,9 +416,9 @@ def run_sprint(
         dur = _fmt_duration(_spec_elapsed)
         _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {dur}")
 
-        # Stop sprint if budget exceeded after this run
-        if accumulated_cost >= manifest.budget_usd and idx < total:
-            acc = accumulated_cost
+        # Stop sprint if budget exceeded after this run (cumulative)
+        if (prior_cost + accumulated_cost) >= manifest.budget_usd and idx < total:
+            acc = prior_cost + accumulated_cost
             bud = manifest.budget_usd
             stopped_reason = f"Budget exceeded after spec {idx} (${acc:.2f} >= ${bud:.2f})"
             for remaining_idx in range(idx + 1, total + 1):
