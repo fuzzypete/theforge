@@ -793,27 +793,26 @@ def _run_gate(
     When task.gate_override is a non-"none" string, that command is used instead
     of config.validation.gate_command, and exit-code mode is always used.
     """
-    # Delete stale handoff to prevent a prior PASS from leaking through on gate failure
-    # (only relevant in handoff-based mode)
-    if config.validation.handoff_file:
-        stale_handoff = workspace_path / config.validation.handoff_file
-        if stale_handoff.exists():
-            try:
-                stale_handoff.unlink()
-            except OSError as e:
-                return None, f"Cannot remove stale handoff file: {e}"
-
     # Determine gate command and exit-code mode
+    # _is_gate_skip handles None internally, so 'task.gate_override and ...' is sufficient.
     has_override = (
-        task is not None
-        and not _is_gate_skip(task.gate_override)
-        and task.gate_override is not None
+        task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
     )
     if has_override:
-        # Custom gate command: always exit-code mode (no handoff expected)
+        # Custom gate command: always exit-code mode (no handoff expected).
+        # Stale-handoff deletion is skipped — custom gates don't read the handoff file.
         gate_cmd = task.gate_override  # type: ignore[union-attr]
         use_exit_code = True
     else:
+        # Global gate command: delete any stale handoff before running (handoff-based mode).
+        # This prevents a prior PASS from leaking through on gate failure.
+        if config.validation.handoff_file:
+            stale_handoff = workspace_path / config.validation.handoff_file
+            if stale_handoff.exists():
+                try:
+                    stale_handoff.unlink()
+                except OSError as e:
+                    return None, f"Cannot remove stale handoff file: {e}"
         # Global gate command with task-specific substitutions
         gate_cmd = config.validation.gate_command
         if task is not None:
