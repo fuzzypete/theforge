@@ -4628,18 +4628,21 @@ criteria_checked: []
 ```
 """
 
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _make_agent_result(output=preflight_large)
+            if profile.name == "synthesis":
+                # 3-model config: large keeps 2 reviewers, synthesis runs
+                return _make_agent_result(output=APPROVE_REVIEW)
+            return _make_agent_result()
+
+        pool_names = [p.name for p in config.review_pool]
         with (
             patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
-            patch(
-                "theforge.coordinator.run_agent",
-                side_effect=[
-                    _make_agent_result(output=preflight_large),  # preflight
-                    _make_agent_result(),  # dev
-                ],
-            ),
+            patch("theforge.coordinator.run_agent", side_effect=fake_run_agent),
             patch(
                 "theforge.coordinator.run_agent_pool",
-                return_value=_make_pool_result([APPROVE_REVIEW], [config.review_pool[0].name]),
+                return_value=_make_pool_result([APPROVE_REVIEW, APPROVE_REVIEW], pool_names),
             ),
         ):
             result = run_task(config, task)
@@ -4725,6 +4728,58 @@ class TestLargeComplexitySynthesisP1:
         adapted = _apply_complexity_adaptation(config, "large")
         assert adapted.synthesis_profile is not None
         assert adapted.synthesis_profile.model == "opus"
+
+    def test_large_2_model_synthesis_runs_in_coordinator(self, tmp_path):
+        """Synthesis gate must not skip synthesis for 1-reviewer large-complexity pool.
+
+        When large complexity materializes synthesis_profile for a 2-model config,
+        the coordinator must invoke synthesis (not skip due to pool_size == 1).
+        """
+        from dataclasses import replace
+
+        config = _make_smart_config(tmp_path)
+        # Simulate 2-model smart-config after large-complexity adaptation:
+        # review_pool has 1 reviewer but synthesis_profile is set
+        two_model_large = replace(
+            config,
+            review_pool=[config.review_pool[0]],
+            synthesis_profile=config.synthesis_profile,
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        preflight_large = """\
+```yaml
+verdict: PROCEED
+complexity: large
+reason: "Big refactor."
+criteria_checked: []
+```
+"""
+        synthesis_called: list[bool] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _make_agent_result(output=preflight_large)
+            if profile.name == "synthesis":
+                synthesis_called.append(True)
+                return _make_agent_result(output=APPROVE_REVIEW)
+            return _make_agent_result()
+
+        with (
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator.run_agent", side_effect=fake_run_agent),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result(
+                    [APPROVE_REVIEW], [two_model_large.review_pool[0].name]
+                ),
+            ),
+        ):
+            run_task(two_model_large, task)
+
+        assert synthesis_called, "synthesis must run for 1-reviewer pool with synthesis_profile set"  # noqa: E501
 
 
 class TestComplexityParsedForAllPreflightsP1:

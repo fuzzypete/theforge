@@ -1265,10 +1265,15 @@ def _coordinator_loop(
                     message=state.error,
                 )
 
-            # Determine the output to parse as the final review verdict
-            if config.synthesis_profile is None or len(successful) == 1:
-                # Pool of 1, or degraded to 1 successful reviewer — no synthesis
-                if len(failed_results) > 0:
+            # Determine the output to parse as the final review verdict.
+            # Skip synthesis when: no synthesis profile, OR degraded (some reviewers failed
+            # from a pool that had multiple reviewers).
+            # This lets synthesis run for a 1-reviewer pool that has synthesis_profile
+            # materialized by large-complexity adaptation.
+            _is_degraded = len(failed_results) > 0 and pool_size > 1
+            if config.synthesis_profile is None or _is_degraded:
+                # No synthesis configured, or degraded to single successful reviewer
+                if _is_degraded:
                     _log_verbose(
                         f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
                         "skipping synthesis"
@@ -1926,8 +1931,9 @@ def run_review_only(
             message=state.error,
         )
 
-    # Synthesis if multi-model pool
-    if config.synthesis_profile is None or len(successful) == 1:
+    # Synthesis if configured and not degraded (same logic as _coordinator_loop)
+    _ro_is_degraded = len(failed_results) > 0 and pool_size > 1
+    if config.synthesis_profile is None or _ro_is_degraded:
         synthesis_output = successful[0].output
     else:
         meta.synthesized = True
