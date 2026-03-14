@@ -5,8 +5,10 @@ file_scope:
   - src/theforge/task.py
   - src/theforge/config.py
   - src/theforge/coordinator.py
+  - src/theforge/runner.py
   - tests/test_task.py
   - tests/test_coordinator.py
+  - tests/test_runner.py
 pytest_target: tests/
 ---
 
