@@ -155,6 +155,7 @@ class SpecTriage:
     action: str  # "skip_merged", "review", "dev", "full"
     reason: str
     worktree_path: Path | None = None
+    slug: str = ""
 
 
 def _triage_spec(
@@ -193,6 +194,7 @@ def _triage_spec(
                 action="skip_merged",
                 reason=f"already merged to {base_branch}",
                 worktree_path=None,
+                slug=slug,
             )
     except (subprocess.TimeoutExpired, OSError):
         pass  # Branch may not exist yet — treat as not merged
@@ -204,6 +206,7 @@ def _triage_spec(
             action="full",
             reason="no worktree found",
             worktree_path=None,
+            slug=slug,
         )
 
     # 3. Check commits ahead of base branch
@@ -230,6 +233,7 @@ def _triage_spec(
             action="full",
             reason=f"worktree exists but 0 commits ahead of {base_branch} (stale)",
             worktree_path=None,
+            slug=slug,
         )
 
     # 4. Gate pre-check to decide REVIEW vs DEV entry
@@ -241,6 +245,7 @@ def _triage_spec(
             action="review",
             reason=f"worktree exists, gate passes ({len(commits_ahead)} commits ahead)",
             worktree_path=worktree_path,
+            slug=slug,
         )
 
     reason_detail = gate_err or f"gate returned {gate_decision}"
@@ -249,6 +254,7 @@ def _triage_spec(
         action="dev",
         reason=f"worktree exists, gate fails ({reason_detail})",
         worktree_path=worktree_path,
+        slug=slug,
     )
 
 
@@ -318,16 +324,24 @@ def run_sprint(
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
         _log("Triaging specs...")
-        for spec_str, spec_path in zip(manifest.specs, spec_paths):
+        for spec_str in manifest.specs:
             triage = _triage_spec(spec_str, config, config.project_root)
             triages[spec_str] = triage
-            task_for_triage = _build_task_from_spec(spec_path)
             action_label = triage.action.upper().replace("_", " ")
-            _log(f"  {task_for_triage.slug:<20} {action_label} ({triage.reason})")
+            _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
 
     for idx, spec_path in enumerate(spec_paths, start=1):
         spec_str = manifest.specs[idx - 1]
         task = _build_task_from_spec(spec_path)
+
+        # Resume mode: skip already-merged specs before budget check.
+        # Merged = work already done successfully; not subject to budget enforcement.
+        if resume:
+            triage = triages.get(spec_str)
+            if triage and triage.action == "skip_merged":
+                _log(f"[{idx}/{total}] SKIP {task.slug} ({triage.reason})")
+                specs_succeeded += 1
+                continue
 
         # Budget check before starting (cumulative: prior + current run)
         cumulative_cost = prior_cost + accumulated_cost
@@ -342,14 +356,6 @@ def run_sprint(
                 _log(f"[{remaining_idx}/{total}] SKIPPED (budget exhausted)")
                 specs_skipped += 1
             break
-
-        # Resume mode: skip already-merged specs (count as succeeded — work is done)
-        if resume:
-            triage = triages.get(spec_str)
-            if triage and triage.action == "skip_merged":
-                _log(f"[{idx}/{total}] SKIP {task.slug} (already merged to main)")
-                specs_succeeded += 1
-                continue
 
         # Emit spec header banner
         print(_spec_header(idx, total, task.slug), file=sys.stderr, flush=True)

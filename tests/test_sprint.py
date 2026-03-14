@@ -683,6 +683,73 @@ class TestResumeSprintIntegration:
         assert result.specs_succeeded == 1  # already-merged = success
         assert result.specs_skipped == 0
 
+    def test_resume_sprint_enters_dev(self, tmp_path: Path) -> None:
+        """End-to-end resume: gate-failing worktree uses run_from_dev."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        dev_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="dev",
+            reason="gate fails",
+            worktree_path=worktree,
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint._triage_spec", return_value=dev_triage):
+            with patch("theforge.sprint.run_from_dev", return_value=coord_result) as mock_dev:
+                with patch("theforge.sprint.run_task") as mock_task:
+                    result = run_sprint(config, manifest_path, resume=True)
+
+        mock_dev.assert_called_once()
+        mock_task.assert_not_called()
+        assert result.specs_succeeded == 1
+
+    def test_resume_budget_exhausted_merged_spec_still_succeeds(self, tmp_path: Path) -> None:
+        """Merged spec counts as succeeded even when budget is exhausted."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=1.0)
+        config = _make_config(tmp_path)
+
+        # Prior run spent $2 — budget exhausted
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        prior_audit = {"sprint": {"total_cost_usd": 2.0}}
+        with open(audits_dir / "sprint-audit.yaml", "w") as f:
+            yaml.dump(prior_audit, f)
+
+        merged_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+        )
+        full_triage = SpecTriage(
+            spec_path="feature-b.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+
+        def triage_side_effect(spec_path, config, project_root):
+            if "feature-a" in spec_path:
+                return merged_triage
+            return full_triage
+
+        with patch("theforge.sprint._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.run_task") as mock_run:
+                result = run_sprint(config, manifest_path, resume=True)
+
+        # Merged spec should be succeeded, not budget-skipped
+        assert result.specs_succeeded == 1  # feature-a (merged)
+        assert result.specs_skipped == 1  # feature-b (budget)
+        mock_run.assert_not_called()
+
     def test_resume_sprint_enters_review(self, tmp_path: Path) -> None:
         """End-to-end resume: gate-passing worktree uses run_from_review."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
