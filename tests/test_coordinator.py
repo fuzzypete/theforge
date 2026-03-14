@@ -5601,3 +5601,261 @@ class TestDevModelEscalationIntegration:
         assert "budget" in result.message.lower()
         # Escalation flag never set (budget guard fired first)
         assert result.state.dev_escalated is False
+
+
+# ── Conflict Resolution Tests ──────────────────────────────────────────
+
+
+class TestConflictResolution:
+    """Tests for auto-resolution of merge conflicts (R1–R7 from spec)."""
+
+    def _shell_with_conflict(
+        self,
+        workspace: "Path",
+        conflicted_files: list[str],
+        gate_pass: bool = True,
+        git_add_ok: bool = True,
+        git_commit_ok: bool = True,
+    ):
+        """Shell side_effect: simulates a merge conflict scenario."""
+
+        def side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                if gate_pass:
+                    _write_handoff(Path(cwd), "PASS")
+                return (gate_pass, "OK" if gate_pass else "FAIL")
+            if "git status --porcelain" in cmd:
+                return (True, "")  # clean
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git branch --list" in cmd:
+                return (True, "main")
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc123 feat: implement thing")
+            if "git checkout" in cmd:
+                return (True, "Switched to branch 'main'")
+            if "git merge --ff-only" in cmd:
+                return (False, "fatal: Not possible to fast-forward")
+            if "git merge --no-edit" in cmd:
+                return (False, "CONFLICT (content): Merge conflict")
+            if "git diff --name-only --diff-filter=U" in cmd:
+                return (True, "\n".join(conflicted_files))
+            if "git add" in cmd:
+                return (git_add_ok, "")
+            if "git commit --no-edit" in cmd:
+                return (git_commit_ok, "")
+            if "git merge --abort" in cmd:
+                return (True, "")
+            if "git worktree remove" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        return side_effect
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_conflict_resolution_succeeds(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Merge conflict → agent resolves → gate passes → merged=True."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = self._shell_with_conflict(
+            workspace, conflicted_files=["src/foo.py"], gate_pass=True
+        )
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented."),  # dev
+            _make_agent_result(success=True, output="Resolved conflicts."),  # conflict resolver
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["merged"] is True
+        assert result.merge["error"] is None
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_conflict_resolution_gate_fails(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Merge conflict → agent resolves → gate fails → merge aborted, merged=False."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # First gate call (VALIDATE phase): PASS; second gate call (conflict resolution): FAIL
+        gate_calls = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                gate_calls["n"] += 1
+                if gate_calls["n"] == 1:
+                    # VALIDATE phase gate → PASS so we get to REVIEW
+                    _write_handoff(Path(cwd), "PASS")
+                    return (True, "OK")
+                else:
+                    # Conflict resolution gate → FAIL
+                    return (False, "Tests failed")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git branch --list" in cmd:
+                return (True, "main")
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc123 feat: implement thing")
+            if "git checkout" in cmd:
+                return (True, "Switched")
+            if "git merge --ff-only" in cmd:
+                return (False, "fatal: Not possible to fast-forward")
+            if "git merge --no-edit" in cmd:
+                return (False, "CONFLICT (content): Merge conflict")
+            if "git diff --name-only --diff-filter=U" in cmd:
+                return (True, "src/foo.py")
+            if "git merge --abort" in cmd:
+                return (True, "")
+            if "git worktree remove" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented."),
+            _make_agent_result(success=True, output="Resolved conflicts."),
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True  # overall run succeeds even if merge failed
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["merged"] is False
+        assert result.merge["error"] is not None
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_conflict_too_many_files_skipped(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """More than 5 conflicted files → auto-resolution skipped, merge fails."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # 6 conflicted files — over the limit of 5
+        many_files = [f"src/file{i}.py" for i in range(6)]
+        mock_shell.side_effect = self._shell_with_conflict(workspace, conflicted_files=many_files)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, auto_merge=True)
+
+        # Run succeeds overall but merge was not completed
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["merged"] is False
+        assert result.merge["error"] is not None
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_no_conflict_no_resolution(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Clean merge (no conflict) → conflict resolution never invoked."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Fast-forward merge succeeds immediately — no conflict
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git branch --list" in cmd:
+                return (True, "main")
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc123 feat: implement thing")
+            if "git checkout" in cmd:
+                return (True, "Switched")
+            if "git merge --ff-only" in cmd:
+                return (True, "Fast-forward")  # success — no conflict
+            if "git worktree remove" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        agent_calls = {"n": 0}
+
+        def agent_side_effect(**kwargs):
+            agent_calls["n"] += 1
+            if agent_calls["n"] == 1:
+                return _make_agent_result(output=PREFLIGHT_PROCEED)  # preflight
+            return _make_agent_result(output="Implemented.")  # dev
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True
+        assert result.merge is not None
+        assert result.merge["merged"] is True
+        # Only preflight + dev agent calls — no conflict resolver call
+        assert agent_calls["n"] == 2
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_conflict_resolution_timeout(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Conflict resolution agent fails (simulating timeout) → merge aborted."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = self._shell_with_conflict(
+            workspace, conflicted_files=["src/foo.py"]
+        )
+        # Preflight, then dev, then conflict resolution agent (fails with timeout)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented."),  # dev
+            _make_agent_result(
+                success=False, output="TIMEOUT after 120s"
+            ),  # conflict resolver times out
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True  # overall run succeeds
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["merged"] is False
+        assert result.merge["error"] is not None

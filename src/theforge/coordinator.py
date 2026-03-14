@@ -467,6 +467,104 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
 
 # ── Merge ────────────────────────────────────────────────────────────
 
+_MAX_AUTO_RESOLVE_FILES = 5
+_CONFLICT_RESOLUTION_TIMEOUT = 120
+
+
+def _resolve_merge_conflicts(
+    project_root: Path,
+    branch_name: str,
+    task_name: str,
+    config: ForgeConfig,
+    workspace_path: Path,
+) -> bool:
+    """Attempt to auto-resolve merge conflicts using the dev agent.
+
+    Returns True if conflicts were resolved and the gate passed, False otherwise.
+    On failure, aborts the in-progress merge.
+    """
+    # Get list of conflicted files
+    ok, conflict_out = _run_shell("git diff --name-only --diff-filter=U", project_root)
+    if not ok or not conflict_out.strip():
+        return False
+
+    conflicted_files = [f.strip() for f in conflict_out.strip().splitlines() if f.strip()]
+    if not conflicted_files:
+        return False
+
+    # Complexity guard: too many files → skip
+    if len(conflicted_files) > _MAX_AUTO_RESOLVE_FILES:
+        _log(f"  ⚠ Too many conflicted files ({len(conflicted_files)}) — skipping auto-resolution")
+        return False
+
+    _log(f"  Merge conflict in {len(conflicted_files)} file(s): {', '.join(conflicted_files)}")
+    _log("  Attempting auto-resolution...")
+
+    # Read conflicted file contents
+    file_sections: list[str] = []
+    for rel_path in conflicted_files:
+        full_path = project_root / rel_path
+        try:
+            content = full_path.read_text(encoding="utf-8")
+            file_sections.append(f"### {rel_path}\n\n```\n{content}\n```")
+        except OSError:
+            file_sections.append(f"### {rel_path}\n\n(could not read file)")
+
+    conflicted_files_with_content = "\n\n".join(file_sections)
+    base_branch = config.workspace.base_branch
+
+    prompt = (
+        f"You are resolving a git merge conflict. The branch `{branch_name}` is being\n"
+        f"merged into `{base_branch}`.\n\n"
+        f"Branch purpose: {task_name}\n\n"
+        f"The following files have conflicts:\n\n"
+        f"{conflicted_files_with_content}\n\n"
+        f"Resolve each conflict by editing the files to remove all conflict markers\n"
+        f"(<<<<<<, =======, >>>>>>>). Preserve the intent of both sides. When both\n"
+        f"sides add code in the same location, keep both additions.\n\n"
+        f"After resolving, run the project's test suite to verify nothing is broken."
+    )
+
+    _resolve_start = time.monotonic()
+    resolve_result = run_agent(
+        prompt=prompt,
+        profile=config.dev_profile,
+        working_dir=project_root,
+        session_id=None,
+    )
+    _resolve_elapsed = time.monotonic() - _resolve_start
+    _log(f"  ... resolution done ({int(_resolve_elapsed)}s)")
+
+    if not resolve_result.success:
+        _log("  ⚠ Conflict resolution agent failed — aborting merge")
+        _run_shell("git merge --abort", project_root)
+        return False
+
+    # Run gate to verify resolution didn't break anything
+    _log("  Running gate to verify resolution...")
+    gate_decision, gate_error = _run_gate(config, workspace_path)
+    if gate_error or gate_decision != "PASS":
+        _log("  ⚠ Conflict resolution broke tests — aborting merge")
+        _run_shell("git merge --abort", project_root)
+        return False
+
+    # Complete the merge: git add resolved files + git commit
+    files_arg = " ".join(f'"{f}"' for f in conflicted_files)
+    ok_add, _ = _run_shell(f"git add {files_arg}", project_root)
+    if not ok_add:
+        _log("  ⚠ Failed to stage resolved files — aborting merge")
+        _run_shell("git merge --abort", project_root)
+        return False
+
+    ok_commit, _ = _run_shell("git commit --no-edit", project_root)
+    if not ok_commit:
+        _log("  ⚠ Failed to commit resolution — aborting merge")
+        _run_shell("git merge --abort", project_root)
+        return False
+
+    _log("  ✓ Conflict resolved and merged")
+    return True
+
 
 def _merge_branch(
     project_root: Path,
@@ -476,10 +574,13 @@ def _merge_branch(
     workspace_path: Path,
     *,
     auto_push: bool = False,
+    config: ForgeConfig | None = None,
+    task_name: str = "",
 ) -> dict:
     """Merge branch_name into base_branch in project_root.
 
     Returns a merge info dict with keys: attempted, merged, base_branch, error.
+    When config is provided, auto-resolve merge conflicts using the dev agent.
     """
     info: dict = {
         "attempted": True,
@@ -523,9 +624,29 @@ def _merge_branch(
         ok, out = _run_shell(f"git merge --no-edit {branch_name}", project_root)
 
     if not ok:
-        info["error"] = f"Merge failed: {out}"
-        _log(f"Auto-merge failed: {info['error']}")
-        return info
+        # Attempt auto-resolution if config is available
+        print(
+            f"[DEBUG merge] config={config is not None} workspace_path={workspace_path}",
+            file=sys.stderr,
+            flush=True,
+        )
+        if config is not None:
+            resolved = _resolve_merge_conflicts(
+                project_root,
+                branch_name,
+                task_name,
+                config,
+                workspace_path,
+            )
+            if not resolved:
+                info["error"] = f"Merge failed: {out}"
+                _log(f"Auto-merge failed: {info['error']}")
+                return info
+            # Resolution succeeded — fall through to mark merged
+        else:
+            info["error"] = f"Merge failed: {out}"
+            _log(f"Auto-merge failed: {info['error']}")
+            return info
 
     info["merged"] = True
     _log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
@@ -1558,6 +1679,8 @@ def _coordinator_loop(
                             task.slug,
                             workspace_path,
                             auto_push=config.workspace.auto_push,
+                            config=config,
+                            task_name=task.name,
                         )
                         merge_suffix = (
                             " Merged."
@@ -1623,6 +1746,8 @@ def _coordinator_loop(
                         task.slug,
                         workspace_path,
                         auto_push=config.workspace.auto_push,
+                        config=config,
+                        task_name=task.name,
                     )
                     merge_suffix = (
                         " Merged."
@@ -1708,6 +1833,8 @@ def _coordinator_loop(
                             task.slug,
                             workspace_path,
                             auto_push=config.workspace.auto_push,
+                            config=config,
+                            task_name=task.name,
                         )
                         merge_suffix = (
                             " Merged."
