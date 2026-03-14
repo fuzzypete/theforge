@@ -40,7 +40,7 @@ from pathlib import Path
 import yaml
 
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
-from .review import ReviewResult, findings_to_markdown, parse_review_output
+from .review import ReviewFinding, ReviewResult, findings_to_markdown, parse_review_output
 from .runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agent_pool
 from .task import (
     TaskSpec,
@@ -112,6 +112,7 @@ class CoordinatorState:
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
     preflight_result: AgentResult | None = None
     error: str | None = None
+    dev_escalated: bool = False  # True once model escalation has occurred this run
 
     @property
     def total_dev_cost(self) -> float:
@@ -647,6 +648,75 @@ def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
         if info.cli == profile.cli and info.model == profile.model:
             return info.cost_rank, info.capability
     return 2, 5
+
+
+def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
+    """Return the MODEL_REGISTRY key for a profile, or None if unknown."""
+    for key, info in MODEL_REGISTRY.items():
+        if info.cli == profile.cli and info.model == profile.model:
+            return key
+    return None
+
+
+def _has_persistent_p1(
+    current_findings: list[ReviewFinding],
+    previous_findings: list[ReviewFinding],
+) -> bool:
+    """Return True if any P1 appears in both current and previous cycles.
+
+    Matches on same file + description similarity (substring containment or
+    >60% token overlap).
+    """
+    current_p1s = [f for f in current_findings if f.severity == "P1"]
+    previous_p1s = [f for f in previous_findings if f.severity == "P1"]
+
+    if not current_p1s or not previous_p1s:
+        return False
+
+    for curr in current_p1s:
+        for prev in previous_p1s:
+            if curr.file != prev.file:
+                continue
+            # Substring containment
+            if curr.description in prev.description or prev.description in curr.description:
+                return True
+            # Token overlap > 60%
+            curr_tokens = set(curr.description.lower().split())
+            prev_tokens = set(prev.description.lower().split())
+            if curr_tokens and prev_tokens:
+                overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
+                if overlap > 0.6:
+                    return True
+
+    return False
+
+
+def _escalate_dev_model(
+    current_model: str,
+    available_models: list[str],
+) -> str | None:
+    """Return the next higher-capability dev-capable model, or None.
+
+    Selects the lowest-capability model that is still higher than current
+    and has dev_capable=True in MODEL_REGISTRY.
+    """
+    current_info = MODEL_REGISTRY.get(current_model)
+    if current_info is None:
+        return None
+
+    candidates = [
+        (key, MODEL_REGISTRY[key])
+        for key in available_models
+        if key in MODEL_REGISTRY
+        and MODEL_REGISTRY[key].dev_capable
+        and MODEL_REGISTRY[key].capability > current_info.capability
+    ]
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda x: x[1].capability)
+    return candidates[0][0]
 
 
 def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
@@ -1566,10 +1636,39 @@ def _coordinator_loop(
                 )
 
         # REQUEST_CHANGES — loop back to dev
+        # Detect persistent P1 (smart config only)
+        _is_persistent_p1 = False
+        if config.smart_config_models is not None and len(state.review_results) >= 2:
+            _prev_result = state.review_results[-2]
+            _is_persistent_p1 = _has_persistent_p1(parsed_review.findings, _prev_result.findings)
+
+        _persistent_tag = " (persistent)" if _is_persistent_p1 else ""
         _log(
-            f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1"
+            f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1{_persistent_tag}"
             f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
         )
+
+        # Escalate dev model on persistent P1 (max once per run)
+        if _is_persistent_p1 and not state.dev_escalated:
+            _curr_key = _find_registry_key_for_profile(config.dev_profile)
+            if _curr_key is not None:
+                _next_key = _escalate_dev_model(_curr_key, config.smart_config_models)
+                if _next_key is not None:
+                    _next_info = MODEL_REGISTRY[_next_key]
+                    _p1_file = next(
+                        (f.file for f in parsed_review.findings if f.severity == "P1"),
+                        "unknown",
+                    )
+                    _log(
+                        f"  Dev escalation: {config.dev_profile.model} → {_next_info.model}"
+                        f" (persistent P1 in {_p1_file})"
+                    )
+                    _new_dev = _dc_replace(
+                        config.dev_profile, cli=_next_info.cli, model=_next_info.model
+                    )
+                    config = _dc_replace(config, dev_profile=_new_dev)
+                    state.dev_escalated = True
+
         if state.review_cycle >= config.retry.max_review_cycles:
             if interactive:
                 state.phase = Phase.HUMAN_REVIEW

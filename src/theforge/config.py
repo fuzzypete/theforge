@@ -24,6 +24,7 @@ class ModelInfo:
     tier: str  # "fast" or "strong"
     capability: int  # relative capability score (1-10)
     cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
+    dev_capable: bool = True  # False for models whose CLI doesn't support dev tools
 
 
 MODEL_REGISTRY: dict[str, ModelInfo] = {
@@ -37,7 +38,12 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         cli="codex", model="gpt-5.4", tier="strong", capability=9, cost_rank=2
     ),
     "google/gemini-2.5-pro": ModelInfo(
-        cli="gemini", model="gemini-2.5-pro", tier="strong", capability=8, cost_rank=2
+        cli="gemini",
+        model="gemini-2.5-pro",
+        tier="strong",
+        capability=8,
+        cost_rank=2,
+        dev_capable=False,
     ),
 }
 
