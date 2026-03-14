@@ -1,11 +1,10 @@
 gate_decision: PASS
 scope_completed:
-  - "SpecTriage dataclass in sprint.py"
-  - "_triage_spec() function with 4 actions: skip_merged, review, dev, full"
-  - "_read_prior_sprint_cost() for cost continuity from prior audit"
-  - "run_from_dev() in coordinator.py - DEV entry on existing worktree"
-  - "run_sprint() resume parameter with triage routing"
-  - "--resume flag added to forge sprint CLI subcommand"
-  - "9 new tests: 5 triage unit tests + 4 resume integration tests"
-deferred_followups: []
+  - "P1: cumulative budget enforcement (prior_cost + accumulated_cost) in both checks"
+  - "P1: skip_merged specs now count as specs_succeeded (work already done)"
+  - "P2: stale worktree triage returns worktree_path=None to prevent ambiguous reuse"
+  - "New test: test_resume_prior_cost_exceeds_budget verifies budget skips when prior cost exceeds limit"
+  - "Updated test: test_resume_sprint_skips_merged asserts specs_succeeded=1, specs_skipped=0"
+deferred_followups:
+  - "P2: test_run_from_dev unit test in tests/test_coordinator.py is out of file_scope for this task"
 next_recommended_step: "forge review specs/sprint-resume.md"
