@@ -1,1 +1,8 @@
 gate_decision: PASS
+scope_completed:
+  - "P1: gate_err handling is now mode-conditional — exit-code mode escalates immediately,
+    handoff mode retries with feedback (restores prior behavior per acceptance criterion #6)"
+  - "P2: TIMEOUT sentinel check uses output.startswith('TIMEOUT') exclusively,
+    removing the broad 'timed out' substring match"
+deferred_followups: []
+next_recommended_step: "Review and merge feat/gate-hardening into main"
