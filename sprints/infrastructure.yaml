@@ -1,25 +1,5 @@
-name: "TheForge infrastructure"
-budget_usd: 60.00
-
-# Phase 9 → 10 → 11 from the roadmap. Sequential dependency chain:
-# dependency-analysis must land before parallel execution can be safe,
-# and parallel execution should be proven before DECOMPOSE relies on it.
-#
-# Before running this campaign, use `forge ideate` on the decompose
-# brief — it's the highest-ambiguity spec in the pipeline and the first
-# real test of the ideation flow on a non-trivial architectural question.
-#
-# Order is mandatory (hard dependency chain):
-#   1. dependency-analysis  — static file_scope conflict detection;
-#                             adds execution plan to campaign audit;
-#                             no change to actual execution order yet
-#   2. parallel-campaign    — uses dependency graph to batch independent
-#                             specs; requires Phase 9 to be safe
-#   3. decompose            — LLM splits a high-level spec into sub-specs
-#                             with file_scope; feeds into parallel campaign
-#                             runner; use `forge ideate` on this spec first
-
+name: "TheForge infrastructure sprint"
+budget_usd: 100.00
 specs:
-  - specs/dependency-analysis.md
-  # specs/parallel-campaign.md  — write via `forge ideate` before queuing
-  # specs/decompose.md          — write via `forge ideate` before queuing
+  - specs/gate-override.md
+  - specs/smart-model-config.md
