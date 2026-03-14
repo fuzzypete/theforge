@@ -12,6 +12,42 @@ from typing import Any
 
 import yaml
 
+# ── Model registry ────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    """Built-in metadata for a known model."""
+
+    cli: str  # "claude", "codex", "gemini"
+    model: str  # model identifier for the CLI
+    tier: str  # "fast" or "strong"
+    capability: int  # relative capability score (1-10)
+    cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
+
+
+MODEL_REGISTRY: dict[str, ModelInfo] = {
+    "claude/sonnet": ModelInfo(
+        cli="claude", model="sonnet", tier="fast", capability=7, cost_rank=1
+    ),
+    "claude/opus": ModelInfo(
+        cli="claude", model="opus", tier="strong", capability=10, cost_rank=3
+    ),
+    "openai/gpt-5.4": ModelInfo(
+        cli="codex", model="gpt-5.4", tier="strong", capability=9, cost_rank=2
+    ),
+    "google/gemini-2.5-pro": ModelInfo(
+        cli="gemini", model="gemini-2.5-pro", tier="strong", capability=8, cost_rank=2
+    ),
+}
+
+# Maps provider prefix → CLI name
+_PROVIDER_CLI_MAP: dict[str, str] = {
+    "claude": "claude",
+    "openai": "codex",
+    "google": "gemini",
+}
+
 
 @dataclass(frozen=True)
 class NtfyConfig:
@@ -103,6 +139,7 @@ class ForgeConfig:
     synthesis_profile: ModelProfile | None  # None when pool size <= 1
     retry: RetryPolicy
     notifications: NotificationConfig = NotificationConfig()
+    smart_config_models: list[str] | None = None  # None = classic config; list = smart config
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -154,6 +191,122 @@ DEFAULT_VALIDATION = ValidationConfig(
 
 # CLIs supported by the runner. Unsupported CLIs are rejected at config load.
 SUPPORTED_CLIS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
+
+
+# ── Smart config helpers ───────────────────────────────────────────────
+
+
+def _resolve_model_info(model_key: str) -> ModelInfo:
+    """Resolve a model key to ModelInfo; unknown models get sensible defaults."""
+    if model_key in MODEL_REGISTRY:
+        return MODEL_REGISTRY[model_key]
+    parts = model_key.split("/", 1)
+    cli = _PROVIDER_CLI_MAP.get(parts[0], parts[0]) if len(parts) == 2 else model_key
+    model = parts[1] if len(parts) == 2 else model_key
+    return ModelInfo(cli=cli, model=model, tier="strong", capability=5, cost_rank=2)
+
+
+def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
+    """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
+    tools = data.get("allowed_tools")
+    reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
+    _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
+    if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
+        raise ValueError(
+            f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
+            f"got {reasoning_effort!r} in profile {base.name!r}"
+        )
+    return ModelProfile(
+        name=base.name,
+        cli=data.get("cli", base.cli),
+        model=data.get("model", base.model),
+        budget_usd=float(data.get("budget_usd", base.budget_usd)),
+        timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
+        allowed_tools=tuple(tools) if tools is not None else base.allowed_tools,
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def _auto_assign_models(
+    models: list[str],
+    budget_usd: float,
+) -> tuple[ModelProfile, ModelProfile, list[ModelProfile], ModelProfile | None]:
+    """Auto-assign models to stages from a declarative pool.
+
+    Assignment algorithm:
+    1. Sort by cost_rank asc, capability desc
+    2. dev = cheapest capable model
+    3. preflight = cheapest "fast" tier, else same as dev
+    4. review_pool = all models except dev (if only 1, pool = [dev])
+    5. synthesis = highest-capability model from review_pool (skip if pool <= 1)
+
+    Budget distribution:
+    - dev: 60% of total
+    - preflight: max(2%, $1)
+    - synthesis: max(2%, $1) when pool > 1
+    - each reviewer: remaining / pool_size
+    """
+    infos = [(m, _resolve_model_info(m)) for m in models]
+    sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
+
+    dev_key, dev_info = sorted_models[0]
+
+    fast = [(k, i) for k, i in sorted_models if i.tier == "fast"]
+    preflight_key, preflight_info = fast[0] if fast else sorted_models[0]
+
+    review_pairs = [(k, i) for k, i in sorted_models if k != dev_key]
+    if not review_pairs:
+        review_pairs = [(dev_key, dev_info)]
+
+    has_synthesis = len(review_pairs) > 1
+
+    preflight_budget = max(budget_usd * 0.02, 1.0)
+    dev_budget = budget_usd * 0.60
+    synthesis_budget = max(budget_usd * 0.02, 1.0) if has_synthesis else 0.0
+    remaining = max(budget_usd - dev_budget - preflight_budget - synthesis_budget, 0.0)
+    reviewer_budget = remaining / len(review_pairs)
+
+    dev_profile = ModelProfile(
+        name="dev",
+        cli=dev_info.cli,
+        model=dev_info.model,
+        budget_usd=dev_budget,
+        timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
+        allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+    )
+    preflight_profile = ModelProfile(
+        name="preflight",
+        cli=preflight_info.cli,
+        model=preflight_info.model,
+        budget_usd=preflight_budget,
+        timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
+        allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+    )
+    review_pool = [
+        ModelProfile(
+            name=k.replace("/", "-"),
+            cli=i.cli,
+            model=i.model,
+            budget_usd=reviewer_budget,
+            timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+        for k, i in review_pairs
+    ]
+
+    synthesis_profile: ModelProfile | None = None
+    if has_synthesis:
+        synth_key, synth_info = max(review_pairs, key=lambda x: x[1].capability)
+        synthesis_profile = ModelProfile(
+            name="synthesis",
+            cli=synth_info.cli,
+            model=synth_info.model,
+            budget_usd=synthesis_budget,
+            timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+
+    return dev_profile, preflight_profile, review_pool, synthesis_profile
 
 
 # ── Loader ────────────────────────────────────────────────────────────
@@ -221,70 +374,125 @@ def load_config(config_path: Path) -> ForgeConfig:
         gate_timeout=val_data.get("gate_timeout"),
     )
 
-    # Profiles
-    profiles = raw.get("profiles", {})
-    dev_profile = (
-        _parse_profile("dev", profiles["dev"], role="dev")
-        if "dev" in profiles
-        else DEFAULT_DEV_PROFILE
-    )
-    preflight_profile = (
-        _parse_profile("preflight", profiles["preflight"], role="review")
-        if "preflight" in profiles
-        else DEFAULT_PREFLIGHT_PROFILE
-    )
+    # ── Smart config: models key ──────────────────────────────────────
+    smart_config_models: list[str] | None = None
 
-    # review_pool precedence: review_pool > review > default
-    if "review_pool" in profiles:
-        pool_data = profiles["review_pool"]
-        if not isinstance(pool_data, list) or len(pool_data) == 0:
-            raise ValueError("profiles.review_pool must be a non-empty list")
-        names = [e.get("name") for e in pool_data]
-        if any(n is None for n in names):
-            raise ValueError("Each profiles.review_pool entry must have a 'name' field")
-        if len(names) != len(set(names)):
-            raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
-        for entry in pool_data:
-            cli = entry.get("cli", DEFAULT_REVIEW_PROFILE.cli)
-            if cli not in SUPPORTED_CLIS:
+    if "models" in raw:
+        models_list = raw["models"]
+        if not isinstance(models_list, list) or len(models_list) == 0:
+            raise ValueError("'models' must be a non-empty list")
+        for m in models_list:
+            if "/" not in str(m):
                 raise ValueError(
-                    f"Unsupported CLI {cli!r} in review_pool entry {entry['name']!r}. "
-                    f"Supported: {sorted(SUPPORTED_CLIS)}"
+                    f"Model entry {m!r} must be in 'provider/model' format (contains '/')"
                 )
-        review_pool = [_parse_profile(e["name"], e, role="review") for e in pool_data]
-        if len(review_pool) > 1:
-            if "synthesis" not in profiles:
+            provider = str(m).split("/", 1)[0]
+            if str(m) not in MODEL_REGISTRY and provider not in _PROVIDER_CLI_MAP:
                 raise ValueError(
-                    "profiles.synthesis is required when review_pool has more than 1 entry"
+                    f"Unknown provider {provider!r} in model {m!r}. "
+                    f"Supported providers: {sorted(_PROVIDER_CLI_MAP)}. "
+                    "Or add the model to MODEL_REGISTRY."
                 )
-            synth_data = profiles["synthesis"]
-            synth_cli = synth_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
-            if synth_cli not in SUPPORTED_CLIS:
-                raise ValueError(
-                    f"Unsupported CLI {synth_cli!r} in profiles.synthesis. "
-                    f"Supported: {sorted(SUPPORTED_CLIS)}"
-                )
-            synthesis_profile: ModelProfile | None = _parse_profile(
-                "synthesis", synth_data, role="review"
-            )
-        else:
-            synthesis_profile = None
+        budget_usd_raw = raw.get("budget_usd", 50.0)
+        budget_usd_val = float(budget_usd_raw)
+        if budget_usd_val <= 0:
+            raise ValueError("budget_usd must be positive")
 
-    elif "review" in profiles:
-        # Backward compat: single review dict wrapped into a pool of one.
-        # CLI validation applies here too (P1 fix).
-        review_data = profiles["review"]
-        cli = review_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
-        if cli not in SUPPORTED_CLIS:
-            raise ValueError(
-                f"Unsupported CLI {cli!r} in profiles.review. Supported: {sorted(SUPPORTED_CLIS)}"
-            )
-        review_pool = [_parse_profile("review", review_data, role="review")]
-        synthesis_profile = None
+        dev_profile, preflight_profile, review_pool, synthesis_profile = _auto_assign_models(
+            [str(m) for m in models_list], budget_usd_val
+        )
+
+        # Apply explicit profile overrides (partial override supported)
+        profiles = raw.get("profiles", {})
+        if "dev" in profiles:
+            dev_profile = _apply_profile_overrides(dev_profile, profiles["dev"])
+        if "preflight" in profiles:
+            preflight_profile = _apply_profile_overrides(preflight_profile, profiles["preflight"])
+        if synthesis_profile is not None and "synthesis" in profiles:
+            synthesis_profile = _apply_profile_overrides(synthesis_profile, profiles["synthesis"])
+        # Apply per-reviewer overrides matched by name
+        # (e.g. profiles.review_pool[{name: claude-opus}])
+        if "review_pool" in profiles:
+            pool_overrides = profiles["review_pool"]
+            if isinstance(pool_overrides, list):
+                override_by_name: dict[str, dict[str, Any]] = {
+                    e["name"]: e for e in pool_overrides if isinstance(e, dict) and "name" in e
+                }
+                review_pool = [
+                    _apply_profile_overrides(p, override_by_name[p.name])
+                    if p.name in override_by_name
+                    else p
+                    for p in review_pool
+                ]
+
+        smart_config_models = [str(m) for m in models_list]
 
     else:
-        review_pool = [DEFAULT_REVIEW_PROFILE]
-        synthesis_profile = None
+        # ── Classic config: profiles key ──────────────────────────────────
+        profiles = raw.get("profiles", {})
+        dev_profile = (
+            _parse_profile("dev", profiles["dev"], role="dev")
+            if "dev" in profiles
+            else DEFAULT_DEV_PROFILE
+        )
+        preflight_profile = (
+            _parse_profile("preflight", profiles["preflight"], role="review")
+            if "preflight" in profiles
+            else DEFAULT_PREFLIGHT_PROFILE
+        )
+
+        # review_pool precedence: review_pool > review > default
+        if "review_pool" in profiles:
+            pool_data = profiles["review_pool"]
+            if not isinstance(pool_data, list) or len(pool_data) == 0:
+                raise ValueError("profiles.review_pool must be a non-empty list")
+            names = [e.get("name") for e in pool_data]
+            if any(n is None for n in names):
+                raise ValueError("Each profiles.review_pool entry must have a 'name' field")
+            if len(names) != len(set(names)):
+                raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
+            for entry in pool_data:
+                cli = entry.get("cli", DEFAULT_REVIEW_PROFILE.cli)
+                if cli not in SUPPORTED_CLIS:
+                    raise ValueError(
+                        f"Unsupported CLI {cli!r} in review_pool entry {entry['name']!r}. "
+                        f"Supported: {sorted(SUPPORTED_CLIS)}"
+                    )
+            review_pool = [_parse_profile(e["name"], e, role="review") for e in pool_data]
+            if len(review_pool) > 1:
+                if "synthesis" not in profiles:
+                    raise ValueError(
+                        "profiles.synthesis is required when review_pool has more than 1 entry"
+                    )
+                synth_data = profiles["synthesis"]
+                synth_cli = synth_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
+                if synth_cli not in SUPPORTED_CLIS:
+                    raise ValueError(
+                        f"Unsupported CLI {synth_cli!r} in profiles.synthesis. "
+                        f"Supported: {sorted(SUPPORTED_CLIS)}"
+                    )
+                synthesis_profile: ModelProfile | None = _parse_profile(
+                    "synthesis", synth_data, role="review"
+                )
+            else:
+                synthesis_profile = None
+
+        elif "review" in profiles:
+            # Backward compat: single review dict wrapped into a pool of one.
+            # CLI validation applies here too (P1 fix).
+            review_data = profiles["review"]
+            cli = review_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
+            if cli not in SUPPORTED_CLIS:
+                raise ValueError(
+                    f"Unsupported CLI {cli!r} in profiles.review. "
+                    f"Supported: {sorted(SUPPORTED_CLIS)}"
+                )
+            review_pool = [_parse_profile("review", review_data, role="review")]
+            synthesis_profile = None
+
+        else:
+            review_pool = [DEFAULT_REVIEW_PROFILE]
+            synthesis_profile = None
 
     # Retry
     retry_data = raw.get("retry", {})
@@ -324,6 +532,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         synthesis_profile=synthesis_profile,
         retry=retry,
         notifications=notifications,
+        smart_config_models=smart_config_models,
     )
 
 

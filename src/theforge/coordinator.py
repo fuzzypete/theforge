@@ -39,7 +39,7 @@ from pathlib import Path
 
 import yaml
 
-from .config import ForgeConfig
+from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from .review import ReviewResult, findings_to_markdown, parse_review_output
 from .runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agent_pool
 from .task import (
@@ -109,6 +109,7 @@ class CoordinatorState:
     human_review_mode: str | None = None  # "remote" | "interactive"
     preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
     preflight_reason: str | None = None
+    preflight_complexity: str | None = None  # "small" | "medium" | "large"
     preflight_result: AgentResult | None = None
     error: str | None = None
 
@@ -593,6 +594,98 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
         return "PROCEED", f"Unknown preflight verdict {verdict!r}; proceeding anyway. {reason}"
 
     return verdict, reason
+
+
+_VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
+
+
+def _parse_preflight_complexity(output: str) -> str:
+    """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            raw = str(parsed.get("complexity", "medium")).lower()
+            if raw in _VALID_COMPLEXITIES:
+                return raw
+    except yaml.YAMLError:
+        pass
+
+    return "medium"
+
+
+def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
+    """Return (cost_rank, capability) for a profile using the model registry.
+
+    Falls back to (2, 5) for unknown models.
+    """
+    for info in MODEL_REGISTRY.values():
+        if info.cli == profile.cli and info.model == profile.model:
+            return info.cost_rank, info.capability
+    return 2, 5
+
+
+def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
+    """Adjust model assignments based on complexity signal.
+
+    Only applies when smart_config_models is set. Explicit profiles are unchanged.
+    - small: single cheapest reviewer, skip synthesis
+    - medium: no change (auto-assigned defaults)
+    - large: upgrade dev to strongest available model
+    """
+    if config.smart_config_models is None or complexity == "medium":
+        return config
+
+    if complexity == "small":
+        if len(config.review_pool) <= 1:
+            return _dc_replace(config, synthesis_profile=None)
+        cheapest = min(
+            config.review_pool,
+            key=lambda p: (
+                _find_registry_info_for_profile(p)[0],
+                -_find_registry_info_for_profile(p)[1],
+            ),
+        )
+        return _dc_replace(config, review_pool=[cheapest], synthesis_profile=None)
+
+    if complexity == "large":
+        # Find strongest model across all profiles
+        candidates: list[ModelProfile] = list(config.review_pool) + [config.dev_profile]
+        if config.synthesis_profile is not None:
+            candidates.append(config.synthesis_profile)
+        strongest = max(candidates, key=lambda p: _find_registry_info_for_profile(p)[1])
+        new_dev = _dc_replace(config.dev_profile, cli=strongest.cli, model=strongest.model)
+        # Spec: large complexity always runs synthesis; materialize it if absent
+        synthesis = config.synthesis_profile
+        if synthesis is None:
+            # Derive a synthesis budget as 2% of dev budget (min $1)
+            synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
+            synth_base = config.review_pool[0]
+            synthesis = _dc_replace(
+                synth_base,
+                name="synthesis",
+                cli=strongest.cli,
+                model=strongest.model,
+                budget_usd=synth_budget,
+            )
+        if (
+            new_dev.cli == config.dev_profile.cli
+            and new_dev.model == config.dev_profile.model
+            and synthesis is config.synthesis_profile
+        ):
+            return config  # already using strongest, synthesis unchanged
+        return _dc_replace(config, dev_profile=new_dev, synthesis_profile=synthesis)
+
+    return config
 
 
 # ── Workspace ────────────────────────────────────────────────────────
@@ -1210,10 +1303,15 @@ def _coordinator_loop(
                     message=state.error,
                 )
 
-            # Determine the output to parse as the final review verdict
-            if config.synthesis_profile is None or len(successful) == 1:
-                # Pool of 1, or degraded to 1 successful reviewer — no synthesis
-                if len(failed_results) > 0:
+            # Determine the output to parse as the final review verdict.
+            # Skip synthesis when: no synthesis profile, OR degraded (some reviewers failed
+            # from a pool that had multiple reviewers).
+            # This lets synthesis run for a 1-reviewer pool that has synthesis_profile
+            # materialized by large-complexity adaptation.
+            _is_degraded = len(failed_results) > 0 and pool_size > 1
+            if config.synthesis_profile is None or _is_degraded:
+                # No synthesis configured, or degraded to single successful reviewer
+                if _is_degraded:
                     _log_verbose(
                         f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
                         "skipping synthesis"
@@ -1589,6 +1687,15 @@ def run_task(
     _task_start = time.monotonic()
     spec_content = load_spec(task.spec_path)
 
+    # ── Smart config display ───────────────────────────────────────
+    if config.smart_config_models is not None:
+        models_str = ", ".join(config.smart_config_models)
+        dev_model = config.dev_profile.model
+        review_models = ", ".join(p.model for p in config.review_pool)
+        synth_model = config.synthesis_profile.model if config.synthesis_profile else "none"
+        _log(f"  Models: {models_str}")
+        _log(f"  Auto-config: dev={dev_model}, review=[{review_models}], synthesis={synth_model}")
+
     # ── WORKSPACE ─────────────────────────────────────────────────
     state.phase = Phase.WORKSPACE
     _log_phase(state.phase, task.slug)
@@ -1640,6 +1747,15 @@ def run_task(
 
     state.preflight_verdict = verdict
     state.preflight_reason = reason
+
+    # ── Complexity parsing + adaptive model swapping ───────────────
+    if preflight_result.success:
+        complexity = _parse_preflight_complexity(preflight_result.output)
+        state.preflight_complexity = complexity
+        _log(f"  Complexity: {complexity} (from preflight)")
+        if config.smart_config_models is not None:
+            config = _apply_complexity_adaptation(config, complexity)
+
     _log(f"  ✓ PREFLIGHT   {verdict}")
     _log_verbose(f"  Reason: {reason}")
 
@@ -1853,8 +1969,9 @@ def run_review_only(
             message=state.error,
         )
 
-    # Synthesis if multi-model pool
-    if config.synthesis_profile is None or len(successful) == 1:
+    # Synthesis if configured and not degraded (same logic as _coordinator_loop)
+    _ro_is_degraded = len(failed_results) > 0 and pool_size > 1
+    if config.synthesis_profile is None or _ro_is_degraded:
         synthesis_output = successful[0].output
     else:
         meta.synthesized = True
