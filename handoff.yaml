@@ -1,6 +1,11 @@
 gate_decision: PASS
 scope_completed:
-  - "Added budget guard to escalation: only escalates when total_dev_cost < budget_usd"
-  - "Added test_escalation_skipped_when_budget_exhausted covering exhausted-budget path"
+  - "SpecTriage dataclass in sprint.py"
+  - "_triage_spec() function with 4 actions: skip_merged, review, dev, full"
+  - "_read_prior_sprint_cost() for cost continuity from prior audit"
+  - "run_from_dev() in coordinator.py - DEV entry on existing worktree"
+  - "run_sprint() resume parameter with triage routing"
+  - "--resume flag added to forge sprint CLI subcommand"
+  - "9 new tests: 5 triage unit tests + 4 resume integration tests"
 deferred_followups: []
-next_recommended_step: "Submit for review — all 375 tests pass, P1 reviewer finding resolved"
+next_recommended_step: "forge review specs/sprint-resume.md"
