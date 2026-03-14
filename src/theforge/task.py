@@ -92,6 +92,16 @@ def build_preflight_prompt(
           - A dependency is missing
           Provide a clear reason so a human can fix the spec.
 
+        ## Complexity Assessment
+
+        When verdict is PROCEED, also assess the implementation complexity:
+
+        - **small**: Config change, typo fix, single-file edit, <50 lines changed
+        - **medium**: New feature, multi-file change, requires tests, 50–500 lines
+        - **large**: Cross-cutting refactor, architectural change, >500 lines, many modules
+
+        When verdict is ALREADY_DONE or BLOCKED, set complexity to "small" as a placeholder.
+
         ## Output Format
 
         You MUST output ONLY a YAML block. No prose before or after.
@@ -99,6 +109,7 @@ def build_preflight_prompt(
 
         ```yaml
         verdict: PROCEED | ALREADY_DONE | BLOCKED
+        complexity: small | medium | large
         reason: "<1-2 sentence explanation of your classification>"
         criteria_checked:
           - criterion: "<acceptance criterion text>"

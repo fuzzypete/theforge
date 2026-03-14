@@ -25,11 +25,13 @@ from theforge.config import (
 )
 from theforge.coordinator import (
     Phase,
+    _apply_complexity_adaptation,
     _fmt_duration,
     _is_remote_mode,
     _is_stale_worktree,
     _ntfy_poll_reply,
     _ntfy_reply_url,
+    _parse_preflight_complexity,
     _remove_worktree,
     generate_audit_log,
     run_from_review,
@@ -4425,3 +4427,259 @@ class TestNtfyPollReply:
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("approve", None)
+
+
+# ── Complexity parsing tests ──────────────────────────────────────────
+
+
+_PREFLIGHT_PROCEED_SMALL = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Single-file config change."
+criteria_checked: []
+```
+"""
+
+_PREFLIGHT_PROCEED_MEDIUM = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+reason: "Multi-file feature with tests."
+criteria_checked: []
+```
+"""
+
+_PREFLIGHT_PROCEED_LARGE = """\
+```yaml
+verdict: PROCEED
+complexity: large
+reason: "Cross-cutting refactor."
+criteria_checked: []
+```
+"""
+
+_PREFLIGHT_NO_COMPLEXITY = """\
+```yaml
+verdict: PROCEED
+reason: "No complexity field."
+criteria_checked: []
+```
+"""
+
+
+class TestParsePreflightComplexity:
+    def test_complexity_parsed_small(self):
+        assert _parse_preflight_complexity(_PREFLIGHT_PROCEED_SMALL) == "small"
+
+    def test_complexity_parsed_medium(self):
+        assert _parse_preflight_complexity(_PREFLIGHT_PROCEED_MEDIUM) == "medium"
+
+    def test_complexity_parsed_large(self):
+        assert _parse_preflight_complexity(_PREFLIGHT_PROCEED_LARGE) == "large"
+
+    def test_complexity_default_medium(self):
+        """Missing complexity line → medium."""
+        assert _parse_preflight_complexity(_PREFLIGHT_NO_COMPLEXITY) == "medium"
+
+    def test_complexity_default_on_invalid_yaml(self):
+        """Malformed YAML → medium."""
+        assert _parse_preflight_complexity("```yaml\n{bad: [yaml\n```") == "medium"
+
+    def test_complexity_default_on_empty(self):
+        assert _parse_preflight_complexity("") == "medium"
+
+    def test_complexity_case_insensitive(self):
+        output = "```yaml\nverdict: PROCEED\ncomplexity: LARGE\n```"
+        assert _parse_preflight_complexity(output) == "large"
+
+    def test_complexity_invalid_value_defaults_medium(self):
+        output = "```yaml\nverdict: PROCEED\ncomplexity: huge\n```"
+        assert _parse_preflight_complexity(output) == "medium"
+
+
+# ── Complexity-adaptive model swapping tests ──────────────────────────
+
+
+def _make_smart_config(tmp_path: Path) -> ForgeConfig:
+    """Build a ForgeConfig that mimics a 3-model smart config."""
+    sonnet = ModelProfile(
+        name="dev",
+        cli="claude",
+        model="sonnet",
+        budget_usd=30.0,
+        timeout_seconds=900,
+        allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    )
+    preflight = ModelProfile(
+        name="preflight",
+        cli="claude",
+        model="sonnet",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    )
+    opus_reviewer = ModelProfile(
+        name="claude-opus",
+        cli="claude",
+        model="opus",
+        budget_usd=6.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    )
+    gpt_reviewer = ModelProfile(
+        name="openai-gpt-5.4",
+        cli="codex",
+        model="gpt-5.4",
+        budget_usd=6.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    )
+    synthesis = ModelProfile(
+        name="synthesis",
+        cli="claude",
+        model="opus",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    )
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=sonnet,
+        preflight_profile=preflight,
+        review_pool=[opus_reviewer, gpt_reviewer],
+        synthesis_profile=synthesis,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        smart_config_models=["claude/sonnet", "claude/opus", "openai/gpt-5.4"],
+    )
+
+
+class TestComplexityAdaptation:
+    def test_medium_no_change(self, tmp_path):
+        """medium complexity → config unchanged."""
+        config = _make_smart_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "medium")
+        assert adapted is config
+
+    def test_small_reduces_review_pool(self, tmp_path):
+        """small complexity → single cheapest reviewer, no synthesis."""
+        config = _make_smart_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "small")
+        assert len(adapted.review_pool) == 1
+        assert adapted.synthesis_profile is None
+
+    def test_large_upgrades_dev(self, tmp_path):
+        """large complexity → dev uses strongest model (opus)."""
+        config = _make_smart_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "large")
+        assert adapted.dev_profile.model == "opus"
+        assert adapted.dev_profile.cli == "claude"
+
+    def test_complexity_ignored_with_explicit_profiles(self, tmp_path):
+        """No smart_config_models → complexity is a no-op."""
+        config = _make_config(tmp_path)  # classic config, smart_config_models=None
+        adapted = _apply_complexity_adaptation(config, "small")
+        assert adapted is config  # unchanged
+
+    def test_small_single_pool_drops_synthesis_only(self, tmp_path):
+        """small with pool of 1 → just drops synthesis (no model change)."""
+        from dataclasses import replace
+
+        config = _make_smart_config(tmp_path)
+        one_pool = replace(config, review_pool=[config.review_pool[0]])
+        adapted = _apply_complexity_adaptation(one_pool, "small")
+        assert len(adapted.review_pool) == 1
+        assert adapted.synthesis_profile is None
+
+    def test_large_already_strongest_no_change(self, tmp_path):
+        """large complexity when dev is already strongest → config unchanged."""
+        from dataclasses import replace
+
+        config = _make_smart_config(tmp_path)
+        opus_dev = replace(config.dev_profile, model="opus", cli="claude")
+        strong_config = replace(config, dev_profile=opus_dev)
+        adapted = _apply_complexity_adaptation(strong_config, "large")
+        assert adapted.dev_profile.model == "opus"
+
+
+class TestComplexityIntegration:
+    """Integration tests: complexity flows through run_task with smart config."""
+
+    def test_complexity_stored_in_state(self, tmp_path):
+        """Complexity parsed from preflight is stored in CoordinatorState."""
+        config = _make_smart_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        preflight_large = """\
+```yaml
+verdict: PROCEED
+complexity: large
+reason: "Big change."
+criteria_checked: []
+```
+"""
+
+        with (
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=[
+                    _make_agent_result(output=preflight_large),  # preflight
+                    _make_agent_result(),  # dev
+                ],
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], [config.review_pool[0].name]),
+            ),
+        ):
+            result = run_task(config, task)
+
+        assert result.state.preflight_complexity == "large"
+
+    def test_complexity_small_skips_synthesis_in_run(self, tmp_path):
+        """small complexity causes pool to be reduced to 1 reviewer."""
+        config = _make_smart_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        preflight_small = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Tiny fix."
+criteria_checked: []
+```
+"""
+
+        pool_calls: list[list[str]] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _make_agent_result(output=preflight_small)
+            return _make_agent_result()
+
+        def fake_run_pool(prompt, profiles, working_dir):
+            pool_calls.append([p.name for p in profiles])
+            return _make_pool_result([APPROVE_REVIEW], [profiles[0].name])
+
+        with (
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator.run_agent", side_effect=fake_run_agent),
+            patch("theforge.coordinator.run_agent_pool", side_effect=fake_run_pool),
+        ):
+            run_task(config, task)
+
+        # Pool should have been called with only 1 reviewer
+        assert len(pool_calls) == 1
+        assert len(pool_calls[0]) == 1
