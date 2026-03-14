@@ -1,4 +1,4 @@
-"""Campaign mode: run multiple specs sequentially through the full pipeline.
+"""Sprint mode: run multiple specs sequentially through the full pipeline.
 
 A sprint is defined by a YAML manifest listing spec paths to run in order,
 with an aggregate budget ceiling (Claude costs only).
@@ -29,7 +29,7 @@ class SprintManifest:
 
 @dataclass
 class SprintResult:
-    """Aggregate result from running a campaign."""
+    """Aggregate result from running a sprint."""
 
     name: str
     specs_total: int
@@ -39,7 +39,7 @@ class SprintResult:
     total_cost_usd: float
     budget_usd: float
     results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
-    stopped_reason: str | None = None  # why campaign stopped early, if it did
+    stopped_reason: str | None = None  # why sprint stopped early, if it did
 
 
 def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
@@ -48,31 +48,31 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
     Raises ValueError if the manifest is invalid.
     """
     if not manifest_path.exists():
-        raise ValueError(f"Campaign manifest not found: {manifest_path}")
+        raise ValueError(f"Sprint manifest not found: {manifest_path}")
 
     with open(manifest_path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     if not isinstance(raw, dict):
-        raise ValueError(f"Campaign manifest must be a YAML mapping: {manifest_path}")
+        raise ValueError(f"Sprint manifest must be a YAML mapping: {manifest_path}")
 
     name = raw.get("name")
     if not name or not isinstance(name, str):
-        raise ValueError("Campaign manifest must have a non-empty 'name' field")
+        raise ValueError("Sprint manifest must have a non-empty 'name' field")
 
     budget_usd = raw.get("budget_usd")
     if budget_usd is None:
-        raise ValueError("Campaign manifest must have a 'budget_usd' field")
+        raise ValueError("Sprint manifest must have a 'budget_usd' field")
     try:
         budget_usd = float(budget_usd)
     except (TypeError, ValueError):
-        raise ValueError(f"Campaign 'budget_usd' must be a number, got {budget_usd!r}")
+        raise ValueError(f"Sprint 'budget_usd' must be a number, got {budget_usd!r}")
     if budget_usd <= 0:
-        raise ValueError(f"Campaign 'budget_usd' must be > 0, got {budget_usd}")
+        raise ValueError(f"Sprint 'budget_usd' must be > 0, got {budget_usd}")
 
     specs = raw.get("specs")
     if not specs or not isinstance(specs, list):
-        raise ValueError("Campaign manifest must have a non-empty 'specs' list")
+        raise ValueError("Sprint manifest must have a non-empty 'specs' list")
     if not all(isinstance(s, str) for s in specs):
         raise ValueError("All entries in 'specs' must be strings (file paths)")
 
@@ -91,7 +91,7 @@ def _validate_spec_paths(manifest: SprintManifest, project_root: Path) -> list[P
             resolved.append(path)
     if missing:
         raise ValueError(
-            f"Campaign manifest references {len(missing)} missing spec(s):\n"
+            f"Sprint manifest references {len(missing)} missing spec(s):\n"
             + "\n".join(f"  {s}" for s in missing)
         )
     return resolved
@@ -244,7 +244,7 @@ def run_sprint(
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     duration = (finished_at - started_at).total_seconds()
 
-    campaign_result = SprintResult(
+    sprint_result = SprintResult(
         name=manifest.name,
         specs_total=total,
         specs_succeeded=specs_succeeded,
@@ -258,7 +258,7 @@ def run_sprint(
 
     _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
     _log(
-        f"Campaign complete: {specs_succeeded} succeeded, {specs_failed} failed, "
+        f"Sprint complete: {specs_succeeded} succeeded, {specs_failed} failed, "
         f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_fmt_dur(_sprint_elapsed)}"
     )
     if notify:
@@ -271,7 +271,7 @@ def run_sprint(
     # Write sprint-audit.yaml
     _write_sprint_audit(
         manifest=manifest,
-        result=campaign_result,
+        result=sprint_result,
         spec_paths=spec_paths,
         started_at=started_at,
         finished_at=finished_at,
@@ -279,7 +279,7 @@ def run_sprint(
         project_root=config.project_root,
     )
 
-    return campaign_result
+    return sprint_result
 
 
 def _write_sprint_audit(

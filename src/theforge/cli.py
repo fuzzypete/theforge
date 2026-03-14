@@ -342,7 +342,7 @@ def cmd_sprint(args: argparse.Namespace) -> int:
     """Run multiple specs sequentially via a sprint manifest."""
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():
-        print(f"Campaign manifest not found: {manifest_path}", file=sys.stderr)
+        print(f"Sprint manifest not found: {manifest_path}", file=sys.stderr)
         return 1
 
     # Find config (search from manifest's directory)
@@ -378,7 +378,7 @@ def cmd_sprint(args: argparse.Namespace) -> int:
             notify=not args.no_notify,
         )
     except ValueError as exc:
-        print(f"Campaign error: {exc}", file=sys.stderr)
+        print(f"Sprint error: {exc}", file=sys.stderr)
         return 1
 
     return 0 if result.specs_failed == 0 else 1
