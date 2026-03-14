@@ -1,4 +1,6 @@
-deferred_followups: []
 gate_decision: PASS
-next_recommended_step: merge
-scope_completed: []
+scope_completed:
+  - "Added budget guard to escalation: only escalates when total_dev_cost < budget_usd"
+  - "Added test_escalation_skipped_when_budget_exhausted covering exhausted-budget path"
+deferred_followups: []
+next_recommended_step: "Submit for review — all 375 tests pass, P1 reviewer finding resolved"
