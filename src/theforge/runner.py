@@ -233,24 +233,27 @@ def run_agent_pool(
 
     pool_start = time.monotonic()
     results: list[AgentResult | None] = [None] * len(profiles)
-    completion_times: list[float] = []
+    agent_durations: list[float] = [0.0] * len(profiles)
+
+    def _timed_agent(idx: int, profile: ModelProfile) -> AgentResult:
+        t0 = time.monotonic()
+        try:
+            return run_agent(prompt=prompt, profile=profile, working_dir=working_dir)
+        finally:
+            agent_durations[idx] = time.monotonic() - t0
 
     with ThreadPoolExecutor(max_workers=len(profiles)) as pool:
-        futures = {
-            pool.submit(run_agent, prompt=prompt, profile=p, working_dir=working_dir): i
-            for i, p in enumerate(profiles)
-        }
+        futures = {pool.submit(_timed_agent, i, p): i for i, p in enumerate(profiles)}
         for future in as_completed(futures):
             idx = futures[future]
             profile = profiles[idx]
             label = profile.name or f"{profile.cli}/{profile.model}"
-            elapsed = time.monotonic() - pool_start
-            completion_times.append(elapsed)
+            duration = agent_durations[idx]
             try:
                 results[idx] = future.result()
-                _log(f"  ... {label} done ({elapsed:.0f}s)")
+                _log(f"  ... {label} done ({duration:.0f}s)")
             except Exception as exc:
-                _log(f"  ... {label} failed ({elapsed:.0f}s): {exc}")
+                _log(f"  ... {label} failed ({duration:.0f}s): {exc}")
                 results[idx] = AgentResult(
                     success=False,
                     output=f"ERROR: {exc}",
@@ -262,7 +265,7 @@ def run_agent_pool(
                 )
 
     wall_clock = time.monotonic() - pool_start
-    sequential_est = sum(completion_times)
+    sequential_est = sum(agent_durations)
     _log(
         f"  Review pool complete: {wall_clock:.0f}s wall clock ({sequential_est:.0f}s sequential)"
     )
@@ -293,10 +296,11 @@ def _process_stream_event(line: str, label: str) -> None:
 
     event_type = event.get("type")
 
+    prefix = f"[{label}] " if label else ""
     if event_type == "tool_use_summary":
         summary = event.get("summary", "")
         if summary:
-            _log_verbose(f"  ↳ {summary}")
+            _log_verbose(f"  ↳ {prefix}{summary}")
     elif event_type == "assistant":
         message = event.get("message", {})
         content = message.get("content", [])
@@ -305,7 +309,7 @@ def _process_stream_event(line: str, label: str) -> None:
                 tool_name = item.get("name", "?")
                 inp = item.get("input", {})
                 preview = _format_tool_input_preview(inp)
-                _log_verbose(f"  ↳ {tool_name}: {preview}")
+                _log_verbose(f"  ↳ {prefix}{tool_name}: {preview}")
 
 
 def _run_claude(
