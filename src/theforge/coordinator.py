@@ -845,6 +845,12 @@ def _create_workspace(
     if not workspace_path.exists():
         return None, None, f"Workspace path does not exist after creation: {workspace_path}"
 
+    if config.workspace.setup_command:
+        _log(f"Running workspace setup: {config.workspace.setup_command}")
+        ok, output = _run_shell(config.workspace.setup_command, workspace_path)
+        if not ok:
+            return None, None, f"Workspace setup command failed: {output}"
+
     return workspace_path, branch_name, None
 
 
@@ -1048,6 +1054,9 @@ def _coordinator_loop(
                 gate_skipped=_is_gate_skip(task.gate_override),
                 review_findings=state.last_review_findings,
                 human_feedback=state.human_feedback,
+                preflight_output=(
+                    state.preflight_result.output if state.preflight_result else None
+                ),
                 iteration=state.dev_iteration,
             )
 

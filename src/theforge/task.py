@@ -185,6 +185,7 @@ def build_dev_prompt(
     gate_skipped: bool = False,
     review_findings: str | None = None,
     human_feedback: str | None = None,
+    preflight_output: str | None = None,
     iteration: int = 1,
 ) -> str:
     """Build the complete dev agent prompt.
@@ -229,6 +230,19 @@ def build_dev_prompt(
             {human_feedback}
         """)
 
+    preflight_section = ""
+    if preflight_output:
+        preflight_section = dedent(f"""\
+
+            ## Codebase Context (from preflight)
+
+            The preflight agent already analysed the codebase. Use this to orient
+            yourself — do NOT re-read files that are already summarised here unless
+            you need the exact content for editing.
+
+            {preflight_output}
+        """)
+
     pytest_line = task.pytest_target or "tests/"
 
     if gate_skipped:
@@ -270,7 +284,7 @@ def build_dev_prompt(
 
         ## Spec
         {spec_content}
-        {feedback_section}
+        {feedback_section}{preflight_section}
         ## Implementation Steps
 
         1. Read the spec above carefully before writing any code.
@@ -281,11 +295,11 @@ def build_dev_prompt(
            make lint   # verify style/types
            ```
         4. Fix any lint failures before proceeding.
-        5. Run tests:
+        5. Run the full gate (not just your test file — the gate runs everything):
            ```bash
-           poetry run pytest {pytest_line} -v
+           {gate_command}
            ```
-        6. Fix any test failures.
+        6. Fix any failures. Do NOT declare success until the full gate passes.
         7. Commit your changes with a conventional commit message:
            ```bash
            git add <files-you-changed>

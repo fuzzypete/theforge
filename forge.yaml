@@ -3,6 +3,7 @@ project: theforge
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
+  setup_command: "pip install -e ."
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
 

@@ -98,6 +98,7 @@ class WorkspaceConfig:
     base_branch: str = "main"  # base branch for diff comparison
     stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
     auto_push: bool = False  # push base_branch to origin after successful auto-merge
+    setup_command: str | None = None  # optional command run once after workspace creation
 
 
 @dataclass(frozen=True)
@@ -365,6 +366,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             "stale_worktree_days", DEFAULT_WORKSPACE.stale_worktree_days
         ),
         auto_push=bool(ws_data.get("auto_push", DEFAULT_WORKSPACE.auto_push)),
+        setup_command=ws_data.get("setup_command", DEFAULT_WORKSPACE.setup_command),
     )
 
     # Validation
@@ -549,6 +551,8 @@ project: my-project
 workspace:
   # Shell command to create an isolated workspace. {slug} is replaced.
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
+  # Optional: run once in the new workspace after creation (e.g. install deps).
+  # setup_command: "pip install -e ."
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "forge/{slug}"
 

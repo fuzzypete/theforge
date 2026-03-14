@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from theforge.cli import cmd_ideate
 from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_VALIDATION,
@@ -16,6 +18,8 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.ideate import (
+    IdeationResult,
+    IdeationRound,
     _build_phase1_prompt,
     _build_phase2_prompt,
     _build_synthesis_prompt,
@@ -798,14 +802,6 @@ pytest_target: tests/
 
 
 # ── cmd_ideate CLI integration tests (moved from test_cli.py) ─────────
-
-import argparse
-
-from theforge.cli import cmd_ideate
-from theforge.config import (
-    ModelProfile,
-)
-from theforge.ideate import IdeationResult, IdeationRound
 
 _SOLO_PROFILE = ModelProfile(
     name="solo",
