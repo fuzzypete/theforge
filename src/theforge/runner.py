@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from .config import ModelProfile
 
@@ -89,13 +89,15 @@ def _run_with_heartbeat(
     label: str,
     profile: ModelProfile,
     cli_name: str,
+    quiet: bool = False,
 ) -> tuple[_SubprocessOutcome, float]:
     """Run a subprocess in a background thread with 30s heartbeat.
 
     Returns (outcome, elapsed_seconds). The caller handles interpreting
     the outcome into an AgentResult.
     """
-    _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
+    if not quiet:
+        _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
     outcome = _SubprocessOutcome()
 
@@ -180,11 +182,14 @@ def run_agent(
     profile: ModelProfile,
     working_dir: Path,
     session_id: str | None = None,
+    quiet: bool = False,
 ) -> AgentResult:
     """Run an agent using the CLI specified in profile.cli.
 
     Dispatches to the appropriate runner implementation.
     Prompt is passed via stdin to avoid shell escaping issues.
+    When quiet=True the per-agent 'Starting...' log is suppressed
+    (used by run_agent_pool which emits a pool-level banner instead).
     """
     runners = {
         "claude": _run_claude,
@@ -209,6 +214,7 @@ def run_agent(
         profile=profile,
         working_dir=working_dir,
         session_id=session_id,
+        quiet=quiet,
     )
 
 
@@ -238,7 +244,7 @@ def run_agent_pool(
     def _timed_agent(idx: int, profile: ModelProfile) -> AgentResult:
         t0 = time.monotonic()
         try:
-            return run_agent(prompt=prompt, profile=profile, working_dir=working_dir)
+            return run_agent(prompt=prompt, profile=profile, working_dir=working_dir, quiet=True)
         finally:
             agent_durations[idx] = time.monotonic() - t0
 
@@ -270,7 +276,7 @@ def run_agent_pool(
         f"  Review pool complete: {wall_clock:.0f}s wall clock ({sequential_est:.0f}s sequential)"
     )
     assert all(r is not None for r in results), "BUG: pool finished with unfilled result slots"
-    return results  # type: ignore[return-value]
+    return cast(list[AgentResult], results)
 
 
 # ── Claude Code CLI ──────────────────────────────────────────────────
@@ -319,6 +325,7 @@ def _run_claude(
     profile: ModelProfile,
     working_dir: Path,
     session_id: str | None = None,
+    quiet: bool = False,
 ) -> AgentResult:
     """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
     cmd: list[str] = [
@@ -342,7 +349,8 @@ def _run_claude(
     env.pop("CLAUDECODE", None)
 
     label = profile.name or f"{profile.cli}/{profile.model}"
-    _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
+    if not quiet:
+        _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
     start = time.monotonic()
     deadline = start + profile.timeout_seconds
@@ -472,6 +480,7 @@ def _run_codex(
     profile: ModelProfile,
     working_dir: Path,
     session_id: str | None = None,
+    quiet: bool = False,
 ) -> AgentResult:
     """Invoke `npx @openai/codex exec --full-auto` as a subprocess.
 
@@ -511,6 +520,7 @@ def _run_codex(
         label=label,
         profile=profile,
         cli_name="npx @openai/codex",
+        quiet=quiet,
     )
 
     try:
@@ -581,6 +591,7 @@ def _run_gemini(
     profile: ModelProfile,
     working_dir: Path,
     session_id: str | None = None,
+    quiet: bool = False,
 ) -> AgentResult:
     """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess."""
     cmd: list[str] = [
@@ -607,6 +618,7 @@ def _run_gemini(
         label=label,
         profile=profile,
         cli_name="gemini",
+        quiet=quiet,
     )
 
     if outcome.exception:

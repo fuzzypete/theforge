@@ -532,6 +532,7 @@ class TestRunAgentPool:
             )
 
         assert len(results) == 2
+        # Set comparison: parallel dispatch order is non-deterministic
         assert set(dispatched_clis) == {"claude", "gemini"}
         assert results[0].profile_name == "claude-reviewer"
         assert results[1].profile_name == "gemini-reviewer"
