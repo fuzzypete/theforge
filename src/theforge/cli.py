@@ -20,7 +20,7 @@ import yaml
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import (
     CoordinatorResult,
-    _fmt_dur,
+    _fmt_duration,
     generate_audit_log,
     run_from_review,
     run_task,
@@ -623,7 +623,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
             profile = a.get("profile", "?")
             cost_usd = a.get("cost_usd", 0.0) or 0.0
             dur = a.get("duration_seconds")
-            dur_str = _fmt_dur(dur) if dur is not None else "—"
+            dur_str = _fmt_duration(dur) if dur is not None else "—"
             print(f"  {role:<10} {profile:<20} ${cost_usd:>11.4f}  {dur_str:>10}")
 
     # Reviews
@@ -806,7 +806,9 @@ def main() -> None:
 
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
-    audit_parser.add_argument("file", help="Path to audit file (e.g. .forge/audits/forge_audit.yaml)")
+    audit_parser.add_argument(
+        "file", help="Path to audit file (e.g. .forge/audits/forge_audit.yaml)"
+    )
 
     args = parser.parse_args()
 
