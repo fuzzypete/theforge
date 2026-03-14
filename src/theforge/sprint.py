@@ -7,6 +7,7 @@ with an aggregate budget ceiling (Claude costs only).
 from __future__ import annotations
 
 import datetime
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,10 @@ from .coordinator import (
     _is_remote_mode,
     _notify,
     _ntfy_publish,
+    _run_gate,
     generate_audit_log,
+    run_from_dev,
+    run_from_review,
     run_task,
 )
 from .task import TaskSpec
@@ -143,6 +147,122 @@ def _spec_header(idx: int, total: int, slug: str) -> str:
     return prefix + dashes
 
 
+@dataclass
+class SpecTriage:
+    """Result of triaging a spec for sprint resume."""
+
+    spec_path: str
+    action: str  # "skip_merged", "review", "dev", "full"
+    reason: str
+    worktree_path: Path | None = None
+
+
+def _triage_spec(
+    spec_path: str,
+    config: ForgeConfig,
+    project_root: Path,
+) -> SpecTriage:
+    """Determine the optimal re-entry point for a spec.
+
+    Decision tree:
+      merged to base?           → skip_merged
+      no worktree?              → full
+      0 commits ahead?          → full (stale; run_task will clean up)
+      gate passes?              → review
+      gate fails?               → dev
+    """
+    full_path = (project_root / spec_path).resolve()
+    task = _build_task_from_spec(full_path)
+    slug = task.slug
+
+    branch = config.workspace.branch_pattern.format(slug=slug)
+    base_branch = config.workspace.base_branch
+    worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
+
+    # 1. Check if already merged to base branch
+    try:
+        merge_result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", branch, base_branch],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        if merge_result.returncode == 0:
+            return SpecTriage(
+                spec_path=spec_path,
+                action="skip_merged",
+                reason=f"already merged to {base_branch}",
+                worktree_path=None,
+            )
+    except (subprocess.TimeoutExpired, OSError):
+        pass  # Branch may not exist yet — treat as not merged
+
+    # 2. Check if worktree exists
+    if not worktree_path.exists():
+        return SpecTriage(
+            spec_path=spec_path,
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+
+    # 3. Check commits ahead of base branch
+    try:
+        log_result = subprocess.run(
+            ["git", "log", f"{base_branch}..{branch}", "--oneline"],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        commits_ahead = [
+            ln
+            for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
+            if ln.strip()
+        ]
+    except (subprocess.TimeoutExpired, OSError):
+        commits_ahead = []
+
+    if not commits_ahead:
+        return SpecTriage(
+            spec_path=spec_path,
+            action="full",
+            reason=f"worktree exists but 0 commits ahead of {base_branch} (stale)",
+            worktree_path=worktree_path,
+        )
+
+    # 4. Gate pre-check to decide REVIEW vs DEV entry
+    gate_decision, gate_err = _run_gate(config, worktree_path, task=task)
+
+    if gate_err is None and gate_decision == "PASS":
+        return SpecTriage(
+            spec_path=spec_path,
+            action="review",
+            reason=f"worktree exists, gate passes ({len(commits_ahead)} commits ahead)",
+            worktree_path=worktree_path,
+        )
+
+    reason_detail = gate_err or f"gate returned {gate_decision}"
+    return SpecTriage(
+        spec_path=spec_path,
+        action="dev",
+        reason=f"worktree exists, gate fails ({reason_detail})",
+        worktree_path=worktree_path,
+    )
+
+
+def _read_prior_sprint_cost(project_root: Path) -> float:
+    """Read total_cost_usd from the prior sprint-audit.yaml, if it exists."""
+    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
+    if not audit_path.exists():
+        return 0.0
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
+    except (OSError, ValueError, TypeError):
+        return 0.0
+
+
 def run_sprint(
     config: ForgeConfig,
     manifest_path: Path,
@@ -150,6 +270,7 @@ def run_sprint(
     auto_merge: bool = False,
     interactive: bool = False,
     notify: bool = False,
+    resume: bool = False,
 ) -> SprintResult:
     """Run all specs in a sprint manifest sequentially.
 
@@ -161,6 +282,8 @@ def run_sprint(
         manifest_path: Path to the sprint.yaml manifest.
         auto_merge: If True, merge each spec's branch after APPROVE.
         interactive: If True, pause for human review at each spec.
+        resume: If True, triage each spec to find the optimal re-entry point
+            (skip_merged / review / dev / full) and carry forward prior costs.
 
     Returns:
         SprintResult with per-spec outcomes and aggregate stats.
@@ -179,11 +302,26 @@ def run_sprint(
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
+    prior_cost = 0.0
     results: list[tuple[str, CoordinatorResult]] = []
     specs_succeeded = 0
     specs_failed = 0
     specs_skipped = 0
     stopped_reason: str | None = None
+
+    # Resume mode: triage all specs and carry forward prior costs
+    triages: dict[str, SpecTriage] = {}
+    if resume:
+        prior_cost = _read_prior_sprint_cost(config.project_root)
+        if prior_cost > 0.0:
+            _log(f"Resuming with prior cost: ${prior_cost:.2f}")
+        _log("Triaging specs...")
+        for spec_str, spec_path in zip(manifest.specs, spec_paths):
+            triage = _triage_spec(spec_str, config, config.project_root)
+            triages[spec_str] = triage
+            task_for_triage = _build_task_from_spec(spec_path)
+            action_label = triage.action.upper().replace("_", " ")
+            _log(f"  {task_for_triage.slug:<20} {action_label} ({triage.reason})")
 
     for idx, spec_path in enumerate(spec_paths, start=1):
         spec_str = manifest.specs[idx - 1]
@@ -202,13 +340,48 @@ def run_sprint(
                 specs_skipped += 1
             break
 
+        # Resume mode: skip already-merged specs
+        if resume:
+            triage = triages.get(spec_str)
+            if triage and triage.action == "skip_merged":
+                _log(f"[{idx}/{total}] SKIP {task.slug} (already merged to main)")
+                specs_skipped += 1
+                continue
+
         # Emit spec header banner
         print(_spec_header(idx, total, task.slug), file=sys.stderr, flush=True)
 
         _spec_start = datetime.datetime.now(datetime.timezone.utc)
-        result = run_task(
-            config, task, interactive=interactive, auto_merge=auto_merge, notify=notify
-        )
+
+        # Choose entry point based on triage
+        if resume:
+            triage = triages.get(spec_str)
+            if triage and triage.action == "review" and triage.worktree_path is not None:
+                result = run_from_review(
+                    config,
+                    task,
+                    triage.worktree_path,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    notify=notify,
+                )
+            elif triage and triage.action == "dev" and triage.worktree_path is not None:
+                result = run_from_dev(
+                    config,
+                    task,
+                    triage.worktree_path,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    notify=notify,
+                )
+            else:
+                result = run_task(
+                    config, task, interactive=interactive, auto_merge=auto_merge, notify=notify
+                )
+        else:
+            result = run_task(
+                config, task, interactive=interactive, auto_merge=auto_merge, notify=notify
+            )
         _spec_elapsed = (
             datetime.datetime.now(datetime.timezone.utc) - _spec_start
         ).total_seconds()
@@ -254,13 +427,14 @@ def run_sprint(
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     duration = (finished_at - started_at).total_seconds()
 
+    final_cost = accumulated_cost + prior_cost
     sprint_result = SprintResult(
         name=manifest.name,
         specs_total=total,
         specs_succeeded=specs_succeeded,
         specs_failed=specs_failed,
         specs_skipped=specs_skipped,
-        total_cost_usd=accumulated_cost,
+        total_cost_usd=final_cost,
         budget_usd=manifest.budget_usd,
         results=results,
         stopped_reason=stopped_reason,
@@ -270,13 +444,13 @@ def run_sprint(
     _sprint_dur = _fmt_duration(_sprint_elapsed)
     _log(
         f"Sprint complete: {specs_succeeded} succeeded, {specs_failed} failed, "
-        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_sprint_dur}"
+        f"{specs_skipped} skipped. Total: ${final_cost:.2f}  {_sprint_dur}"
     )
     if notify:
         _notify(
             f"TheForge: {manifest.name}",
             f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
-            f" — ${accumulated_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
+            f" — ${final_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
         )
         # R10: ntfy summary notification when remote mode is active
         if _is_remote_mode(notify, config):
@@ -284,8 +458,7 @@ def run_sprint(
             _ntfy_title = f'TheForge sprint complete \u2014 "{manifest.name}"'
             _ntfy_body_lines = [
                 f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
-                f"Total cost: ${accumulated_cost:.2f}   "
-                f"Duration: {_fmt_duration(_sprint_elapsed)}",
+                f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
             ]
             if stopped_reason:
                 _ntfy_body_lines.append(f"Stopped: {stopped_reason}")

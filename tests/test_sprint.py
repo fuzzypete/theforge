@@ -26,6 +26,8 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.sprint import (
+    SpecTriage,
+    _triage_spec,
     load_sprint_manifest,
     run_sprint,
 )
@@ -541,3 +543,211 @@ class TestNotifyFunction:
         """_osa_quote wraps in double quotes and escapes special chars."""
         result = _osa_quote('say "hello\\world"')
         assert result == '"say \\"hello\\\\world\\""'
+
+
+# ── Sprint resume / triage tests ─────────────────────────────────────
+
+
+class TestTriageSpec:
+    def test_triage_merged_spec(self, tmp_path: Path) -> None:
+        """Branch already merged to base → skip_merged."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        with patch("theforge.sprint.subprocess.run") as mock_run:
+            # merge-base --is-ancestor returns 0 → merged
+            mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "skip_merged"
+        assert "merged" in triage.reason
+
+    def test_triage_worktree_with_passing_gate(self, tmp_path: Path) -> None:
+        """Worktree exists, commits ahead, gate passes → review."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        # Create fake worktree directory
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1  # not merged
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123 some commit\n"
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint._run_gate", return_value=("PASS", None)):
+                triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "review"
+        assert triage.worktree_path == worktree
+
+    def test_triage_worktree_with_failing_gate(self, tmp_path: Path) -> None:
+        """Worktree exists, commits ahead, gate fails → dev."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123 some commit\n"
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint._run_gate", return_value=("FAIL", "tests failed")):
+                triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "dev"
+        assert triage.worktree_path == worktree
+
+    def test_triage_no_worktree(self, tmp_path: Path) -> None:
+        """No worktree found → full."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1  # not merged
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "full"
+        assert "no worktree" in triage.reason
+
+    def test_triage_stale_worktree_no_commits(self, tmp_path: Path) -> None:
+        """Worktree exists but 0 commits ahead of base → full (stale)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""  # no commits ahead
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "full"
+        assert "stale" in triage.reason or "0 commits" in triage.reason
+
+
+class TestResumeSprintIntegration:
+    def test_resume_sprint_skips_merged(self, tmp_path: Path) -> None:
+        """End-to-end resume: merged spec is skipped, not passed to run_task."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        merged_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+        )
+
+        with patch("theforge.sprint._triage_spec", return_value=merged_triage):
+            with patch("theforge.sprint.run_task") as mock_run:
+                result = run_sprint(config, manifest_path, resume=True)
+
+        mock_run.assert_not_called()
+        assert result.specs_skipped == 1
+        assert result.specs_succeeded == 0
+
+    def test_resume_sprint_enters_review(self, tmp_path: Path) -> None:
+        """End-to-end resume: gate-passing worktree uses run_from_review."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        review_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="review",
+            reason="gate passes",
+            worktree_path=worktree,
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint._triage_spec", return_value=review_triage):
+            with patch("theforge.sprint.run_from_review", return_value=coord_result) as mock_rev:
+                with patch("theforge.sprint.run_task") as mock_task:
+                    result = run_sprint(config, manifest_path, resume=True)
+
+        mock_rev.assert_called_once()
+        mock_task.assert_not_called()
+        assert result.specs_succeeded == 1
+
+    def test_resume_cost_continuity(self, tmp_path: Path) -> None:
+        """Prior sprint cost is carried forward into total_cost_usd."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        # Write a prior sprint-audit.yaml with a known cost
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        prior_audit = {"sprint": {"total_cost_usd": 3.50}}
+        with open(audits_dir / "sprint-audit.yaml", "w") as f:
+            yaml.dump(prior_audit, f)
+
+        full_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.run_task", return_value=coord_result):
+                result = run_sprint(config, manifest_path, resume=True)
+
+        # total should be prior (3.50) + new (1.00)
+        assert result.total_cost_usd == pytest.approx(4.50)
+
+    def test_no_resume_flag_unchanged(self, tmp_path: Path) -> None:
+        """Without --resume, behavior is unchanged (run_task called normally)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint._triage_spec") as mock_triage:
+            with patch("theforge.sprint.run_task", return_value=coord_result) as mock_task:
+                result = run_sprint(config, manifest_path, resume=False)
+
+        mock_triage.assert_not_called()
+        mock_task.assert_called_once()
+        assert result.specs_succeeded == 1

@@ -2129,6 +2129,76 @@ def run_from_review(
     )
 
 
+# ── Dev-from-existing-worktree mode ─────────────────────────────────
+
+
+def run_from_dev(
+    config: ForgeConfig,
+    task: TaskSpec,
+    workspace_path: Path,
+    *,
+    interactive: bool = False,
+    auto_merge: bool = False,
+    notify: bool = False,
+) -> CoordinatorResult:
+    """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
+
+    Used by sprint resume when a worktree has commits ahead of the base branch
+    but the gate failed. Reuses the existing workspace without recreating it.
+
+    Args:
+        config: The forge configuration.
+        task: The task specification.
+        workspace_path: Path to the existing worktree.
+        interactive: When True, pause at HUMAN_REVIEW for operator input.
+        auto_merge: When True, merge the feature branch after APPROVE.
+    """
+    state = CoordinatorState(
+        phase=Phase.DEV,
+        dev_iteration=0,
+        review_cycle=0,
+        preflight_verdict="SKIPPED",
+    )
+    state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _task_start = time.monotonic()
+
+    if not workspace_path.exists():
+        state.phase = Phase.ESCALATE
+        state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        _escalate_notify(task, state, notify)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    state.workspace_path = workspace_path
+
+    # Resolve branch name from actual worktree HEAD (same as run_from_review)
+    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
+        branch_name = _branch_out.strip()
+    else:
+        branch_name = config.workspace.branch_pattern.format(slug=task.slug)
+    state.branch_name = branch_name
+
+    spec_content = load_spec(task.spec_path)
+
+    # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
+    return _coordinator_loop(
+        state,
+        config,
+        task,
+        spec_content,
+        _task_start,
+        interactive=interactive,
+        auto_merge=auto_merge,
+        skip_dev_first_iter=False,
+        notify=notify,
+    )
+
+
 # ── Review-only mode ─────────────────────────────────────────────────
 
 

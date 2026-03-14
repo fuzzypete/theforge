@@ -369,6 +369,7 @@ def cmd_sprint(args: argparse.Namespace) -> int:
 
     auto_merge = getattr(args, "auto_merge", False)
     interactive = getattr(args, "interactive", False)
+    resume = getattr(args, "resume", False)
 
     try:
         result = run_sprint(
@@ -377,6 +378,7 @@ def cmd_sprint(args: argparse.Namespace) -> int:
             auto_merge=auto_merge,
             interactive=interactive,
             notify=not args.no_notify,
+            resume=resume,
         )
     except ValueError as exc:
         print(f"Sprint error: {exc}", file=sys.stderr)
@@ -760,6 +762,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Suppress OS notifications",
+    )
+    sprint_parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Auto-triage failed specs and pick optimal re-entry point",
     )
 
     # forge ideate
