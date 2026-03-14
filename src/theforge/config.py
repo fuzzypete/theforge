@@ -14,6 +14,24 @@ import yaml
 
 
 @dataclass(frozen=True)
+class NtfyConfig:
+    """Configuration for ntfy.sh push notifications."""
+
+    url: str  # e.g. "https://ntfy.sh/my-topic"
+    priority: str = "high"  # ntfy priority: min, low, default, high, urgent
+
+
+@dataclass(frozen=True)
+class NotificationConfig:
+    """Notification backend configuration."""
+
+    backend: str = "none"  # "none", "ntfy", "osascript"
+    ntfy: NtfyConfig | None = None
+    script: str | None = None  # path to custom notification script
+    human_review_timeout_seconds: int = 14400  # 4 hours
+
+
+@dataclass(frozen=True)
 class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
@@ -76,6 +94,7 @@ class ForgeConfig:
     review_pool: list[ModelProfile]  # all reviewers; at least 1
     synthesis_profile: ModelProfile | None  # None when pool size <= 1
     retry: RetryPolicy
+    notifications: NotificationConfig = NotificationConfig()
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -267,6 +286,25 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
     )
 
+    # Notifications
+    notif_data = raw.get("notifications", {})
+    notif_backend = notif_data.get("backend", "none")
+    ntfy_config: NtfyConfig | None = None
+    if "ntfy" in notif_data:
+        ntfy_data = notif_data["ntfy"]
+        ntfy_url = ntfy_data.get("url", "")
+        if ntfy_url:
+            ntfy_config = NtfyConfig(
+                url=ntfy_url,
+                priority=ntfy_data.get("priority", "high"),
+            )
+    notifications = NotificationConfig(
+        backend=notif_backend,
+        ntfy=ntfy_config,
+        script=notif_data.get("script"),
+        human_review_timeout_seconds=int(notif_data.get("human_review_timeout_seconds", 14400)),
+    )
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -277,6 +315,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         review_pool=review_pool,
         synthesis_profile=synthesis_profile,
         retry=retry,
+        notifications=notifications,
     )
 
 

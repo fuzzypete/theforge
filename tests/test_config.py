@@ -417,3 +417,68 @@ class TestSupportedClis:
         assert "claude" in clis
         assert "codex" in clis
         assert "gemini" in clis
+
+
+class TestNotificationConfig:
+    def test_notifications_default_when_absent(self, tmp_path):
+        """Missing notifications section → default NotificationConfig."""
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.notifications.backend == "none"
+        assert config.notifications.ntfy is None
+        assert config.notifications.human_review_timeout_seconds == 14400
+
+    def test_human_review_timeout_parsed(self, tmp_path):
+        """human_review_timeout_seconds is read from forge.yaml."""
+        config_path = _write_config(
+            {"notifications": {"backend": "ntfy", "human_review_timeout_seconds": 7200}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.notifications.human_review_timeout_seconds == 7200
+
+    def test_human_review_timeout_default(self, tmp_path):
+        """Absent human_review_timeout_seconds defaults to 14400."""
+        config_path = _write_config(
+            {"notifications": {"backend": "ntfy"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.notifications.human_review_timeout_seconds == 14400
+
+    def test_ntfy_config_parsed(self, tmp_path):
+        """ntfy url and priority are parsed correctly."""
+        config_path = _write_config(
+            {
+                "notifications": {
+                    "backend": "ntfy",
+                    "ntfy": {
+                        "url": "https://ntfy.sh/my-topic",
+                        "priority": "urgent",
+                    },
+                    "human_review_timeout_seconds": 3600,
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.notifications.backend == "ntfy"
+        assert config.notifications.ntfy is not None
+        assert config.notifications.ntfy.url == "https://ntfy.sh/my-topic"
+        assert config.notifications.ntfy.priority == "urgent"
+        assert config.notifications.human_review_timeout_seconds == 3600
+
+    def test_ntfy_default_priority(self, tmp_path):
+        """ntfy priority defaults to 'high'."""
+        config_path = _write_config(
+            {
+                "notifications": {
+                    "backend": "ntfy",
+                    "ntfy": {"url": "https://ntfy.sh/topic"},
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.notifications.ntfy is not None
+        assert config.notifications.ntfy.priority == "high"

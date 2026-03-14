@@ -25,10 +25,13 @@ Transitions:
 from __future__ import annotations
 
 import datetime
+import json
 import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
 from enum import Enum, auto
@@ -97,8 +100,13 @@ class CoordinatorState:
     gate_decisions: list[str] = field(default_factory=list)
     last_review_findings: str | None = None
     human_feedback: str | None = None
-    human_review_decision: str | None = None  # "approve" | "reject" | "escalate"
+    human_review_decision: str | None = (
+        None  # "approve" | "reject" | "escalate" | "extend" | "timeout"
+    )
     human_review_feedback: str | None = None  # rejection text from human
+    human_review_extra_cycles: int = 0  # cycles granted by "extend" decisions
+    human_review_waited_seconds: float | None = None  # seconds waited in remote mode
+    human_review_mode: str | None = None  # "remote" | "interactive"
     preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
     preflight_reason: str | None = None
     preflight_result: AgentResult | None = None
@@ -157,6 +165,17 @@ def _fmt_dur(seconds: float) -> str:
     return f"{h}h {m:02d}m {s:02d}s"
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format duration as '2h 14m 3s', '14m 3s', or '47s'."""
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 def _log(msg: str) -> None:
     """Print coordinator status to stderr (always shown)."""
     print(f"[forge] {msg}", file=sys.stderr, flush=True)
@@ -211,6 +230,167 @@ def _escalate_notify(task: "TaskSpec", state: "CoordinatorState", notify: bool) 
         )
 
 
+# ── ntfy helpers ──────────────────────────────────────────────────────
+
+
+def _ntfy_reply_url(base_url: str) -> str:
+    """Append '-reply' to the topic segment of the ntfy URL."""
+    return base_url.rstrip("/") + "-reply"
+
+
+def _ntfy_publish(
+    url: str,
+    title: str,
+    body: str,
+    priority: str = "high",
+    actions: str | None = None,
+) -> None:
+    """POST a message to an ntfy topic. Fails silently."""
+    headers: dict[str, str] = {
+        "Title": title,
+        "Priority": priority,
+        "Content-Type": "text/plain; charset=utf-8",
+    }
+    if actions:
+        headers["Actions"] = actions
+    try:
+        req = urllib.request.Request(
+            url,
+            data=body.encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass
+
+
+def _ntfy_poll_reply(
+    reply_url: str,
+    since_ts: int,
+    timeout_seconds: int,
+) -> tuple[str, str | None]:
+    """Poll ntfy reply topic until a valid decision arrives or timeout.
+
+    Returns (decision, feedback):
+      "approve"  → transition to DONE
+      "extend"   → grant fresh review budget
+      "escalate" → transition to ESCALATE
+      "reject"   → feedback contains human findings text
+      "timeout"  → no reply within timeout_seconds
+    """
+    deadline = time.monotonic() + timeout_seconds
+    poll_url = f"{reply_url}/json?poll=1&since={since_ts}"
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(poll_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("event") not in ("message", None):
+                    continue
+                msg = (obj.get("message") or "").strip()
+                msg_lower = msg.lower()
+                if msg_lower == "approve":
+                    return "approve", None
+                if msg_lower == "extend":
+                    return "extend", None
+                if msg_lower == "escalate":
+                    return "escalate", None
+                if msg_lower.startswith("reject:"):
+                    findings = msg[7:].strip()
+                    return "reject", findings or None
+                # Unknown message — ignore, keep polling
+        except Exception:
+            pass
+
+        sleep_secs = min(10.0, max(0.0, deadline - time.monotonic()))
+        if sleep_secs > 0:
+            time.sleep(sleep_secs)
+
+    return "timeout", None
+
+
+def _is_remote_mode(notify: bool, config: "ForgeConfig") -> bool:
+    """Return True when all conditions for ntfy-based remote HUMAN_REVIEW are met."""
+    return (
+        notify and config.notifications.backend == "ntfy" and config.notifications.ntfy is not None
+    )
+
+
+def _remote_human_review(
+    state: "CoordinatorState",
+    parsed_review: "ReviewResult",
+    workspace_path: "Path",
+    branch_name: str,
+    task: "TaskSpec",
+    config: "ForgeConfig",
+    notify: bool,
+) -> tuple[str, str | None]:
+    """Async ntfy-based human review decision.
+
+    Publishes a push notification with action buttons, then polls the reply topic.
+    Returns (decision, feedback) matching _human_review's interface, plus the
+    additional decisions "extend" and "timeout".
+    """
+    ntfy = config.notifications.ntfy
+    assert ntfy is not None
+
+    reply_url = _ntfy_reply_url(ntfy.url)
+    timeout_seconds = config.notifications.human_review_timeout_seconds
+
+    p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
+
+    title = f"TheForge: review needed \u2014 {task.slug}"
+    body_lines = [
+        f"{parsed_review.verdict} ({p1} P1, {p2} P2) \u2014 ${state.total_cost:.2f}  "
+        f"{_fmt_duration(time.monotonic())}",
+        parsed_review.summary[:120],
+        f"Branch: {branch_name}",
+    ]
+    body = "\n".join(body_lines)
+    actions = (
+        f"http, Approve, {reply_url}, method=POST, body=approve; "
+        f"http, Extend+1, {reply_url}, method=POST, body=extend; "
+        f"http, Escalate, {reply_url}, method=POST, body=escalate"
+    )
+
+    _log("─── Remote Human Review (ntfy) ───")
+    _log(f"  Topic:   {ntfy.url}")
+    _log(f"  Reply:   {reply_url}")
+    _log(f"  Timeout: {_fmt_duration(timeout_seconds)}")
+
+    since_ts = int(time.time())
+    _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
+
+    _poll_start = time.monotonic()
+    decision, feedback = _ntfy_poll_reply(reply_url, since_ts, timeout_seconds)
+    state.human_review_waited_seconds = time.monotonic() - _poll_start
+    state.human_review_mode = "remote"
+
+    if decision == "timeout":
+        timeout_title = f"TheForge: timed out waiting for review decision \u2014 {task.slug}"
+        _ntfy_publish(
+            ntfy.url, timeout_title, "Auto-escalating after timeout.", priority=ntfy.priority
+        )
+        _log(f"Remote review timed out after {_fmt_duration(state.human_review_waited_seconds)}")
+    else:
+        waited_str = _fmt_duration(state.human_review_waited_seconds or 0)
+        _log(f"Remote review decision: {decision!r} (waited {waited_str})")
+
+    return decision, feedback
+
+
 # ── Human review ─────────────────────────────────────────────────────
 
 
@@ -219,6 +399,9 @@ def _human_review(
     parsed_review: "ReviewResult",  # noqa: F821
     workspace_path: "Path",  # noqa: F821
     branch_name: str,
+    task: "TaskSpec | None" = None,  # unused; kept for signature compat
+    config: "ForgeConfig | None" = None,  # unused; kept for signature compat
+    notify: bool = False,  # unused; kept for signature compat
 ) -> tuple[str, str | None]:
     """Prompt the human operator for a review decision.
 
@@ -245,6 +428,7 @@ def _human_review(
     _log("  [e]scalate → give up")
     _log("")
 
+    state.human_review_mode = "interactive"
     while True:
         print("[forge] Choice [a/r/e]: ", end="", file=sys.stderr, flush=True)
         raw = sys.stdin.readline()
@@ -1139,9 +1323,14 @@ def _coordinator_loop(
             if interactive:
                 state.phase = Phase.HUMAN_REVIEW
                 _log_phase(state.phase)
-                decision, feedback = _human_review(
-                    state, parsed_review, workspace_path, branch_name
-                )
+                if _is_remote_mode(notify, config):
+                    decision, feedback = _remote_human_review(
+                        state, parsed_review, workspace_path, branch_name, task, config, notify
+                    )
+                else:
+                    decision, feedback = _human_review(
+                        state, parsed_review, workspace_path, branch_name
+                    )
                 state.human_review_decision = decision
                 state.human_review_feedback = feedback
                 if decision == "approve":
@@ -1175,9 +1364,13 @@ def _coordinator_loop(
                         ),
                         merge=merge_info,
                     )
-                if decision == "escalate":
+                if decision in ("escalate", "timeout"):
                     state.phase = Phase.ESCALATE
-                    state.error = "Human chose to escalate after APPROVE."
+                    state.error = (
+                        "Remote review timed out — auto-escalated."
+                        if decision == "timeout"
+                        else "Human chose to escalate after APPROVE."
+                    )
                     _log(f"✗ ESCALATE   {state.error}")
                     _escalate_notify(task, state, notify)
                     return CoordinatorResult(
@@ -1186,6 +1379,18 @@ def _coordinator_loop(
                         state=state,
                         message=state.error,
                     )
+                if decision == "extend":
+                    # Grant a completely fresh budget of max_review_cycles
+                    state.dev_iteration = 0
+                    state.review_cycle = 0
+                    state.human_review_extra_cycles += 1
+                    state.last_review_findings = findings_to_markdown(parsed_review.findings)
+                    state.human_feedback = None
+                    _log(
+                        f"Human extended — granting fresh budget "
+                        f"(extra_cycles={state.human_review_extra_cycles})"
+                    )
+                    continue
                 # decision == "reject" — loop back to dev with human feedback
                 state.human_feedback = feedback
                 state.last_review_findings = None
@@ -1233,9 +1438,14 @@ def _coordinator_loop(
             if interactive:
                 state.phase = Phase.HUMAN_REVIEW
                 _log_phase(state.phase, "cycles exhausted")
-                decision, feedback = _human_review(
-                    state, parsed_review, workspace_path, branch_name
-                )
+                if _is_remote_mode(notify, config):
+                    decision, feedback = _remote_human_review(
+                        state, parsed_review, workspace_path, branch_name, task, config, notify
+                    )
+                else:
+                    decision, feedback = _human_review(
+                        state, parsed_review, workspace_path, branch_name
+                    )
                 state.human_review_decision = decision
                 state.human_review_feedback = feedback
                 if decision == "approve":
@@ -1268,24 +1478,45 @@ def _coordinator_loop(
                         ),
                         merge=merge_info,
                     )
-                if decision == "reject":
-                    # Human wants another dev loop; reset iteration counter
-                    state.human_feedback = feedback
-                    state.last_review_findings = None
+                if decision in ("escalate", "timeout"):
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        "Remote review timed out — auto-escalated."
+                        if decision == "timeout"
+                        else "Human chose to escalate after exhausted cycles."
+                    )
+                    _log(f"✗ ESCALATE   {state.error}")
+                    _escalate_notify(task, state, notify)
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+                if decision == "extend":
+                    # Grant a completely fresh budget
                     state.dev_iteration = 0
-                    _log("Human rejected — looping back to dev with feedback")
+                    state.review_cycle = 0
+                    state.human_review_extra_cycles += 1
+                    state.last_review_findings = findings_to_markdown(parsed_review.findings)
+                    state.human_feedback = None
+                    _log(
+                        f"Human extended — granting fresh budget "
+                        f"(extra_cycles={state.human_review_extra_cycles})"
+                    )
                     continue
-                # escalate
-                state.phase = Phase.ESCALATE
-                state.error = "Human chose to escalate after exhausted cycles."
-                _log(f"✗ ESCALATE   {state.error}")
-                _escalate_notify(task, state, notify)
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
+                # decision == "reject" — cycles exhausted: treat as extend + reject
+                # Grants a fresh budget at human's explicit direction
+                state.dev_iteration = 0
+                state.review_cycle = 0
+                state.human_review_extra_cycles += 1
+                state.human_feedback = feedback
+                state.last_review_findings = None
+                _log(
+                    "Human rejected (cycles exhausted) — granting fresh budget "
+                    f"(extra_cycles={state.human_review_extra_cycles})"
                 )
+                continue
             else:
                 state.phase = Phase.ESCALATE
                 state.error = (
@@ -1843,8 +2074,15 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
         "reviews": reviews,
         "human_review": (
             {
+                "mode": state.human_review_mode or "interactive",
                 "decision": state.human_review_decision,
                 "feedback": state.human_review_feedback,
+                "waited_seconds": (
+                    round(state.human_review_waited_seconds, 1)
+                    if state.human_review_waited_seconds is not None
+                    else None
+                ),
+                "extra_cycles_granted": state.human_review_extra_cycles,
             }
             if state.human_review_decision is not None
             else None

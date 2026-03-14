@@ -806,7 +806,9 @@ def main() -> None:
 
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
-    audit_parser.add_argument("file", help="Path to audit file (e.g. .forge/audits/forge_audit.yaml)")
+    audit_parser.add_argument(
+        "file", help="Path to audit file (e.g. .forge/audits/forge_audit.yaml)"
+    )
 
     args = parser.parse_args()
 

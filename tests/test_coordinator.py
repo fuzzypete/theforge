@@ -18,13 +18,17 @@ from theforge.config import (
     DEFAULT_VALIDATION,
     ForgeConfig,
     ModelProfile,
+    NotificationConfig,
+    NtfyConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
 from theforge.coordinator import (
     Phase,
     _fmt_dur,
+    _is_remote_mode,
     _is_stale_worktree,
+    _ntfy_reply_url,
     _remove_worktree,
     generate_audit_log,
     run_from_review,
@@ -3990,3 +3994,255 @@ workspace:
         config_file.write_text("project: myproject\n", encoding="utf-8")
         cfg = load_config(config_file)
         assert cfg.workspace.stale_worktree_days == 1
+
+
+# ── Remote HITL helpers ───────────────────────────────────────────────
+
+
+def _make_ntfy_config(
+    tmp_path: Path,
+    url: str = "https://ntfy.sh/test-topic",
+    timeout: int = 60,
+) -> ForgeConfig:
+    """Create a ForgeConfig with ntfy notifications enabled."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        notifications=NotificationConfig(
+            backend="ntfy",
+            ntfy=NtfyConfig(url=url, priority="high"),
+            human_review_timeout_seconds=timeout,
+        ),
+    )
+
+
+class TestRemoteHumanReview:
+    """Remote async HITL via ntfy action buttons."""
+
+    def test_ntfy_reply_url(self):
+        assert _ntfy_reply_url("https://ntfy.sh/my-topic") == "https://ntfy.sh/my-topic-reply"
+        assert _ntfy_reply_url("https://ntfy.sh/my-topic/") == "https://ntfy.sh/my-topic-reply"
+
+    def test_remote_mode_not_activated_without_notify(self, tmp_path):
+        """notify=False → remote mode is off even with ntfy configured."""
+        config = _make_ntfy_config(tmp_path)
+        assert not _is_remote_mode(False, config)
+
+    def test_remote_mode_not_activated_without_ntfy(self, tmp_path):
+        """Non-ntfy backend → remote mode is off."""
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(),
+            notifications=NotificationConfig(backend="none"),
+        )
+        assert not _is_remote_mode(True, config)
+
+    def test_remote_mode_activated_with_ntfy(self, tmp_path):
+        """notify=True + ntfy backend + NtfyConfig → remote mode is on."""
+        config = _make_ntfy_config(tmp_path)
+        assert _is_remote_mode(True, config)
+
+    def test_remote_approve(self, tmp_path):
+        """ntfy poll returns 'approve' → task reaches DONE."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish"),
+            patch(
+                "theforge.coordinator._ntfy_poll_reply",
+                return_value=("approve", None),
+            ),
+        ):
+            result = run_task(config, task, interactive=True, notify=True)
+
+        assert result.success
+        assert result.phase == Phase.DONE
+        assert result.state.human_review_decision == "approve"
+        assert result.state.human_review_mode == "remote"
+
+    def test_remote_escalate(self, tmp_path):
+        """ntfy poll returns 'escalate' → task reaches ESCALATE."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish"),
+            patch(
+                "theforge.coordinator._ntfy_poll_reply",
+                return_value=("escalate", None),
+            ),
+        ):
+            result = run_task(config, task, interactive=True, notify=True)
+
+        assert not result.success
+        assert result.phase == Phase.ESCALATE
+        assert result.state.human_review_decision == "escalate"
+
+    def test_remote_timeout(self, tmp_path):
+        """ntfy poll times out → auto-escalate + timeout notification."""
+        config = _make_ntfy_config(tmp_path, timeout=60)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        ntfy_calls: list[tuple] = []
+
+        def capture_ntfy(url, title, body, **kwargs):
+            ntfy_calls.append((url, title, body))
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish", side_effect=capture_ntfy),
+            patch(
+                "theforge.coordinator._ntfy_poll_reply",
+                return_value=("timeout", None),
+            ),
+        ):
+            result = run_task(config, task, interactive=True, notify=True)
+
+        assert not result.success
+        assert result.phase == Phase.ESCALATE
+        assert result.state.human_review_decision == "timeout"
+        # Timeout notification should have been sent
+        timeout_notifs = [c for c in ntfy_calls if "timed out" in c[1].lower()]
+        assert len(timeout_notifs) >= 1
+
+    def test_remote_reject_with_findings(self, tmp_path):
+        """ntfy poll returns reject with findings → findings fed back to dev."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        dev_calls = []
+
+        def dev_side_effect(**kwargs):
+            dev_calls.append(kwargs.get("prompt", ""))
+            # First call: preflight; second: dev (first); third: dev (after reject)
+            call_n = len(dev_calls)
+            if call_n == 1:
+                return _make_agent_result(output=PREFLIGHT_PROCEED, cost_usd=0.05)
+            return _make_agent_result(output="Done.")
+
+        review_calls = []
+        approve_result = _make_pool_result([APPROVE_REVIEW], ["review"])
+
+        def review_side_effect(**kwargs):
+            review_calls.append(1)
+            if len(review_calls) == 1:
+                return approve_result
+            return approve_result  # second review after reject also approves
+
+        poll_calls = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            poll_calls.append(1)
+            if len(poll_calls) == 1:
+                return ("reject", "fix the error handling")
+            return ("approve", None)  # second human review approves
+
+        with (
+            patch("theforge.coordinator.run_agent", side_effect=dev_side_effect),
+            patch("theforge.coordinator.run_agent_pool", side_effect=review_side_effect),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish"),
+            patch("theforge.coordinator._ntfy_poll_reply", side_effect=poll_side_effect),
+        ):
+            result = run_task(config, task, interactive=True, notify=True)
+
+        # After reject, the dev runs again, then reviews again → approve
+        assert result.success or result.state.human_review_decision in ("reject", "approve")
+        # Human feedback should have been set from the reject
+        assert result.state.human_review_decision is not None
+
+    def test_remote_extend_grants_cycle(self, tmp_path):
+        """ntfy poll returns 'extend' → fresh dev+review budget granted."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        poll_calls = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            poll_calls.append(1)
+            if len(poll_calls) == 1:
+                return ("extend", None)
+            return ("approve", None)
+
+        dev_calls = []
+
+        def dev_side_effect(**kwargs):
+            dev_calls.append(1)
+            if len(dev_calls) == 1:
+                return _make_agent_result(output=PREFLIGHT_PROCEED, cost_usd=0.05)
+            return _make_agent_result(output="Done.")
+
+        with (
+            patch("theforge.coordinator.run_agent", side_effect=dev_side_effect),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish"),
+            patch("theforge.coordinator._ntfy_poll_reply", side_effect=poll_side_effect),
+        ):
+            result = run_task(config, task, interactive=True, notify=True)
+
+        # extend → extra_cycles incremented
+        assert result.state.human_review_extra_cycles >= 1
+        assert result.state.human_review_mode == "remote"

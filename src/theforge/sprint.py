@@ -14,7 +14,16 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .coordinator import CoordinatorResult, _fmt_dur, _notify, generate_audit_log, run_task
+from .coordinator import (
+    CoordinatorResult,
+    _fmt_dur,
+    _fmt_duration,
+    _is_remote_mode,
+    _notify,
+    _ntfy_publish,
+    generate_audit_log,
+    run_task,
+)
 from .task import TaskSpec
 
 
@@ -267,6 +276,23 @@ def run_sprint(
             f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
             f" — ${accumulated_cost:.2f}  {_fmt_dur(_sprint_elapsed)}",
         )
+        # R10: ntfy summary notification when remote mode is active
+        if _is_remote_mode(notify, config):
+            assert config.notifications.ntfy is not None
+            _ntfy_title = f'TheForge sprint complete \u2014 "{manifest.name}"'
+            _ntfy_body_lines = [
+                f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
+                f"Total cost: ${accumulated_cost:.2f}   "
+                f"Duration: {_fmt_duration(_sprint_elapsed)}",
+            ]
+            if stopped_reason:
+                _ntfy_body_lines.append(f"Stopped: {stopped_reason}")
+            _ntfy_publish(
+                config.notifications.ntfy.url,
+                _ntfy_title,
+                "\n".join(_ntfy_body_lines),
+                priority=config.notifications.ntfy.priority,
+            )
 
     # Write sprint-audit.yaml
     _write_sprint_audit(
