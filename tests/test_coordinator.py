@@ -1258,7 +1258,7 @@ class TestVerboseFlagEnablesToolLines:
             )
             runner_mod._process_stream_event(tool_event, "test-label")
             captured = capsys.readouterr()
-            assert "↳ Read" in captured.err
+            assert "↳ [test-label] Read" in captured.err
         finally:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 

@@ -254,7 +254,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ Read src/theforge/runner.py (240 lines) [dev]" in captured.err
+        assert "↳ [dev] Read src/theforge/runner.py (240 lines)" in captured.err
 
     def test_activity_assistant_fallback(
         self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -288,7 +288,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ Bash: pytest tests/ -q [dev]" in captured.err
+        assert "↳ [dev] Bash: pytest tests/ -q" in captured.err
 
 
 class TestRunAgentCostCoercion:
@@ -781,10 +781,14 @@ class TestRunAgentPool:
                 allowed_tools=(),
             ),
         ]
+        import threading
+
         received_prompts: list[str] = []
+        lock = threading.Lock()
 
         def capture_prompt(**kwargs) -> AgentResult:
-            received_prompts.append(kwargs["prompt"])
+            with lock:
+                received_prompts.append(kwargs["prompt"])
             profile = kwargs["profile"]
             return AgentResult(
                 success=True,

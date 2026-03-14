@@ -269,6 +269,7 @@ def run_agent_pool(
     _log(
         f"  Review pool complete: {wall_clock:.0f}s wall clock ({sequential_est:.0f}s sequential)"
     )
+    assert all(r is not None for r in results), "BUG: pool finished with unfilled result slots"
     return results  # type: ignore[return-value]
 
 
@@ -296,11 +297,11 @@ def _process_stream_event(line: str, label: str) -> None:
 
     event_type = event.get("type")
 
-    label_tag = f" [{label}]" if label else ""
+    label_prefix = f"[{label}] " if label else ""
     if event_type == "tool_use_summary":
         summary = event.get("summary", "")
         if summary:
-            _log_verbose(f"  ↳ {summary}{label_tag}")
+            _log_verbose(f"  ↳ {label_prefix}{summary}")
     elif event_type == "assistant":
         message = event.get("message", {})
         content = message.get("content", [])
@@ -309,7 +310,7 @@ def _process_stream_event(line: str, label: str) -> None:
                 tool_name = item.get("name", "?")
                 inp = item.get("input", {})
                 preview = _format_tool_input_preview(inp)
-                _log_verbose(f"  ↳ {tool_name}: {preview}{label_tag}")
+                _log_verbose(f"  ↳ {label_prefix}{tool_name}: {preview}")
 
 
 def _run_claude(
