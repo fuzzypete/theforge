@@ -473,6 +473,8 @@ def _merge_branch(
     branch_name: str,
     slug: str,
     workspace_path: Path,
+    *,
+    auto_push: bool = False,
 ) -> dict:
     """Merge branch_name into base_branch in project_root.
 
@@ -526,6 +528,19 @@ def _merge_branch(
 
     info["merged"] = True
     _log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
+
+    if auto_push:
+        try:
+            subprocess.run(
+                ["git", "push", "origin", base_branch],
+                cwd=str(project_root),
+                timeout=30,
+                capture_output=True,
+                check=True,
+            )
+            _log(f"  Pushed {base_branch} to origin")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            _log(f"  ⚠ Push failed: {e} (merge succeeded locally)")
 
     # Worktree cleanup (best-effort)
     worktree_rel = f".forge/worktrees/{slug}"
@@ -1463,6 +1478,7 @@ def _coordinator_loop(
                             branch_name,
                             task.slug,
                             workspace_path,
+                            auto_push=config.workspace.auto_push,
                         )
                         merge_suffix = (
                             " Merged."
@@ -1527,6 +1543,7 @@ def _coordinator_loop(
                         branch_name,
                         task.slug,
                         workspace_path,
+                        auto_push=config.workspace.auto_push,
                     )
                     merge_suffix = (
                         " Merged."
@@ -1578,6 +1595,7 @@ def _coordinator_loop(
                             branch_name,
                             task.slug,
                             workspace_path,
+                            auto_push=config.workspace.auto_push,
                         )
                         merge_suffix = (
                             " Merged."

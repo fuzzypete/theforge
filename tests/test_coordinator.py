@@ -2399,6 +2399,159 @@ class TestCoordinatorAutoMerge:
         assert audit["merge"] is None
 
 
+# ── Auto-push tests ───────────────────────────────────────────────
+
+
+class TestCoordinatorAutoPush:
+    """Tests for auto_push=True path inside _merge_branch."""
+
+    def _make_auto_push_config(self, tmp_path: "Path", auto_push: bool = True) -> ForgeConfig:
+        return ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                auto_push=auto_push,
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        )
+
+    def _shell_with_gate_and_merge(self, workspace: "Path"):
+        def side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git branch --list" in cmd:
+                return (True, "main")
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc123 feat: implement thing")
+            if "git checkout" in cmd:
+                return (True, "Switched to branch 'main'")
+            if "git merge --ff-only" in cmd:
+                return (True, "Fast-forward")
+            if "git worktree remove" in cmd:
+                return (True, "OK")
+            return (True, "OK")
+
+        return side_effect
+
+    @patch("theforge.coordinator.subprocess.run")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_auto_push_after_merge(
+        self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
+    ):
+        """auto_push=True + merge success → git push called with base_branch."""
+        config = self._make_auto_push_config(tmp_path, auto_push=True)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = self._shell_with_gate_and_merge(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True
+        assert result.merge is not None
+        assert result.merge["merged"] is True
+        # Verify git push was called
+        push_calls = [
+            c
+            for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:3] == ["git", "push", "origin"]
+        ]
+        assert len(push_calls) == 1
+        assert push_calls[0].args[0] == ["git", "push", "origin", "main"]
+
+    @patch("theforge.coordinator.subprocess.run")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_auto_push_disabled_by_default(
+        self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
+    ):
+        """auto_push=False (default) → git push not called."""
+        config = self._make_auto_push_config(tmp_path, auto_push=False)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = self._shell_with_gate_and_merge(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True
+        assert result.merge is not None
+        assert result.merge["merged"] is True
+        push_calls = [
+            c
+            for c in mock_subprocess.call_args_list
+            if c.args and c.args[0][:3] == ["git", "push", "origin"]
+        ]
+        assert len(push_calls) == 0
+
+    @patch("theforge.coordinator.subprocess.run")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_auto_push_failure_non_fatal(
+        self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
+    ):
+        """auto_push=True + push fails → warning logged, run still DONE."""
+        import subprocess as _subprocess
+
+        config = self._make_auto_push_config(tmp_path, auto_push=True)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = self._shell_with_gate_and_merge(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_subprocess.side_effect = _subprocess.CalledProcessError(
+            1, ["git", "push", "origin", "main"], stderr=b"auth error"
+        )
+
+        result = run_task(config, task, auto_merge=True)
+
+        # Run still succeeds even though push failed
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["merged"] is True
+
+
 # ── Exit-code gate mode + pytest_target substitution ─────────────
 
 

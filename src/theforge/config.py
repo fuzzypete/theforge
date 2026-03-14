@@ -97,6 +97,7 @@ class WorkspaceConfig:
     branch_pattern: str  # branch name template, {slug} is replaced
     base_branch: str = "main"  # base branch for diff comparison
     stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
+    auto_push: bool = False  # push base_branch to origin after successful auto-merge
 
 
 @dataclass(frozen=True)
@@ -363,6 +364,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         stale_worktree_days=ws_data.get(
             "stale_worktree_days", DEFAULT_WORKSPACE.stale_worktree_days
         ),
+        auto_push=bool(ws_data.get("auto_push", DEFAULT_WORKSPACE.auto_push)),
     )
 
     # Validation

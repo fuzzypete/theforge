@@ -780,3 +780,31 @@ class TestResolveModelInfo:
         assert info.tier == "strong"
         assert info.capability == 5
         assert info.cost_rank == 2
+
+
+class TestAutoPushConfig:
+    """Tests for workspace.auto_push config field."""
+
+    def test_auto_push_config_parsed(self, tmp_path):
+        """forge.yaml workspace.auto_push: true → config.workspace.auto_push is True."""
+        config_path = _write_config(
+            {"project": "test", "workspace": {"auto_push": True}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.workspace.auto_push is True
+
+    def test_auto_push_default_false(self, tmp_path):
+        """auto_push absent from forge.yaml → defaults to False."""
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.workspace.auto_push is False
+
+    def test_auto_push_explicit_false(self, tmp_path):
+        """workspace.auto_push: false → config.workspace.auto_push is False."""
+        config_path = _write_config(
+            {"project": "test", "workspace": {"auto_push": False}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.workspace.auto_push is False
