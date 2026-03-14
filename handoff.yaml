@@ -1,17 +1,15 @@
 gate_decision: PASS
 scope_completed:
-  - R1: run_agent_pool uses ThreadPoolExecutor (parallel, all agents start simultaneously)
-  - R2: _process_stream_event suffixes lines with [label] e.g. '↳ Read: foo.py [opus]'
-  - R3: pool progress logging with accurate wall-clock vs sequential comparison
-  - R4: per-agent exception isolation (failed agents return AgentResult, pool continues)
+  - R1: run_agent_pool uses ThreadPoolExecutor (all agents start simultaneously)
+  - R2: _process_stream_event prefixes lines with [label]: '↳ [opus] Read: file.py'
+  - R3: pool progress logging (start banner, per-agent completion, wall-clock vs sequential)
+  - R4: per-agent exception isolation — failed agents return AgentResult, pool continues
   - R5: single-agent pool bypasses ThreadPoolExecutor entirely
-  - R6: 5 new tests in test_runner.py (runs_parallel, preserves_order, single_no_thread,
-    failure_isolated, all_receive_same_prompt)
-  - P2 fix: per-agent duration tracked via _timed_agent finally block for accurate sequential_est
-  - P1 fix: label appended as suffix '↳ content [label]' so existing coordinator test keeps
-    passing (it asserts '↳ Read' which is still a substring of '↳ Read: ... [label]')
-deferred_followups:
-  - R2 label is suffix (↳ Read: foo.py [opus]) not prefix (↳ [opus] Read: foo.py) per spec.
-    Prefix format would break test_coordinator.py:1261 (out of scope). To adopt prefix format:
-    update that assertion from '"↳ Read"' to '"↳ [test-label] Read"'.
+  - R6: 5 new tests (runs_parallel, preserves_order, single_no_thread, failure_isolated,
+    all_receive_same_prompt with threading.Lock)
+  - P2a: assert all(r is not None) guard before return in run_agent_pool
+  - P2b: threading.Lock in test_pool_all_agents_receive_same_prompt
+  - P1 fix: prefix label format + updated test_coordinator.py:1261 assertion
+    (out of declared file_scope; modified as explicitly required by P1 review finding)
+deferred_followups: []
 next_recommended_step: merge feat/parallel-review to main
