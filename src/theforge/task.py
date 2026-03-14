@@ -63,6 +63,12 @@ def parse_spec_frontmatter(spec_path: Path) -> dict:
 
     if not isinstance(result, dict):
         return {}
+
+    # R3: gate must be a string if present; drop non-string values to prevent
+    # AttributeError when _is_gate_skip() calls .lower() on a non-string.
+    if "gate" in result and not isinstance(result["gate"], str):
+        result = {k: v for k, v in result.items() if k != "gate"}
+
     return result
 
 

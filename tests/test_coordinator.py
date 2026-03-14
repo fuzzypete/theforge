@@ -4618,6 +4618,21 @@ class TestGateOverride:
         )
         assert task.gate_override == "none"
 
+    def test_gate_override_non_string_stripped_from_frontmatter(self, tmp_path):
+        """R3: non-string gate values are stripped by parse_spec_frontmatter (type safety)."""
+        from theforge.task import parse_spec_frontmatter
+
+        spec = tmp_path / "spec.md"
+        # gate: 123 is a YAML integer, not a string
+        spec.write_text(
+            "---\nname: My Spec\nslug: my-spec\ngate: 123\n---\n\n# Body",
+            encoding="utf-8",
+        )
+
+        fm = parse_spec_frontmatter(spec)
+        # Non-string gate must be stripped to avoid AttributeError in _is_gate_skip
+        assert "gate" not in fm
+
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coordinator._run_shell")

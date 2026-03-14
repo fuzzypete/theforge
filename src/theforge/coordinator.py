@@ -749,7 +749,7 @@ def _is_gate_skip(gate_override: str | None) -> bool:
     The special value 'none' (case-insensitive) triggers skip mode.
     None (absent) does NOT trigger skip mode.
     """
-    return gate_override is not None and gate_override.lower() == "none"
+    return isinstance(gate_override, str) and gate_override.lower() == "none"
 
 
 def _read_gate_decision(
@@ -983,7 +983,7 @@ def _coordinator_loop(
             gate_override = task.gate_override
             if _is_gate_skip(gate_override):
                 _log_phase(state.phase, "skipped (gate: none)")
-                _log("  Gate override: none — skipping validation")
+                _log("  Gate: none (spec override)")
                 gate_decision: str | None = "PASS"
                 gate_err: str | None = None
             else:
