@@ -254,7 +254,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ Read src/theforge/runner.py (240 lines)" in captured.err
+        assert "↳ [dev] Read src/theforge/runner.py (240 lines)" in captured.err
 
     def test_activity_assistant_fallback(
         self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -288,7 +288,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ Bash: pytest tests/ -q" in captured.err
+        assert "↳ [dev] Bash: pytest tests/ -q" in captured.err
 
 
 class TestRunAgentCostCoercion:
@@ -420,8 +420,8 @@ class TestRunAgentUnknownCli:
 class TestRunAgentPool:
     """Test pool runner."""
 
-    def test_pool_runs_sequentially_in_order(self, tmp_path: Path) -> None:
-        """run_agent_pool returns results in profile order."""
+    def test_pool_preserves_profile_order(self, tmp_path: Path) -> None:
+        """run_agent_pool returns results in profile order regardless of completion order."""
         profiles = [
             ModelProfile(
                 name="reviewer-a",
@@ -440,16 +440,13 @@ class TestRunAgentPool:
                 allowed_tools=(),
             ),
         ]
-        outputs = ["Review A output", "Review B output"]
-        call_index = {"n": 0}
 
         def mock_run_agent(**kwargs):
-            idx = call_index["n"]
-            call_index["n"] += 1
             profile = kwargs["profile"]
+            output = "Review A output" if profile.name == "reviewer-a" else "Review B output"
             return AgentResult(
                 success=True,
-                output=outputs[idx],
+                output=output,
                 session_id=None,
                 cost_usd=0.10,
                 exit_code=0,
@@ -535,7 +532,7 @@ class TestRunAgentPool:
             )
 
         assert len(results) == 2
-        assert dispatched_clis == ["claude", "gemini"]
+        assert set(dispatched_clis) == {"claude", "gemini"}
         assert results[0].profile_name == "claude-reviewer"
         assert results[1].profile_name == "gemini-reviewer"
         assert results[0].output == "output from claude"
@@ -561,8 +558,20 @@ class TestRunAgentPool:
                 allowed_tools=(),
             ),
         ]
-        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.10)])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+
+        def mock_run_agent(**kwargs):
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=True,
+                output="done",
+                session_id=None,
+                cost_usd=0.10,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=profiles,
@@ -571,6 +580,227 @@ class TestRunAgentPool:
 
         assert results[0].profile_name == "r1"
         assert results[1].profile_name == "r2"
+
+    def test_pool_runs_parallel(self, tmp_path: Path) -> None:
+        """Wall clock is less than the sum of individual durations (proves parallel)."""
+        profiles = [
+            ModelProfile(
+                name="a",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="b",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="c",
+                cli="claude",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+
+        def slow_agent(**kwargs) -> AgentResult:
+            time.sleep(0.1)
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=True,
+                output="done",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=slow_agent):
+            start = time.monotonic()
+            results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
+            elapsed = time.monotonic() - start
+
+        assert len(results) == 3
+        # Sequential total would be ~0.3s; parallel should finish in ~0.1s
+        assert elapsed < 0.25
+
+    def test_pool_preserves_order(self, tmp_path: Path) -> None:
+        """Results are returned in profile order even when fast agent finishes first."""
+        profiles = [
+            ModelProfile(
+                name="slow",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="fast",
+                cli="claude",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+
+        def variable_agent(**kwargs) -> AgentResult:
+            profile = kwargs["profile"]
+            if profile.name == "slow":
+                time.sleep(0.1)
+            return AgentResult(
+                success=True,
+                output=f"output-{profile.name}",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=variable_agent):
+            results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
+
+        assert results[0].profile_name == "slow"
+        assert results[1].profile_name == "fast"
+        assert results[0].output == "output-slow"
+        assert results[1].output == "output-fast"
+
+    def test_pool_single_agent_no_thread(self, tmp_path: Path) -> None:
+        """Single-profile pool runs directly without creating a ThreadPoolExecutor."""
+        profile = ModelProfile(
+            name="solo",
+            cli="claude",
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+
+        def mock_run_agent(**kwargs) -> AgentResult:
+            return AgentResult(
+                success=True,
+                output="solo",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name="solo",
+            )
+
+        with (
+            patch("theforge.runner.run_agent", side_effect=mock_run_agent),
+            patch("theforge.runner.ThreadPoolExecutor") as mock_executor,
+        ):
+            results = run_agent_pool(prompt="review", profiles=[profile], working_dir=tmp_path)
+
+        mock_executor.assert_not_called()
+        assert len(results) == 1
+        assert results[0].profile_name == "solo"
+
+    def test_pool_agent_failure_isolated(self, tmp_path: Path) -> None:
+        """A failing agent doesn't prevent the others from returning results."""
+        profiles = [
+            ModelProfile(
+                name="good",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="bad",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="also-good",
+                cli="claude",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+
+        def flaky_agent(**kwargs) -> AgentResult:
+            profile = kwargs["profile"]
+            if profile.name == "bad":
+                raise RuntimeError("agent crashed")
+            return AgentResult(
+                success=True,
+                output=f"output-{profile.name}",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=flaky_agent):
+            results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
+
+        assert len(results) == 3
+        assert results[0].success is True
+        assert results[0].output == "output-good"
+        assert results[1].success is False
+        assert results[1].exit_code == -1
+        assert results[2].success is True
+        assert results[2].output == "output-also-good"
+
+    def test_pool_all_agents_receive_same_prompt(self, tmp_path: Path) -> None:
+        """All agents in the pool receive exactly the same prompt string."""
+        profiles = [
+            ModelProfile(
+                name="r1",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="r2",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+        received_prompts: list[str] = []
+
+        def capture_prompt(**kwargs) -> AgentResult:
+            received_prompts.append(kwargs["prompt"])
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=True,
+                output="done",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=capture_prompt):
+            run_agent_pool(prompt="the shared prompt", profiles=profiles, working_dir=tmp_path)
+
+        assert len(received_prompts) == 2
+        assert all(p == "the shared prompt" for p in received_prompts)
 
 
 @pytest.fixture

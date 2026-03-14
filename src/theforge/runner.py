@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -217,12 +218,55 @@ def run_agent_pool(
     profiles: list[ModelProfile],
     working_dir: Path,
 ) -> list[AgentResult]:
-    """Run multiple agents sequentially with the same prompt.
+    """Run multiple agents concurrently with the same prompt.
 
     Returns results in the same order as the input profiles list.
-    Each agent runs independently with no shared context.
+    Uses ThreadPoolExecutor for parallel execution; single-agent pools
+    run directly without thread overhead. Each agent runs independently
+    with no shared context.
     """
-    return [run_agent(prompt=prompt, profile=p, working_dir=working_dir) for p in profiles]
+    if len(profiles) == 1:
+        return [run_agent(prompt=prompt, profile=profiles[0], working_dir=working_dir)]
+
+    names = ", ".join(p.name or f"{p.cli}/{p.model}" for p in profiles)
+    _log(f"  Starting review pool: {names} (parallel)")
+
+    pool_start = time.monotonic()
+    results: list[AgentResult | None] = [None] * len(profiles)
+    completion_times: list[float] = []
+
+    with ThreadPoolExecutor(max_workers=len(profiles)) as pool:
+        futures = {
+            pool.submit(run_agent, prompt=prompt, profile=p, working_dir=working_dir): i
+            for i, p in enumerate(profiles)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            profile = profiles[idx]
+            label = profile.name or f"{profile.cli}/{profile.model}"
+            elapsed = time.monotonic() - pool_start
+            completion_times.append(elapsed)
+            try:
+                results[idx] = future.result()
+                _log(f"  ... {label} done ({elapsed:.0f}s)")
+            except Exception as exc:
+                _log(f"  ... {label} failed ({elapsed:.0f}s): {exc}")
+                results[idx] = AgentResult(
+                    success=False,
+                    output=f"ERROR: {exc}",
+                    session_id=None,
+                    cost_usd=0.0,
+                    exit_code=-1,
+                    raw={},
+                    profile_name=profile.name,
+                )
+
+    wall_clock = time.monotonic() - pool_start
+    sequential_est = sum(completion_times)
+    _log(
+        f"  Review pool complete: {wall_clock:.0f}s wall clock ({sequential_est:.0f}s sequential)"
+    )
+    return results  # type: ignore[return-value]
 
 
 # ── Claude Code CLI ──────────────────────────────────────────────────
@@ -249,10 +293,11 @@ def _process_stream_event(line: str, label: str) -> None:
 
     event_type = event.get("type")
 
+    prefix = f"[{label}] " if label else ""
     if event_type == "tool_use_summary":
         summary = event.get("summary", "")
         if summary:
-            _log_verbose(f"  ↳ {summary}")
+            _log_verbose(f"  ↳ {prefix}{summary}")
     elif event_type == "assistant":
         message = event.get("message", {})
         content = message.get("content", [])
@@ -261,7 +306,7 @@ def _process_stream_event(line: str, label: str) -> None:
                 tool_name = item.get("name", "?")
                 inp = item.get("input", {})
                 preview = _format_tool_input_preview(inp)
-                _log_verbose(f"  ↳ {tool_name}: {preview}")
+                _log_verbose(f"  ↳ {prefix}{tool_name}: {preview}")
 
 
 def _run_claude(
