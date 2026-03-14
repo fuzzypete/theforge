@@ -36,16 +36,6 @@ profiles:
       - Glob
       - Grep
   review_pool:
-    - name: opus
-      cli: claude
-      model: opus
-      budget_usd: 3.00
-      timeout_seconds: 600
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
     - name: codex
       cli: codex
       model: gpt-5.4
@@ -69,8 +59,8 @@ profiles:
         - Grep
 
   synthesis:
-    cli: claude
-    model: opus
+    cli: codex
+    model: gpt-5.4
     budget_usd: 1.00
     timeout_seconds: 300
     allowed_tools:
