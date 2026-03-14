@@ -165,6 +165,7 @@ def build_dev_prompt(
     branch_name: str,
     spec_content: str,
     gate_command: str,
+    gate_skipped: bool = False,
     review_findings: str | None = None,
     human_feedback: str | None = None,
     iteration: int = 1,
@@ -213,6 +214,24 @@ def build_dev_prompt(
 
     pytest_line = task.pytest_target or "tests/"
 
+    if gate_skipped:
+        gate_steps = dedent("""\
+            8. Gate: none (spec override) — the coordinator will skip the gate for
+               this spec. Do NOT run a gate command. Commit all changes and confirm
+               your work is done.
+        """)
+    else:
+        gate_steps = dedent(f"""\
+            8. Run the gate to generate the handoff artifact:
+               ```bash
+               {gate_command}
+               ```
+            9. If the gate generated `handoff.yaml`, fill in these fields:
+               - `scope_completed`: list what you implemented
+               - `deferred_followups`: list anything you couldn't finish
+               - `next_recommended_step`: single next action
+        """)
+
     return dedent(f"""\
         You are implementing **{task.name}** for this project.
 
@@ -255,15 +274,7 @@ def build_dev_prompt(
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
            ```
-        8. Run the gate to generate the handoff artifact:
-           ```bash
-           {gate_command}
-           ```
-        9. If the gate generated `handoff.yaml`, fill in these fields:
-           - `scope_completed`: list what you implemented
-           - `deferred_followups`: list anything you couldn't finish
-           - `next_recommended_step`: single next action
-
+        {gate_steps}
         ## Rules
 
         - Do NOT merge to main.

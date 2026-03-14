@@ -743,6 +743,15 @@ def _create_workspace(
 # ── Validation ───────────────────────────────────────────────────────
 
 
+def _is_gate_skip(gate_override: str | None) -> bool:
+    """Return True if the gate_override value means 'skip the gate entirely'.
+
+    The special value 'none' (case-insensitive) triggers skip mode.
+    None (absent) does NOT trigger skip mode.
+    """
+    return gate_override is not None and gate_override.lower() == "none"
+
+
 def _read_gate_decision(
     config: ForgeConfig, workspace_path: Path
 ) -> tuple[str | None, str | None]:
@@ -797,8 +806,8 @@ def _run_gate(
     # Determine gate command and exit-code mode
     has_override = (
         task is not None
+        and not _is_gate_skip(task.gate_override)
         and task.gate_override is not None
-        and task.gate_override.lower() != "none"
     )
     if has_override:
         # Custom gate command: always exit-code mode (no handoff expected)
@@ -926,9 +935,10 @@ def _coordinator_loop(
                 spec_content=spec_content,
                 gate_command=(
                     task.gate_override
-                    if task.gate_override is not None and task.gate_override.lower() != "none"
+                    if task.gate_override is not None and not _is_gate_skip(task.gate_override)
                     else config.validation.gate_command
                 ),
+                gate_skipped=_is_gate_skip(task.gate_override),
                 review_findings=state.last_review_findings,
                 human_feedback=state.human_feedback,
                 iteration=state.dev_iteration,
@@ -972,7 +982,7 @@ def _coordinator_loop(
             state.phase = Phase.VALIDATE
 
             gate_override = task.gate_override
-            if gate_override is not None and gate_override.lower() == "none":
+            if _is_gate_skip(gate_override):
                 _log_phase(state.phase, "skipped (gate: none)")
                 _log("  Gate override: none — skipping validation")
                 gate_decision: str | None = "PASS"
