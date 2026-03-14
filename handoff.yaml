@@ -1,18 +1,17 @@
-gate_decision: PASS
+gate_decision: FAIL
 scope_completed:
-  - run_agent_pool replaced with ThreadPoolExecutor concurrent execution (R1)
-  - Single-agent pool bypasses thread overhead (R5)
-  - Per-agent exception isolation — failed agents return AgentResult(success=False) (R4)
-  - Pool progress logging with wall-clock vs sequential comparison (R3)
-  - 5 new tests in test_runner.py (R6): test_pool_runs_parallel, test_pool_preserves_order,
-    test_pool_single_agent_no_thread, test_pool_agent_failure_isolated,
-    test_pool_all_agents_receive_same_prompt
-  - 4 existing pool tests updated to be parallel-safe
+  - R1: run_agent_pool uses ThreadPoolExecutor for concurrent execution
+  - R2: _process_stream_event prefixes lines with [label] (e.g. '↳ [opus] Read: file.py')
+  - R3: pool progress logging with accurate wall-clock vs sequential comparison
+  - R4: per-agent exception isolation via try/except around future.result()
+  - R5: single-agent pool bypasses ThreadPoolExecutor entirely
+  - R6: 5 new tests in test_runner.py (parallel, order, single-no-thread, failure-isolated, same-prompt)
+  - P2 fix: per-agent duration tracked via _timed_agent finally block (not elapsed-from-pool-start)
 deferred_followups:
-  - R2 (per-tool-line agent labels) partially deferred. Full R2 requires updating
-    tests/test_coordinator.py::TestVerboseFlagEnablesToolLines assertion from
-    '"↳ Read"' to '"↳ [label] Read"' (one line, out of file scope). Once that
-    test is fixed, re-enable label prefix in _process_stream_event.
+  - BLOCKER for gate PASS: tests/test_coordinator.py line ~1261 is OUT OF SCOPE.
+    TestVerboseFlagEnablesToolLines.test_verbose_prints_tool_lines asserts '"↳ Read"'
+    but _process_stream_event now outputs '↳ [test-label] Read: /foo.py'.
+    Fix: change assertion to '"↳ [test-label] Read"'. One-line change.
 next_recommended_step: >
-  Update tests/test_coordinator.py line ~1261 assertion to '"↳ [test-label] Read"',
-  re-enable label prefix in _process_stream_event, commit, then merge feat/parallel-review to main.
+  Expand file scope to include tests/test_coordinator.py, update line ~1261
+  assertion from '"↳ Read"' to '"↳ [test-label] Read"', then re-run gate for PASS.
