@@ -16,7 +16,6 @@ from pathlib import Path
 
 import yaml
 
-from .sprint import run_sprint
 from .config import ForgeConfig, generate_default_config, load_config
 from .coordinator import (
     CoordinatorResult,
@@ -29,6 +28,7 @@ from .coordinator import set_log_level as coordinator_set_log_level
 from .ideate import generate_ideation_audit, run_ideation
 from .runner import LogLevel
 from .runner import set_log_level as runner_set_log_level
+from .sprint import run_sprint
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 

@@ -1,13 +1,1 @@
 gate_decision: PASS
-scope_completed:
-  - "P1: Added stale_worktree_days: int = 1 to WorkspaceConfig in config.py (scope
-    exception); wired through load_config() from ws_data; removed getattr() fallback
-    in coordinator.py"
-  - "P2: _remove_worktree accepts info_line parameter and logs actual staleness reason;
-    split combined message into separate 'Removed stale worktree' and 'Deleted branch'
-    logs after respective commands"
-  - "P2: _make_stale_config() simplified to use real WorkspaceConfig (no SimpleNamespace);
-    added test_stale_worktree_days_parsed_from_forge_yaml and
-    test_stale_worktree_days_defaults_to_1 exercising real config-loading path"
-deferred_followups: []
-next_recommended_step: "Submit for review — all 269 tests pass, all P1/P2 findings addressed"
