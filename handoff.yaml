@@ -1,8 +1,17 @@
 gate_decision: PASS
 scope_completed:
-  - "P1: gate_err handling is now mode-conditional — exit-code mode escalates immediately,
-    handoff mode retries with feedback (restores prior behavior per acceptance criterion #6)"
-  - "P2: TIMEOUT sentinel check uses output.startswith('TIMEOUT') exclusively,
-    removing the broad 'timed out' substring match"
-deferred_followups: []
-next_recommended_step: "Review and merge feat/gate-hardening into main"
+  - "Fix 1: dirty-worktree check correctly handles empty handoff_file in exit-code mode
+    (if/else instead of endswith('') matching all paths)"
+  - "Fix 2: _run_gate distinguishes TIMEOUT vs ERROR: sentinels from _run_shell and
+    returns structured error messages instead of collapsing to FAIL"
+  - "Fix 3: coordinator gate_err handling is mode-conditional — exit-code mode escalates
+    immediately; handoff mode retries with feedback (preserving acceptance criterion 6)"
+  - "Tests: test_exit_code_dirty_worktree_detected, test_handoff_dirty_worktree_unchanged,
+    test_exit_code_gate_timeout_is_error, test_exit_code_infrastructure_error_is_error,
+    test_exit_code_test_failure_is_fail — all 5 new acceptance-criterion tests pass"
+deferred_followups:
+  - "Pre-existing E402 lint errors in tests/test_ideate.py (imports at line 802 outside
+    module scope) — file is out of scope for this sprint; make lint fails on this.
+    Fix requires moving or restructuring late imports in test_ideate.py."
+next_recommended_step: "Fix pre-existing E402 lint errors in tests/test_ideate.py so
+  make lint passes cleanly, then merge feat/gate-hardening to main."
