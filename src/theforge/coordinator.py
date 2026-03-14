@@ -924,7 +924,11 @@ def _coordinator_loop(
                 workspace_path=workspace_path,
                 branch_name=branch_name,
                 spec_content=spec_content,
-                gate_command=task.gate_override or config.validation.gate_command,
+                gate_command=(
+                    task.gate_override
+                    if task.gate_override is not None and task.gate_override.lower() != "none"
+                    else config.validation.gate_command
+                ),
                 review_findings=state.last_review_findings,
                 human_feedback=state.human_feedback,
                 iteration=state.dev_iteration,

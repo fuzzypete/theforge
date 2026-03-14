@@ -4536,6 +4536,43 @@ class TestGateOverride:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coordinator._run_shell")
+    def test_gate_override_custom_command_fail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Custom gate command returning non-zero exit code produces FAIL and triggers retry."""
+        config = _make_config(tmp_path)
+        task = _make_task_with_gate_override(tmp_path, "make lint")
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "make lint" in cmd:
+                # Simulate lint failure (non-zero exit → FAIL in exit-code mode)
+                return (False, "lint error: style violations found")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented."),
+            _make_agent_result(success=True, output="Fixed lint."),
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # Gate always fails → dev retried → max_dev_iterations exhausted → ESCALATE
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert any(d == "FAIL" for d in result.state.gate_decisions)
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
     def test_gate_override_absent_uses_global(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """No gate_override → uses config.validation.gate_command (backward compat)."""
         config = _make_config(tmp_path)
