@@ -94,6 +94,7 @@ def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:
         slug=resolved_slug,
         file_scope=fm.get("file_scope", []),
         pytest_target=fm.get("pytest_target"),
+        gate_override=fm.get("gate"),
     )
 
 

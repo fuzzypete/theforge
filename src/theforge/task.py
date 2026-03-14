@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
 
+import yaml
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -20,11 +22,54 @@ class TaskSpec:
     slug: str  # workspace slug, e.g. "export-service"
     file_scope: list[str]  # paths the agent may modify
     pytest_target: str | None = None  # specific test target, or None for all
+    gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
 
 
 def load_spec(spec_path: Path) -> str:
     """Read the spec file content. Raises FileNotFoundError if missing."""
     return spec_path.read_text(encoding="utf-8")
+
+
+def parse_spec_frontmatter(spec_path: Path) -> dict:
+    """Extract YAML frontmatter from a spec file.
+
+    Spec files can optionally have YAML frontmatter delimited by ---::
+
+        ---
+        name: Phase 6H: per-user export
+        slug: export-service
+        gate: none
+        file_scope:
+          - src/export/
+        ---
+
+        # Spec content starts here...
+
+    If no frontmatter is present, returns empty dict.
+    """
+    text = spec_path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}
+
+    end = text.find("---", 3)
+    if end == -1:
+        return {}
+
+    frontmatter = text[3:end].strip()
+    try:
+        result = yaml.safe_load(frontmatter) or {}
+    except yaml.YAMLError:
+        return {}
+
+    if not isinstance(result, dict):
+        return {}
+
+    # R3: gate must be a string if present; drop non-string values to prevent
+    # AttributeError when _is_gate_skip() calls .lower() on a non-string.
+    if "gate" in result and not isinstance(result["gate"], str):
+        result = {k: v for k, v in result.items() if k != "gate"}
+
+    return result
 
 
 # ── Preflight prompt ─────────────────────────────────────────────────
@@ -126,6 +171,7 @@ def build_dev_prompt(
     branch_name: str,
     spec_content: str,
     gate_command: str,
+    gate_skipped: bool = False,
     review_findings: str | None = None,
     human_feedback: str | None = None,
     iteration: int = 1,
@@ -174,6 +220,24 @@ def build_dev_prompt(
 
     pytest_line = task.pytest_target or "tests/"
 
+    if gate_skipped:
+        gate_steps = dedent("""\
+            8. Gate: none (spec override) — the coordinator will skip the gate for
+               this spec. Do NOT run a gate command. Commit all changes and confirm
+               your work is done.
+        """)
+    else:
+        gate_steps = dedent(f"""\
+            8. Run the gate to generate the handoff artifact:
+               ```bash
+               {gate_command}
+               ```
+            9. If the gate generated `handoff.yaml`, fill in these fields:
+               - `scope_completed`: list what you implemented
+               - `deferred_followups`: list anything you couldn't finish
+               - `next_recommended_step`: single next action
+        """)
+
     return dedent(f"""\
         You are implementing **{task.name}** for this project.
 
@@ -216,15 +280,7 @@ def build_dev_prompt(
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
            ```
-        8. Run the gate to generate the handoff artifact:
-           ```bash
-           {gate_command}
-           ```
-        9. If the gate generated `handoff.yaml`, fill in these fields:
-           - `scope_completed`: list what you implemented
-           - `deferred_followups`: list anything you couldn't finish
-           - `next_recommended_step`: single next action
-
+        {gate_steps}
         ## Rules
 
         - Do NOT merge to main.
