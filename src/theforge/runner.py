@@ -425,7 +425,8 @@ def _run_claude(
         )
 
     elapsed = time.monotonic() - start
-    _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
+    if not quiet:
+        _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
     # Find the result line (type=result) in the JSONL stream
     result_json: dict[str, Any] = {}
@@ -539,7 +540,8 @@ def _run_codex(
 
         proc = outcome.proc
         assert proc is not None
-        _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
+        if not quiet:
+            _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
         # Read output file; fall back to stdout then stderr
         output_text = ""
@@ -634,7 +636,8 @@ def _run_gemini(
 
     proc = outcome.proc
     assert proc is not None
-    _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
+    if not quiet:
+        _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
     # Parse JSON output (-o json requests structured response)
     result_json: dict[str, Any] = {}

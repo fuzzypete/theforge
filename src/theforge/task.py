@@ -243,8 +243,6 @@ def build_dev_prompt(
             {preflight_output}
         """)
 
-    pytest_line = task.pytest_target or "tests/"
-
     if gate_skipped:
         gate_steps = dedent("""\
             8. Gate: none (spec override) — the coordinator will skip the gate for
