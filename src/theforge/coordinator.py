@@ -647,7 +647,7 @@ def _run_gate(
         # Distinguish infrastructure failures (timeout, shell error) from code failures.
         # _run_shell prefixes these with "TIMEOUT" or "ERROR:" — surface them as errors
         # so the coordinator escalates immediately rather than burning dev retries.
-        if "TIMEOUT" in output or "timed out" in output.lower():
+        if output.startswith("TIMEOUT"):
             return (
                 None,
                 f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
@@ -790,18 +790,36 @@ def _coordinator_loop(
             gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
 
             if gate_err:
-                # Infrastructure errors (timeout, shell error) escalate immediately —
-                # they are not code-quality failures that the dev agent can fix.
-                _log(f"✗ ESCALATE   {gate_err}")
-                state.phase = Phase.ESCALATE
-                state.error = gate_err
-                _escalate_notify(task, state, notify)
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
+                use_exit_code = not config.validation.handoff_file
+                if use_exit_code:
+                    # Infrastructure errors in exit-code mode escalate immediately —
+                    # they are not code-quality failures the dev agent can fix.
+                    _log(f"✗ ESCALATE   {gate_err}")
+                    state.phase = Phase.ESCALATE
+                    state.error = gate_err
+                    _escalate_notify(task, state, notify)
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+                # Handoff mode: retry dev with feedback (original behavior)
+                _log_verbose(f"Gate error: {gate_err}")
+                if state.dev_iteration >= config.retry.max_dev_iterations:
+                    state.phase = Phase.ESCALATE
+                    state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
+                    _log(f"✗ ESCALATE   {state.error}")
+                    _escalate_notify(task, state, notify)
+                    return CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
+                state.human_feedback = f"Gate validation failed: {gate_err}"
+                _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
+                continue
 
             assert gate_decision is not None
             state.gate_decisions.append(gate_decision)
