@@ -5560,3 +5560,44 @@ class TestDevModelEscalationIntegration:
 
         # No escalation happened
         assert result.state.dev_escalated is False
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_escalation_skipped_when_budget_exhausted(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Budget exhausted before persistent P1 detected → no escalation, no extra dev run."""
+        # Use a very tight budget so the first dev call exhausts it
+        config = _make_smart_config(tmp_path, max_review_cycles=3)
+        # Override dev budget to be tiny so it's exceeded after first call
+        from dataclasses import replace as _replace
+
+        tight_dev = _replace(config.dev_profile, budget_usd=0.01)
+        config = _replace(config, dev_profile=tight_dev)
+
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        # Dev result costs more than budget (0.50 > 0.01)
+        expensive_dev = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+        mock_agent.side_effect = _preflight_then(expensive_dev)
+
+        # Pool always returns persistent P1
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=_PERSISTENT_P1_REVIEW, profile_name="claude-opus"
+            )
+        ]
+
+        result = run_task(config, task)
+
+        # Dev budget exhausted → ESCALATE immediately after first dev run
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "budget" in result.message.lower()
+        # Escalation flag never set (budget guard fired first)
+        assert result.state.dev_escalated is False

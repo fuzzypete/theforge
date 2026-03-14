@@ -1648,8 +1648,12 @@ def _coordinator_loop(
             f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
         )
 
-        # Escalate dev model on persistent P1 (max once per run)
-        if _is_persistent_p1 and not state.dev_escalated:
+        # Escalate dev model on persistent P1 (max once per run, only if budget remains)
+        if (
+            _is_persistent_p1
+            and not state.dev_escalated
+            and (state.total_dev_cost < config.dev_profile.budget_usd)
+        ):
             _curr_key = _find_registry_key_for_profile(config.dev_profile)
             if _curr_key is not None:
                 _next_key = _escalate_dev_model(_curr_key, config.smart_config_models)
