@@ -1,0 +1,24 @@
+name: "TheForge polish sprint 3"
+budget_usd: 80.00
+
+# Completes the specs that false-ALREADY_DONE'd in polish-2 (now fixed
+# by stale-worktree on main), plus gate-hardening and reasoning-effort
+# which have been waiting since the hardening sprint.
+#
+# Flags: --auto-merge --no-notify
+#   auto-merge: each spec merges on APPROVE so sequential deps are live
+#   no-notify:  suppress osascript spam until remote-hitl ships ntfy
+#
+# Order matters:
+#   1. audit-improvements   — timing/cost detail in audit logs
+#   2. human-in-the-loop    — stdin HUMAN_REVIEW; prereq for remote-hitl
+#   3. gate-hardening       — 5 missing tests from hardening sprint
+#   4. reasoning-effort     — 3 missing config validation tests
+#   5. remote-hitl          — ntfy async decisions; depends on hitl above
+
+specs:
+  - specs/audit-improvements.md
+  - specs/human-in-the-loop.md
+  - specs/gate-hardening.md
+  - specs/reasoning-effort.md
+  - specs/remote-hitl.md

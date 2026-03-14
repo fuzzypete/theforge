@@ -254,7 +254,9 @@ Used in: log lines, campaign summary, notification bodies.
 
 ## Dependencies
 
-- `specs/notifications.md` must be implemented first (ntfy backend,
-  `NotificationConfig`, `--notify` flag)
 - `specs/human-in-the-loop.md` must be implemented first (`HUMAN_REVIEW`
   phase, `run_task(interactive=)` signature)
+- `specs/notifications.md` is already implemented (`--no-notify` flag,
+  `_notify()` osascript helper). This spec extends `NotificationConfig`
+  with `NtfyConfig` and `human_review_timeout_seconds` — do not depend
+  on notifications.md providing these; implement them here.

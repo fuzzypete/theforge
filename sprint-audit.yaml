@@ -1,0 +1,89 @@
+sprint:
+  name: TheForge polish sprint 3
+  budget_usd: 60.0
+  total_cost_usd: 11.8266
+  budget_note: Costs reflect Claude invocations only; Codex/Gemini report $0.00
+  started_at: '2026-03-14T00:33:03Z'
+  finished_at: '2026-03-14T01:14:03Z'
+  duration_seconds: 2460.1
+  specs_total: 5
+  specs_succeeded: 1
+  specs_failed: 1
+  specs_skipped: 3
+  stopped_reason: null
+specs:
+- path: specs/audit-improvements.md
+  outcome: ALREADY_DONE
+  cost_usd: 0.3249
+  preflight: ALREADY_DONE
+  merge: false
+  reviews: []
+- path: specs/human-in-the-loop.md
+  outcome: ALREADY_DONE
+  cost_usd: 0.3188
+  preflight: ALREADY_DONE
+  merge: false
+  reviews: []
+- path: specs/gate-hardening.md
+  outcome: DONE
+  cost_usd: 4.1426
+  preflight: PROCEED
+  merge: false
+  reviews:
+  - cycle: 1
+    pool:
+    - opus
+    - codex
+    - gemini
+    successful:
+    - opus
+    - codex
+    - gemini
+    failed: []
+    synthesized: true
+    parse_retries: 0
+    verdict: REQUEST_CHANGES
+    p1_count: 1
+    p2_count: 2
+  - cycle: 2
+    pool:
+    - opus
+    - codex
+    - gemini
+    successful:
+    - opus
+    - codex
+    - gemini
+    failed: []
+    synthesized: true
+    parse_retries: 0
+    verdict: APPROVE
+    p1_count: 0
+    p2_count: 2
+- path: specs/reasoning-effort.md
+  outcome: ALREADY_DONE
+  cost_usd: 0.1092
+  preflight: ALREADY_DONE
+  merge: false
+  reviews: []
+- path: specs/remote-hitl.md
+  outcome: ESCALATE
+  cost_usd: 6.9311
+  preflight: PROCEED
+  merge: false
+  reviews:
+  - cycle: 1
+    pool:
+    - opus
+    - codex
+    - gemini
+    successful:
+    - opus
+    - codex
+    - gemini
+    failed: []
+    synthesized: true
+    parse_retries: 0
+    verdict: REQUEST_CHANGES
+    p1_count: 4
+    p2_count: 3
