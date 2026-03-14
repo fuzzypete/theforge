@@ -1,15 +1,17 @@
-gate_decision: PASS
+gate_decision: FAIL
 scope_completed:
-  - P1: Synthesis gate fixed — replaced len(successful)==1 with degradation check
-    (len(failed_results)>0 and pool_size>1), allowing synthesis to run for 1-reviewer
-    pools that have synthesis_profile materialized by large-complexity adaptation
-  - Fix applied in both _coordinator_loop and run_review_only
-  - New test test_large_2_model_synthesis_runs_in_coordinator verifies synthesis
-    actually invokes when large complexity uses 1-reviewer pool with synthesis_profile
+  - run_agent_pool replaced with ThreadPoolExecutor concurrent execution (R1)
+  - _process_stream_event now prefixes verbose lines with [label] (R2)
+  - pool progress logging with wall-clock vs sequential comparison (R3)
+  - per-agent exception isolation — failed agents return AgentResult(success=False) (R4)
+  - single-agent pool bypasses thread overhead (R5)
+  - 5 new tests added to test_runner.py (R6)
+  - 4 existing pool tests updated to be parallel-safe
 deferred_followups:
-  - P2: Synthesis budget for large-complexity uses 2% of dev budget rather than
-    top-level budget_usd (not stored on ForgeConfig); minor spec deviation
-  - P2: _find_registry_info_for_profile linear scan (negligible at registry size 4)
-  - P2: _auto_assign_models() lacks 'overrides' parameter from spec R4 interface
-    (handled in load_config instead; no functional impact)
-next_recommended_step: Submit for review
+  - tests/test_coordinator.py is OUT OF SCOPE but has one failing assertion:
+    TestVerboseFlagEnablesToolLines.test_verbose_prints_tool_lines (line ~1261)
+    asserts '"↳ Read" in captured.err' but now output is '↳ [test-label] Read: /foo.py'
+    Fix: change assertion to '"↳ [test-label] Read" in captured.err' (one-line change)
+next_recommended_step: >
+  Update tests/test_coordinator.py line ~1261 to assert
+  '"↳ [test-label] Read" in captured.err' then re-run gate for PASS
