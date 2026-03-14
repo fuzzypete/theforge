@@ -292,8 +292,13 @@ def _format_tool_input_preview(inp: dict[str, Any]) -> str:
     return str(inp)[:120]
 
 
-def _process_stream_event(line: str, label: str) -> None:
-    """Process a single JSONL stream event and print tool activity to stderr."""
+def _process_stream_event(line: str, label: str = "", *, label_prefix: str = "") -> None:
+    """Process a single JSONL stream event and print tool activity to stderr.
+
+    label: accepted for API compatibility but not used for formatting.
+    label_prefix: if non-empty, prepended to tool activity lines
+        (e.g. "[reviewer-a] "). Callers set this only in parallel pool mode.
+    """
     if not line:
         return
     try:
@@ -303,7 +308,6 @@ def _process_stream_event(line: str, label: str) -> None:
 
     event_type = event.get("type")
 
-    label_prefix = f"[{label}] " if label else ""
     if event_type == "tool_use_summary":
         summary = event.get("summary", "")
         if summary:
@@ -385,9 +389,10 @@ def _run_claude(
         watchdog = threading.Thread(target=_watchdog, daemon=True)
         watchdog.start()
 
+        lp = f"[{label}] " if quiet else ""
         for line in proc.stdout:
             lines.append(line)
-            _process_stream_event(line.strip(), label)
+            _process_stream_event(line.strip(), label_prefix=lp)
             if time.monotonic() > deadline:
                 proc.kill()
                 timed_out = True

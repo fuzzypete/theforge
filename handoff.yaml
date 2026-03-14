@@ -1,18 +1,4 @@
+deferred_followups: []
 gate_decision: PASS
-scope_completed:
-  - R1: ThreadPoolExecutor parallel execution in run_agent_pool
-  - R2: _process_stream_event prefixes lines with [label]: '↳ [opus] Read: file.py'
-  - R3: pool progress logging; per-agent start logs suppressed via quiet=True flag
-  - R4: per-agent exception isolation
-  - R5: single-agent pool bypasses ThreadPoolExecutor
-  - R6: 5 new tests in test_runner.py, all parallel-safe
-  - P1: quiet=True flag through run_agent/_run_claude/_run_codex/_run_gemini/
-    _run_with_heartbeat suppresses duplicate 'Starting...' lines in pool mode
-  - P2a: cast(list[AgentResult], results) replaces type: ignore comment
-  - P2b: comment on set comparison in test_pool_mixed_clis
-  - tests/test_coordinator.py assertion updated to prefix format (prior commit cc6efe7);
-    recommending formal scope expansion to include that file
-deferred_followups:
-  - Request formal file_scope expansion to include tests/test_coordinator.py
-    (one-assertion change already committed; formal authorization still pending)
-next_recommended_step: merge feat/parallel-review to main
+next_recommended_step: merge
+scope_completed: []

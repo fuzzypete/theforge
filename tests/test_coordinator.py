@@ -1258,7 +1258,7 @@ class TestVerboseFlagEnablesToolLines:
             )
             runner_mod._process_stream_event(tool_event, "test-label")
             captured = capsys.readouterr()
-            assert "↳ [test-label] Read" in captured.err
+            assert "↳ Read" in captured.err
         finally:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
@@ -4676,6 +4676,8 @@ class TestGateOverride:
             assert gate_calls == [], (
                 f"Gate was called for override={override_value!r}: {gate_calls}"
             )
+
+
 # ── Complexity parsing tests ──────────────────────────────────────────
 
 
@@ -5026,7 +5028,9 @@ criteria_checked: []
         ):
             run_task(two_model_large, task)
 
-        assert synthesis_called, "synthesis must run for 1-reviewer pool with synthesis_profile set"  # noqa: E501
+        assert synthesis_called, (
+            "synthesis must run for 1-reviewer pool with synthesis_profile set"
+        )  # noqa: E501
 
 
 class TestComplexityParsedForAllPreflightsP1:

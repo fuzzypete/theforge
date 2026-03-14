@@ -254,7 +254,43 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ [dev] Read src/theforge/runner.py (240 lines)" in captured.err
+        assert "↳ Read src/theforge/runner.py (240 lines)" in captured.err
+
+    def test_activity_label_only_in_pool_mode(
+        self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """Label prefix [name] appears in parallel pool mode (quiet=True) only."""
+        summary_line = (
+            json.dumps(
+                {
+                    "type": "tool_use_summary",
+                    "summary": "Read file.py (10 lines)",
+                }
+            )
+            + "\n"
+        )
+        runner_mod.set_log_level(LogLevel.VERBOSE)
+        try:
+            # Single-agent mode (quiet=False, default): no label prefix
+            mock_proc = _make_stream_mock(
+                [summary_line, _result_line(result="done", total_cost_usd=0.01)]
+            )
+            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            captured = capsys.readouterr()
+            assert "↳ Read file.py (10 lines)" in captured.err
+            assert "[dev]" not in captured.err
+
+            # Pool mode (quiet=True): label prefix present
+            mock_proc2 = _make_stream_mock(
+                [summary_line, _result_line(result="done", total_cost_usd=0.01)]
+            )
+            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc2):
+                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path, quiet=True)
+            captured2 = capsys.readouterr()
+            assert "↳ [dev] Read file.py (10 lines)" in captured2.err
+        finally:
+            runner_mod.set_log_level(LogLevel.PROGRESS)
 
     def test_activity_assistant_fallback(
         self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -288,7 +324,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ [dev] Bash: pytest tests/ -q" in captured.err
+        assert "↳ Bash: pytest tests/ -q" in captured.err
 
 
 class TestRunAgentCostCoercion:
@@ -761,6 +797,57 @@ class TestRunAgentPool:
         assert results[1].exit_code == -1
         assert results[2].success is True
         assert results[2].output == "output-also-good"
+
+    def test_pool_progress_logging(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        """Pool emits start banner, per-agent completion, and final summary to stderr."""
+        profiles = [
+            ModelProfile(
+                name="reviewer-a",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="reviewer-b",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+
+        def mock_run_agent(**kwargs) -> AgentResult:
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=True,
+                output="done",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+            run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
+
+        captured = capsys.readouterr()
+        # R3: pool start banner lists agent names
+        assert "Starting review pool:" in captured.err
+        assert "reviewer-a" in captured.err
+        assert "reviewer-b" in captured.err
+        assert "(parallel)" in captured.err
+        # R3: per-agent completion lines with duration
+        assert "reviewer-a" in captured.err
+        assert "reviewer-b" in captured.err
+        assert "done" in captured.err
+        # R3: final summary with wall clock and sequential estimate
+        assert "Review pool complete:" in captured.err
+        assert "wall clock" in captured.err
+        assert "sequential" in captured.err
 
     def test_pool_all_agents_receive_same_prompt(self, tmp_path: Path) -> None:
         """All agents in the pool receive exactly the same prompt string."""
