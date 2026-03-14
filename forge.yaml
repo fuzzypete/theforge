@@ -66,6 +66,11 @@ profiles:
     allowed_tools:
       - Read
 
+smart_config_models:
+  - sonnet
+  - codex
+  - opus
+
 retry:
   max_dev_iterations: 5
   max_review_cycles: 5

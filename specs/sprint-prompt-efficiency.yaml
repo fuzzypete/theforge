@@ -1,0 +1,7 @@
+name: Prompt Efficiency Sprint
+description: Targeted fix prompts, reviewer role specialization, and pre-validate command
+budget_usd: 30
+specs:
+  - specs/pre-validate-command.md
+  - specs/targeted-fix-prompt.md
+  - specs/reviewer-role-specialization.md
