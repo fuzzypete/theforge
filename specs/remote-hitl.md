@@ -5,6 +5,7 @@ file_scope:
   - src/theforge/coordinator.py
   - src/theforge/config.py
   - src/theforge/cli.py
+  - src/theforge/sprint.py
   - tests/test_coordinator.py
   - tests/test_config.py
 pytest_target: tests/
@@ -110,7 +111,9 @@ human findings text, feeding it back to the dev agent. This consumes one
 review cycle (same as the existing reject path).
 
 If cycles are exhausted when `reject` arrives, treat it as `extend` +
-reject — automatically grant one more cycle.
+reject: reset `state.dev_iteration = 0` and `state.review_cycle = 0`
+(identical to `extend`), then feed the rejection findings to the dev
+agent. This grants a full fresh budget of `max_review_cycles`.
 
 ### R4: Timeout
 
