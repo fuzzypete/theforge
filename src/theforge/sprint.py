@@ -148,7 +148,7 @@ def run_sprint(
     *,
     auto_merge: bool = False,
     interactive: bool = False,
-    notify: bool = True,
+    notify: bool = False,
 ) -> SprintResult:
     """Run all specs in a sprint manifest sequentially.
 
