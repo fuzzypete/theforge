@@ -1,4 +1,11 @@
-deferred_followups: []
 gate_decision: PASS
-next_recommended_step: merge
-scope_completed: []
+scope_completed:
+  - "Added dev_capable: bool = True to ModelInfo in config.py; set False for google/gemini-2.5-pro"
+  - "Added _has_persistent_p1() helper detecting same P1 across consecutive cycles via file + description similarity"
+  - "Added _escalate_dev_model() selecting next higher dev-capable model from smart config pool"
+  - "Added _find_registry_key_for_profile() for profile-to-registry-key lookup"
+  - "Added dev_escalated: bool field to CoordinatorState (max-1 escalation enforcement)"
+  - "Integrated escalation logic in _coordinator_loop after REQUEST_CHANGES verdict"
+  - "Added 13 new tests (5 unit for _has_persistent_p1, 5 unit for _escalate_dev_model, 3 integration)"
+deferred_followups: []
+next_recommended_step: "Submit for review — all 374 tests pass, lint clean on modified files"
