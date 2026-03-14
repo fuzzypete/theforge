@@ -3,5 +3,6 @@ budget_usd: 100.00
 specs:
   - specs/parallel-review.md
   - specs/auto-push.md
+  - specs/auto-conflict-resolution.md
   - specs/sprint-resume.md
   - specs/dev-model-escalation.md
