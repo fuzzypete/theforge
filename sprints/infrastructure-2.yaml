@@ -2,3 +2,4 @@ name: "TheForge infrastructure sprint 2"
 budget_usd: 100.00
 specs:
   - specs/sprint-resume.md
+  - specs/dev-model-escalation.md
