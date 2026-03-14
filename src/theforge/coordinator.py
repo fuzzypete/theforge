@@ -645,11 +645,17 @@ def _run_gate(
         if ok:
             return "PASS", None
         # Distinguish infrastructure failures (timeout, shell error) from code failures.
-        # _run_shell prefixes these with "TIMEOUT" or "ERROR" — surface them as errors
+        # _run_shell prefixes these with "TIMEOUT" or "ERROR:" — surface them as errors
         # so the coordinator escalates immediately rather than burning dev retries.
-        if output.startswith("TIMEOUT") or output.startswith("ERROR"):
-            return None, f"Gate infrastructure failure: {output[:300]}"
-        _log_verbose(f"Gate command failed: {output[:200]}")
+        if "TIMEOUT" in output or "timed out" in output.lower():
+            return (
+                None,
+                f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
+                " Consider increasing gate_timeout.",
+            )
+        if output.startswith("ERROR:"):
+            return None, f"Gate infrastructure error: {output[:300]}"
+        _log(f"Gate command failed (exit non-zero): {output[:200]}")
         return "FAIL", None
 
     # Handoff-based mode: read decision from handoff file
@@ -784,22 +790,18 @@ def _coordinator_loop(
             gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
 
             if gate_err:
-                _log_verbose(f"Gate error: {gate_err}")
-                if state.dev_iteration >= config.retry.max_dev_iterations:
-                    state.phase = Phase.ESCALATE
-                    state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
-                    _log(f"✗ ESCALATE   {state.error}")
-                    _escalate_notify(task, state, notify)
-                    return CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    )
-                # Retry dev with feedback about the gate failure
-                state.human_feedback = f"Gate validation failed: {gate_err}"
-                _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
-                continue
+                # Infrastructure errors (timeout, shell error) escalate immediately —
+                # they are not code-quality failures that the dev agent can fix.
+                _log(f"✗ ESCALATE   {gate_err}")
+                state.phase = Phase.ESCALATE
+                state.error = gate_err
+                _escalate_notify(task, state, notify)
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
 
             assert gate_decision is not None
             state.gate_decisions.append(gate_decision)
@@ -814,11 +816,14 @@ def _coordinator_loop(
                 if dirty_ok and dirty_out.strip():
                     # Filter out handoff.yaml and other gate artifacts
                     handoff_file = config.validation.handoff_file
-                    dirty_lines = [
-                        line
-                        for line in dirty_out.strip().splitlines()
-                        if not (handoff_file and line.strip().endswith(handoff_file))
-                    ]
+                    if handoff_file:
+                        dirty_lines = [
+                            line
+                            for line in dirty_out.strip().splitlines()
+                            if line and not line.endswith(handoff_file)
+                        ]
+                    else:
+                        dirty_lines = [line for line in dirty_out.strip().splitlines() if line]
                     if dirty_lines:
                         dirty_files = ", ".join(
                             line.strip().split(maxsplit=1)[-1] for line in dirty_lines
