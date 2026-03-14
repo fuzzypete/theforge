@@ -1,11 +1,15 @@
 gate_decision: PASS
 scope_completed:
-  - P1: Reviewer budget clamping — max(remaining, 0)/pool_size prevents exceeding budget_usd
-  - P1: review_pool override in smart-config mode — profiles.review_pool entries matched by name
-  - P1: large complexity materializes synthesis for 2-model pools (was skipped, now always created)
-  - P1: complexity parsed on all successful preflights; adaptive swapping still gated on smart_config_models
-  - Tests for all four P1 fixes (11 new test methods across test_config.py and test_coordinator.py)
+  - P1: Synthesis gate fixed — replaced len(successful)==1 with degradation check
+    (len(failed_results)>0 and pool_size>1), allowing synthesis to run for 1-reviewer
+    pools that have synthesis_profile materialized by large-complexity adaptation
+  - Fix applied in both _coordinator_loop and run_review_only
+  - New test test_large_2_model_synthesis_runs_in_coordinator verifies synthesis
+    actually invokes when large complexity uses 1-reviewer pool with synthesis_profile
 deferred_followups:
-  - P2: large complexity preserves original dev budget (may be inadequate for stronger model)
-  - P2: _find_registry_info_for_profile linear scan (minor perf, registry is tiny)
+  - P2: Synthesis budget for large-complexity uses 2% of dev budget rather than
+    top-level budget_usd (not stored on ForgeConfig); minor spec deviation
+  - P2: _find_registry_info_for_profile linear scan (negligible at registry size 4)
+  - P2: _auto_assign_models() lacks 'overrides' parameter from spec R4 interface
+    (handled in load_config instead; no functional impact)
 next_recommended_step: Submit for review
