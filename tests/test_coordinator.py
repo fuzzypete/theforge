@@ -1691,6 +1691,40 @@ class TestCoordinatorDirtyWorktree:
         assert result.success is True
         assert result.phase == Phase.DONE
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_handoff_dirty_worktree_unchanged(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Regression guard: handoff mode still filters handoff.yaml from dirty check."""
+        config = _make_config(tmp_path)  # handoff_file="handoff.yaml"
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                # handoff.yaml is the only dirty file — should be filtered out
+                return (True, "?? handoff.yaml")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # handoff.yaml filtered out → worktree clean → proceeds to DONE
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
 
 # ── Human Review Tests ────────────────────────────────────────────────
 
@@ -2531,6 +2565,120 @@ class TestExitCodeGateMode:
         assert result.success is False
         assert result.phase != Phase.DONE
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_dirty_worktree_detected(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Exit-code mode: dirty files detected (empty handoff_file must not cause false-clean)."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "pytest" in cmd:
+                return (True, "passed")
+            if "git status --porcelain" in cmd:
+                return (True, " M src/theforge/coordinator.py\n M tests/test_foo.py")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase != Phase.DONE
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_gate_timeout_is_error(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Timeout in exit-code mode returns error message (not FAIL), escalates immediately."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "pytest" in cmd:
+                return (False, "TIMEOUT after 120s: pytest tests/ -q")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        # Message must mention timeout and hint to increase gate_timeout
+        msg = result.message.lower()
+        assert "timed out" in msg or "gate_timeout" in msg
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_infrastructure_error_is_error(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """ERROR: prefix in exit-code mode returns error (not FAIL), escalates immediately."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "pytest" in cmd:
+                return (False, "ERROR: [Errno 2] No such file or directory: 'pytest'")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        # Escalated as infrastructure error, not retried as FAIL
+        assert result.state.dev_iteration == 1  # no retries consumed
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_exit_code_test_failure_is_fail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Normal non-zero exit (tests failing) returns FAIL and is retried."""
+        config = _make_exit_code_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # First gate call fails with normal test output; second passes
+        mock_shell.side_effect = _shell_exit_code(pass_on_call=2)
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.gate_decisions == ["FAIL", "PASS"]
+        assert result.state.dev_iteration == 2  # was retried
+
 
 class TestPytestTargetSubstitution:
     """Test that {pytest_target} in gate_command is replaced from TaskSpec."""
@@ -3347,8 +3495,8 @@ class TestCampaignAuditWrites:
     @patch("theforge.sprint.run_task")
     def test_campaign_already_done_no_worktree_audit(self, mock_run_task, tmp_path):
         """ALREADY_DONE specs do not write a worktree audit (no worktree was created)."""
-        from theforge.sprint import run_sprint
         from theforge.coordinator import CoordinatorResult, CoordinatorState
+        from theforge.sprint import run_sprint
 
         config = _make_config(tmp_path)
 

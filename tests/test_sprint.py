@@ -8,10 +8,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from theforge.sprint import (
-    load_sprint_manifest,
-    run_sprint,
-)
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -28,6 +24,10 @@ from theforge.coordinator import (
     _notify,
     _osa_quote,
     run_task,
+)
+from theforge.sprint import (
+    load_sprint_manifest,
+    run_sprint,
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────
