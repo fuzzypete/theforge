@@ -4425,3 +4425,200 @@ class TestNtfyPollReply:
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("approve", None)
+
+
+# ── Gate Override Tests ───────────────────────────────────────────────
+
+
+def _make_task_with_gate_override(tmp_path: Path, gate_override: str | None) -> TaskSpec:
+    """Create a test task with a gate_override set."""
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
+    return TaskSpec(
+        name="Test Task",
+        spec_path=spec,
+        slug="test-task",
+        file_scope=["src/"],
+        gate_override=gate_override,
+    )
+
+
+class TestGateOverride:
+    """Tests for spec-level gate override feature."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_override_none_skips_validation(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """gate_override='none' skips validation; no gate subprocess is run."""
+        config = _make_config(tmp_path)
+        task = _make_task_with_gate_override(tmp_path, "none")
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        gate_calls: list[str] = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            # Track any gate-related shell calls
+            if "gate" in cmd:
+                gate_calls.append(cmd)
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # No gate command should have been run
+        assert gate_calls == [], f"Gate was called unexpectedly: {gate_calls}"
+        # PASS should have been recorded
+        assert "PASS" in result.state.gate_decisions
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_override_custom_command(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """gate_override='make lint' runs that command instead of global gate."""
+        config = _make_config(tmp_path)
+        task = _make_task_with_gate_override(tmp_path, "make lint")
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        called_cmds: list[str] = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            called_cmds.append(cmd)
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            # Custom gate succeeds with exit 0 (exit-code mode)
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # "make lint" should have been called
+        assert any("make lint" in c for c in called_cmds), (
+            f"make lint not called; cmds={called_cmds}"
+        )
+        # Global gate_command ("make gate") should NOT have been called
+        assert not any("make gate" in c for c in called_cmds), (
+            f"Global gate was called unexpectedly: {called_cmds}"
+        )
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_override_absent_uses_global(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """No gate_override → uses config.validation.gate_command (backward compat)."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)  # no gate_override (None by default)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        assert task.gate_override is None
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
+    def test_gate_override_parsed_from_frontmatter(self, tmp_path):
+        """parse_spec_frontmatter reads 'gate' key and it maps to gate_override on TaskSpec."""
+        from theforge.task import parse_spec_frontmatter
+
+        spec = tmp_path / "spec.md"
+        spec.write_text(
+            "---\nname: My Spec\nslug: my-spec\ngate: none\n---\n\n# Body",
+            encoding="utf-8",
+        )
+
+        fm = parse_spec_frontmatter(spec)
+        assert fm.get("gate") == "none"
+
+        # Build TaskSpec with the parsed gate value
+        task = TaskSpec(
+            name=fm.get("name", "My Spec"),
+            spec_path=spec,
+            slug=fm.get("slug", "my-spec"),
+            file_scope=fm.get("file_scope", []),
+            gate_override=fm.get("gate"),
+        )
+        assert task.gate_override == "none"
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_override_none_case_insensitive(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """gate_override='None' and 'NONE' both trigger skip mode."""
+        for override_value in ("None", "NONE"):
+            config = _make_config(tmp_path)
+            task = _make_task_with_gate_override(tmp_path, override_value)
+            workspace = tmp_path / "test-task"
+            workspace.mkdir(exist_ok=True)
+
+            gate_calls: list[str] = []
+
+            def shell_side_effect(cmd, cwd, **kwargs):
+                if "gate" in cmd:
+                    gate_calls.append(cmd)
+                    _write_handoff(Path(cwd), "PASS")
+                    return (True, "OK")
+                if "git status --porcelain" in cmd:
+                    return (True, "")
+                stale_resp = _handle_stale_check_cmd(cmd)
+                if stale_resp is not None:
+                    return stale_resp
+                return (True, "OK")
+
+            mock_shell.side_effect = shell_side_effect
+            mock_agent.side_effect = _preflight_then(
+                _make_agent_result(success=True, output="Implemented.")
+            )
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+
+            result = run_task(config, task)
+
+            assert result.success is True, f"Failed for gate_override={override_value!r}"
+            assert gate_calls == [], (
+                f"Gate was called for override={override_value!r}: {gate_calls}"
+            )

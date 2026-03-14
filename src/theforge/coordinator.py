@@ -780,6 +780,9 @@ def _run_gate(
        gate PASS/FAIL is determined purely by the command's exit code.
 
     The gate_command supports {pytest_target} substitution from the TaskSpec.
+
+    When task.gate_override is a non-"none" string, that command is used instead
+    of config.validation.gate_command, and exit-code mode is always used.
     """
     # Delete stale handoff to prevent a prior PASS from leaking through on gate failure
     # (only relevant in handoff-based mode)
@@ -791,12 +794,24 @@ def _run_gate(
             except OSError as e:
                 return None, f"Cannot remove stale handoff file: {e}"
 
-    # Substitute task-specific placeholders in the gate command
-    gate_cmd = config.validation.gate_command
-    if task is not None:
-        pytest_target = task.pytest_target or "tests/"
-        gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
-        gate_cmd = gate_cmd.replace("{slug}", task.slug)
+    # Determine gate command and exit-code mode
+    has_override = (
+        task is not None
+        and task.gate_override is not None
+        and task.gate_override.lower() != "none"
+    )
+    if has_override:
+        # Custom gate command: always exit-code mode (no handoff expected)
+        gate_cmd = task.gate_override  # type: ignore[union-attr]
+        use_exit_code = True
+    else:
+        # Global gate command with task-specific substitutions
+        gate_cmd = config.validation.gate_command
+        if task is not None:
+            pytest_target = task.pytest_target or "tests/"
+            gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
+            gate_cmd = gate_cmd.replace("{slug}", task.slug)
+        use_exit_code = not config.validation.handoff_file
 
     _log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
@@ -806,8 +821,7 @@ def _run_gate(
         timeout=gate_timeout,
     )
 
-    # Exit-code mode: if no handoff_file configured, use command exit code directly
-    use_exit_code = not config.validation.handoff_file
+    # Exit-code mode: use command exit code directly
     if use_exit_code:
         if ok:
             return "PASS", None
@@ -910,7 +924,7 @@ def _coordinator_loop(
                 workspace_path=workspace_path,
                 branch_name=branch_name,
                 spec_content=spec_content,
-                gate_command=config.validation.gate_command,
+                gate_command=task.gate_override or config.validation.gate_command,
                 review_findings=state.last_review_findings,
                 human_feedback=state.human_feedback,
                 iteration=state.dev_iteration,
@@ -952,9 +966,20 @@ def _coordinator_loop(
 
             # ── VALIDATE ──────────────────────────────────────────
             state.phase = Phase.VALIDATE
-            _log_phase(state.phase, "running gate...")
 
-            gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
+            gate_override = task.gate_override
+            if gate_override is not None and gate_override.lower() == "none":
+                _log_phase(state.phase, "skipped (gate: none)")
+                _log("  Gate override: none — skipping validation")
+                gate_decision: str | None = "PASS"
+                gate_err: str | None = None
+            else:
+                if gate_override is not None:
+                    _log_phase(state.phase, "running gate... (override)")
+                    _log(f"  Gate: {gate_override} (spec override)")
+                else:
+                    _log_phase(state.phase, "running gate...")
+                gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
 
             if gate_err:
                 use_exit_code = not config.validation.handoff_file

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
 
+import yaml
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -20,11 +22,48 @@ class TaskSpec:
     slug: str  # workspace slug, e.g. "export-service"
     file_scope: list[str]  # paths the agent may modify
     pytest_target: str | None = None  # specific test target, or None for all
+    gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
 
 
 def load_spec(spec_path: Path) -> str:
     """Read the spec file content. Raises FileNotFoundError if missing."""
     return spec_path.read_text(encoding="utf-8")
+
+
+def parse_spec_frontmatter(spec_path: Path) -> dict:
+    """Extract YAML frontmatter from a spec file.
+
+    Spec files can optionally have YAML frontmatter delimited by ---::
+
+        ---
+        name: Phase 6H: per-user export
+        slug: export-service
+        gate: none
+        file_scope:
+          - src/export/
+        ---
+
+        # Spec content starts here...
+
+    If no frontmatter is present, returns empty dict.
+    """
+    text = spec_path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        return {}
+
+    end = text.find("---", 3)
+    if end == -1:
+        return {}
+
+    frontmatter = text[3:end].strip()
+    try:
+        result = yaml.safe_load(frontmatter) or {}
+    except yaml.YAMLError:
+        return {}
+
+    if not isinstance(result, dict):
+        return {}
+    return result
 
 
 # ── Preflight prompt ─────────────────────────────────────────────────
