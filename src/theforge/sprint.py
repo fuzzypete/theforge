@@ -363,4 +363,13 @@ def _write_sprint_audit(
     audit_path = audits_dir / "sprint-audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+    # Append to history log (JSONL, never overwritten).
+    history_path = audits_dir / "history.jsonl"
+    try:
+        import json
+
+        with open(history_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit, default=str) + "\n")
+    except OSError:
+        pass
     _log(f"Audit written: {audit_path}")

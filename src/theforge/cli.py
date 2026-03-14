@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import json
 import sys
 import time
 from pathlib import Path
@@ -96,6 +97,16 @@ def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:
     )
 
 
+def _append_history(audits_dir: Path, record: dict) -> None:
+    """Append a record to .forge/audits/history.jsonl (never overwritten)."""
+    history_path = audits_dir / "history.jsonl"
+    try:
+        with open(history_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except OSError:
+        pass  # best-effort — never block a run on history write failure
+
+
 def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec) -> Path:
     """Write the audit log to .forge/audits/forge_audit.yaml and worktree."""
     audit = generate_audit_log(config, task, result)
@@ -104,6 +115,8 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
     audit_path = audits_dir / "forge_audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+    # Append to history log (JSONL, never overwritten).
+    _append_history(audits_dir, audit)
     # Also write to worktree for per-spec persistence (not overwritten by next run).
     # Skip for ALREADY_DONE — no real work was done, worktree is just a checkout.
     already_done = result.state.preflight_verdict == "ALREADY_DONE"
