@@ -6,7 +6,7 @@ Uses mocked runner to test all state transitions without real agent calls.
 import datetime
 import time as _time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -25,9 +25,10 @@ from theforge.config import (
 )
 from theforge.coordinator import (
     Phase,
-    _fmt_dur,
+    _fmt_duration,
     _is_remote_mode,
     _is_stale_worktree,
+    _ntfy_poll_reply,
     _ntfy_reply_url,
     _remove_worktree,
     generate_audit_log,
@@ -3665,27 +3666,27 @@ class TestRunFromReview:
         assert audit["preflight"]["cost_usd"] == 0.0
 
 
-# ── _fmt_dur ──────────────────────────────────────────────────────────
+# ── _fmt_duration ─────────────────────────────────────────────────────
 
 
-def test_fmt_dur_seconds():
-    assert _fmt_dur(0) == "0s"
-    assert _fmt_dur(1) == "1s"
-    assert _fmt_dur(59) == "59s"
-    assert _fmt_dur(59.9) == "59s"
+def test_fmt_duration_seconds():
+    assert _fmt_duration(0) == "0s"
+    assert _fmt_duration(1) == "1s"
+    assert _fmt_duration(59) == "59s"
+    assert _fmt_duration(59.9) == "59s"
 
 
-def test_fmt_dur_minutes():
-    assert _fmt_dur(60) == "1m 00s"
-    assert _fmt_dur(61) == "1m 01s"
-    assert _fmt_dur(90) == "1m 30s"
-    assert _fmt_dur(3599) == "59m 59s"
+def test_fmt_duration_minutes():
+    assert _fmt_duration(60) == "1m 0s"
+    assert _fmt_duration(61) == "1m 1s"
+    assert _fmt_duration(90) == "1m 30s"
+    assert _fmt_duration(3599) == "59m 59s"
 
 
-def test_fmt_dur_hours():
-    assert _fmt_dur(3600) == "1h 00m 00s"
-    assert _fmt_dur(3661) == "1h 01m 01s"
-    assert _fmt_dur(7384) == "2h 03m 04s"
+def test_fmt_duration_hours():
+    assert _fmt_duration(3600) == "1h 0m 0s"
+    assert _fmt_duration(3661) == "1h 1m 1s"
+    assert _fmt_duration(7384) == "2h 3m 4s"
 
 
 # ── TestStaleWorktree ─────────────────────────────────────────────────
@@ -4161,32 +4162,24 @@ class TestRemoteHumanReview:
         assert len(timeout_notifs) >= 1
 
     def test_remote_reject_with_findings(self, tmp_path):
-        """ntfy poll returns reject with findings → findings fed back to dev."""
+        """ntfy poll returns reject with findings → findings fed back to dev, then approve."""
         config = _make_ntfy_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        dev_calls = []
+        dev_prompts: list[str] = []
 
         def dev_side_effect(**kwargs):
-            dev_calls.append(kwargs.get("prompt", ""))
-            # First call: preflight; second: dev (first); third: dev (after reject)
-            call_n = len(dev_calls)
-            if call_n == 1:
+            dev_prompts.append(kwargs.get("prompt", ""))
+            # call 1: preflight; call 2: dev (first run); call 3: dev after reject
+            if len(dev_prompts) == 1:
                 return _make_agent_result(output=PREFLIGHT_PROCEED, cost_usd=0.05)
             return _make_agent_result(output="Done.")
 
-        review_calls = []
         approve_result = _make_pool_result([APPROVE_REVIEW], ["review"])
 
-        def review_side_effect(**kwargs):
-            review_calls.append(1)
-            if len(review_calls) == 1:
-                return approve_result
-            return approve_result  # second review after reject also approves
-
-        poll_calls = []
+        poll_calls: list[int] = []
 
         def poll_side_effect(reply_url, since_ts, timeout_seconds):
             poll_calls.append(1)
@@ -4196,17 +4189,23 @@ class TestRemoteHumanReview:
 
         with (
             patch("theforge.coordinator.run_agent", side_effect=dev_side_effect),
-            patch("theforge.coordinator.run_agent_pool", side_effect=review_side_effect),
+            patch("theforge.coordinator.run_agent_pool", return_value=approve_result),
             patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coordinator._ntfy_publish"),
             patch("theforge.coordinator._ntfy_poll_reply", side_effect=poll_side_effect),
         ):
             result = run_task(config, task, interactive=True, notify=True)
 
-        # After reject, the dev runs again, then reviews again → approve
-        assert result.success or result.state.human_review_decision in ("reject", "approve")
-        # Human feedback should have been set from the reject
-        assert result.state.human_review_decision is not None
+        # Flow: preflight → dev1 → review(APPROVE) → human(reject)
+        #       → dev2 → review(APPROVE) → human(approve) → DONE
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.human_review_decision == "approve"
+        # dev ran at least 3 times: preflight + dev1 + dev-after-reject
+        assert len(dev_prompts) >= 3
+        # Rejection text "fix the error handling" must appear in the post-reject dev prompt
+        post_reject_prompts = " ".join(dev_prompts[2:])
+        assert "fix the error handling" in post_reject_prompts
 
     def test_remote_extend_grants_cycle(self, tmp_path):
         """ntfy poll returns 'extend' → fresh dev+review budget granted."""
@@ -4246,3 +4245,183 @@ class TestRemoteHumanReview:
         # extend → extra_cycles incremented
         assert result.state.human_review_extra_cycles >= 1
         assert result.state.human_review_mode == "remote"
+
+
+class TestNtfyPollReply:
+    """Unit tests for _ntfy_poll_reply() — mock urlopen/time to avoid real I/O."""
+
+    def _make_resp(self, lines: list[str]):
+        """Return a fake context-manager response whose read() returns the given lines."""
+        content = "\n".join(lines).encode("utf-8")
+        resp = MagicMock()
+        resp.read.return_value = content
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_poll_returns_approve_immediately(self):
+        """Single 'approve' message in response → returns ('approve', None)."""
+        resp = self._make_resp(['{"event":"message","message":"approve"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("approve", None)
+
+    def test_poll_returns_extend(self):
+        """'extend' message → returns ('extend', None)."""
+        resp = self._make_resp(['{"event":"message","message":"extend"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("extend", None)
+
+    def test_poll_returns_escalate(self):
+        """'escalate' message → returns ('escalate', None)."""
+        resp = self._make_resp(['{"event":"message","message":"escalate"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("escalate", None)
+
+    def test_poll_reject_with_findings(self):
+        """'reject: fix the bug' → returns ('reject', 'fix the bug')."""
+        resp = self._make_resp(['{"event":"message","message":"reject: fix the bug"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("reject", "fix the bug")
+
+    def test_poll_reject_empty_findings(self):
+        """'reject:' with no trailing text → findings is None."""
+        resp = self._make_resp(['{"event":"message","message":"reject:"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("reject", None)
+
+    def test_poll_uses_since_parameter(self):
+        """Verify the URL contains poll=1&since=<ts>."""
+        captured_urls: list[str] = []
+
+        resp = self._make_resp(['{"event":"message","message":"approve"}'])
+
+        def fake_urlopen(req, timeout=None):
+            captured_urls.append(req.full_url)
+            return resp
+
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+
+        assert len(captured_urls) >= 1
+        assert "poll=1" in captured_urls[0]
+        assert "since=1700000000" in captured_urls[0]
+
+    def test_poll_ignores_unknown_messages(self):
+        """Unknown message on first response, valid on second → returns valid decision."""
+        resp1 = self._make_resp(['{"event":"message","message":"unknown-action"}'])
+        resp2 = self._make_resp(['{"event":"message","message":"approve"}'])
+        call_count = 0
+
+        def fake_urlopen(req, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            return resp1 if call_count == 1 else resp2
+
+        # deadline=60s; first poll at t=0 < 60; sleep; second poll at t=1 < 60; returns
+        monotonic_vals = iter([0.0, 0.0, 1.0, 1.0, 1.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+
+        assert result == ("approve", None)
+        assert call_count == 2
+
+    def test_poll_timeout_when_no_reply(self):
+        """monotonic advances past deadline → returns ('timeout', None)."""
+        # call 1: deadline = monotonic() + 60 → deadline=60
+        # call 2: while monotonic() < 60 → True, enter loop
+        # urlopen raises → sleep calc: call 3 (returns 10, so sleep(10))
+        # call 4: while monotonic() < 60 → 61 >= 60 → exit loop
+        monotonic_vals = iter([0.0, 0.0, 10.0, 61.0])
+        with (
+            patch(
+                "theforge.coordinator.urllib.request.urlopen",
+                side_effect=Exception("no data"),
+            ),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("timeout", None)
+
+    def test_poll_sleeps_10_seconds_between_polls(self):
+        """time.sleep is called with ~10 seconds when deadline is far away."""
+        resp_empty = self._make_resp([""])
+        resp_approve = self._make_resp(['{"event":"message","message":"approve"}'])
+        call_count = 0
+
+        def fake_urlopen(req, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            return resp_empty if call_count == 1 else resp_approve
+
+        sleep_args: list[float] = []
+
+        # t=0 (deadline check), t=0 (after failed parse, compute sleep), t=1 (loop check), t=1, t=1
+        monotonic_vals = iter([0.0, 0.0, 1.0, 1.0, 1.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep", side_effect=lambda s: sleep_args.append(s)),
+        ):
+            _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+
+        assert len(sleep_args) >= 1
+        # sleep should be capped at 10s; with deadline=60 and t=0, remaining=60 → sleep=10
+        assert sleep_args[0] == pytest.approx(10.0)
+
+    def test_poll_skips_non_message_events(self):
+        """ntfy keepalive/open events (event != 'message') are ignored."""
+        resp = self._make_resp(
+            [
+                '{"event":"open","message":""}',
+                '{"event":"keepalive","message":""}',
+                '{"event":"message","message":"approve"}',
+            ]
+        )
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coordinator.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.time.sleep"),
+        ):
+            result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == ("approve", None)

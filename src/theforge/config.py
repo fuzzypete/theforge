@@ -22,11 +22,19 @@ class NtfyConfig:
 
 
 @dataclass(frozen=True)
+class EmailConfig:
+    """Stub for future email notification support (not yet implemented)."""
+
+    pass
+
+
+@dataclass(frozen=True)
 class NotificationConfig:
     """Notification backend configuration."""
 
     backend: str = "none"  # "none", "ntfy", "osascript"
     ntfy: NtfyConfig | None = None
+    email: EmailConfig | None = None  # reserved for future use
     script: str | None = None  # path to custom notification script
     human_review_timeout_seconds: int = 14400  # 4 hours
 

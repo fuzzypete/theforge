@@ -16,7 +16,6 @@ import yaml
 from .config import ForgeConfig
 from .coordinator import (
     CoordinatorResult,
-    _fmt_dur,
     _fmt_duration,
     _is_remote_mode,
     _notify,
@@ -237,7 +236,8 @@ def run_sprint(
 
         # Emit spec completion summary
         icon = "✓" if result.success else "✗"
-        _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {_fmt_dur(_spec_elapsed)}")
+        dur = _fmt_duration(_spec_elapsed)
+        _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {dur}")
 
         # Stop sprint if budget exceeded after this run
         if accumulated_cost >= manifest.budget_usd and idx < total:
@@ -266,15 +266,16 @@ def run_sprint(
     )
 
     _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
+    _sprint_dur = _fmt_duration(_sprint_elapsed)
     _log(
         f"Sprint complete: {specs_succeeded} succeeded, {specs_failed} failed, "
-        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_fmt_dur(_sprint_elapsed)}"
+        f"{specs_skipped} skipped. Total: ${accumulated_cost:.2f}  {_sprint_dur}"
     )
     if notify:
         _notify(
             f"TheForge: {manifest.name}",
             f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
-            f" — ${accumulated_cost:.2f}  {_fmt_dur(_sprint_elapsed)}",
+            f" — ${accumulated_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
         )
         # R10: ntfy summary notification when remote mode is active
         if _is_remote_mode(notify, config):
