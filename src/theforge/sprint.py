@@ -358,7 +358,9 @@ def _write_sprint_audit(
         "specs": spec_entries,
     }
 
-    audit_path = project_root / "sprint-audit.yaml"
+    audits_dir = project_root / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = audits_dir / "sprint-audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     _log(f"Audit written: {audit_path}")

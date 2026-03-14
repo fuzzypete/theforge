@@ -97,9 +97,11 @@ def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:
 
 
 def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec) -> Path:
-    """Write the audit log to forge_audit.yaml in the project root and worktree."""
+    """Write the audit log to .forge/audits/forge_audit.yaml and worktree."""
     audit = generate_audit_log(config, task, result)
-    audit_path = config.project_root / "forge_audit.yaml"
+    audits_dir = config.project_root / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = audits_dir / "forge_audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Also write to worktree for per-spec persistence (not overwritten by next run).
@@ -459,7 +461,9 @@ def cmd_ideate(args: argparse.Namespace) -> int:
         finished_at=ideation_finished_at,
         duration_seconds=duration_seconds,
     )
-    audit_path = config.project_root / "forge_ideation_audit.yaml"
+    audits_dir = config.project_root / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    audit_path = audits_dir / "forge_ideation_audit.yaml"
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     print(f"[forge] Audit log: {audit_path}", file=sys.stderr)
@@ -789,7 +793,7 @@ def main() -> None:
 
     # forge audit
     audit_parser = subparsers.add_parser("audit", help="Print audit log summary")
-    audit_parser.add_argument("file", help="Path to forge_audit.yaml")
+    audit_parser.add_argument("file", help="Path to audit file (e.g. .forge/audits/forge_audit.yaml)")
 
     args = parser.parse_args()
 

@@ -197,7 +197,7 @@ class TestRunCampaign:
         assert len(campaign.results) == 2
 
         # Audit file should exist
-        audit_path = tmp_path / "sprint-audit.yaml"
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         assert audit_path.exists()
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
@@ -326,7 +326,7 @@ class TestRunCampaign:
         with patch("theforge.sprint.run_task", return_value=result_a):
             run_sprint(config, manifest_path)
 
-        audit_path = tmp_path / "sprint-audit.yaml"
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         assert audit_path.exists()
 
         with open(audit_path) as f:
@@ -350,7 +350,7 @@ class TestRunCampaign:
         with patch("theforge.sprint.run_task", return_value=result_a):
             run_sprint(config, manifest_path)
 
-        audit_path = tmp_path / "sprint-audit.yaml"
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
 
@@ -384,7 +384,7 @@ class TestRunCampaign:
         # Campaign counts as succeeded (task itself passed), but merge did not happen
         assert campaign.specs_succeeded == 1
 
-        audit_path = tmp_path / "sprint-audit.yaml"
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         with open(audit_path) as f:
             audit = yaml.safe_load(f)
 

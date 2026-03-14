@@ -899,7 +899,7 @@ class TestCmdIdeate:
         assert rc == 0
         captured = capsys.readouterr()
         assert "Test Feature" in captured.out
-        audit_path = tmp_path / "forge_ideation_audit.yaml"
+        audit_path = tmp_path / ".forge" / "audits" / "forge_ideation_audit.yaml"
         assert not audit_path.exists(), "Audit must NOT be written on --dry-run"
 
     def test_normal_run_writes_audit(self, tmp_path):
@@ -908,7 +908,7 @@ class TestCmdIdeate:
         args = _make_ideate_args()
         rc, mock_run = self._run(tmp_path, args, ideation_result=result)
         assert rc == 0
-        assert (tmp_path / "forge_ideation_audit.yaml").exists()
+        assert (tmp_path / ".forge" / "audits" / "forge_ideation_audit.yaml").exists()
         call_kwargs = mock_run.call_args
         assert call_kwargs.kwargs.get("specs_dir") == tmp_path / "specs"
 

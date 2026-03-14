@@ -22,9 +22,13 @@ venv/
 .coverage
 htmlcov/
 
-# TheForge artifacts
-forge_audit.yaml
+# TheForge runtime (worktrees, audits, handoffs all live here)
 .forge/
+# Legacy root-level artifacts (ignore if leftover)
+forge_audit.yaml
+forge_ideation_audit.yaml
+sprint-audit.yaml
+campaign-audit.yaml
 
 # Claude Code
 .claude/settings.local.json

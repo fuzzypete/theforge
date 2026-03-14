@@ -3475,7 +3475,7 @@ class TestCampaignAuditWrites:
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
         run_sprint(config, manifest_path)
 
-        sprint_audit_path = tmp_path / "sprint-audit.yaml"
+        sprint_audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         assert sprint_audit_path.exists(), "sprint-audit.yaml not written"
         audit = yaml.safe_load(sprint_audit_path.read_text(encoding="utf-8")) or {}
         specs = audit.get("specs", [])
