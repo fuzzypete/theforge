@@ -296,11 +296,11 @@ def _process_stream_event(line: str, label: str) -> None:
 
     event_type = event.get("type")
 
-    prefix = f"[{label}] " if label else ""
+    label_tag = f" [{label}]" if label else ""
     if event_type == "tool_use_summary":
         summary = event.get("summary", "")
         if summary:
-            _log_verbose(f"  ↳ {prefix}{summary}")
+            _log_verbose(f"  ↳ {summary}{label_tag}")
     elif event_type == "assistant":
         message = event.get("message", {})
         content = message.get("content", [])
@@ -309,7 +309,7 @@ def _process_stream_event(line: str, label: str) -> None:
                 tool_name = item.get("name", "?")
                 inp = item.get("input", {})
                 preview = _format_tool_input_preview(inp)
-                _log_verbose(f"  ↳ {prefix}{tool_name}: {preview}")
+                _log_verbose(f"  ↳ {tool_name}: {preview}{label_tag}")
 
 
 def _run_claude(

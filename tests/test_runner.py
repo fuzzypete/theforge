@@ -254,7 +254,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ [dev] Read src/theforge/runner.py (240 lines)" in captured.err
+        assert "↳ Read src/theforge/runner.py (240 lines) [dev]" in captured.err
 
     def test_activity_assistant_fallback(
         self, dev_profile: ModelProfile, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -288,7 +288,7 @@ class TestRunAgentClaude:
             runner_mod.set_log_level(LogLevel.PROGRESS)
 
         captured = capsys.readouterr()
-        assert "↳ [dev] Bash: pytest tests/ -q" in captured.err
+        assert "↳ Bash: pytest tests/ -q [dev]" in captured.err
 
 
 class TestRunAgentCostCoercion:
