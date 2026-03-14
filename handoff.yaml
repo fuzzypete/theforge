@@ -1,4 +1,17 @@
-deferred_followups: []
 gate_decision: PASS
-next_recommended_step: merge
-scope_completed: []
+scope_completed:
+  - ModelInfo dataclass and MODEL_REGISTRY (claude/sonnet, claude/opus, openai/gpt-5.4, google/gemini-2.5-pro)
+  - models key in forge.yaml for declarative model pool (R2)
+  - top-level budget_usd with auto-distribution: dev=60%, preflight=max(2%,$1), synthesis=max(2%,$1), reviewers=remaining/pool_size (R3)
+  - _auto_assign_models() implementing cost/capability sort, dev/preflight/pool/synthesis assignment (R4)
+  - load_config() integration with models key + partial profile override support (R5)
+  - Preflight prompt extended to request complexity: small/medium/large assessment (R6)
+  - _parse_preflight_complexity() with medium fallback on missing/invalid value (R6)
+  - _apply_complexity_adaptation(): small→single-cheapest-reviewer+no-synthesis, large→upgrade-dev-to-strongest (R7)
+  - CLI display: Auto-config and Complexity lines logged in run header (R8)
+  - Full backward compatibility when models key is absent (R9)
+  - Config validation: non-empty list, provider/model format, positive budget (R10)
+  - 13 new tests in test_config.py (auto-assign 1/2/4 models, budget distribution, models key loading, profile override, backward compat, unknown model defaults, validation errors)
+  - 13+ new tests in test_coordinator.py (complexity parsing, adaptive swapping, integration tests)
+deferred_followups: []
+next_recommended_step: Submit for review — all 329 tests pass, gate PASS, no uncommitted changes.
