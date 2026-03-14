@@ -263,8 +263,8 @@ def _auto_assign_models(
     preflight_budget = max(budget_usd * 0.02, 1.0)
     dev_budget = budget_usd * 0.60
     synthesis_budget = max(budget_usd * 0.02, 1.0) if has_synthesis else 0.0
-    remaining = budget_usd - dev_budget - preflight_budget - synthesis_budget
-    reviewer_budget = max(remaining / len(review_pairs), 0.5)
+    remaining = max(budget_usd - dev_budget - preflight_budget - synthesis_budget, 0.0)
+    reviewer_budget = remaining / len(review_pairs)
 
     dev_profile = ModelProfile(
         name="dev",
@@ -410,6 +410,20 @@ def load_config(config_path: Path) -> ForgeConfig:
             preflight_profile = _apply_profile_overrides(preflight_profile, profiles["preflight"])
         if synthesis_profile is not None and "synthesis" in profiles:
             synthesis_profile = _apply_profile_overrides(synthesis_profile, profiles["synthesis"])
+        # Apply per-reviewer overrides matched by name
+        # (e.g. profiles.review_pool[{name: claude-opus}])
+        if "review_pool" in profiles:
+            pool_overrides = profiles["review_pool"]
+            if isinstance(pool_overrides, list):
+                override_by_name: dict[str, dict[str, Any]] = {
+                    e["name"]: e for e in pool_overrides if isinstance(e, dict) and "name" in e
+                }
+                review_pool = [
+                    _apply_profile_overrides(p, override_by_name[p.name])
+                    if p.name in override_by_name
+                    else p
+                    for p in review_pool
+                ]
 
         smart_config_models = [str(m) for m in models_list]
 

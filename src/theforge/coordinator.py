@@ -663,10 +663,27 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
         if config.synthesis_profile is not None:
             candidates.append(config.synthesis_profile)
         strongest = max(candidates, key=lambda p: _find_registry_info_for_profile(p)[1])
-        if strongest.cli == config.dev_profile.cli and strongest.model == config.dev_profile.model:
-            return config  # already using strongest
         new_dev = _dc_replace(config.dev_profile, cli=strongest.cli, model=strongest.model)
-        return _dc_replace(config, dev_profile=new_dev)
+        # Spec: large complexity always runs synthesis; materialize it if absent
+        synthesis = config.synthesis_profile
+        if synthesis is None:
+            # Derive a synthesis budget as 2% of dev budget (min $1)
+            synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
+            synth_base = config.review_pool[0]
+            synthesis = _dc_replace(
+                synth_base,
+                name="synthesis",
+                cli=strongest.cli,
+                model=strongest.model,
+                budget_usd=synth_budget,
+            )
+        if (
+            new_dev.cli == config.dev_profile.cli
+            and new_dev.model == config.dev_profile.model
+            and synthesis is config.synthesis_profile
+        ):
+            return config  # already using strongest, synthesis unchanged
+        return _dc_replace(config, dev_profile=new_dev, synthesis_profile=synthesis)
 
     return config
 
@@ -1689,11 +1706,12 @@ def run_task(
     state.preflight_reason = reason
 
     # ── Complexity parsing + adaptive model swapping ───────────────
-    if preflight_result.success and config.smart_config_models is not None:
+    if preflight_result.success:
         complexity = _parse_preflight_complexity(preflight_result.output)
         state.preflight_complexity = complexity
-        config = _apply_complexity_adaptation(config, complexity)
         _log(f"  Complexity: {complexity} (from preflight)")
+        if config.smart_config_models is not None:
+            config = _apply_complexity_adaptation(config, complexity)
 
     _log(f"  ✓ PREFLIGHT   {verdict}")
     _log_verbose(f"  Reason: {reason}")

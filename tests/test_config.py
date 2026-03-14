@@ -662,6 +662,107 @@ class TestModelsKeyConfig:
         assert config.synthesis_profile.model == "opus"
 
 
+class TestAutoAssignBudgetClamping:
+    """Tests for budget clamping (P1 fix: reviewer budget must not exceed total)."""
+
+    def test_tight_budget_reviewer_does_not_exceed_total(self):
+        """When dev+preflight+synthesis consume the budget, reviewers get $0 not $0.50.
+
+        Old bug: max(remaining / pool_size, 0.5) would give each reviewer $0.50
+        even when remaining=0, pushing total above budget_usd.
+        """
+        # With $5 and 3 models: dev=$3, preflight=$1, synthesis=$1 → remaining=$0
+        budget = 5.0
+        dev, preflight, pool, synthesis = _auto_assign_models(
+            ["claude/sonnet", "claude/opus", "openai/gpt-5.4"], budget
+        )
+        total = dev.budget_usd + preflight.budget_usd + sum(p.budget_usd for p in pool)
+        if synthesis:
+            total += synthesis.budget_usd
+        assert total <= budget + 0.01  # allow tiny float rounding
+        for p in pool:
+            assert p.budget_usd >= 0.0  # reviewer budget never negative
+
+    def test_reviewer_budget_never_negative(self):
+        """Reviewer budget is never negative even when fixed costs eat the whole budget."""
+        dev, preflight, pool, synthesis = _auto_assign_models(["claude/sonnet"], 1.0)
+        for p in pool:
+            assert p.budget_usd >= 0.0
+
+    def test_normal_budget_reviewer_gets_remaining_share(self):
+        """With adequate budget, reviewers split remaining after dev+preflight+synthesis."""
+        budget = 50.0
+        dev, preflight, pool, synthesis = _auto_assign_models(
+            ["claude/sonnet", "claude/opus", "openai/gpt-5.4"], budget
+        )
+        assert synthesis is not None
+        remaining = budget - dev.budget_usd - preflight.budget_usd - synthesis.budget_usd
+        expected_per_reviewer = remaining / len(pool)
+        for p in pool:
+            assert abs(p.budget_usd - expected_per_reviewer) < 0.01
+
+
+class TestModelsKeyReviewPoolOverride:
+    """Tests for review_pool override in smart-config mode (P1 fix)."""
+
+    def test_review_pool_override_by_name(self, tmp_path):
+        """profiles.review_pool entries are matched by name and override auto-assigned values."""
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "claude/opus"],
+                "budget_usd": 50.0,
+                "profiles": {
+                    "review_pool": [
+                        {"name": "claude-opus", "budget_usd": 99.0},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert len(config.review_pool) == 1
+        assert config.review_pool[0].model == "opus"
+        assert abs(config.review_pool[0].budget_usd - 99.0) < 0.01
+
+    def test_review_pool_override_partial(self, tmp_path):
+        """Overriding only budget_usd preserves auto-assigned cli/model."""
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "claude/opus"],
+                "budget_usd": 50.0,
+                "profiles": {
+                    "review_pool": [
+                        {"name": "claude-opus", "timeout_seconds": 600},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.review_pool[0].cli == "claude"
+        assert config.review_pool[0].model == "opus"
+        assert config.review_pool[0].timeout_seconds == 600
+
+    def test_review_pool_override_unknown_name_ignored(self, tmp_path):
+        """Override with name not in auto-assigned pool is silently ignored."""
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "claude/opus"],
+                "budget_usd": 50.0,
+                "profiles": {
+                    "review_pool": [
+                        {"name": "nonexistent", "budget_usd": 1.0},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        # Pool still has auto-assigned opus reviewer
+        assert len(config.review_pool) == 1
+        assert config.review_pool[0].model == "opus"
+
+
 class TestResolveModelInfo:
     """Tests for _resolve_model_info()."""
 

@@ -4683,3 +4683,126 @@ criteria_checked: []
         # Pool should have been called with only 1 reviewer
         assert len(pool_calls) == 1
         assert len(pool_calls[0]) == 1
+
+
+class TestLargeComplexitySynthesisP1:
+    """P1 fix: large complexity must materialize synthesis even for 2-model pool."""
+
+    def test_large_2_model_pool_creates_synthesis(self, tmp_path):
+        """large with 2-model config (synthesis=None) → synthesis is created."""
+        from dataclasses import replace
+
+        config = _make_smart_config(tmp_path)
+        # Simulate 2-model auto-assign: single reviewer, no synthesis
+        two_model = replace(
+            config,
+            review_pool=[config.review_pool[0]],
+            synthesis_profile=None,
+        )
+        adapted = _apply_complexity_adaptation(two_model, "large")
+        assert adapted.synthesis_profile is not None
+        assert adapted.synthesis_profile.name == "synthesis"
+
+    def test_large_2_model_synthesis_uses_strongest(self, tmp_path):
+        """For large complexity with 2 models, synthesis is set to the strongest model."""
+        from dataclasses import replace
+
+        config = _make_smart_config(tmp_path)
+        two_model = replace(
+            config,
+            review_pool=[config.review_pool[0]],  # opus reviewer
+            synthesis_profile=None,
+        )
+        adapted = _apply_complexity_adaptation(two_model, "large")
+        assert adapted.synthesis_profile is not None
+        # Strongest is opus (cap=10)
+        assert adapted.synthesis_profile.model == "opus"
+        assert adapted.synthesis_profile.cli == "claude"
+
+    def test_large_3_model_pool_synthesis_preserved(self, tmp_path):
+        """large with existing synthesis → synthesis is preserved (not recreated)."""
+        config = _make_smart_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "large")
+        assert adapted.synthesis_profile is not None
+        assert adapted.synthesis_profile.model == "opus"
+
+
+class TestComplexityParsedForAllPreflightsP1:
+    """P1 fix: complexity parsed on all successful preflights, not just smart config."""
+
+    def test_complexity_stored_for_classic_config(self, tmp_path):
+        """Complexity stored in preflight_complexity even when smart_config_models is None."""
+        config = _make_config(tmp_path)  # classic config, no smart_config_models
+        assert config.smart_config_models is None
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        preflight_medium = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+reason: "Multi-file feature."
+criteria_checked: []
+```
+"""
+
+        with (
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=[
+                    _make_agent_result(output=preflight_medium),  # preflight
+                    _make_agent_result(),  # dev
+                ],
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], [config.review_pool[0].name]),
+            ),
+        ):
+            result = run_task(config, task)
+
+        assert result.state.preflight_complexity == "medium"
+
+    def test_classic_config_complexity_does_not_swap_models(self, tmp_path):
+        """Classic config: complexity is parsed but does NOT change model assignments."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        preflight_large = """\
+```yaml
+verdict: PROCEED
+complexity: large
+reason: "Big refactor."
+criteria_checked: []
+```
+"""
+
+        pool_profiles_used: list[str] = []
+
+        def fake_run_pool(prompt, profiles, working_dir):
+            pool_profiles_used.extend(p.name for p in profiles)
+            return _make_pool_result([APPROVE_REVIEW], [profiles[0].name])
+
+        with (
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=[
+                    _make_agent_result(output=preflight_large),  # preflight
+                    _make_agent_result(),  # dev
+                ],
+            ),
+            patch("theforge.coordinator.run_agent_pool", side_effect=fake_run_pool),
+        ):
+            result = run_task(config, task)
+
+        # Complexity captured
+        assert result.state.preflight_complexity == "large"
+        # But dev model unchanged (classic config not swapped)
+        assert result.state.dev_results[0].success  # dev ran normally
+        # Pool called with original single reviewer (no synthesis was added)
+        assert len(pool_profiles_used) == 1
