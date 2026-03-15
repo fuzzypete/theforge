@@ -15,9 +15,9 @@ validation:
 profiles:
   dev:
     cli: claude
-    model: sonnet
-    budget_usd: 50.00
-    timeout_seconds: 1200
+    model: opus
+    budget_usd: 100.00
+    timeout_seconds: 3600
     allowed_tools:
       - Read
       - Edit
