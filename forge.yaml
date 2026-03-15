@@ -36,10 +36,9 @@ profiles:
       - Glob
       - Grep
   review_pool:
-    - name: codex
-      cli: codex
-      model: gpt-5.4
-      reasoning_effort: medium
+    - name: sonnet
+      cli: claude
+      model: sonnet
       budget_usd: 1.00
       timeout_seconds: 600
       allowed_tools:
@@ -60,8 +59,8 @@ profiles:
         - Grep
 
   synthesis:
-    cli: codex
-    model: gpt-5.4
+    cli: claude
+    model: sonnet
     budget_usd: 1.00
     timeout_seconds: 300
     allowed_tools:
@@ -69,7 +68,7 @@ profiles:
 
 smart_config_models:
   - sonnet
-  - codex
+  - gemini
   - opus
 
 retry:
