@@ -34,6 +34,7 @@ from theforge.coordinator import (
     _ntfy_poll_reply,
     _ntfy_reply_url,
     _parse_preflight_complexity,
+    _parse_scope_blocked,
     _remove_worktree,
     generate_audit_log,
     run_from_review,
@@ -660,6 +661,200 @@ class TestCoordinatorBudgetEnforcement:
         assert "0.5000" in result.message
         assert "0.4000" in result.message
         assert len(result.state.review_agent_results) == 1
+
+
+class TestParseScopeBlocked:
+    """Unit tests for the _parse_scope_blocked helper."""
+
+    def test_detects_terminal_sentinel(self) -> None:
+        output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/runner.py\n"
+            "Reason: runner.py needs a new helper."
+        )
+        blocked, files = _parse_scope_blocked(output)
+        assert blocked is True
+        assert files == "src/theforge/runner.py"
+
+    def test_ignores_sentinel_in_middle_of_output(self) -> None:
+        """SCOPE_BLOCKED mentioned mid-output (e.g. quoting instructions) must not trigger."""
+        output = (
+            "Here is the instruction the agent received:\n"
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/foo.py\n"
+            "Now I will proceed to implement the task anyway.\n"
+            "I have implemented the feature and committed the changes.\n"
+            "All tests pass."
+        )
+        blocked, _ = _parse_scope_blocked(output)
+        assert blocked is False
+
+    def test_ignores_sentinel_when_more_than_2_lines_follow(self) -> None:
+        """SCOPE_BLOCKED with more than 2 non-empty lines after it is not terminal."""
+        output = (
+            "SCOPE_BLOCKED: sentinel here\n"
+            "Required files not in scope: src/foo.py\n"
+            "Reason: foo.py needs modification.\n"
+            "But then the agent kept going and wrote more output here."
+        )
+        blocked, _ = _parse_scope_blocked(output)
+        assert blocked is False
+
+    def test_empty_output_not_blocked(self) -> None:
+        blocked, files = _parse_scope_blocked("")
+        assert blocked is False
+        assert files == ""
+
+    def test_blocked_files_empty_when_line_absent(self) -> None:
+        output = "SCOPE_BLOCKED: Cannot implement spec."
+        blocked, files = _parse_scope_blocked(output)
+        assert blocked is True
+        assert files == ""
+
+
+class TestScopeBlocked:
+    """Test that SCOPE_BLOCKED sentinel in dev output causes immediate escalation."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_escalates_immediately(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Dev output containing SCOPE_BLOCKED: skips VALIDATE and escalates."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        scope_blocked_output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/runner.py\n"
+            "Reason: runner.py needs a new helper function for the feature."
+        )
+        dev_result = _make_agent_result(success=False, output=scope_blocked_output)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "ESCALATE" in result.message
+        assert "scope blocked" in result.message.lower()
+        assert "src/theforge/runner.py" in result.message
+        # Gate must NOT have been called (skip VALIDATE)
+        gate_calls = [call for call in mock_shell.call_args_list if "gate" in str(call).lower()]
+        assert len(gate_calls) == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_no_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """SCOPE_BLOCKED does not consume retry iterations — escalates on first occurrence."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        scope_blocked_output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/schemas.py\n"
+            "Reason: schemas.py must define the new validation type."
+        )
+        dev_result = _make_agent_result(success=False, output=scope_blocked_output)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        # Only one dev invocation (preflight + 1 dev call)
+        assert result.state.dev_iteration == 1
+        assert result.phase == Phase.ESCALATE
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_takes_precedence_over_budget(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """SCOPE_BLOCKED escalation takes priority over dev-budget exhaustion."""
+        # Budget set to $0.01 so the $0.50 dev result exceeds it
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=ModelProfile(
+                name=DEFAULT_DEV_PROFILE.name,
+                cli=DEFAULT_DEV_PROFILE.cli,
+                model=DEFAULT_DEV_PROFILE.model,
+                budget_usd=0.01,
+                timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
+                allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+            ),
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        scope_blocked_output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/runner.py\n"
+            "Reason: runner.py needs modification."
+        )
+        # cost_usd=0.50 exceeds budget of 0.01, but SCOPE_BLOCKED should win
+        dev_result = _make_agent_result(success=False, output=scope_blocked_output, cost_usd=0.50)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "scope blocked" in result.message.lower()
+        assert "src/theforge/runner.py" in result.message
+        # Must NOT be a budget error
+        assert "budget" not in result.message.lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_mid_output_does_not_escalate(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """SCOPE_BLOCKED quoted in the middle of output must not trigger escalation."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Agent quotes the instruction but then proceeds to implement successfully
+        output_with_mid_sentinel = (
+            "Here is the instruction I received:\n"
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/fake.py\n"
+            "Now I will implement the task.\n"
+            "I have committed the changes and the gate passed."
+        )
+        dev_result = _make_agent_result(success=True, output=output_with_mid_sentinel)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_pool.return_value = _make_pool_result([APPROVE_REVIEW], ["review"], success=True)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        # Should NOT escalate — the sentinel was mid-output, not terminal
+        assert result.phase != Phase.ESCALATE
+        assert result.success is True
 
 
 class TestCoordinatorStaleHandoff:

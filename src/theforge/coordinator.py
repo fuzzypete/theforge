@@ -760,6 +760,39 @@ def _parse_preflight_complexity(output: str) -> str:
     return "medium"
 
 
+def _parse_scope_blocked(output: str) -> tuple[bool, str]:
+    """Detect a terminal SCOPE_BLOCKED sentinel in dev agent output.
+
+    The sentinel format is three lines (SCOPE_BLOCKED:, Required files:, Reason:).
+    To avoid false positives when the agent quotes the instruction text earlier
+    in its output, we only treat the output as scope-blocked when the last
+    occurrence of SCOPE_BLOCKED: has at most 2 non-empty lines after it —
+    matching the two expected follow-on lines of the sentinel block.
+
+    Returns (is_blocked, blocked_files_string).
+    """
+    lines = output.splitlines()
+    # Find the last occurrence of the sentinel line
+    sentinel_idx = None
+    for i in range(len(lines) - 1, -1, -1):
+        if "SCOPE_BLOCKED:" in lines[i]:
+            sentinel_idx = i
+            break
+    if sentinel_idx is None:
+        return False, ""
+    # Count non-empty lines after the sentinel; more than 2 means the agent
+    # continued working after mentioning SCOPE_BLOCKED (not a terminal output).
+    after_non_empty = [ln for ln in lines[sentinel_idx + 1 :] if ln.strip()]
+    if len(after_non_empty) > 2:
+        return False, ""
+    blocked_files = ""
+    for line in lines[sentinel_idx:]:
+        if "Required files not in scope:" in line:
+            blocked_files = line.split("Required files not in scope:", 1)[1].strip()
+            break
+    return True, blocked_files
+
+
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
     """Return (cost_rank, capability) for a profile using the model registry.
 
@@ -1264,6 +1297,22 @@ def _coordinator_loop(
             state.dev_session_id = dev_result.session_id
             log_agent_result(dev_result, "DEV")
             _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_duration(_dev_elapsed)}")
+
+            _scope_blocked, _blocked_files = _parse_scope_blocked(dev_result.output)
+            if _scope_blocked:
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"ESCALATE: Dev agent scope blocked. "
+                    f"Required files: {_blocked_files}. Update file_scope in spec."
+                )
+                _log(f"✗ ESCALATE   {state.error}")
+                _escalate_notify(task, state, notify)
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
 
             if state.total_dev_cost > config.dev_profile.budget_usd:
                 state.phase = Phase.ESCALATE
