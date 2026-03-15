@@ -25,6 +25,7 @@ htmlcov/
 # TheForge runtime (worktrees, audits, handoffs all live here)
 .forge/
 # Legacy root-level artifacts (ignore if leftover)
+forge_plan.md
 forge_audit.yaml
 forge_ideation_audit.yaml
 sprint-audit.yaml

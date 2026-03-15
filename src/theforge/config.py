@@ -148,6 +148,14 @@ class PlanConfig:
 
 
 @dataclass(frozen=True)
+class LogConfig:
+    """Configuration for persistent structured logging."""
+
+    log_file: str = "~/.forge/logs/{project}/forge.log"
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -163,6 +171,7 @@ class ForgeConfig:
     notifications: NotificationConfig = NotificationConfig()
     smart_config_models: list[str] | None = None  # None = classic config; list = smart config
     plan: PlanConfig = field(default_factory=PlanConfig)
+    log: LogConfig = field(default_factory=LogConfig)
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -555,6 +564,13 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout=int(plan_data.get("timeout", 300)),
     )
 
+    # Logging
+    log_data = raw.get("logging", {})
+    log_cfg = LogConfig(
+        log_file=str(log_data.get("log_file", LogConfig.log_file)),
+        enabled=bool(log_data.get("enabled", True)),
+    )
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -568,6 +584,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         notifications=notifications,
         smart_config_models=smart_config_models,
         plan=plan_cfg,
+        log=log_cfg,
     )
 
 

@@ -4,6 +4,7 @@ Uses mocked runner to test all state transitions without real agent calls.
 """
 
 import datetime
+import json as _json
 import time as _time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -17,6 +18,7 @@ from theforge.config import (
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
     ForgeConfig,
+    LogConfig,
     ModelProfile,
     NotificationConfig,
     NtfyConfig,
@@ -26,9 +28,11 @@ from theforge.config import (
 )
 from theforge.coordinator import (
     Phase,
+    StructuredLogger,
     _apply_complexity_adaptation,
     _escalate_dev_model,
     _fmt_duration,
+    _generate_run_id,
     _has_persistent_p1,
     _is_remote_mode,
     _is_stale_worktree,
@@ -64,6 +68,7 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        log=LogConfig(enabled=False),
     )
 
 
@@ -85,6 +90,7 @@ def _make_pool_config(
         review_pool=profiles,
         synthesis_profile=synthesis,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        log=LogConfig(enabled=False),
     )
 
 
@@ -7165,3 +7171,386 @@ class TestPlanPhase:
         # plan_output is still the original plan (from first run)
         assert result.state.plan_output is not None
         assert "Implementation Plan" in result.state.plan_output
+
+
+# ── Structured logging tests ──────────────────────────────────────────
+
+
+class TestStructuredLogger:
+    """Unit tests for StructuredLogger class."""
+
+    def test_emits_valid_json(self, tmp_path):
+        log_file = tmp_path / "forge.log"
+        logger = StructuredLogger(
+            run_id="abc123",
+            project="proj",
+            task="my-task",
+            log_file=str(log_file),
+            enabled=True,
+        )
+        logger.emit("test_event", key="value")
+        lines = log_file.read_text().splitlines()
+        assert len(lines) == 1
+        entry = _json.loads(lines[0])
+        assert entry["ts"]
+        assert entry["project"] == "proj"
+        assert entry["run_id"] == "abc123"
+        assert entry["task"] == "my-task"
+        assert entry["event"] == "test_event"
+        assert entry["key"] == "value"
+
+    def test_creates_directory(self, tmp_path):
+        log_file = tmp_path / "deep" / "nested" / "forge.log"
+        logger = StructuredLogger(
+            run_id="r1",
+            project="p",
+            task="t",
+            log_file=str(log_file),
+            enabled=True,
+        )
+        logger.emit("test_event")
+        assert log_file.exists()
+        entry = _json.loads(log_file.read_text().splitlines()[0])
+        assert entry["event"] == "test_event"
+
+    def test_appends_not_overwrites(self, tmp_path):
+        log_file = tmp_path / "forge.log"
+        logger = StructuredLogger(
+            run_id="r1",
+            project="p",
+            task="t",
+            log_file=str(log_file),
+            enabled=True,
+        )
+        logger.emit("event_one")
+        logger.emit("event_two")
+        lines = log_file.read_text().splitlines()
+        assert len(lines) == 2
+        assert _json.loads(lines[0])["event"] == "event_one"
+        assert _json.loads(lines[1])["event"] == "event_two"
+
+    def test_write_failure_is_silent(self, tmp_path):
+        logger = StructuredLogger(
+            run_id="r1",
+            project="p",
+            task="t",
+            log_file="/nonexistent_root_dir/impossible/forge.log",
+            enabled=True,
+        )
+        # Must not raise
+        logger.emit("test_event")
+
+    def test_disabled_does_not_write(self, tmp_path):
+        log_file = tmp_path / "forge.log"
+        logger = StructuredLogger(
+            run_id="r1",
+            project="p",
+            task="t",
+            log_file=str(log_file),
+            enabled=False,
+        )
+        logger.emit("test_event")
+        assert not log_file.exists()
+
+    def test_project_substitution(self, tmp_path):
+        log_file = str(tmp_path / "{project}" / "forge.log")
+        logger = StructuredLogger(
+            run_id="r1",
+            project="myproj",
+            task="t",
+            log_file=log_file,
+            enabled=True,
+        )
+        logger.emit("test_event")
+        expected = tmp_path / "myproj" / "forge.log"
+        assert expected.exists()
+
+    def test_generate_run_id_returns_hex_string(self):
+        rid = _generate_run_id()
+        assert len(rid) == 12
+        assert all(c in "0123456789abcdef" for c in rid)
+
+
+class TestLogConfigParsing:
+    """Test LogConfig parsing from forge.yaml."""
+
+    def test_log_config_parsed_from_forge_yaml(self, tmp_path):
+        from theforge.config import load_config
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text(
+            "project: myproj\n"
+            "logging:\n"
+            "  log_file: /tmp/test_forge.log\n"
+            "  enabled: false\n"
+            "profiles:\n"
+            "  dev:\n"
+            "    cli: claude\n"
+            "    model: sonnet\n"
+            "    budget_usd: 1.0\n"
+            "    timeout_seconds: 300\n"
+            "  review:\n"
+            "    cli: claude\n"
+            "    model: opus\n"
+            "    budget_usd: 1.0\n"
+            "    timeout_seconds: 300\n",
+            encoding="utf-8",
+        )
+        config = load_config(forge_yaml)
+        assert config.log.log_file == "/tmp/test_forge.log"
+        assert config.log.enabled is False
+
+    def test_log_config_defaults_when_absent(self, tmp_path):
+        from theforge.config import load_config
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text(
+            "project: myproj\n"
+            "profiles:\n"
+            "  dev:\n"
+            "    cli: claude\n"
+            "    model: sonnet\n"
+            "    budget_usd: 1.0\n"
+            "    timeout_seconds: 300\n"
+            "  review:\n"
+            "    cli: claude\n"
+            "    model: opus\n"
+            "    budget_usd: 1.0\n"
+            "    timeout_seconds: 300\n",
+            encoding="utf-8",
+        )
+        config = load_config(forge_yaml)
+        assert config.log.log_file == "~/.forge/logs/{project}/forge.log"
+        assert config.log.enabled is True
+
+
+class TestStructuredLoggingIntegration:
+    """Integration tests: logging events emitted during run_task."""
+
+    def _make_logging_config(self, tmp_path: Path, log_file: Path) -> ForgeConfig:
+        return ForgeConfig(
+            project="testproj",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+            log=LogConfig(log_file=str(log_file), enabled=True),
+        )
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_run_task_emits_lifecycle_events(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        log_file = tmp_path / "forge.log"
+        config = self._make_logging_config(tmp_path, log_file)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        preflight_result = _make_agent_result(
+            success=True,
+            output="verdict: PROCEED\ncomplexity: small",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        agent_calls = {"n": 0}
+        agent_results = [preflight_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(agent_calls["n"], len(agent_results) - 1)
+            agent_calls["n"] += 1
+            return agent_results[idx]
+
+        mock_agent.side_effect = agent_side_effect
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+        assert result.success is True
+
+        assert log_file.exists()
+        lines = log_file.read_text().splitlines()
+        events = [_json.loads(line)["event"] for line in lines]
+
+        assert "run_start" in events
+        assert "run_end" in events
+        # Phase events
+        assert "phase_start" in events
+        assert "phase_end" in events
+        assert "gate_result" in events
+        assert "review_result" in events
+
+        # All events share the same run_id
+        run_ids = {_json.loads(line)["run_id"] for line in lines}
+        assert len(run_ids) == 1
+
+        # All events have required fields
+        for line in lines:
+            entry = _json.loads(line)
+            assert "ts" in entry
+            assert "project" in entry
+            assert "run_id" in entry
+            assert "task" in entry
+            assert "event" in entry
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_result_includes_output_tail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        log_file = tmp_path / "forge.log"
+        config = self._make_logging_config(tmp_path, log_file)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        long_output = "x" * 1000
+
+        def shell_with_long_output(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, long_output)
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_with_long_output
+        mock_agent.side_effect = [
+            _make_agent_result(
+                success=True,
+                output="verdict: PROCEED\ncomplexity: small",
+                cost_usd=0.10,
+            ),
+            _make_agent_result(success=True, output="Done.", cost_usd=0.50),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        lines = log_file.read_text().splitlines()
+        gate_events = [
+            _json.loads(line) for line in lines if _json.loads(line)["event"] == "gate_result"
+        ]
+        assert len(gate_events) >= 1
+        output_tail = gate_events[0]["output_tail"]
+        assert len(output_tail) <= 500
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_review_result_event_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        log_file = tmp_path / "forge.log"
+        config = self._make_logging_config(tmp_path, log_file)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(
+                success=True,
+                output="verdict: PROCEED\ncomplexity: small",
+                cost_usd=0.10,
+            ),
+            _make_agent_result(success=True, output="Done.", cost_usd=0.50),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        lines = log_file.read_text().splitlines()
+        review_events = [
+            _json.loads(line) for line in lines if _json.loads(line)["event"] == "review_result"
+        ]
+        assert len(review_events) >= 1
+        ev = review_events[0]
+        assert ev["verdict"] == "APPROVE"
+        assert ev["p1_count"] == 0
+        assert ev["p2_count"] == 0
+        assert "cost_usd" in ev
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_escalate_event_emitted_on_gate_failure(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        log_file = tmp_path / "forge.log"
+        config = self._make_logging_config(tmp_path, log_file)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        # Always return FAIL → exhaust retries → ESCALATE
+        mock_shell.side_effect = _shell_with_gate(workspace, "FAIL")
+        mock_agent.side_effect = [
+            _make_agent_result(
+                success=True,
+                output="verdict: PROCEED\ncomplexity: small",
+                cost_usd=0.10,
+            ),
+            _make_agent_result(success=True, output="Done.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Done.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Done.", cost_usd=0.10),
+        ]
+        mock_pool.return_value = []
+
+        result = run_task(config, task)
+        assert result.success is False
+
+        lines = log_file.read_text().splitlines()
+        events = [_json.loads(line)["event"] for line in lines]
+        assert "escalate" in events
+        assert "run_end" in events
+
+        run_end = next(
+            _json.loads(line) for line in lines if _json.loads(line)["event"] == "run_end"
+        )
+        assert run_end["outcome"] == "escalate"
+
+    def test_log_write_failure_does_not_crash_run(self, tmp_path):
+        """A broken emit() must never crash the run."""
+        log_file = tmp_path / "forge.log"
+        config = self._make_logging_config(tmp_path, log_file)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch("theforge.coordinator.run_agent_pool") as mock_pool,
+            patch("theforge.coordinator.run_agent") as mock_agent,
+            patch("theforge.coordinator._run_shell") as mock_shell,
+            patch("theforge.coordinator.StructuredLogger.emit", side_effect=OSError("disk full")),
+        ):
+            mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+            mock_agent.side_effect = [
+                _make_agent_result(
+                    success=True,
+                    output="verdict: PROCEED\ncomplexity: small",
+                    cost_usd=0.10,
+                ),
+                _make_agent_result(success=True, output="Done.", cost_usd=0.50),
+            ]
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            # The run must succeed despite OSError from emit
+            result = run_task(config, task)
+        assert result.success is True

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -195,6 +196,67 @@ def _log_verbose(msg: str) -> None:
 def _log_phase(phase: Phase, detail: str = "") -> None:
     suffix = f"   {detail}" if detail else ""
     _log(f"▸ {phase.name}{suffix}")
+
+
+# ── Structured logging ────────────────────────────────────────────────
+
+
+def _generate_run_id() -> str:
+    """Return a short random hex run ID (12 chars)."""
+    return secrets.token_hex(6)
+
+
+class StructuredLogger:
+    """Append-only JSON Lines logger for persistent run events.
+
+    Writes one JSON object per line to ~/.forge/logs/<project>/forge.log
+    (or a configured path). All writes are best-effort — failures are
+    silently swallowed and never crash the run.
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        project: str,
+        task: str,
+        log_file: str,
+        enabled: bool,
+    ) -> None:
+        self._run_id = run_id
+        self._project = project
+        self._task = task
+        self._enabled = enabled
+        if enabled:
+            resolved = log_file.replace("{project}", project)
+            self._log_path = Path(resolved).expanduser()
+        else:
+            self._log_path = Path("/dev/null")
+
+    def emit(self, event: str, **fields: object) -> None:
+        """Append one JSON event line to the log file. Never raises."""
+        if not self._enabled:
+            return
+        try:
+            entry = {
+                "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "project": self._project,
+                "run_id": self._run_id,
+                "task": self._task,
+                "event": event,
+                **fields,
+            }
+            self._log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._log_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass
+
+    def _safe_emit(self, event: str, **fields: object) -> None:
+        """Call emit(), silently swallowing any exception (including mocked errors)."""
+        try:
+            self.emit(event, **fields)
+        except Exception:
+            pass
 
 
 # ── Notifications ─────────────────────────────────────────────────────
@@ -681,7 +743,7 @@ def _resolve_merge_conflicts(
 
     # Run gate to verify resolution didn't break anything
     _log("  Running gate to verify resolution...")
-    gate_decision, gate_error = _run_gate(config, workspace_path)
+    gate_decision, gate_error, _gate_output = _run_gate(config, workspace_path)
     if gate_error or gate_decision != "PASS":
         _log("  ⚠ Conflict resolution broke tests — aborting merge")
         _run_shell("git merge --abort", project_root)
@@ -1222,8 +1284,8 @@ def _read_gate_decision(
 
 def _run_gate(
     config: ForgeConfig, workspace_path: Path, task: "TaskSpec | None" = None
-) -> tuple[str | None, str | None]:
-    """Run the gate command and read the decision. Returns (decision, error).
+) -> tuple[str | None, str | None, str]:
+    """Run the gate command and read the decision. Returns (decision, error, output).
 
     Supports two modes:
     1. Handoff-based: gate_command writes a handoff file with a gate decision key.
@@ -1254,7 +1316,7 @@ def _run_gate(
                 try:
                     stale_handoff.unlink()
                 except OSError as e:
-                    return None, f"Cannot remove stale handoff file: {e}"
+                    return None, f"Cannot remove stale handoff file: {e}", ""
         # Global gate command with task-specific substitutions
         gate_cmd = config.validation.gate_command
         if task is not None:
@@ -1274,7 +1336,7 @@ def _run_gate(
     # Exit-code mode: use command exit code directly
     if use_exit_code:
         if ok:
-            return "PASS", None
+            return "PASS", None, output
         # Distinguish infrastructure failures (timeout, shell error) from code failures.
         # _run_shell prefixes these with "TIMEOUT" or "ERROR:" — surface them as errors
         # so the coordinator escalates immediately rather than burning dev retries.
@@ -1283,11 +1345,12 @@ def _run_gate(
                 None,
                 f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
                 " Consider increasing gate_timeout.",
+                output,
             )
         if output.startswith("ERROR:"):
-            return None, f"Gate infrastructure error: {output[:300]}"
+            return None, f"Gate infrastructure error: {output[:300]}", output
         _log(f"Gate command failed (exit non-zero): {output[:200]}")
-        return "FAIL", None
+        return "FAIL", None, output
 
     # Handoff-based mode: read decision from handoff file
     if not ok:
@@ -1295,10 +1358,11 @@ def _run_gate(
         # Gate may have still produced a handoff with FAIL/BLOCKED
         decision, err = _read_gate_decision(config, workspace_path)
         if decision:
-            return decision, None
-        return None, f"Gate command failed and no handoff produced: {output[:500]}"
+            return decision, None, output
+        return None, f"Gate command failed and no handoff produced: {output[:500]}", output
 
-    return _read_gate_decision(config, workspace_path)
+    decision, err = _read_gate_decision(config, workspace_path)
+    return decision, err, output
 
 
 # ── Diff extraction ─────────────────────────────────────────────────
@@ -1342,6 +1406,7 @@ def _coordinator_loop(
     auto_merge: bool = False,
     skip_dev_first_iter: bool = False,
     notify: bool = False,
+    logger: StructuredLogger | None = None,
 ) -> CoordinatorResult:
     """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
@@ -1375,6 +1440,8 @@ def _coordinator_loop(
                 state.phase,
                 f"{config.dev_profile.model}  iter={state.dev_iteration}",
             )
+            if logger:
+                logger._safe_emit("phase_start", phase="DEV", iteration=state.dev_iteration)
 
             _gate_cmd = (
                 task.gate_override
@@ -1422,6 +1489,14 @@ def _coordinator_loop(
             state.dev_session_id = dev_result.session_id
             log_agent_result(dev_result, "DEV")
             _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_duration(_dev_elapsed)}")
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="DEV",
+                    outcome="success" if dev_result.success else "failure",
+                    cost_usd=dev_result.cost_usd,
+                    duration_s=round(_dev_elapsed, 2),
+                )
 
             if state.total_dev_cost > config.dev_profile.budget_usd:
                 state.phase = Phase.ESCALATE
@@ -1430,6 +1505,8 @@ def _coordinator_loop(
                     f"(limit ${config.dev_profile.budget_usd:.4f})"
                 )
                 _log(f"✗ ESCALATE   {state.error}")
+                if logger:
+                    logger._safe_emit("escalate", reason=state.error, phase="DEV")
                 _escalate_notify(task, state, notify, config)
                 return CoordinatorResult(
                     success=False,
@@ -1445,20 +1522,32 @@ def _coordinator_loop(
 
             # ── VALIDATE ──────────────────────────────────────────
             state.phase = Phase.VALIDATE
+            if logger:
+                logger._safe_emit("phase_start", phase="VALIDATE", iteration=state.dev_iteration)
 
+            _gate_start = time.monotonic()
             gate_override = task.gate_override
             if _is_gate_skip(gate_override):
                 _log_phase(state.phase, "skipped (gate: none)")
                 _log("  Gate: none (spec override)")
                 gate_decision: str | None = "PASS"
                 gate_err: str | None = None
+                gate_output: str = ""
             else:
                 if gate_override is not None:
                     _log_phase(state.phase, "running gate... (override)")
                     _log(f"  Gate: {gate_override} (spec override)")
                 else:
                     _log_phase(state.phase, "running gate...")
-                gate_decision, gate_err = _run_gate(config, workspace_path, task=task)
+                gate_decision, gate_err, gate_output = _run_gate(config, workspace_path, task=task)
+            _gate_elapsed = time.monotonic() - _gate_start
+            if logger:
+                logger._safe_emit(
+                    "gate_result",
+                    decision=gate_decision or gate_err,
+                    duration_s=round(_gate_elapsed, 2),
+                    output_tail=gate_output[-500:] if gate_output else "",
+                )
 
             if gate_err:
                 use_exit_code = not config.validation.handoff_file
@@ -1468,6 +1557,9 @@ def _coordinator_loop(
                     _log(f"✗ ESCALATE   {gate_err}")
                     state.phase = Phase.ESCALATE
                     state.error = gate_err
+                    if logger:
+                        logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                        logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
                     _escalate_notify(task, state, notify, config)
                     return CoordinatorResult(
                         success=False,
@@ -1481,6 +1573,9 @@ def _coordinator_loop(
                     state.phase = Phase.ESCALATE
                     state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
                     _log(f"✗ ESCALATE   {state.error}")
+                    if logger:
+                        logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                        logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
                     _escalate_notify(task, state, notify, config)
                     return CoordinatorResult(
                         success=False,
@@ -1491,6 +1586,8 @@ def _coordinator_loop(
                 state.human_feedback = f"Gate validation failed: {gate_err}"
                 state.retry_reason = "gate_fail"
                 _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
+                if logger:
+                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
                 continue
 
             assert gate_decision is not None
@@ -1595,6 +1692,9 @@ def _coordinator_loop(
                         f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
                     )
                     _log(f"✗ ESCALATE   {state.error}")
+                    if logger:
+                        logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                        logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
                     _escalate_notify(task, state, notify, config)
                     return CoordinatorResult(
                         success=False,
@@ -1612,6 +1712,8 @@ def _coordinator_loop(
                 state.retry_reason = "gate_fail"
                 _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
                 _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
+                if logger:
+                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
                 continue
             else:
                 _log(f"Unknown gate decision: {gate_decision!r}, treating as FAIL")
@@ -1626,10 +1728,14 @@ def _coordinator_loop(
                     message=state.error,
                 )
 
+        if logger:
+            logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
         _skip_dev = False  # all subsequent iterations start at DEV
 
         # ── REVIEW ────────────────────────────────────────────
         state.phase = Phase.REVIEW
+        if logger:
+            logger._safe_emit("phase_start", phase="REVIEW", iteration=state.review_cycle + 1)
         pool_size = len(config.review_pool)
         max_parse_retries = config.retry.max_review_parse_retries
         _review_pool_start = time.monotonic()
@@ -1838,6 +1944,9 @@ def _coordinator_loop(
                 f"after {meta.parse_retries} retries. Last error: {last_parse_error}"
             )
             _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+                logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
             _escalate_notify(task, state, notify, config)
             return CoordinatorResult(
                 success=False,
@@ -1860,6 +1969,14 @@ def _coordinator_loop(
         _log_verbose(f"Review verdict: {parsed_review.verdict}")
         _log_verbose(f"  Summary: {parsed_review.summary}")
         _log_verbose(f"  Findings: {len(parsed_review.findings)} ({_p1_count} P1)")
+        if logger:
+            logger._safe_emit(
+                "review_result",
+                verdict=parsed_review.verdict,
+                p1_count=_p1_count,
+                p2_count=_p2_count,
+                cost_usd=round(_review_cost, 6),
+            )
 
         if parsed_review.verdict == "APPROVE":
             _log(
@@ -1982,6 +2099,21 @@ def _coordinator_loop(
                         " Merged."
                         if merge_info["merged"]
                         else f" Merge failed: {merge_info['error']}"
+                    )
+                    if logger:
+                        logger._safe_emit(
+                            "merge_result",
+                            success=merge_info["merged"],
+                            branch=branch_name,
+                            error=merge_info.get("error"),
+                        )
+                if logger:
+                    logger._safe_emit(
+                        "phase_end",
+                        phase="REVIEW",
+                        outcome="approve",
+                        cost_usd=round(_review_cost, 6),
+                        duration_s=round(_review_elapsed, 2),
                     )
                 _task_elapsed = time.monotonic() - task_start
                 _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(_task_elapsed)}")
@@ -2145,6 +2277,9 @@ def _coordinator_loop(
                     f"Max cycles ({config.retry.max_review_cycles}) exhausted."
                 )
                 _log(f"✗ ESCALATE   {state.error}")
+                if logger:
+                    logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+                    logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
                 _escalate_notify(task, state, notify, config)
                 return CoordinatorResult(
                     success=False,
@@ -2154,6 +2289,14 @@ def _coordinator_loop(
                 )
 
         # Feed findings back to dev agent
+        if logger:
+            logger._safe_emit(
+                "phase_end",
+                phase="REVIEW",
+                outcome="request_changes",
+                cost_usd=round(_review_cost, 6),
+                duration_s=round(_review_elapsed, 2),
+            )
         state.last_review_findings = findings_to_markdown(parsed_review.findings)
         state.dev_iteration = 0
         state.human_feedback = None
@@ -2169,6 +2312,7 @@ def run_task(
     interactive: bool = False,
     auto_merge: bool = False,
     notify: bool = False,
+    run_id: str | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -2191,6 +2335,22 @@ def run_task(
     _task_start = time.monotonic()
     spec_content = load_spec(task.spec_path)
 
+    # ── Structured logger ──────────────────────────────────────────
+    _run_id = run_id or _generate_run_id()
+    logger = StructuredLogger(
+        run_id=_run_id,
+        project=config.project,
+        task=task.slug,
+        log_file=config.log.log_file,
+        enabled=config.log.enabled,
+    )
+    logger._safe_emit(
+        "run_start",
+        specs=[str(task.spec_path)],
+        budget_usd=config.dev_profile.budget_usd,
+        resume=False,
+    )
+
     # ── Smart config display ───────────────────────────────────────
     if config.smart_config_models is not None:
         models_str = ", ".join(config.smart_config_models)
@@ -2203,11 +2363,15 @@ def run_task(
     # ── WORKSPACE ─────────────────────────────────────────────────
     state.phase = Phase.WORKSPACE
     _log_phase(state.phase, task.slug)
+    logger._safe_emit("phase_start", phase="WORKSPACE", iteration=0)
 
     workspace_path, branch_name, err = _create_workspace(config, task)
     if err:
         state.phase = Phase.ESCALATE
         state.error = err
+        logger._safe_emit("phase_end", phase="WORKSPACE", outcome="escalate")
+        logger._safe_emit("escalate", reason=state.error, phase="WORKSPACE")
+        logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False,
@@ -2220,11 +2384,13 @@ def run_task(
     assert branch_name is not None
     state.workspace_path = workspace_path
     state.branch_name = branch_name
+    logger._safe_emit("phase_end", phase="WORKSPACE", outcome="success")
 
     # ── PREFLIGHT ──────────────────────────────────────────────────
     state.phase = Phase.PREFLIGHT
     preflight_profile = config.preflight_profile
     _log_phase(state.phase, preflight_profile.model)
+    logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
 
     file_contents = _load_file_scope_contents(task, config.project_root)
     preflight_prompt = build_preflight_prompt(
@@ -2237,6 +2403,7 @@ def run_task(
         profile=preflight_profile,
         working_dir=workspace_path,
     )
+    _preflight_elapsed = time.monotonic() - _preflight_start
     state.preflight_result = preflight_result
     log_agent_result(preflight_result, "PREFLIGHT")
 
@@ -2262,11 +2429,24 @@ def run_task(
 
     _log(f"  ✓ PREFLIGHT   {verdict}")
     _log_verbose(f"  Reason: {reason}")
+    logger._safe_emit(
+        "phase_end",
+        phase="PREFLIGHT",
+        outcome=verdict.lower(),
+        cost_usd=preflight_result.cost_usd,
+        duration_s=round(_preflight_elapsed, 2),
+    )
 
     if verdict == "ALREADY_DONE":
         state.phase = Phase.DONE
         elapsed = time.monotonic() - _task_start
         _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(elapsed)}")
+        logger._safe_emit(
+            "run_end",
+            outcome="already_done",
+            total_cost_usd=round(state.total_cost, 6),
+            total_duration_s=round(elapsed, 2),
+        )
         _ntfy_done_notify(
             task, state, config, notify, reason or "Spec already satisfied.", elapsed, branch_name
         )
@@ -2281,6 +2461,13 @@ def run_task(
         state.phase = Phase.ESCALATE
         state.error = f"Preflight: spec is blocked. {reason}"
         _log(f"✗ ESCALATE   {state.error}")
+        logger._safe_emit("escalate", reason=state.error, phase="PREFLIGHT")
+        logger._safe_emit(
+            "run_end",
+            outcome="escalate",
+            total_cost_usd=round(state.total_cost, 6),
+            total_duration_s=round(time.monotonic() - _task_start, 2),
+        )
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False,
@@ -2330,7 +2517,7 @@ def run_task(
             _log("  ⚠ PLAN failed — proceeding to DEV without plan")
 
     # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
-    return _coordinator_loop(
+    result = _coordinator_loop(
         state,
         config,
         task,
@@ -2339,7 +2526,16 @@ def run_task(
         interactive=interactive,
         auto_merge=auto_merge,
         notify=notify,
+        logger=logger,
     )
+    _total_elapsed = time.monotonic() - _task_start
+    logger._safe_emit(
+        "run_end",
+        outcome="done" if result.success else "escalate",
+        total_cost_usd=round(state.total_cost, 6),
+        total_duration_s=round(_total_elapsed, 2),
+    )
+    return result
 
 
 # ── Review-from-existing-worktree mode (full iteration loop) ─────────
@@ -2353,6 +2549,7 @@ def run_from_review(
     interactive: bool = False,
     auto_merge: bool = False,
     notify: bool = False,
+    run_id: str | None = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -2378,9 +2575,26 @@ def run_from_review(
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
 
+    _run_id = run_id or _generate_run_id()
+    logger = StructuredLogger(
+        run_id=_run_id,
+        project=config.project,
+        task=task.slug,
+        log_file=config.log.log_file,
+        enabled=config.log.enabled,
+    )
+    logger._safe_emit(
+        "run_start",
+        specs=[str(task.spec_path)],
+        budget_usd=config.dev_profile.budget_usd,
+        resume=True,
+    )
+
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE
         state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        logger._safe_emit("escalate", reason=state.error, phase="INIT")
+        logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False,
@@ -2404,7 +2618,7 @@ def run_from_review(
     # ── REVIEW→DEV→VALIDATE→REVIEW loop ─────────────────────────
     # First iteration starts at REVIEW (skip DEV+VALIDATE for existing worktree).
     # Subsequent iterations run the full DEV→VALIDATE→REVIEW sequence.
-    return _coordinator_loop(
+    result = _coordinator_loop(
         state,
         config,
         task,
@@ -2414,7 +2628,15 @@ def run_from_review(
         auto_merge=auto_merge,
         skip_dev_first_iter=True,
         notify=notify,
+        logger=logger,
     )
+    logger._safe_emit(
+        "run_end",
+        outcome="done" if result.success else "escalate",
+        total_cost_usd=round(state.total_cost, 6),
+        total_duration_s=round(time.monotonic() - _task_start, 2),
+    )
+    return result
 
 
 # ── Dev-from-existing-worktree mode ─────────────────────────────────
@@ -2428,6 +2650,7 @@ def run_from_dev(
     interactive: bool = False,
     auto_merge: bool = False,
     notify: bool = False,
+    run_id: str | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -2450,9 +2673,26 @@ def run_from_dev(
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
 
+    _run_id = run_id or _generate_run_id()
+    logger = StructuredLogger(
+        run_id=_run_id,
+        project=config.project,
+        task=task.slug,
+        log_file=config.log.log_file,
+        enabled=config.log.enabled,
+    )
+    logger._safe_emit(
+        "run_start",
+        specs=[str(task.spec_path)],
+        budget_usd=config.dev_profile.budget_usd,
+        resume=True,
+    )
+
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE
         state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        logger._safe_emit("escalate", reason=state.error, phase="INIT")
+        logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False,
@@ -2474,7 +2714,7 @@ def run_from_dev(
     spec_content = load_spec(task.spec_path)
 
     # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
-    return _coordinator_loop(
+    result = _coordinator_loop(
         state,
         config,
         task,
@@ -2484,7 +2724,15 @@ def run_from_dev(
         auto_merge=auto_merge,
         skip_dev_first_iter=False,
         notify=notify,
+        logger=logger,
     )
+    logger._safe_emit(
+        "run_end",
+        outcome="done" if result.success else "escalate",
+        total_cost_usd=round(state.total_cost, 6),
+        total_duration_s=round(time.monotonic() - _task_start, 2),
+    )
+    return result
 
 
 # ── Review-only mode ─────────────────────────────────────────────────
@@ -2505,11 +2753,29 @@ def run_review_only(
     """
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    _ro_task_start = time.monotonic()
+
+    _run_id = _generate_run_id()
+    logger = StructuredLogger(
+        run_id=_run_id,
+        project=config.project,
+        task=task.slug,
+        log_file=config.log.log_file,
+        enabled=config.log.enabled,
+    )
+    logger._safe_emit(
+        "run_start",
+        specs=[str(task.spec_path)],
+        budget_usd=config.dev_profile.budget_usd,
+        resume=True,
+    )
 
     # ── Verify workspace exists ───────────────────────────────────────
     if not workspace_path.exists():
         state.phase = Phase.ESCALATE
         state.error = f"Worktree not found at {workspace_path}. Run `forge run` first."
+        logger._safe_emit("escalate", reason=state.error, phase="INIT")
+        logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
             success=False,
@@ -2526,6 +2792,7 @@ def run_review_only(
 
     # ── REVIEW ────────────────────────────────────────────────────────
     state.phase = Phase.REVIEW
+    logger._safe_emit("phase_start", phase="REVIEW", iteration=1)
     state.review_cycle = 1
     state.dev_iteration = 0
     pool_size = len(config.review_pool)
@@ -2650,11 +2917,32 @@ def run_review_only(
     _ro_cost = sum(r.cost_usd for r in state.review_agent_results)
     _ro_elapsed = _pool_elapsed
 
+    logger._safe_emit(
+        "review_result",
+        verdict=parsed_review.verdict,
+        p1_count=_ro_p1,
+        p2_count=_ro_p2,
+        cost_usd=round(_ro_cost, 6),
+    )
+
     if parsed_review.verdict == "APPROVE":
         state.phase = Phase.DONE
         _dur = _fmt_duration(_ro_elapsed)
         _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_dur}")
         _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(_ro_elapsed)}")
+        logger._safe_emit(
+            "phase_end",
+            phase="REVIEW",
+            outcome="approve",
+            cost_usd=round(_ro_cost, 6),
+            duration_s=round(_ro_elapsed, 2),
+        )
+        logger._safe_emit(
+            "run_end",
+            outcome="done",
+            total_cost_usd=round(state.total_cost, 6),
+            total_duration_s=round(time.monotonic() - _ro_task_start, 2),
+        )
         _ntfy_done_notify(
             task, state, config, notify, parsed_review.summary, _ro_elapsed, branch_name
         )
@@ -2675,6 +2963,20 @@ def run_review_only(
         f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
     )
     _log(f"✗ ESCALATE   {state.error}")
+    logger._safe_emit(
+        "phase_end",
+        phase="REVIEW",
+        outcome="escalate",
+        cost_usd=round(_ro_cost, 6),
+        duration_s=round(_ro_elapsed, 2),
+    )
+    logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+    logger._safe_emit(
+        "run_end",
+        outcome="escalate",
+        total_cost_usd=round(state.total_cost, 6),
+        total_duration_s=round(time.monotonic() - _ro_task_start, 2),
+    )
     _escalate_notify(task, state, notify, config)
     return CoordinatorResult(
         success=False,
