@@ -6233,3 +6233,318 @@ class TestFixPromptRouting:
         # iter 1 → build_dev_prompt; iter 2 (post-extend) → build_fix_prompt (P1 findings)
         assert mock_dev_prompt.call_count == 1
         assert mock_fix_prompt.call_count == 1
+
+
+# ── ntfy terminal notifications (DONE / ESCALATE) ────────────────────
+
+
+class TestNtfyTerminalNotifications:
+    """ntfy publish calls at DONE and ESCALATE terminal states."""
+
+    def test_done_publishes_ntfy(self, tmp_path):
+        """DONE state sends an ntfy notification with correct title and body."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert mock_ntfy.called
+        # Find the DONE notification (title contains "✓ done")
+        done_calls = [c for c in mock_ntfy.call_args_list if "done" in c.args[1]]
+        assert len(done_calls) == 1, f"Expected 1 DONE ntfy call, got: {mock_ntfy.call_args_list}"
+        call = done_calls[0]
+        title = call.args[1]
+        body = call.args[2]
+        assert "✓" in title
+        assert "done" in title
+        assert "test-task" in title
+        assert "APPROVE" in body
+        assert "$" in body  # cost present
+        assert "Branch:" in body
+        assert "Looks good." in body  # parsed_review.summary from APPROVE_REVIEW
+        # No action buttons on DONE notifications
+        assert "actions" not in call.kwargs
+
+    def test_done_summary_truncated(self, tmp_path):
+        """Long review summary is truncated to 120 chars in DONE body."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        long_summary = "A" * 200
+        long_approve = f"""\
+```yaml
+verdict: APPROVE
+summary: "{long_summary}"
+findings: []
+spec_compliance:
+  matches_spec: true
+test_coverage:
+  adequate: true
+```
+"""
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([long_approve], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is True
+        done_calls = [c for c in mock_ntfy.call_args_list if "done" in c.args[1]]
+        assert len(done_calls) == 1
+        body = done_calls[0].args[2]
+        body_lines = body.splitlines()
+        # The summary line (line 2) must be at most 120 chars
+        assert len(body_lines[1]) <= 120
+
+    def test_escalate_publishes_ntfy(self, tmp_path):
+        """ESCALATE state sends an ntfy notification with correct title and body."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(
+                    _make_agent_result(output="Done."),
+                    _make_agent_result(output="Fixed."),
+                ),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([REQUEST_CHANGES_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            # max_review_cycles=2 in _make_ntfy_config; run until exhausted (no interactive)
+            result = run_task(config, task, notify=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        escalate_calls = [c for c in mock_ntfy.call_args_list if "escalated" in c.args[1]]
+        assert len(escalate_calls) >= 1, (
+            f"Expected ntfy ESCALATE call, got: {mock_ntfy.call_args_list}"
+        )
+        call = escalate_calls[-1]  # last call is the cycles-exhausted one
+        title = call.args[1]
+        body = call.args[2]
+        body_lines = body.splitlines()
+        assert "✗" in title
+        assert "escalated" in title
+        assert "test-task" in title
+        assert "cycles exhausted" in body_lines[0]  # always uses cycles format
+        assert "$" in body_lines[0]  # cost present in first line
+        # Second line: P1 description (or error), truncated to 120 chars
+        assert "Off by one" in body_lines[1]  # P1 description from REQUEST_CHANGES_REVIEW
+        assert len(body_lines[1]) <= 120
+        assert "Branch:" in body
+        # No action buttons on ESCALATE notifications
+        assert "actions" not in call.kwargs
+
+    def test_escalate_detail_truncated(self, tmp_path):
+        """Long P1 description is truncated to 120 chars in ESCALATE body."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        long_desc = "X" * 200
+        long_p1_review = f"""\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Bug found."
+findings:
+  - severity: P1
+    file: src/foo.py
+    line: 10
+    description: "{long_desc}"
+    suggestion: "Fix it"
+spec_compliance:
+  matches_spec: false
+  mismatches: []
+test_coverage:
+  adequate: false
+  gaps: []
+```
+"""
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(
+                    _make_agent_result(output="Done."),
+                    _make_agent_result(output="Fixed."),
+                ),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([long_p1_review], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.phase == Phase.ESCALATE
+        escalate_calls = [c for c in mock_ntfy.call_args_list if "escalated" in c.args[1]]
+        assert len(escalate_calls) >= 1
+        body = escalate_calls[-1].args[2]
+        detail_line = body.splitlines()[1]
+        assert len(detail_line) <= 120
+        assert detail_line == "X" * 120
+
+    def test_escalate_non_cycle_body_uses_cycle_format(self, tmp_path):
+        """Non-cycle ESCALATE (workspace failure) still uses '{cycles} cycles exhausted' format."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        with (
+            patch(
+                "theforge.coordinator._run_shell",
+                return_value=(False, "git error"),
+            ),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        escalate_calls = [c for c in mock_ntfy.call_args_list if "escalated" in c.args[1]]
+        assert len(escalate_calls) >= 1
+        body = escalate_calls[0].args[2]
+        # Spec format always uses cycles exhausted (review_cycle=0 for workspace failure)
+        assert "0 cycles exhausted" in body
+        assert "$" in body
+        assert "Branch:" in body
+
+    def test_no_ntfy_when_not_configured(self, tmp_path):
+        """No ntfy call at all when config.notifications.ntfy is None."""
+        config = _make_config(tmp_path)  # no ntfy
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is True
+        mock_ntfy.assert_not_called()
+
+    def test_no_ntfy_when_notify_false(self, tmp_path):
+        """No ntfy call when notify=False even if ntfy is configured."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=False)
+
+        assert result.success is True
+        assert not mock_ntfy.called
+
+    def test_ntfy_publish_failure_is_silent(self, tmp_path):
+        """If _ntfy_publish raises, the coordinator run still succeeds."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch(
+                "theforge.coordinator._ntfy_publish",
+                side_effect=OSError("network unreachable"),
+            ),
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
+    def test_already_done_publishes_ntfy(self, tmp_path):
+        """ALREADY_DONE preflight verdict publishes a DONE-style ntfy notification."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_already_done = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.05
+        )
+
+        with (
+            patch("theforge.coordinator.run_agent", return_value=preflight_already_done),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        done_calls = [c for c in mock_ntfy.call_args_list if "done" in c.args[1]]
+        assert len(done_calls) == 1
+        title = done_calls[0].args[1]
+        body = done_calls[0].args[2]
+        assert "✓" in title
+        assert "done" in title
+        assert "APPROVE" in body
+        assert "$" in body
+        assert "Branch:" in body
