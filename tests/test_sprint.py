@@ -584,7 +584,7 @@ class TestTriageSpec:
             return m
 
         with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
-            with patch("theforge.sprint._run_gate", return_value=("PASS", None)):
+            with patch("theforge.sprint._run_gate", return_value=("PASS", None, "")):
                 triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "review"
@@ -611,7 +611,7 @@ class TestTriageSpec:
             return m
 
         with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
-            with patch("theforge.sprint._run_gate", return_value=("FAIL", "tests failed")):
+            with patch("theforge.sprint._run_gate", return_value=("FAIL", "tests failed", "")):
                 triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "dev"
