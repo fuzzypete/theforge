@@ -1,1 +1,11 @@
 gate_decision: PASS
+scope_completed:
+  - "Replaced permissive scope violation instruction in build_dev_prompt() with strict SCOPE_BLOCKED sentinel version"
+  - "New instruction eliminates workaround escape hatch: no commit, output SCOPE_BLOCKED: sentinel only"
+  - "Created tests/test_task.py with 7 tests verifying: sentinel present, no-commit instruction, no-workaround instruction, old text absent, escalation consequence explained, file scope listed, empty scope renders correctly"
+  - "Committed pre-existing ideate.py change (strip markdown code fences from synthesis output)"
+deferred_followups:
+  - "src/theforge/coordinator.py: detect SCOPE_BLOCKED: in dev_result.output and escalate immediately (skip VALIDATE/REVIEW) — NOT in file_scope"
+  - "tests/test_coordinator.py: test coordinator escalates on SCOPE_BLOCKED: output — NOT in file_scope"
+  - "file_scope in spec needs expansion to include coordinator.py and tests/test_coordinator.py for full acceptance criteria"
+next_recommended_step: "Update spec file_scope to add src/theforge/coordinator.py and tests/test_coordinator.py, then re-run this task to implement coordinator SCOPE_BLOCKED detection"
