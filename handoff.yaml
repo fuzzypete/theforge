@@ -1,9 +1,9 @@
 gate_decision: PASS
 scope_completed:
-  - "build_dev_prompt() scope instruction replaced with strict SCOPE_BLOCKED sentinel version (task.py)"
-  - "tests/test_task.py created with 7 tests verifying strict instruction text"
+  - "build_dev_prompt() scope instruction replaced with strict SCOPE_BLOCKED sentinel version"
+  - "Fallback 'commit what you have' rule rewritten to exclude scope-blocked cases"
+  - "tests/test_task.py: 8 tests verifying strict instruction text and correct fallback rule"
 deferred_followups:
-  - "src/theforge/coordinator.py: detect SCOPE_BLOCKED: in dev_result.output and escalate (skip VALIDATE/REVIEW) — NOT in file_scope"
-  - "tests/test_coordinator.py: add regression test for immediate escalation on SCOPE_BLOCKED: output — NOT in file_scope"
-  - "src/theforge/ideate.py: review P1 flags this as out-of-scope; was committed per prior human feedback to clear uncommitted state"
-next_recommended_step: "Expand file_scope in spec to include src/theforge/coordinator.py and tests/test_coordinator.py, then re-run task"
+  - "src/theforge/coordinator.py: detect SCOPE_BLOCKED: in dev_result.output and escalate immediately — NOT in file_scope"
+  - "tests/test_coordinator.py: regression test for coordinator SCOPE_BLOCKED escalation — NOT in file_scope"
+next_recommended_step: "Expand file_scope to include src/theforge/coordinator.py and tests/test_coordinator.py, then implement coordinator detection"
