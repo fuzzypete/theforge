@@ -1280,6 +1280,27 @@ def _coordinator_loop(
                     message=state.error,
                 )
 
+            if "SCOPE_BLOCKED:" in dev_result.output:
+                # Extract the required files from the sentinel line for a helpful message.
+                blocked_files = ""
+                for line in dev_result.output.splitlines():
+                    if "Required files not in scope:" in line:
+                        blocked_files = line.split("Required files not in scope:", 1)[1].strip()
+                        break
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"ESCALATE: Dev agent scope blocked. "
+                    f"Required files: {blocked_files}. Update file_scope in spec."
+                )
+                _log(f"✗ ESCALATE   {state.error}")
+                _escalate_notify(task, state, notify)
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
+
             if not dev_result.success:
                 _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
                 # Don't immediately escalate — try validation anyway,

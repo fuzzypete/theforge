@@ -662,6 +662,67 @@ class TestCoordinatorBudgetEnforcement:
         assert len(result.state.review_agent_results) == 1
 
 
+class TestScopeBlocked:
+    """Test that SCOPE_BLOCKED sentinel in dev output causes immediate escalation."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_escalates_immediately(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Dev output containing SCOPE_BLOCKED: skips VALIDATE and escalates."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        scope_blocked_output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/runner.py\n"
+            "Reason: runner.py needs a new helper function for the feature."
+        )
+        dev_result = _make_agent_result(success=False, output=scope_blocked_output)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "ESCALATE" in result.message
+        assert "scope blocked" in result.message.lower()
+        assert "src/theforge/runner.py" in result.message
+        # Gate must NOT have been called (skip VALIDATE)
+        gate_calls = [call for call in mock_shell.call_args_list if "gate" in str(call).lower()]
+        assert len(gate_calls) == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_no_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """SCOPE_BLOCKED does not consume retry iterations — escalates on first occurrence."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        scope_blocked_output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/schemas.py\n"
+            "Reason: schemas.py must define the new validation type."
+        )
+        dev_result = _make_agent_result(success=False, output=scope_blocked_output)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        # Only one dev invocation (preflight + 1 dev call)
+        assert result.state.dev_iteration == 1
+        assert result.phase == Phase.ESCALATE
+
+
 class TestCoordinatorStaleHandoff:
     """Test that stale handoff.yaml is deleted before running the gate."""
 
