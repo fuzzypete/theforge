@@ -339,7 +339,9 @@ _REVIEW_TASK_SCOPE = ["src/"]
 
 _REVIEW_COMMON_KWARGS = dict(
     spec_content="# Spec",
-    diff_text="+ added line",
+    diff_stat=" src/foo.py | 10 +++---\n 1 file changed",
+    workspace_path="/tmp/ws",
+    branch="feat/test",
     handoff_content="gate_decision: PASS",
 )
 
@@ -421,10 +423,23 @@ class TestBuildReviewPrompt:
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "Test Task" in prompt
 
-    def test_includes_diff(self, review_task: TaskSpec) -> None:
-        """Diff text is embedded in the prompt."""
+    def test_includes_diff_stat(self, review_task: TaskSpec) -> None:
+        """Diff stat summary is embedded in the prompt."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
-        assert "+ added line" in prompt
+        assert "Changed Files (git diff --stat)" in prompt
+        assert "src/foo.py | 10" in prompt
+        assert "```diff" not in prompt
+        assert "## Diff to Review" not in prompt
+
+    def test_includes_tool_instructions(self, review_task: TaskSpec) -> None:
+        """Reviewer is instructed to use Read/Bash/Glob/Grep tools."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "Read" in prompt
+        assert "Bash" in prompt
+        assert "Glob" in prompt
+        assert "Grep" in prompt
+        assert "/tmp/ws" in prompt
+        assert "feat/test" in prompt
 
     def test_includes_spec(self, review_task: TaskSpec) -> None:
         """Spec content is embedded in the prompt."""

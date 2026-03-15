@@ -33,6 +33,7 @@ from theforge.coordinator import (
     _escalate_dev_model,
     _fmt_duration,
     _generate_run_id,
+    _get_diff_stat,
     _has_persistent_p1,
     _is_remote_mode,
     _is_stale_worktree,
@@ -7551,3 +7552,35 @@ class TestStructuredLoggingIntegration:
             # The run must succeed despite OSError from emit
             result = run_task(config, task)
         assert result.success is True
+
+
+# ── _get_diff_stat ────────────────────────────────────────────────────
+
+
+class TestGetDiffStat:
+    """Tests for the _get_diff_stat() helper."""
+
+    @patch("theforge.coordinator._run_shell")
+    def test_success(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns stat output when first command succeeds."""
+        stat = " src/foo.py | 5 ++---\n 1 file changed, 2 insertions(+), 3 deletions(-)"
+        mock_shell.return_value = (True, stat)
+        result = _get_diff_stat(tmp_path, "main")
+        assert result == stat
+        mock_shell.assert_called_once_with("git diff --stat main...HEAD", tmp_path)
+
+    @patch("theforge.coordinator._run_shell")
+    def test_fallback_when_first_empty(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Falls back to git diff --stat HEAD when first call returns empty."""
+        fallback = " src/bar.py | 3 +++\n 1 file changed, 3 insertions(+)"
+        mock_shell.side_effect = [(True, ""), (True, fallback)]
+        result = _get_diff_stat(tmp_path, "main")
+        assert result == fallback
+        assert mock_shell.call_count == 2
+
+    @patch("theforge.coordinator._run_shell")
+    def test_both_fail(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns placeholder when both commands fail."""
+        mock_shell.return_value = (False, "")
+        result = _get_diff_stat(tmp_path, "main")
+        assert result == "(no diff stat available)"

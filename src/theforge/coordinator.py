@@ -1382,18 +1382,18 @@ def _run_gate(
 # ── Diff extraction ─────────────────────────────────────────────────
 
 
-def _get_diff(workspace_path: Path, base_branch: str = "main") -> str:
-    """Get the diff of changes on the current branch vs the base branch."""
-    ok, diff = _run_shell(f"git diff {base_branch}...HEAD", workspace_path)
-    if ok and diff:
-        return diff
+def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
+    """Get a compact git diff --stat summary vs the base branch."""
+    ok, stat = _run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
+    if ok and stat:
+        return stat
 
-    # Fallback: diff of staged + unstaged
-    ok, diff = _run_shell("git diff HEAD", workspace_path)
-    if ok and diff:
-        return diff
+    # Fallback: stat of staged + unstaged
+    ok, stat = _run_shell("git diff --stat HEAD", workspace_path)
+    if ok and stat:
+        return stat
 
-    return "(no diff available)"
+    return "(no diff stat available)"
 
 
 def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
@@ -1770,13 +1770,15 @@ def _coordinator_loop(
         _pool_model_names = "+".join(p.model for p in config.review_pool)
         _log_phase(state.phase, f"{_pool_model_names}  cycle={state.review_cycle + 1}")
 
-        diff_text = _get_diff(workspace_path, config.workspace.base_branch)
+        diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
 
         review_prompt = build_review_prompt(
             task,
             spec_content=spec_content,
-            diff_text=diff_text,
+            diff_stat=diff_stat,
+            workspace_path=str(workspace_path),
+            branch=branch_name,
             handoff_content=handoff_content,
         )
 
@@ -2841,13 +2843,15 @@ def run_review_only(
     _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
     _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
 
-    diff_text = _get_diff(workspace_path, config.workspace.base_branch)
+    diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
     handoff_content = _get_handoff_content(config, workspace_path)
 
     review_prompt = build_review_prompt(
         task,
         spec_content=spec_content,
-        diff_text=diff_text,
+        diff_stat=diff_stat,
+        workspace_path=str(workspace_path),
+        branch=branch_name,
         handoff_content=handoff_content,
     )
 

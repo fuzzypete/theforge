@@ -661,16 +661,19 @@ def build_review_prompt(
     task: TaskSpec,
     *,
     spec_content: str,
-    diff_text: str,
+    diff_stat: str,
+    workspace_path: str,
+    branch: str,
     handoff_content: str,
     review_role: str | None = None,
 ) -> str:
     """Build the review agent prompt.
 
     The reviewer receives:
-    - The diff (focused attention, not the full codebase)
+    - A git diff --stat summary of changed files
     - The spec (to verify compliance)
     - The handoff.yaml (to cross-check validation claims)
+    - Instructions to use Read/Bash/Glob/Grep tools to inspect actual source
 
     When review_role is set to a known role ("correctness", "patterns",
     "edge-cases"), the "Your Role" section uses a role-specific lens.
@@ -690,11 +693,16 @@ def build_review_prompt(
 
         {spec_content}
 
-        ## Diff to Review
+        ## Changed Files (git diff --stat)
 
-        ```diff
-        {diff_text}
         ```
+        {diff_stat}
+        ```
+
+        Use your Read, Bash, Glob, and Grep tools to inspect the changed files in the
+        worktree at: {workspace_path}
+
+        The branch under review is: {branch}
 
         ## Handoff from Dev Agent
 
@@ -739,7 +747,7 @@ def build_review_prompt(
         - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists
         - Be concrete: cite file + line + what is wrong + how to fix
         - Verify against the spec. Do NOT approve just because it looks reasonable.
-        - Do NOT invent issues. Only report real problems you can point to in the diff.
-        - If the diff is empty or trivial, still verify against the spec.
+        - Do NOT invent issues. Only report real problems you can find in the source.
+        - If no files were changed or the change is trivial, still verify against the spec.
         - Check that the handoff validation results are consistent (all PASS for PASS gate).
     """)
