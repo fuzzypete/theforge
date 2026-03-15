@@ -202,8 +202,25 @@ def build_dev_prompt(
     """
     if task.file_scope:
         file_scope_str = "\n".join(f"- `{p}`" for p in task.file_scope)
+        scope_blocked_block = dedent("""\
+            **If you determine that correctly implementing this spec requires modifying
+            a file NOT in the list above:**
+
+            1. Do NOT implement a workaround within in-scope files.
+            2. Do NOT commit any code changes.
+            3. Output ONLY the following in your final response:
+
+               SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.
+               Required files not in scope: <list file paths>
+               Reason: <one sentence explaining what each file needs to do>
+
+            The coordinator will treat any session that ends with SCOPE_BLOCKED as an
+            escalation. Workarounds that technically pass the gate but cannot pass review
+            waste far more budget than an early escalation.
+        """)
     else:
         file_scope_str = "- (no scope restriction — all project files)"
+        scope_blocked_block = ""
 
     feedback_section = ""
     if review_findings:
@@ -276,21 +293,7 @@ def build_dev_prompt(
         You may ONLY create or modify files in these locations:
         {file_scope_str}
 
-        **If you determine that correctly implementing this spec requires modifying
-        a file NOT in the list above:**
-
-        1. Do NOT implement a workaround within in-scope files.
-        2. Do NOT commit any code changes.
-        3. Output ONLY the following in your final response:
-
-           SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.
-           Required files not in scope: <list file paths>
-           Reason: <one sentence explaining what each file needs to do>
-
-        The coordinator will treat any session that ends with SCOPE_BLOCKED as an
-        escalation. Workarounds that technically pass the gate but cannot pass review
-        waste far more budget than an early escalation.
-
+        {scope_blocked_block}
         ## Spec
         {spec_content}
         {feedback_section}{preflight_section}

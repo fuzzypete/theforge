@@ -74,3 +74,15 @@ class TestBuildDevPromptScopeInstruction:
         )
         prompt = _make_prompt(task)
         assert "no scope restriction — all project files" in prompt
+
+    def test_scope_blocked_absent_when_no_file_scope(self, minimal_task: TaskSpec) -> None:
+        """SCOPE_BLOCKED instruction must not appear for unrestricted tasks."""
+        task = TaskSpec(
+            name=minimal_task.name,
+            spec_path=minimal_task.spec_path,
+            slug=minimal_task.slug,
+            file_scope=[],
+        )
+        prompt = _make_prompt(task)
+        assert "SCOPE_BLOCKED:" not in prompt
+        assert "Do NOT implement a workaround" not in prompt
