@@ -122,6 +122,8 @@ class ValidationConfig:
     handoff_file: str  # e.g. "handoff.yaml", or "" for exit-code mode
     gate_decision_key: str  # YAML key to read for pass/fail
     gate_timeout: int | None = None  # seconds; None = default 600
+    gate_output_tail_chars: int = 2000  # chars of gate output to surface on FAIL
+    pre_validate_command: str | None = None  # optional command run before dirty check
 
 
 @dataclass(frozen=True)
@@ -406,6 +408,10 @@ def load_config(config_path: Path) -> ForgeConfig:
         handoff_file=val_data.get("handoff_file", DEFAULT_VALIDATION.handoff_file),
         gate_decision_key=val_data.get("gate_decision_key", DEFAULT_VALIDATION.gate_decision_key),
         gate_timeout=val_data.get("gate_timeout"),
+        gate_output_tail_chars=int(
+            val_data.get("gate_output_tail_chars", DEFAULT_VALIDATION.gate_output_tail_chars)
+        ),
+        pre_validate_command=val_data.get("pre_validate_command"),
     )
 
     # ── Smart config: models key ──────────────────────────────────────

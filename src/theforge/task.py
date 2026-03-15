@@ -97,6 +97,22 @@ def build_preflight_prompt(
     else:
         files_block = "(no file_scope defined — spec applies to entire project)"
 
+    if task.file_scope:
+        scope_feasibility_section = dedent("""\
+            ## Scope Feasibility Check
+
+            If file_scope is non-empty, scan the spec body for files explicitly named
+            as requiring modification (look for file paths, function signatures tied to
+            specific files, "in X.py change Y", acceptance criteria referencing specific
+            files). For each such file, verify it appears in the file_scope list below.
+            If any required file is absent from file_scope, verdict is BLOCKED — do not
+            return PROCEED.
+
+            This check is mandatory when file_scope is non-empty.
+        """)
+    else:
+        scope_feasibility_section = ""
+
     return dedent(f"""\
         You are a preflight validator for **{task.name}**.
 
@@ -110,6 +126,7 @@ def build_preflight_prompt(
 
         {spec_content}
 
+        {scope_feasibility_section}
         ## Current File Contents (file_scope)
 
         These are the files the spec targets, as they exist RIGHT NOW on the

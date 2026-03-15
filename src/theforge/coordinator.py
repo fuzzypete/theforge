@@ -743,7 +743,7 @@ def _resolve_merge_conflicts(
 
     # Run gate to verify resolution didn't break anything
     _log("  Running gate to verify resolution...")
-    gate_decision, gate_error, _gate_output = _run_gate(config, workspace_path)
+    gate_decision, gate_error = _run_gate(config, workspace_path)
     if gate_error or gate_decision != "PASS":
         _log("  ⚠ Conflict resolution broke tests — aborting merge")
         _run_shell("git merge --abort", project_root)
@@ -1282,10 +1282,10 @@ def _read_gate_decision(
     return str(decision).upper(), None
 
 
-def _run_gate(
+def _run_gate_full(
     config: ForgeConfig, workspace_path: Path, task: "TaskSpec | None" = None
 ) -> tuple[str | None, str | None, str]:
-    """Run the gate command and read the decision. Returns (decision, error, output).
+    """Run the gate command and read the decision. Returns (decision, error, output_tail).
 
     Supports two modes:
     1. Handoff-based: gate_command writes a handoff file with a gate decision key.
@@ -1333,10 +1333,13 @@ def _run_gate(
         timeout=gate_timeout,
     )
 
+    tail_chars = config.validation.gate_output_tail_chars
+    output_tail = output[-tail_chars:]
+
     # Exit-code mode: use command exit code directly
     if use_exit_code:
         if ok:
-            return "PASS", None, output
+            return "PASS", None, output_tail
         # Distinguish infrastructure failures (timeout, shell error) from code failures.
         # _run_shell prefixes these with "TIMEOUT" or "ERROR:" — surface them as errors
         # so the coordinator escalates immediately rather than burning dev retries.
@@ -1345,12 +1348,12 @@ def _run_gate(
                 None,
                 f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
                 " Consider increasing gate_timeout.",
-                output,
+                output_tail,
             )
         if output.startswith("ERROR:"):
-            return None, f"Gate infrastructure error: {output[:300]}", output
-        _log(f"Gate command failed (exit non-zero): {output[:200]}")
-        return "FAIL", None, output
+            return None, f"Gate infrastructure error: {output[:300]}", output_tail
+        _log(f"Gate command failed (exit non-zero): {output_tail}")
+        return "FAIL", None, output_tail
 
     # Handoff-based mode: read decision from handoff file
     if not ok:
@@ -1358,11 +1361,22 @@ def _run_gate(
         # Gate may have still produced a handoff with FAIL/BLOCKED
         decision, err = _read_gate_decision(config, workspace_path)
         if decision:
-            return decision, None, output
-        return None, f"Gate command failed and no handoff produced: {output[:500]}", output
+            return decision, None, output_tail
+        return None, f"Gate command failed and no handoff produced: {output[:500]}", output_tail
 
     decision, err = _read_gate_decision(config, workspace_path)
-    return decision, err, output
+    return decision, err, output_tail
+
+
+def _run_gate(
+    config: ForgeConfig, workspace_path: Path, task: "TaskSpec | None" = None
+) -> tuple[str | None, str | None]:
+    """Run the gate command. Returns (decision, error).
+
+    Backward-compatible 2-tuple wrapper around _run_gate_full.
+    """
+    decision, err, _ = _run_gate_full(config, workspace_path, task)
+    return decision, err
 
 
 # ── Diff extraction ─────────────────────────────────────────────────
@@ -1527,26 +1541,28 @@ def _coordinator_loop(
 
             _gate_start = time.monotonic()
             gate_override = task.gate_override
+            gate_output_tail: str = ""
             if _is_gate_skip(gate_override):
                 _log_phase(state.phase, "skipped (gate: none)")
                 _log("  Gate: none (spec override)")
                 gate_decision: str | None = "PASS"
                 gate_err: str | None = None
-                gate_output: str = ""
             else:
                 if gate_override is not None:
                     _log_phase(state.phase, "running gate... (override)")
                     _log(f"  Gate: {gate_override} (spec override)")
                 else:
                     _log_phase(state.phase, "running gate...")
-                gate_decision, gate_err, gate_output = _run_gate(config, workspace_path, task=task)
+                gate_decision, gate_err, gate_output_tail = _run_gate_full(
+                    config, workspace_path, task=task
+                )
             _gate_elapsed = time.monotonic() - _gate_start
             if logger:
                 logger._safe_emit(
                     "gate_result",
                     decision=gate_decision or gate_err,
                     duration_s=round(_gate_elapsed, 2),
-                    output_tail=gate_output[-500:] if gate_output else "",
+                    output_tail=gate_output_tail[-500:] if gate_output_tail else "",
                 )
 
             if gate_err:
@@ -1596,6 +1612,16 @@ def _coordinator_loop(
 
             if gate_decision == "PASS":
                 _log("  ✓ VALIDATE   PASS")
+                # Run pre_validate_command (e.g. commit build artifacts) before dirty check.
+                # Failure is non-fatal — log a warning and proceed to the dirty check.
+                pre_validate_cmd = config.validation.pre_validate_command
+                if pre_validate_cmd:
+                    _log(f"  Running pre-validate command: {pre_validate_cmd}")
+                    pv_ok, pv_out = _run_shell(pre_validate_cmd, workspace_path)
+                    if not pv_ok:
+                        _log(f"  ⚠ Pre-validate command failed (non-fatal): {pv_out[:200]}")
+                    else:
+                        _log_verbose(f"Pre-validate output: {pv_out[:200]}")
                 # Verify worktree is clean — the dev agent must commit all changes.
                 # The gate runs against the working tree, so it can pass even with
                 # uncommitted files. This check catches that process violation.
@@ -1705,6 +1731,8 @@ def _coordinator_loop(
                 # Retry dev — the gate failure details are in handoff.yaml
                 handoff_text = _get_handoff_content(config, workspace_path)
                 state.human_feedback = (
+                    f"Gate output (last {config.validation.gate_output_tail_chars} chars):\n"
+                    f"{gate_output_tail}\n\n"
                     f"Gate returned {gate_decision}. "
                     f"Fix the issues and re-run the gate.\n\n"
                     f"Current handoff:\n{handoff_text}"
@@ -2520,7 +2548,7 @@ def run_task(
                 f"did not produce one (exit={plan_result.exit_code}). "
                 "Consider increasing plan timeout or simplifying the spec."
             )
-            _log(f"  ✗ PLAN failed — escalating (not proceeding blind)")
+            _log("  ✗ PLAN failed — escalating (not proceeding blind)")
             _log(f"✗ ESCALATE   {state.error}")
             _escalate_notify(task, state, notify, config)
             return CoordinatorResult(
