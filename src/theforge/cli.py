@@ -246,8 +246,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     if getattr(args, "dry_run", False):
         return _cmd_dry_run(config, task, spec_path)
 
-    # --auto disables human review; default (no flag) is interactive
-    interactive = not getattr(args, "auto", False)
+    # --interactive enables human review checkpoint on APPROVE; default is unattended
+    interactive = getattr(args, "interactive", False)
     auto_merge = getattr(args, "auto_merge", False)
     result = run_task(
         config,
@@ -683,10 +683,10 @@ def main() -> None:
         help="Print prompts and config without invoking agents",
     )
     run_parser.add_argument(
-        "--auto",
+        "--interactive",
         action="store_true",
         default=False,
-        help="Skip human review; run fully unattended (CI mode)",
+        help="Pause at APPROVE for human confirmation before merging",
     )
     run_parser.add_argument(
         "--auto-merge",
