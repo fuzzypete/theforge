@@ -7039,9 +7039,7 @@ class TestPlanPhase:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coordinator._run_shell")
-    def test_plan_failure_escalates(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
+    def test_plan_failure_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """When PLAN agent fails, the run escalates (does not proceed blind)."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
