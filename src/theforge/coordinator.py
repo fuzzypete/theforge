@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -535,6 +536,59 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
         return False, f"ERROR: {e}"
+
+
+# ── Dirty-worktree helpers ───────────────────────────────────────────
+
+
+def _parse_dirty_files(raw_output: str) -> list[str]:
+    """Parse filenames from ``git status --porcelain`` output.
+
+    Returns tracked modified/added/deleted/renamed filenames.
+    Skips untracked (``??``) and ignored (``!!``) entries.
+    For renames (``R`` status) returns the destination filename.
+    """
+    dirty: list[str] = []
+    for line in raw_output.splitlines():
+        if len(line) < 4:
+            continue
+        xy = line[:2]
+        # Skip untracked and ignored — never auto-committed
+        if xy in ("??", "!!", " ?", " !"):
+            continue
+        rest = line[3:]
+        # Rename entries look like: "R  old/path -> new/path"
+        # Only the destination (new) filename matters
+        if " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        dirty.append(rest.strip())
+    return dirty
+
+
+def _auto_commit_side_effects(workspace_path: Path, files: list[str]) -> bool:
+    """Stage and commit out-of-scope files as fmt side-effects.
+
+    Uses explicit filenames (not ``-A``) so only the intended files are staged.
+    Returns True if the commit succeeded, False on any git error (fail-safe).
+    """
+    try:
+        quoted = " ".join(shlex.quote(f) for f in files)
+        add_ok, add_out = _run_shell(f"git add -- {quoted}", workspace_path)
+        if not add_ok:
+            _log(f"Auto-commit: git add failed: {add_out}")
+            return False
+        commit_ok, commit_out = _run_shell(
+            'git commit -m "chore: auto-commit fmt side-effects"', workspace_path
+        )
+        if not commit_ok:
+            _log(f"Auto-commit: git commit failed: {commit_out}")
+            return False
+        n = len(files)
+        _log(f"Auto-committed {n} out-of-scope fmt side-effects: {', '.join(files)}")
+        return True
+    except Exception as e:  # noqa: BLE001
+        _log(f"Auto-commit: unexpected error: {e}")
+        return False
 
 
 # ── Merge ────────────────────────────────────────────────────────────
@@ -1443,34 +1497,103 @@ def _coordinator_loop(
                     if handoff_file:
                         dirty_lines = [
                             line
-                            for line in dirty_out.strip().splitlines()
-                            if line and not line.endswith(handoff_file)
+                            for line in dirty_out.splitlines()
+                            if line.strip() and not line.endswith(handoff_file)
                         ]
                     else:
-                        dirty_lines = [line for line in dirty_out.strip().splitlines() if line]
+                        dirty_lines = [line for line in dirty_out.splitlines() if line.strip()]
                     if dirty_lines:
-                        dirty_files = ", ".join(
-                            line.strip().split(maxsplit=1)[-1] for line in dirty_lines
-                        )
-                        _log(f"Dirty worktree detected: {dirty_files}")
-                        if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
-                            state.phase = Phase.ESCALATE
-                            state.error = f"Dev agent left uncommitted changes: {dirty_files}"
-                            _log(f"✗ ESCALATE   {state.error}")
-                            _escalate_notify(task, state, notify, config)
-                            return CoordinatorResult(
-                                success=False,
-                                phase=state.phase,
-                                state=state,
-                                message=state.error,
+                        parsed_files = _parse_dirty_files("\n".join(dirty_lines))
+
+                        # Auto-commit out-of-scope fmt side-effects when file_scope
+                        # is set and every dirty file is outside the scope.
+                        # A file is in-scope if its path equals or starts with any scope entry.
+                        def _in_scope(f: str) -> bool:
+                            return any(f == s or f.startswith(s) for s in task.file_scope)
+
+                        if task.file_scope and parsed_files:
+                            in_scope = [f for f in parsed_files if _in_scope(f)]
+                            out_of_scope = [f for f in parsed_files if not _in_scope(f)]
+                            if not in_scope:
+                                # All dirty files are out-of-scope — auto-commit and proceed
+                                if _auto_commit_side_effects(workspace_path, out_of_scope):
+                                    # Fall through to REVIEW without a DEV retry
+                                    pass
+                                else:
+                                    # Auto-commit failed — fall back to DEV retry
+                                    dirty_files = ", ".join(out_of_scope)
+                                    _log(f"Dirty worktree detected: {dirty_files}")
+                                    if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
+                                        state.phase = Phase.ESCALATE
+                                        state.error = (
+                                            f"Dev agent left uncommitted changes: {dirty_files}"
+                                        )
+                                        _log(f"✗ ESCALATE   {state.error}")
+                                        _escalate_notify(task, state, notify, config)
+                                        return CoordinatorResult(
+                                            success=False,
+                                            phase=state.phase,
+                                            state=state,
+                                            message=state.error,
+                                        )
+                                    state.human_feedback = (
+                                        "PROCESS VIOLATION: You left uncommitted changes in"
+                                        f" the worktree: {dirty_files}. You MUST commit ALL"
+                                        " modified files before running the gate. Stage and"
+                                        " commit them now."
+                                    )
+                                    state.retry_reason = "dirty_worktree"
+                                    continue
+                            else:
+                                # Some dirty files are in-scope — existing DEV retry
+                                dirty_files = ", ".join(parsed_files)
+                                _log(f"Dirty worktree detected: {dirty_files}")
+                                if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
+                                    state.phase = Phase.ESCALATE
+                                    state.error = (
+                                        f"Dev agent left uncommitted changes: {dirty_files}"
+                                    )
+                                    _log(f"✗ ESCALATE   {state.error}")
+                                    _escalate_notify(task, state, notify, config)
+                                    return CoordinatorResult(
+                                        success=False,
+                                        phase=state.phase,
+                                        state=state,
+                                        message=state.error,
+                                    )
+                                state.human_feedback = (
+                                    "PROCESS VIOLATION: You left uncommitted changes in"
+                                    f" the worktree: {dirty_files}. You MUST commit ALL"
+                                    " modified files before running the gate. Stage and"
+                                    " commit them now."
+                                )
+                                state.retry_reason = "dirty_worktree"
+                                continue
+                        else:
+                            # Empty file_scope — treat all dirty as in-scope (existing behavior)
+                            dirty_files = ", ".join(
+                                line.strip().split(maxsplit=1)[-1] for line in dirty_lines
                             )
-                        state.human_feedback = (
-                            "PROCESS VIOLATION: You left uncommitted changes in the "
-                            f"worktree: {dirty_files}. You MUST commit ALL modified "
-                            "files before running the gate. Stage and commit them now."
-                        )
-                        state.retry_reason = "dirty_worktree"
-                        continue
+                            _log(f"Dirty worktree detected: {dirty_files}")
+                            if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
+                                state.phase = Phase.ESCALATE
+                                state.error = f"Dev agent left uncommitted changes: {dirty_files}"
+                                _log(f"✗ ESCALATE   {state.error}")
+                                _escalate_notify(task, state, notify, config)
+                                return CoordinatorResult(
+                                    success=False,
+                                    phase=state.phase,
+                                    state=state,
+                                    message=state.error,
+                                )
+                            state.human_feedback = (
+                                "PROCESS VIOLATION: You left uncommitted changes in"
+                                f" the worktree: {dirty_files}. You MUST commit ALL"
+                                " modified files before running the gate. Stage and"
+                                " commit them now."
+                            )
+                            state.retry_reason = "dirty_worktree"
+                            continue
             elif gate_decision in ("FAIL", "BLOCKED"):
                 if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
                     state.phase = Phase.ESCALATE
