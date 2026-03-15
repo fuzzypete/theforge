@@ -321,8 +321,11 @@ def build_dev_prompt(
         - Do NOT modify docs/project_plan.md.
         - Do NOT leave uncommitted changes.
         - Do NOT skip `make fmt` or `make lint`.
-        - If you cannot complete the task, commit what you have and note blockers
-          in `deferred_followups`.
+        - If you cannot complete the task due to a scope block (files required
+          outside file_scope), you MUST follow the SCOPE_BLOCKED instruction
+          above — do NOT commit any code changes.
+        - If you cannot complete the task for any other reason, commit what you
+          have and note blockers in `deferred_followups`.
     """)
 
 

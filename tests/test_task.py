@@ -58,6 +58,13 @@ class TestBuildDevPromptScopeInstruction:
         assert "src/foo.py" in prompt
         assert "tests/test_foo.py" in prompt
 
+    def test_fallback_rule_excludes_scope_blocked(self, minimal_task: TaskSpec) -> None:
+        """The fallback 'commit what you have' rule must carve out scope-blocked cases."""
+        prompt = _make_prompt(minimal_task)
+        assert "scope block" in prompt.lower()
+        # The old unconditional fallback must not appear on its own
+        assert "If you cannot complete the task, commit what you have" not in prompt
+
     def test_no_scope_restriction_when_empty(self, minimal_task: TaskSpec) -> None:
         task = TaskSpec(
             name=minimal_task.name,
