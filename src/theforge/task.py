@@ -600,6 +600,45 @@ def build_synthesis_prompt(
 
 # ── Review prompt ─────────────────────────────────────────────────────
 
+_REVIEW_ROLE_SECTIONS: dict[str, str] = {
+    "correctness": dedent("""\
+        You are a code reviewer focused on **correctness**.
+        Your job is to verify:
+        1. The implementation matches the spec
+        2. Logic and correctness bugs (wrong conditions, off-by-one, bad state)
+        3. Data integrity risks (corruption, lost writes, inconsistent state)
+        4. Security issues (injection, auth bypass, unsafe defaults)
+
+        You are NOT implementing anything. Do NOT write code. Do NOT make changes."""),
+    "patterns": dedent("""\
+        You are a code reviewer focused on **patterns and design**.
+        Your job is to verify:
+        1. API usage patterns and idiom violations (wrong abstractions, leaky boundaries)
+        2. Error handling completeness (unhandled exceptions, silent failures)
+        3. Test coverage gaps and missing edge-case tests
+        4. Code organization and interface design (coupling, cohesion, naming)
+
+        You are NOT implementing anything. Do NOT write code. Do NOT make changes."""),
+    "edge-cases": dedent("""\
+        You are a code reviewer focused on **edge cases and failure modes**.
+        Your job is to verify:
+        1. Boundary conditions and off-by-one errors (empty inputs, max values, zero)
+        2. Race conditions and concurrency hazards (shared state, ordering assumptions)
+        3. State that survives when it shouldn't (cleanup paths, reset logic, teardown)
+        4. Failure modes under unexpected input or timing (partial writes, timeouts, retries)
+
+        You are NOT implementing anything. Do NOT write code. Do NOT make changes."""),
+}
+
+_REVIEW_ROLE_GENERIC = dedent("""\
+    You are a code reviewer. Your job is to verify:
+    1. The implementation matches the spec
+    2. The code is correct and safe
+    3. Tests adequately cover the changes
+    4. No regressions are introduced
+
+    You are NOT implementing anything. Do NOT write code. Do NOT make changes.""")
+
 
 def build_review_prompt(
     task: TaskSpec,
@@ -607,6 +646,7 @@ def build_review_prompt(
     spec_content: str,
     diff_text: str,
     handoff_content: str,
+    review_role: str | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -615,20 +655,19 @@ def build_review_prompt(
     - The spec (to verify compliance)
     - The handoff.yaml (to cross-check validation claims)
 
+    When review_role is set to a known role ("correctness", "patterns",
+    "edge-cases"), the "Your Role" section uses a role-specific lens.
+    Unknown or None values fall back to the generic prompt.
+
     The reviewer outputs ONLY a YAML block. No prose.
     """
+    role_section = _REVIEW_ROLE_SECTIONS.get(review_role or "", _REVIEW_ROLE_GENERIC)
     return dedent(f"""\
         You are reviewing an implementation of **{task.name}**.
 
         ## Your Role
 
-        You are a code reviewer. Your job is to verify:
-        1. The implementation matches the spec
-        2. The code is correct and safe
-        3. Tests adequately cover the changes
-        4. No regressions are introduced
-
-        You are NOT implementing anything. Do NOT write code. Do NOT make changes.
+        {role_section}
 
         ## Spec
 

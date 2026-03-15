@@ -2,7 +2,15 @@
 
 from pathlib import Path
 
-from theforge.task import TaskSpec, build_dev_prompt, build_fix_prompt, build_plan_prompt
+import pytest
+
+from theforge.task import (
+    TaskSpec,
+    build_dev_prompt,
+    build_fix_prompt,
+    build_plan_prompt,
+    build_review_prompt,
+)
 
 
 def _make_task(tmp_path: Path) -> TaskSpec:
@@ -322,5 +330,105 @@ class TestBuildDevPromptPlanOutput:
         plan_pos = prompt.index("Implementation Plan (from planning agent)")
         spec_pos = prompt.index("## Spec")
         assert plan_pos < spec_pos
+
+
+# ── build_review_prompt role specialization ───────────────────────────
+
+
+_REVIEW_TASK_SCOPE = ["src/"]
+
+_REVIEW_COMMON_KWARGS = dict(
+    spec_content="# Spec",
+    diff_text="+ added line",
+    handoff_content="gate_decision: PASS",
+)
+
+
+@pytest.fixture
+def review_task(tmp_path: Path) -> TaskSpec:
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
+    return TaskSpec(
+        name="Test Task",
+        spec_path=spec,
+        slug="test-task",
+        file_scope=_REVIEW_TASK_SCOPE,
+    )
+
+
+class TestBuildReviewPrompt:
+    """Tests for build_review_prompt() role specialization."""
+
+    def test_default_no_role(self, review_task: TaskSpec) -> None:
+        """review_role=None produces the generic prompt."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "You are a code reviewer." in prompt
+        assert "The implementation matches the spec" in prompt
+
+    def test_correctness_role(self, review_task: TaskSpec) -> None:
+        """review_role='correctness' produces correctness-focused lens."""
+        prompt = build_review_prompt(
+            review_task, **_REVIEW_COMMON_KWARGS, review_role="correctness"
+        )
+        assert "correctness" in prompt
+        assert "Data integrity risks" in prompt
+        assert "Security issues" in prompt
+        assert "API usage patterns" not in prompt
+
+    def test_patterns_role(self, review_task: TaskSpec) -> None:
+        """review_role='patterns' produces patterns-focused lens."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role="patterns")
+        assert "patterns" in prompt
+        assert "API usage patterns" in prompt
+        assert "Error handling completeness" in prompt
+        assert "Data integrity risks" not in prompt
+
+    def test_edge_cases_role(self, review_task: TaskSpec) -> None:
+        """review_role='edge-cases' produces edge-case-focused lens."""
+        prompt = build_review_prompt(
+            review_task, **_REVIEW_COMMON_KWARGS, review_role="edge-cases"
+        )
+        assert "edge cases" in prompt
+        assert "Race conditions" in prompt
+        assert "Boundary conditions" in prompt
+        assert "API usage patterns" not in prompt
+
+    def test_unknown_role_falls_back(self, review_task: TaskSpec) -> None:
+        """Unknown review_role falls back to the generic prompt."""
+        prompt_unknown = build_review_prompt(
+            review_task, **_REVIEW_COMMON_KWARGS, review_role="unknown-role"
+        )
+        prompt_none = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role=None)
+        assert prompt_unknown == prompt_none
+
+    def test_empty_string_role_falls_back(self, review_task: TaskSpec) -> None:
+        """Empty string review_role falls back to the generic prompt."""
+        prompt_empty = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role="")
+        prompt_none = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert prompt_empty == prompt_none
+
+    def test_shared_structure_across_roles(self, review_task: TaskSpec) -> None:
+        """All roles share the same YAML output format and severity rules."""
+        for role in [None, "correctness", "patterns", "edge-cases", "unknown"]:
+            prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role=role)
+            assert "verdict: APPROVE | REQUEST_CHANGES" in prompt
+            assert "severity: P1 | P2" in prompt
+            assert "## Severity Definitions" in prompt
+            assert "## Rules" in prompt
+
+    def test_includes_task_name(self, review_task: TaskSpec) -> None:
+        """Task name appears in the prompt header."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "Test Task" in prompt
+
+    def test_includes_diff(self, review_task: TaskSpec) -> None:
+        """Diff text is embedded in the prompt."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "+ added line" in prompt
+
+    def test_includes_spec(self, review_task: TaskSpec) -> None:
+        """Spec content is embedded in the prompt."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "# Spec" in prompt
         # ## Spec heading must be on its own line (newline before it)
         assert "\n        ## Spec" in prompt or "\n## Spec" in prompt

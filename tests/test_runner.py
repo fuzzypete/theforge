@@ -1027,9 +1027,9 @@ class TestRunCodex:
             run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
-        assert "-c" in cmd
-        c_idx = cmd.index("-c")
-        assert cmd[c_idx + 1] == 'model_reasoning_effort="high"'
+        assert "--reasoning-effort" in cmd
+        re_idx = cmd.index("--reasoning-effort")
+        assert cmd[re_idx + 1] == "high"
 
     def test_codex_reasoning_effort_none(
         self, codex_profile: ModelProfile, tmp_path: Path
@@ -1039,7 +1039,7 @@ class TestRunCodex:
             run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
-        assert "-c" not in cmd
+        assert "--reasoning-effort" not in cmd
 
     def test_codex_reasoning_effort_in_command_position(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -1057,9 +1057,9 @@ class TestRunCodex:
 
         cmd = mock_run.call_args[0][0]
         m_idx = cmd.index("-m")
-        c_idx = cmd.index("-c")
+        re_idx = cmd.index("--reasoning-effort")
         C_idx = cmd.index("-C")
-        assert m_idx < c_idx < C_idx
+        assert m_idx < re_idx < C_idx
 
 
 class TestRunGemini:

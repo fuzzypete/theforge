@@ -220,19 +220,24 @@ def run_agent(
 
 def run_agent_pool(
     *,
-    prompt: str,
+    prompt: str | list[str],
     profiles: list[ModelProfile],
     working_dir: Path,
 ) -> list[AgentResult]:
-    """Run multiple agents concurrently with the same prompt.
+    """Run multiple agents concurrently, each with its own prompt or a shared prompt.
+
+    When prompt is a list, each agent gets its corresponding prompt (length must
+    equal profiles length). When prompt is a string, all agents share it.
 
     Returns results in the same order as the input profiles list.
     Uses ThreadPoolExecutor for parallel execution; single-agent pools
     run directly without thread overhead. Each agent runs independently
     with no shared context.
     """
+    prompts: list[str] = [prompt] * len(profiles) if isinstance(prompt, str) else prompt
+
     if len(profiles) == 1:
-        return [run_agent(prompt=prompt, profile=profiles[0], working_dir=working_dir)]
+        return [run_agent(prompt=prompts[0], profile=profiles[0], working_dir=working_dir)]
 
     names = ", ".join(p.name or f"{p.cli}/{p.model}" for p in profiles)
     _log(f"  Starting review pool: {names} (parallel)")
@@ -244,7 +249,9 @@ def run_agent_pool(
     def _timed_agent(idx: int, profile: ModelProfile) -> AgentResult:
         t0 = time.monotonic()
         try:
-            return run_agent(prompt=prompt, profile=profile, working_dir=working_dir, quiet=True)
+            return run_agent(
+                prompt=prompts[idx], profile=profile, working_dir=working_dir, quiet=True
+            )
         finally:
             agent_durations[idx] = time.monotonic() - t0
 
@@ -506,7 +513,7 @@ def _run_codex(
         profile.model,
     ]
     if profile.reasoning_effort:
-        cmd += ["-c", f'model_reasoning_effort="{profile.reasoning_effort}"']
+        cmd += ["--reasoning-effort", profile.reasoning_effort]
     cmd += [
         "-C",
         str(working_dir),
@@ -612,6 +619,20 @@ def _run_gemini(
         "-o",
         "json",
     ]
+
+    _GEMINI_THINKING_CONFIG: dict[str, tuple[int, str]] = {
+        "low": (2048, "LOW"),
+        "medium": (8192, "MEDIUM"),
+        "high": (16384, "HIGH"),
+    }
+    if profile.reasoning_effort and profile.reasoning_effort in _GEMINI_THINKING_CONFIG:
+        budget, level = _GEMINI_THINKING_CONFIG[profile.reasoning_effort]
+        cmd += [
+            "--config",
+            f"modelConfigs.default.thinkingConfig.thinkingBudget={budget}",
+            "--config",
+            f"modelConfigs.default.thinkingConfig.thinkingLevel={level}",
+        ]
 
     label = profile.name or f"{profile.cli}/{profile.model}"
     outcome, elapsed = _run_with_heartbeat(
