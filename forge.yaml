@@ -76,6 +76,12 @@ retry:
   max_dev_iterations: 3
   max_review_cycles: 3
 
+plan:
+  enabled: true
+  model: claude   # CLI name for the plan agent (uses opus model)
+  budget_usd: 0.50
+  timeout: 300
+
 notifications:
   backend: ntfy
   ntfy:

@@ -172,6 +172,113 @@ def build_preflight_prompt(
     """)
 
 
+# ── Plan prompt ───────────────────────────────────────────────────────
+
+
+def build_plan_prompt(
+    task: TaskSpec,
+    *,
+    spec_content: str,
+    file_contents: dict[str, str],
+    preflight_output: str | None = None,
+) -> str:
+    """Build the planning agent prompt.
+
+    The planning agent reads the spec and file_scope contents, then produces
+    a structured forge_plan.md document. It does NOT write code.
+
+    Output is ONLY the plan document, starting with '# Implementation Plan'.
+    """
+    if file_contents:
+        files_block = "\n\n".join(
+            f"### `{path}`\n```\n{content}\n```" for path, content in file_contents.items()
+        )
+    else:
+        files_block = "(no file_scope defined — spec applies to entire project)"
+
+    preflight_section = ""
+    if preflight_output:
+        preflight_section = dedent(f"""\
+
+            ## Preflight Analysis
+
+            The preflight agent already analysed the codebase:
+
+            {preflight_output}
+        """)
+
+    return dedent(f"""\
+        You are a planning agent for **{task.name}**.
+
+        ## Your Role
+
+        You are NOT implementing anything. You are producing a detailed implementation
+        plan that a dev agent will follow. Your output is a structured markdown document
+        that covers exactly what needs to be done, in what order, with what edge cases.
+
+        ## Spec
+
+        {spec_content}
+
+        ## Current File Contents (file_scope)
+
+        These are the files the spec will modify, as they exist right now:
+
+        {files_block}
+        {preflight_section}
+        ## Output Format
+
+        You MUST output ONLY the plan document. No prose before or after.
+        Start your response with `# Implementation Plan` and produce valid markdown.
+
+        The plan MUST cover all of these sections:
+
+        ```
+        # Implementation Plan: {task.name}
+
+        ## Summary
+        One paragraph: what we're implementing and why.
+
+        ## Implementation Order
+        1. Step one — why first
+        2. Step two — depends on step one
+        ...
+
+        ## Functions to Modify
+
+        ### `module.function_name(args) -> return_type`
+        - **File**: `src/theforge/module.py`
+        - **Change**: Add parameter X, handle edge case Y
+        - **Signature**: `def function_name(a: str, b: int = 0) -> bool:`
+
+        ## Edge Cases
+
+        | Condition | Expected Behavior | Notes |
+        |-----------|-------------------|-------|
+        | Empty list passed | Return [] immediately | No error |
+
+        ## Test Scenarios
+
+        ### `test_scenario_name`
+        - **Setup**: mock X returns Y
+        - **Call**: `function_name("input")`
+        - **Assert**: returns True, log contains "message"
+
+        ## Risks and Ambiguities
+
+        - **Risk**: The spec says X but the code does Y — resolve by doing Z
+        ```
+
+        ## Rules
+
+        - Do NOT write any code.
+        - Do NOT modify any files.
+        - Output ONLY the plan document starting with `# Implementation Plan`.
+        - Be specific: cite exact function names, file paths, and line numbers where known.
+        - Cover ALL acceptance criteria from the spec.
+    """)
+
+
 # ── Dev prompt ────────────────────────────────────────────────────────
 
 
@@ -186,6 +293,7 @@ def build_dev_prompt(
     review_findings: str | None = None,
     human_feedback: str | None = None,
     preflight_output: str | None = None,
+    plan_output: str | None = None,
     iteration: int = 1,
 ) -> str:
     """Build the complete dev agent prompt.
@@ -228,6 +336,18 @@ def build_dev_prompt(
             The project owner provided the following feedback. Address all points:
 
             {human_feedback}
+        """)
+
+    plan_section = ""
+    if plan_output:
+        plan_section = dedent(f"""\
+
+            ## Implementation Plan (from planning agent)
+
+            The planning agent has already analysed this codebase and produced a detailed
+            implementation plan. Follow it closely — do not re-derive the approach from scratch.
+
+            {plan_output}
         """)
 
     preflight_section = ""
@@ -280,7 +400,7 @@ def build_dev_prompt(
         minimal and directly related to the spec. The reviewer will flag any
         unexpected out-of-scope changes.
 
-        ## Spec
+        {plan_section}## Spec
         {spec_content}
         {feedback_section}{preflight_section}
         ## Implementation Steps

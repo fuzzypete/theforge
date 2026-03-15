@@ -6,7 +6,7 @@ validation commands, model selection) live in forge.yaml in the consuming projec
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +134,20 @@ class RetryPolicy:
 
 
 @dataclass(frozen=True)
+class PlanConfig:
+    """Configuration for the PLAN phase (pre-DEV implementation planning).
+
+    Disabled by default; forge.yaml sets enabled: true to opt in.
+    This keeps existing test configurations unaffected.
+    """
+
+    enabled: bool = False
+    model: str = "claude"  # CLI name for the plan agent
+    budget_usd: float = 0.50
+    timeout: int = 300
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -148,6 +162,7 @@ class ForgeConfig:
     retry: RetryPolicy
     notifications: NotificationConfig = NotificationConfig()
     smart_config_models: list[str] | None = None  # None = classic config; list = smart config
+    plan: PlanConfig = field(default_factory=PlanConfig)
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -181,6 +196,15 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     cli="claude",
     model="sonnet",
     budget_usd=1.00,
+    timeout_seconds=300,
+    allowed_tools=("Read", "Bash", "Glob", "Grep"),
+)
+
+DEFAULT_PLAN_PROFILE = ModelProfile(
+    name="plan",
+    cli="claude",
+    model="opus",
+    budget_usd=0.50,
     timeout_seconds=300,
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
 )
@@ -531,6 +555,15 @@ def load_config(config_path: Path) -> ForgeConfig:
         human_review_timeout_seconds=int(notif_data.get("human_review_timeout_seconds", 14400)),
     )
 
+    # Plan
+    plan_data = raw.get("plan", {})
+    plan_cfg = PlanConfig(
+        enabled=bool(plan_data.get("enabled", True)),
+        model=str(plan_data.get("model", "claude")),
+        budget_usd=float(plan_data.get("budget_usd", 0.50)),
+        timeout=int(plan_data.get("timeout", 300)),
+    )
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -543,6 +576,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         retry=retry,
         notifications=notifications,
         smart_config_models=smart_config_models,
+        plan=plan_cfg,
     )
 
 

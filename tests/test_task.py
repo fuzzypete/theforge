@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from theforge.task import TaskSpec, build_dev_prompt, build_fix_prompt
+from theforge.task import TaskSpec, build_dev_prompt, build_fix_prompt, build_plan_prompt
 
 
 def _make_task(tmp_path: Path) -> TaskSpec:
@@ -208,3 +208,117 @@ class TestBuildFixPrompt:
         assert "Do NOT re-run the gate" not in skipped
         assert "Gate:" not in skipped
         assert "make gate" not in skipped
+
+
+class TestBuildPlanPrompt:
+    """Tests for build_plan_prompt()."""
+
+    def test_contains_file_contents(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec\n\nDo the thing.",
+            file_contents={"src/foo.py": "def foo(): pass"},
+        )
+        assert "src/foo.py" in prompt
+        assert "def foo(): pass" in prompt
+
+    def test_contains_spec_content(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec\n\nDo the unique thing.",
+            file_contents={},
+        )
+        assert "Do the unique thing." in prompt
+
+    def test_instructs_no_code(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec",
+            file_contents={},
+        )
+        assert "Do NOT write any code" in prompt
+
+    def test_output_starts_with_implementation_plan(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec",
+            file_contents={},
+        )
+        assert "# Implementation Plan" in prompt
+
+    def test_includes_preflight_output_when_provided(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec",
+            file_contents={},
+            preflight_output="verdict: PROCEED\ncomplexity: medium",
+        )
+        assert "verdict: PROCEED" in prompt
+
+    def test_omits_preflight_section_when_absent(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec",
+            file_contents={},
+            preflight_output=None,
+        )
+        assert "Preflight Analysis" not in prompt
+
+    def test_empty_file_scope_shows_placeholder(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            spec_content="# Spec",
+            file_contents={},
+        )
+        assert "no file_scope defined" in prompt
+
+
+class TestBuildDevPromptPlanOutput:
+    """Tests for build_dev_prompt() with plan_output parameter."""
+
+    def test_with_plan_output_includes_plan_section(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan_text = "# Implementation Plan\n\nStep 1: do this."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+            plan_output=plan_text,
+        )
+        assert "Implementation Plan (from planning agent)" in prompt
+        assert plan_text in prompt
+
+    def test_without_plan_output_omits_plan_section(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+        )
+        assert "Implementation Plan (from planning agent)" not in prompt
+
+    def test_plan_section_appears_before_spec(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan_text = "# Implementation Plan\n\nUnique plan content here."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec\n\nUnique spec content here.",
+            gate_command="make gate",
+            plan_output=plan_text,
+        )
+        plan_pos = prompt.index("Implementation Plan (from planning agent)")
+        spec_pos = prompt.index("## Spec")
+        assert plan_pos < spec_pos

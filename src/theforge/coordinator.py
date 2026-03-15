@@ -47,6 +47,7 @@ from .task import (
     TaskSpec,
     build_dev_prompt,
     build_fix_prompt,
+    build_plan_prompt,
     build_preflight_prompt,
     build_review_prompt,
     build_synthesis_prompt,
@@ -60,6 +61,7 @@ class Phase(Enum):
     INIT = auto()
     WORKSPACE = auto()
     PREFLIGHT = auto()
+    PLAN = auto()
     DEV = auto()
     VALIDATE = auto()
     REVIEW = auto()
@@ -113,6 +115,8 @@ class CoordinatorState:
     preflight_reason: str | None = None
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
     preflight_result: AgentResult | None = None
+    plan_result: AgentResult | None = None
+    plan_output: str | None = None  # contents of forge_plan.md, passed to dev
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
     retry_reason: str | None = (
@@ -132,8 +136,17 @@ class CoordinatorState:
         return self.preflight_result.cost_usd if self.preflight_result else 0.0
 
     @property
+    def total_plan_cost(self) -> float:
+        return self.plan_result.cost_usd if self.plan_result else 0.0
+
+    @property
     def total_cost(self) -> float:
-        return self.total_dev_cost + self.total_review_cost + self.total_preflight_cost
+        return (
+            self.total_dev_cost
+            + self.total_review_cost
+            + self.total_preflight_cost
+            + self.total_plan_cost
+        )
 
 
 @dataclass
@@ -1391,6 +1404,7 @@ def _coordinator_loop(
                     preflight_output=(
                         state.preflight_result.output if state.preflight_result else None
                     ),
+                    plan_output=state.plan_output,
                     iteration=state.dev_iteration,
                 )
             state.retry_reason = None  # consumed
@@ -2275,7 +2289,45 @@ def run_task(
             message=state.error,
         )
 
-    # verdict == "PROCEED" — continue to DEV
+    # verdict == "PROCEED" — continue to DEV (possibly via PLAN)
+
+    # ── PLAN ──────────────────────────────────────────────────────
+    should_plan = config.plan.enabled and state.preflight_complexity in ("medium", "large")
+    if should_plan:
+        state.phase = Phase.PLAN
+        plan_profile = ModelProfile(
+            name="plan",
+            cli=config.plan.model,
+            model="opus",
+            budget_usd=config.plan.budget_usd,
+            timeout_seconds=config.plan.timeout,
+            allowed_tools=config.preflight_profile.allowed_tools,
+        )
+        _log_phase(state.phase, plan_profile.model)
+
+        plan_prompt = build_plan_prompt(
+            task,
+            spec_content=spec_content,
+            file_contents=file_contents,
+            preflight_output=(preflight_result.output if preflight_result.success else None),
+        )
+
+        _plan_start = time.monotonic()
+        plan_result = run_agent(
+            prompt=plan_prompt,
+            profile=plan_profile,
+            working_dir=workspace_path,
+        )
+        _plan_elapsed = time.monotonic() - _plan_start
+        state.plan_result = plan_result
+
+        if plan_result.success:
+            plan_text = plan_result.output
+            (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+            state.plan_output = plan_text
+            _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
+        else:
+            _log("  ⚠ PLAN failed — proceeding to DEV without plan")
 
     # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
     return _coordinator_loop(
