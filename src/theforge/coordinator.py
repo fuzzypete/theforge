@@ -242,18 +242,20 @@ def _escalate_notify(
             last_p1 = p1s[0].description
     detail = (last_p1 or (state.error or ""))[:120]
     branch = state.branch_name or ""
-    cost_dur = f"${state.total_cost:.2f}  {_fmt_duration(elapsed)}"
-    if "exhausted" in (state.error or ""):
-        first_line = f"{state.review_cycle} cycles exhausted — {cost_dur}"
-    else:
-        first_line = f"escalated — {cost_dur}"
-    body = "\n".join([first_line, detail, f"Branch: {branch}"])
-    _ntfy_publish(
-        ntfy.url,
-        f"TheForge: \u2717 escalated \u2014 {task.slug}",
-        body,
-        priority=ntfy.priority,
+    first_line = (
+        f"{state.review_cycle} cycles exhausted"
+        f" — ${state.total_cost:.2f}  {_fmt_duration(elapsed)}"
     )
+    body = "\n".join([first_line, detail, f"Branch: {branch}"])
+    try:
+        _ntfy_publish(
+            ntfy.url,
+            f"TheForge: \u2717 escalated \u2014 {task.slug}",
+            body,
+            priority=ntfy.priority,
+        )
+    except Exception:
+        pass
 
 
 def _ntfy_done_notify(
@@ -276,12 +278,15 @@ def _ntfy_done_notify(
             f"Branch: {branch_name}",
         ]
     )
-    _ntfy_publish(
-        ntfy.url,
-        f"TheForge: \u2713 done \u2014 {task.slug}",
-        body,
-        priority=ntfy.priority,
-    )
+    try:
+        _ntfy_publish(
+            ntfy.url,
+            f"TheForge: \u2713 done \u2014 {task.slug}",
+            body,
+            priority=ntfy.priority,
+        )
+    except Exception:
+        pass
 
 
 # ── ntfy helpers ──────────────────────────────────────────────────────
