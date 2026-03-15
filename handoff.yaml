@@ -1,11 +1,1 @@
 gate_decision: PASS
-scope_completed:
-  - "P1: skip_merged check moved before budget check — merged specs always count as succeeded"
-  - "P2: slug field added to SpecTriage; triage logging no longer calls _build_task_from_spec"
-  - "P2: skip_merged log uses triage.reason (config base_branch) instead of hardcoded 'main'"
-  - "P2: test_resume_sprint_enters_dev — verifies run_from_dev called on gate-failing worktree"
-  - "P2: test_resume_budget_exhausted_merged_spec_still_succeeds — merged not blocked by budget"
-deferred_followups:
-  - "P2: test_run_from_dev unit test in tests/test_coordinator.py — out of file_scope"
-  - "Pre-existing lint error in src/theforge/task.py (F841 unused pytest_line) — out of scope"
-next_recommended_step: "forge review specs/sprint-resume.md"
