@@ -1,99 +1,71 @@
 ---
-name: "file_scope advisory — auto-commit fmt side-effects, soften enforcement"
+name: "file_scope advisory — soften enforcement to guidance language"
 slug: file-scope-advisory
 file_scope:
-  - src/theforge/coordinator.py
   - src/theforge/task.py
-  - tests/test_coordinator.py
-tests_target: tests/
+  - tests/test_task.py
+pytest_target: tests/
 ---
 
 # file_scope Advisory Mode
 
 ## Problem
 
-`file_scope` was designed to constrain agents to specific files, but the
-rigid enforcement causes more problems than it solves:
+`file_scope` enforcement in `build_dev_prompt()` is too rigid. The current
+language says "You may ONLY create or modify files in these locations" and
+includes the `SCOPE_BLOCKED` hard-stop instruction. This causes problems:
 
-1. **Dirty worktree false positives** — `make fmt` reformats files outside
-   `file_scope` (e.g. `ideate.py`). These harmless whitespace changes trigger
-   the dirty worktree check, sending the agent back for a pointless cleanup
-   iteration that burns time and money.
-
-2. **Impossible tasks burn full budget** — If a spec omits a required file
-   from `file_scope`, the agent can't implement it correctly but tries anyway.
-   This costs 5 review cycles before escalation. (Partially addressed by
-   `preflight-scope-check` and `dev-scope-escalation`, but the root issue is
-   the rigidity itself.)
-
-3. **Spec authoring burden** — Writers must perfectly predict every file that
-   needs changing. This is impractical for cross-cutting changes.
-
-The review process already catches unauthorized changes. Reviewers will flag
-an unexpected edit to an unrelated module as a P1. Hard enforcement in the
-coordinator adds friction without adding safety beyond what review provides.
+- Spec authors can't always predict every file needed
+- The review process already catches unauthorized changes
+- Reviewers flag unexpected out-of-scope edits as P1/P2 anyway
 
 ## Solution
 
-### 1. Dirty worktree check: auto-commit out-of-scope fmt changes
+Change `build_dev_prompt()` file_scope section from hard enforcement to
+advisory guidance. One file, one function, minimal change.
 
-After a gate PASS, before flagging a dirty worktree and sending back to DEV:
+### Current language (lines ~274-293 in task.py):
 
-1. Check which files are dirty
-2. If ALL dirty files are outside `file_scope` (or `file_scope` is empty):
-   - Run `git add <dirty files> && git commit -m "chore: auto-commit fmt side-effects"`
-   - Continue to REVIEW — do NOT send back to DEV
-3. If ANY dirty file is inside `file_scope`:
-   - Still send back to DEV (the agent forgot to commit its own work)
-
-This eliminates the ruff/formatter false-positive loop entirely.
-
-### 2. Dev prompt: change file_scope from hard stop to guidance
-
-**Current (enforcement):**
 ```
 You may ONLY create or modify files in these locations:
-- src/theforge/coordinator.py
-...
-If the task requires changes outside this list, STOP...
+{file_scope_str}
+
+**If you determine that correctly implementing this spec requires modifying
+a file NOT in the list above:**
+1. Do NOT implement a workaround within in-scope files.
+2. Do NOT commit any code changes.
+3. Output ONLY the following...
+SCOPE_BLOCKED: ...
 ```
 
-**Replace with (advisory):**
+### Replace with:
+
 ```
 Focus your changes on these files:
-- src/theforge/coordinator.py
-...
+{file_scope_str}
+
 If you need to touch a file not listed here, do so — but keep changes
 minimal and directly related to the spec. The reviewer will flag any
-unexpected changes.
+unexpected out-of-scope changes.
 ```
 
-Remove the `SCOPE_BLOCKED` instruction from `build_dev_prompt()`. The
-`_parse_scope_blocked()` and coordinator detection can remain for cases where
-the agent explicitly signals it (optional use), but it should not be the
-primary enforcement mechanism.
+Remove the entire `scope_blocked_block` variable, the `{scope_blocked_block}`
+interpolation, and the SCOPE_BLOCKED instruction paragraphs from
+`build_dev_prompt()`. The `_parse_scope_blocked()` function and coordinator
+detection can remain (they do no harm), but must not be referenced in the
+dev prompt.
 
-## What file_scope still does (keep these)
-
-- **Preflight context**: preflight reads these files to assess current state
-- **Reviewer signal**: reviewers see what files were intended to change and
-  can flag unexpected edits as P2/P1
-- **Preflight scope-check**: preflight warns if spec text requires a file not
-  listed (informational, not a hard block — return PROCEED with a warning)
+Do NOT change `build_fix_prompt()` or any other function.
 
 ## Acceptance Criteria
 
-- [ ] Dirty worktree check: if all dirty files are outside `file_scope`,
-      auto-commit them with `chore: auto-commit fmt side-effects` and proceed
-      to REVIEW without sending back to DEV
-- [ ] Dirty worktree check: if any dirty file IS in `file_scope`, still send
-      back to DEV (agent has uncommitted scope work)
-- [ ] `build_dev_prompt()` file_scope section changed from "ONLY" enforcement
-      to advisory guidance language
-- [ ] `SCOPE_BLOCKED` block removed from `build_dev_prompt()`
-- [ ] `file_scope` still passed to preflight for context (unchanged)
-- [ ] Existing tests pass
-- [ ] New test: dirty worktree with only out-of-scope files → auto-commit,
-      no DEV retry triggered
-- [ ] New test: dirty worktree with in-scope dirty file → DEV retry still
-      triggered
+- [ ] `build_dev_prompt()` file_scope section uses "Focus your changes on"
+      language instead of "ONLY create or modify"
+- [ ] `scope_blocked_block` variable removed from `build_dev_prompt()`
+- [ ] `SCOPE_BLOCKED` sentinel instruction removed from `build_dev_prompt()`
+- [ ] `build_fix_prompt()` unchanged
+- [ ] All other functions in task.py unchanged
+- [ ] Existing tests pass without modification
+- [ ] New test: `build_dev_prompt()` with non-empty file_scope contains
+      "Focus your changes" and does NOT contain "SCOPE_BLOCKED"
+- [ ] New test: `build_dev_prompt()` with empty file_scope still works correctly

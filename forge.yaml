@@ -73,8 +73,8 @@ smart_config_models:
   - opus
 
 retry:
-  max_dev_iterations: 5
-  max_review_cycles: 5
+  max_dev_iterations: 3
+  max_review_cycles: 3
 
 notifications:
   backend: ntfy
