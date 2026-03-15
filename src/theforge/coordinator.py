@@ -1505,17 +1505,20 @@ def _coordinator_loop(
                     if dirty_lines:
                         parsed_files = _parse_dirty_files("\n".join(dirty_lines))
 
-                        # Auto-commit out-of-scope fmt side-effects when file_scope
-                        # is set and every dirty file is outside the scope.
                         # A file is in-scope if its path equals or starts with any scope entry.
                         def _in_scope(f: str) -> bool:
                             return any(f == s or f.startswith(s) for s in task.file_scope)
 
-                        if task.file_scope and parsed_files:
+                        # Auto-commit eligible only when:
+                        #   1. file_scope is set
+                        #   2. every dirty line is a tracked file (len match — no ??/!! dropped)
+                        #   3. no tracked file is in-scope
+                        all_tracked = len(parsed_files) == len(dirty_lines)
+                        if task.file_scope and parsed_files and all_tracked:
                             in_scope = [f for f in parsed_files if _in_scope(f)]
                             out_of_scope = [f for f in parsed_files if not _in_scope(f)]
                             if not in_scope:
-                                # All dirty files are out-of-scope — auto-commit and proceed
+                                # All dirty entries are tracked out-of-scope → auto-commit
                                 if _auto_commit_side_effects(workspace_path, out_of_scope):
                                     # Fall through to REVIEW without a DEV retry
                                     pass
@@ -1545,7 +1548,7 @@ def _coordinator_loop(
                                     state.retry_reason = "dirty_worktree"
                                     continue
                             else:
-                                # Some dirty files are in-scope — existing DEV retry
+                                # Some tracked files are in-scope — existing DEV retry
                                 dirty_files = ", ".join(parsed_files)
                                 _log(f"Dirty worktree detected: {dirty_files}")
                                 if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
@@ -1570,7 +1573,8 @@ def _coordinator_loop(
                                 state.retry_reason = "dirty_worktree"
                                 continue
                         else:
-                            # Empty file_scope — treat all dirty as in-scope (existing behavior)
+                            # Untracked/ignored entries present, empty file_scope, or no
+                            # parsed tracked files — treat all dirty as in-scope (existing)
                             dirty_files = ", ".join(
                                 line.strip().split(maxsplit=1)[-1] for line in dirty_lines
                             )
