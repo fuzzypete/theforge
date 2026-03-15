@@ -126,11 +126,51 @@ is proactive (predict), timeout escalation is reactive (observe and adapt).
 
 ---
 
+## 6. Plan Review Before Dev (Critical Gap)
+
+**Current implementation:** PLAN → DEV. Plan is trusted as-is, unreviewed.
+
+**How the project owner actually worked:**
+1. Opus produces plan document
+2. Codex + Gemini review the *plan* (not the code — the plan itself)
+3. Human reads synthesized plan review, may push back or adjust
+4. Only after approval does dev execute
+
+**Why this matters:** Plan review is cheaper than code review. A wrong plan
+caught before DEV costs one synthesis call. The same wrong plan caught at
+REVIEW after 3 dev cycles costs 3× dev + 3× review + potential escalation.
+
+**What the review looks for is different from code review:**
+- Gaps in the plan (missing edge cases, unhandled states)
+- Wrong assumptions about the codebase (Gemini's `_run_shell` catch was valid
+  but unverified — a code-grounded reviewer would confirm or refute it)
+- Ordering problems (step 3 depends on step 5)
+- Circular import risks
+- Missing test scenarios
+
+**Target state:** `PLAN → PLAN_REVIEW(pool) → HUMAN_REVIEW(ntfy) → DEV`
+
+The human gets an ntfy with the synthesized plan + reviewer notes and can:
+- Approve → DEV starts with the plan
+- Request changes → PLAN reruns with feedback
+- Reject / redirect → ESCALATE
+
+**forge.yaml config:** A `plan_review` profile (lightweight — reviewers don't
+need to execute code, just reason about the plan document). Could reuse the
+existing review pool with a different prompt.
+
+**Relationship to current HUMAN_REVIEW:** This is a new decision gate, not
+a replacement. HUMAN_REVIEW fires on code review APPROVE. PLAN_REVIEW fires
+before any code is written. Both feed into the decision surface vision.
+
+---
+
 ## Priority for Implementation
 
 1. **PLAN failure blocks** — small change, high impact, ✅ done
 2. **Timeout bumps** — config change, ✅ done
-3. **Timeout-triggered model escalation** — medium effort, high impact, spec it
-4. **Progress-aware timeouts** — medium effort, high value, spec it
-5. **Task decomposition** — large effort, transformative, needs ideation
-6. **Source code analysis** — independent track, good forge-ideate candidate
+3. **Plan review before DEV** — high impact, corrects core workflow gap, spec it next
+4. **Timeout-triggered model escalation** — medium effort, high impact, spec it
+5. **Progress-aware timeouts** — medium effort, high value, spec it
+6. **Task decomposition** — large effort, transformative, needs ideation
+7. **Source code analysis** — independent track, good forge-ideate candidate
