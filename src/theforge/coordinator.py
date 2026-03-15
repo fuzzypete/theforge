@@ -911,8 +911,8 @@ def _has_persistent_p1(
 ) -> bool:
     """Return True if any P1 appears in both current and previous cycles.
 
-    Matches on same file + description similarity (substring containment or
-    >60% token overlap).
+    Matches on description similarity alone (substring containment or
+    >=60% token overlap) regardless of file.
     """
     current_p1s = [f for f in current_findings if f.severity == "P1"]
     previous_p1s = [f for f in previous_findings if f.severity == "P1"]
@@ -922,17 +922,15 @@ def _has_persistent_p1(
 
     for curr in current_p1s:
         for prev in previous_p1s:
-            if curr.file != prev.file:
-                continue
             # Substring containment
             if curr.description in prev.description or prev.description in curr.description:
                 return True
-            # Token overlap > 60%
+            # Token overlap >= 60%
             curr_tokens = set(curr.description.lower().split())
             prev_tokens = set(prev.description.lower().split())
             if curr_tokens and prev_tokens:
                 overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
-                if overlap > 0.6:
+                if overlap >= 0.6:
                     return True
 
     return False

@@ -5624,10 +5624,18 @@ class TestHasPersistentP1:
         assert _has_persistent_p1([finding], [finding]) is True
 
     def test_new_p1_not_persistent(self):
-        """Different files → not persistent."""
+        """Different descriptions → not persistent."""
         curr = [_make_review_finding(file="src/foo.py", description="Off by one error")]
         prev = [_make_review_finding(file="src/bar.py", description="Missing validation")]
         assert _has_persistent_p1(curr, prev) is False
+
+    def test_persistent_p1_different_files(self):
+        """Same P1 description on different files → still detected as persistent."""
+        curr = [
+            _make_review_finding(file="src/coordinator.py", description="extend resets session ID")
+        ]
+        prev = [_make_review_finding(file="src/task.py", description="extend resets session ID")]
+        assert _has_persistent_p1(curr, prev) is True
 
     def test_p1_similarity_matching(self):
         """Substring containment and token overlap both match."""
