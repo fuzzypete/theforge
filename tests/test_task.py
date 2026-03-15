@@ -322,3 +322,5 @@ class TestBuildDevPromptPlanOutput:
         plan_pos = prompt.index("Implementation Plan (from planning agent)")
         spec_pos = prompt.index("## Spec")
         assert plan_pos < spec_pos
+        # ## Spec heading must be on its own line (newline before it)
+        assert "\n        ## Spec" in prompt or "\n## Spec" in prompt

@@ -400,7 +400,8 @@ def build_dev_prompt(
         minimal and directly related to the spec. The reviewer will flag any
         unexpected out-of-scope changes.
 
-        {plan_section}## Spec
+        {plan_section}
+        ## Spec
         {spec_content}
         {feedback_section}{preflight_section}
         ## Implementation Steps

@@ -200,15 +200,6 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
 )
 
-DEFAULT_PLAN_PROFILE = ModelProfile(
-    name="plan",
-    cli="claude",
-    model="opus",
-    budget_usd=0.50,
-    timeout_seconds=300,
-    allowed_tools=("Read", "Bash", "Glob", "Grep"),
-)
-
 DEFAULT_WORKSPACE = WorkspaceConfig(
     create_command="git worktree add .forge/worktrees/{slug} -b forge/{slug} main",
     path_pattern=".forge/worktrees/{slug}",
@@ -558,7 +549,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     # Plan
     plan_data = raw.get("plan", {})
     plan_cfg = PlanConfig(
-        enabled=bool(plan_data.get("enabled", True)),
+        enabled=bool(plan_data.get("enabled", False)),
         model=str(plan_data.get("model", "claude")),
         budget_usd=float(plan_data.get("budget_usd", 0.50)),
         timeout=int(plan_data.get("timeout", 300)),
