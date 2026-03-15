@@ -6356,14 +6356,69 @@ test_coverage:
         call = escalate_calls[-1]  # last call is the cycles-exhausted one
         title = call.args[1]
         body = call.args[2]
+        body_lines = body.splitlines()
         assert "✗" in title
         assert "escalated" in title
         assert "test-task" in title
-        assert "cycles exhausted" in body  # always uses cycles format
-        assert "$" in body  # cost present
+        assert "cycles exhausted" in body_lines[0]  # always uses cycles format
+        assert "$" in body_lines[0]  # cost present in first line
+        # Second line: P1 description (or error), truncated to 120 chars
+        assert "Off by one" in body_lines[1]  # P1 description from REQUEST_CHANGES_REVIEW
+        assert len(body_lines[1]) <= 120
         assert "Branch:" in body
         # No action buttons on ESCALATE notifications
         assert "actions" not in call.kwargs
+
+    def test_escalate_detail_truncated(self, tmp_path):
+        """Long P1 description is truncated to 120 chars in ESCALATE body."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        long_desc = "X" * 200
+        long_p1_review = f"""\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Bug found."
+findings:
+  - severity: P1
+    file: src/foo.py
+    line: 10
+    description: "{long_desc}"
+    suggestion: "Fix it"
+spec_compliance:
+  matches_spec: false
+  mismatches: []
+test_coverage:
+  adequate: false
+  gaps: []
+```
+"""
+        with (
+            patch(
+                "theforge.coordinator.run_agent",
+                side_effect=_preflight_then(
+                    _make_agent_result(output="Done."),
+                    _make_agent_result(output="Fixed."),
+                ),
+            ),
+            patch(
+                "theforge.coordinator.run_agent_pool",
+                return_value=_make_pool_result([long_p1_review], ["review"]),
+            ),
+            patch("theforge.coordinator._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.phase == Phase.ESCALATE
+        escalate_calls = [c for c in mock_ntfy.call_args_list if "escalated" in c.args[1]]
+        assert len(escalate_calls) >= 1
+        body = escalate_calls[-1].args[2]
+        detail_line = body.splitlines()[1]
+        assert len(detail_line) <= 120
+        assert detail_line == "X" * 120
 
     def test_escalate_non_cycle_body_uses_cycle_format(self, tmp_path):
         """Non-cycle ESCALATE (workspace failure) still uses '{cycles} cycles exhausted' format."""
