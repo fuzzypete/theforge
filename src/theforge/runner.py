@@ -513,7 +513,7 @@ def _run_codex(
         profile.model,
     ]
     if profile.reasoning_effort:
-        cmd += ["--reasoning-effort", profile.reasoning_effort]
+        cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
     cmd += [
         "-C",
         str(working_dir),
@@ -620,19 +620,9 @@ def _run_gemini(
         "json",
     ]
 
-    _GEMINI_THINKING_CONFIG: dict[str, tuple[int, str]] = {
-        "low": (2048, "LOW"),
-        "medium": (8192, "MEDIUM"),
-        "high": (16384, "HIGH"),
-    }
-    if profile.reasoning_effort and profile.reasoning_effort in _GEMINI_THINKING_CONFIG:
-        budget, level = _GEMINI_THINKING_CONFIG[profile.reasoning_effort]
-        cmd += [
-            "--config",
-            f"modelConfigs.default.thinkingConfig.thinkingBudget={budget}",
-            "--config",
-            f"modelConfigs.default.thinkingConfig.thinkingLevel={level}",
-        ]
+    # NOTE: Gemini CLI has no --config flag for thinking config.
+    # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.
+    # The model uses its default thinking level.
 
     label = profile.name or f"{profile.cli}/{profile.model}"
     outcome, elapsed = _run_with_heartbeat(
