@@ -1,9 +1,6 @@
 gate_decision: PASS
 scope_completed:
-  - "task.py: strict SCOPE_BLOCKED scope instruction in build_dev_prompt()"
-  - "coordinator.py: detect SCOPE_BLOCKED: sentinel in dev_result.output, escalate immediately skipping VALIDATE/REVIEW"
-  - "test_task.py: tests verifying strict scope instruction is present and permissive text is absent"
-  - "test_coordinator.py: TestScopeBlocked — immediate escalation and no retry on scope-blocked output"
-  - "reverted out-of-scope ideate.py change to match main"
+  - "coordinator.py: SCOPE_BLOCKED check moved before dev-budget enforcement so scope-blocked escalation always takes priority"
+  - "test_coordinator.py: test_scope_blocked_takes_precedence_over_budget covers budget-exceeded + SCOPE_BLOCKED overlap"
 deferred_followups: []
 next_recommended_step: "Review and merge feat/dev-scope-escalation into main"
