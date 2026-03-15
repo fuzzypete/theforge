@@ -294,6 +294,10 @@ def cmd_review(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if getattr(args, "verbose", False):
+        coordinator_set_log_level(LogLevel.VERBOSE)
+        runner_set_log_level(LogLevel.VERBOSE)
+
     config = load_config(config_path)
     task = _build_task(spec_path, slug=args.slug)
 
