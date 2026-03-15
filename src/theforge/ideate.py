@@ -288,6 +288,14 @@ def _parse_synthesis_output(
     elif synthesis_text.strip().startswith("---"):
         spec_text = synthesis_text.strip()
 
+    # Strip markdown code fences that models sometimes wrap the spec in
+    if spec_text.startswith("```"):
+        first_newline = spec_text.find("\n")
+        if first_newline != -1:
+            spec_text = spec_text[first_newline + 1:]
+    if spec_text.endswith("```"):
+        spec_text = spec_text[: spec_text.rfind("```")].rstrip()
+
     return converged, divergent, spec_text
 
 
