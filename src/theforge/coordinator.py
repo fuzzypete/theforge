@@ -1265,21 +1265,6 @@ def _coordinator_loop(
             log_agent_result(dev_result, "DEV")
             _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_duration(_dev_elapsed)}")
 
-            if state.total_dev_cost > config.dev_profile.budget_usd:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
-                    f"(limit ${config.dev_profile.budget_usd:.4f})"
-                )
-                _log(f"✗ ESCALATE   {state.error}")
-                _escalate_notify(task, state, notify)
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
-
             if "SCOPE_BLOCKED:" in dev_result.output:
                 # Extract the required files from the sentinel line for a helpful message.
                 blocked_files = ""
@@ -1291,6 +1276,21 @@ def _coordinator_loop(
                 state.error = (
                     f"ESCALATE: Dev agent scope blocked. "
                     f"Required files: {blocked_files}. Update file_scope in spec."
+                )
+                _log(f"✗ ESCALATE   {state.error}")
+                _escalate_notify(task, state, notify)
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
+
+            if state.total_dev_cost > config.dev_profile.budget_usd:
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
+                    f"(limit ${config.dev_profile.budget_usd:.4f})"
                 )
                 _log(f"✗ ESCALATE   {state.error}")
                 _escalate_notify(task, state, notify)

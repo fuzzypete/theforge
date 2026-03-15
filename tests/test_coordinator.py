@@ -722,6 +722,59 @@ class TestScopeBlocked:
         assert result.state.dev_iteration == 1
         assert result.phase == Phase.ESCALATE
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_scope_blocked_takes_precedence_over_budget(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """SCOPE_BLOCKED escalation takes priority over dev-budget exhaustion."""
+        # Budget set to $0.01 so the $0.50 dev result exceeds it
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=ModelProfile(
+                name=DEFAULT_DEV_PROFILE.name,
+                cli=DEFAULT_DEV_PROFILE.cli,
+                model=DEFAULT_DEV_PROFILE.model,
+                budget_usd=0.01,
+                timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
+                allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+            ),
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        scope_blocked_output = (
+            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
+            "Required files not in scope: src/theforge/runner.py\n"
+            "Reason: runner.py needs modification."
+        )
+        # cost_usd=0.50 exceeds budget of 0.01, but SCOPE_BLOCKED should win
+        dev_result = _make_agent_result(success=False, output=scope_blocked_output, cost_usd=0.50)
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_shell.side_effect = _shell_with_gate(workspace)
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "scope blocked" in result.message.lower()
+        assert "src/theforge/runner.py" in result.message
+        # Must NOT be a budget error
+        assert "budget" not in result.message.lower()
+
 
 class TestCoordinatorStaleHandoff:
     """Test that stale handoff.yaml is deleted before running the gate."""
