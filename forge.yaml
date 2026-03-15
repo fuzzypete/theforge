@@ -39,7 +39,7 @@ profiles:
     - name: codex
       cli: codex
       model: gpt-5.4
-      reasoning_effort: medium
+      reasoning_effort: high
       budget_usd: 1.00
       timeout_seconds: 600
       allowed_tools:
@@ -50,6 +50,7 @@ profiles:
     - name: gemini
       cli: gemini
       model: gemini-2.5-pro
+      reasoning_effort: high
       budget_usd: 1.00
       timeout_seconds: 600
       allowed_tools:
