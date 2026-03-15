@@ -34,7 +34,6 @@ from theforge.coordinator import (
     _ntfy_poll_reply,
     _ntfy_reply_url,
     _parse_preflight_complexity,
-    _parse_scope_blocked,
     _remove_worktree,
     generate_audit_log,
     run_from_review,
@@ -661,200 +660,6 @@ class TestCoordinatorBudgetEnforcement:
         assert "0.5000" in result.message
         assert "0.4000" in result.message
         assert len(result.state.review_agent_results) == 1
-
-
-class TestParseScopeBlocked:
-    """Unit tests for the _parse_scope_blocked helper."""
-
-    def test_detects_terminal_sentinel(self) -> None:
-        output = (
-            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
-            "Required files not in scope: src/theforge/runner.py\n"
-            "Reason: runner.py needs a new helper."
-        )
-        blocked, files = _parse_scope_blocked(output)
-        assert blocked is True
-        assert files == "src/theforge/runner.py"
-
-    def test_ignores_sentinel_in_middle_of_output(self) -> None:
-        """SCOPE_BLOCKED mentioned mid-output (e.g. quoting instructions) must not trigger."""
-        output = (
-            "Here is the instruction the agent received:\n"
-            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
-            "Required files not in scope: src/foo.py\n"
-            "Now I will proceed to implement the task anyway.\n"
-            "I have implemented the feature and committed the changes.\n"
-            "All tests pass."
-        )
-        blocked, _ = _parse_scope_blocked(output)
-        assert blocked is False
-
-    def test_ignores_sentinel_when_more_than_2_lines_follow(self) -> None:
-        """SCOPE_BLOCKED with more than 2 non-empty lines after it is not terminal."""
-        output = (
-            "SCOPE_BLOCKED: sentinel here\n"
-            "Required files not in scope: src/foo.py\n"
-            "Reason: foo.py needs modification.\n"
-            "But then the agent kept going and wrote more output here."
-        )
-        blocked, _ = _parse_scope_blocked(output)
-        assert blocked is False
-
-    def test_empty_output_not_blocked(self) -> None:
-        blocked, files = _parse_scope_blocked("")
-        assert blocked is False
-        assert files == ""
-
-    def test_blocked_files_empty_when_line_absent(self) -> None:
-        output = "SCOPE_BLOCKED: Cannot implement spec."
-        blocked, files = _parse_scope_blocked(output)
-        assert blocked is True
-        assert files == ""
-
-
-class TestScopeBlocked:
-    """Test that SCOPE_BLOCKED sentinel in dev output causes immediate escalation."""
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coordinator._run_shell")
-    def test_scope_blocked_escalates_immediately(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """Dev output containing SCOPE_BLOCKED: skips VALIDATE and escalates."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        scope_blocked_output = (
-            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
-            "Required files not in scope: src/theforge/runner.py\n"
-            "Reason: runner.py needs a new helper function for the feature."
-        )
-        dev_result = _make_agent_result(success=False, output=scope_blocked_output)
-        mock_agent.side_effect = _preflight_then(dev_result)
-        mock_shell.side_effect = _shell_with_gate(workspace)
-
-        result = run_task(config, task)
-
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "ESCALATE" in result.message
-        assert "scope blocked" in result.message.lower()
-        assert "src/theforge/runner.py" in result.message
-        # Gate must NOT have been called (skip VALIDATE)
-        gate_calls = [call for call in mock_shell.call_args_list if "gate" in str(call).lower()]
-        assert len(gate_calls) == 0
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coordinator._run_shell")
-    def test_scope_blocked_no_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """SCOPE_BLOCKED does not consume retry iterations — escalates on first occurrence."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        scope_blocked_output = (
-            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
-            "Required files not in scope: src/theforge/schemas.py\n"
-            "Reason: schemas.py must define the new validation type."
-        )
-        dev_result = _make_agent_result(success=False, output=scope_blocked_output)
-        mock_agent.side_effect = _preflight_then(dev_result)
-        mock_shell.side_effect = _shell_with_gate(workspace)
-
-        result = run_task(config, task)
-
-        # Only one dev invocation (preflight + 1 dev call)
-        assert result.state.dev_iteration == 1
-        assert result.phase == Phase.ESCALATE
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coordinator._run_shell")
-    def test_scope_blocked_takes_precedence_over_budget(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """SCOPE_BLOCKED escalation takes priority over dev-budget exhaustion."""
-        # Budget set to $0.01 so the $0.50 dev result exceeds it
-        config = ForgeConfig(
-            project="test",
-            project_root=tmp_path,
-            workspace=WorkspaceConfig(
-                create_command="mkdir -p {slug}",
-                path_pattern="{slug}",
-                branch_pattern="forge/{slug}",
-            ),
-            validation=DEFAULT_VALIDATION,
-            dev_profile=ModelProfile(
-                name=DEFAULT_DEV_PROFILE.name,
-                cli=DEFAULT_DEV_PROFILE.cli,
-                model=DEFAULT_DEV_PROFILE.model,
-                budget_usd=0.01,
-                timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
-                allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
-            ),
-            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
-            review_pool=[DEFAULT_REVIEW_PROFILE],
-            synthesis_profile=None,
-            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        )
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        scope_blocked_output = (
-            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
-            "Required files not in scope: src/theforge/runner.py\n"
-            "Reason: runner.py needs modification."
-        )
-        # cost_usd=0.50 exceeds budget of 0.01, but SCOPE_BLOCKED should win
-        dev_result = _make_agent_result(success=False, output=scope_blocked_output, cost_usd=0.50)
-        mock_agent.side_effect = _preflight_then(dev_result)
-        mock_shell.side_effect = _shell_with_gate(workspace)
-
-        result = run_task(config, task)
-
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "scope blocked" in result.message.lower()
-        assert "src/theforge/runner.py" in result.message
-        # Must NOT be a budget error
-        assert "budget" not in result.message.lower()
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coordinator._run_shell")
-    def test_scope_blocked_mid_output_does_not_escalate(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """SCOPE_BLOCKED quoted in the middle of output must not trigger escalation."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        # Agent quotes the instruction but then proceeds to implement successfully
-        output_with_mid_sentinel = (
-            "Here is the instruction I received:\n"
-            "SCOPE_BLOCKED: Cannot implement spec correctly within file_scope.\n"
-            "Required files not in scope: src/fake.py\n"
-            "Now I will implement the task.\n"
-            "I have committed the changes and the gate passed."
-        )
-        dev_result = _make_agent_result(success=True, output=output_with_mid_sentinel)
-        mock_agent.side_effect = _preflight_then(dev_result)
-        mock_pool.return_value = _make_pool_result([APPROVE_REVIEW], ["review"], success=True)
-        mock_shell.side_effect = _shell_with_gate(workspace)
-
-        result = run_task(config, task)
-
-        # Should NOT escalate — the sentinel was mid-output, not terminal
-        assert result.phase != Phase.ESCALATE
-        assert result.success is True
 
 
 class TestCoordinatorStaleHandoff:
@@ -6054,3 +5859,377 @@ class TestConflictResolution:
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
+
+
+# ── Fix Prompt Routing Tests ──────────────────────────────────────────
+
+
+class TestFixPromptRouting:
+    """Tests that the coordinator routes to build_fix_prompt on iteration 2+."""
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_iteration_1_uses_dev_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """First iteration always uses build_dev_prompt."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        mock_dev_prompt.assert_called_once()
+        mock_fix_prompt.assert_not_called()
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_iteration_2_with_review_findings_uses_fix_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """Iteration 2+ with last_review_findings set uses build_fix_prompt."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),  # iter 1
+            _make_agent_result(success=True, output="Fixed."),  # iter 2
+        )
+        mock_pool.side_effect = [
+            # First review: REQUEST_CHANGES → triggers iter 2
+            [
+                _make_agent_result(
+                    success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                )
+            ],
+            # Second review: APPROVE
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+
+        run_task(config, task)
+
+        assert mock_dev_prompt.call_count == 1  # only iter 1
+        assert mock_fix_prompt.call_count == 1  # iter 2 uses fix prompt
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_failure_retry_uses_dev_prompt_not_fix_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """Gate failure retries use build_dev_prompt (not review findings)."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+
+        # First gate call FAILs, second PASSes
+        mock_shell.side_effect = _shell_with_gate(workspace, decisions=["FAIL", "PASS"])
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),  # iter 1
+            _make_agent_result(success=True, output="Fixed."),  # iter 2 (gate retry)
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        # Both iterations should use dev_prompt since last_review_findings is None
+        assert mock_dev_prompt.call_count == 2
+        mock_fix_prompt.assert_not_called()
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_fix_prompt_receives_review_findings(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """build_fix_prompt is called with the review findings content."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),
+            _make_agent_result(success=True, output="Fixed."),
+        )
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                )
+            ],
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+
+        run_task(config, task)
+
+        assert mock_fix_prompt.call_count == 1
+        call_kwargs = mock_fix_prompt.call_args.kwargs
+        assert call_kwargs["review_findings"] is not None
+        assert len(call_kwargs["review_findings"]) > 0
+        assert call_kwargs["iteration"] >= 1
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_gate_failure_after_review_uses_dev_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """After REQUEST_CHANGES, if the fix attempt's gate fails, the retry uses
+        build_dev_prompt (not build_fix_prompt) because human_feedback is set."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+
+        # iter 1: PASS; iter 2 (post-review fix): FAIL; iter 3 (gate retry): PASS
+        mock_shell.side_effect = _shell_with_gate(workspace, decisions=["PASS", "FAIL", "PASS"])
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),  # iter 1
+            _make_agent_result(success=True, output="Fixed."),  # iter 2 (fix attempt)
+            _make_agent_result(success=True, output="Fixed."),  # iter 3 (gate retry)
+        )
+        mock_pool.side_effect = [
+            # Review after iter 1: REQUEST_CHANGES
+            [
+                _make_agent_result(
+                    success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                )
+            ],
+            # Review after iter 3: APPROVE
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+
+        run_task(config, task)
+
+        # iter 1 → build_dev_prompt; iter 2 → build_fix_prompt; iter 3 → build_dev_prompt
+        assert mock_dev_prompt.call_count == 2
+        assert mock_fix_prompt.call_count == 1
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_run_from_review_first_dev_uses_dev_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """run_from_review() starts at REVIEW with last_review_findings pre-set.
+        The first DEV pass (dev_iteration=1) must use build_dev_prompt, not
+        build_fix_prompt, because there is no prior resumed dev session."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        # run_from_review skips preflight — only dev + review agents
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Fixed."),
+        ]
+        mock_pool.side_effect = [
+            # Initial REVIEW: REQUEST_CHANGES → triggers DEV
+            [
+                _make_agent_result(
+                    success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                )
+            ],
+            # Second REVIEW after DEV: APPROVE
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+
+        run_from_review(config, task, workspace_path=workspace)
+
+        # run_from_review starts at REVIEW; after REQUEST_CHANGES the first DEV pass
+        # uses build_fix_prompt because retry_reason="review_changes" and findings are
+        # set — the routing condition does not require a prior resumed dev session.
+        mock_dev_prompt.assert_not_called()
+        assert mock_fix_prompt.call_count == 1
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator._ntfy_publish")
+    @patch("theforge.coordinator._ntfy_poll_reply")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_extend_on_approve_with_no_findings_uses_dev_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_poll,
+        mock_publish,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        """After a remote 'extend' on an APPROVE review (no findings), the next
+        DEV pass must use build_dev_prompt. The extend path only sets
+        last_review_findings when there are actual findings; an empty findings
+        list produces last_review_findings=None, so the routing falls back to
+        build_dev_prompt (there is nothing specific for the agent to fix)."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),  # iter 1
+            _make_agent_result(success=True, output="Done."),  # iter after extend
+        )
+        # APPROVE review — no P1 findings → last_review_findings will be None
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        poll_calls = {"n": 0}
+
+        def poll_side(reply_url, since_ts, timeout_seconds):
+            poll_calls["n"] += 1
+            if poll_calls["n"] == 1:
+                return ("extend", None)
+            return ("approve", None)
+
+        mock_poll.side_effect = poll_side
+
+        result = run_task(config, task, interactive=True, notify=True)
+
+        assert result.success is True
+        # iter 1 → build_dev_prompt; post-extend iter → build_dev_prompt
+        # (no actionable findings → last_review_findings=None → dev prompt)
+        assert mock_dev_prompt.call_count == 2
+        mock_fix_prompt.assert_not_called()
+
+    @patch("theforge.coordinator.build_fix_prompt")
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator._ntfy_publish")
+    @patch("theforge.coordinator._ntfy_poll_reply")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_extend_after_request_changes_uses_fix_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_poll,
+        mock_publish,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        """After a remote 'extend' triggered by REQUEST_CHANGES (cycles exhausted),
+        the next DEV pass must use build_fix_prompt because last_review_findings
+        contains real P1 findings from the REQUEST_CHANGES review."""
+        from theforge.config import RetryPolicy
+
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=1),
+            notifications=NotificationConfig(
+                backend="ntfy",
+                ntfy=NtfyConfig(url="https://ntfy.sh/test", priority="high"),
+                human_review_timeout_seconds=60,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_shell.side_effect = _shell_with_gate(workspace)
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),  # iter 1
+            _make_agent_result(success=True, output="Fixed."),  # iter 2 (post-extend fix)
+        )
+
+        pool_calls = {"n": 0}
+
+        def pool_side(*args, **kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                # First review: REQUEST_CHANGES — exhausts cycles (max_review_cycles=1)
+                return [
+                    _make_agent_result(
+                        success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                    )
+                ]
+            # Second review after fix: APPROVE
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side
+
+        poll_calls = {"n": 0}
+
+        def poll_side(reply_url, since_ts, timeout_seconds):
+            poll_calls["n"] += 1
+            # First call: human extends after REQUEST_CHANGES exhausted cycles
+            if poll_calls["n"] == 1:
+                return ("extend", None)
+            # Second call: human approves after the fix iteration
+            return ("approve", None)
+
+        mock_poll.side_effect = poll_side
+
+        result = run_task(config, task, interactive=True, notify=True)
+
+        assert result.success is True
+        # iter 1 → build_dev_prompt; iter 2 (post-extend) → build_fix_prompt (P1 findings)
+        assert mock_dev_prompt.call_count == 1
+        assert mock_fix_prompt.call_count == 1

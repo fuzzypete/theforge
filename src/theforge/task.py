@@ -332,6 +332,72 @@ def build_dev_prompt(
     """)
 
 
+# ── Fix prompt (iteration 2+) ─────────────────────────────────────────
+
+
+def build_fix_prompt(
+    task: TaskSpec,
+    *,
+    workspace_path: Path,
+    branch_name: str,
+    review_findings: str,
+    gate_command: str,
+    gate_skipped: bool = False,
+    iteration: int = 2,
+) -> str:
+    """Build a minimal fix prompt for review iteration 2+.
+
+    The agent already has full context from iteration 1's resumed session.
+    This prompt contains ONLY what changes: the specific P1 findings to fix.
+
+    The coordinator runs the gate after the agent completes — the agent
+    should NOT re-run the gate (saves 5-8 minutes per iteration).
+    """
+    gate_bullet = (
+        ""
+        if gate_skipped
+        else (
+            f"- Do NOT re-run the gate (`{gate_command}`). "
+            "The coordinator runs it automatically after you complete.\n        "
+        )
+    )
+    return dedent(f"""\
+        You are continuing work on **{task.name}** (iteration {iteration}).
+
+        ## Working Directory
+
+        `{workspace_path}`  (branch: `{branch_name}`)
+
+        You are already in the correct workspace. Do NOT create a new worktree.
+        Do NOT switch branches.
+
+        ## P1 Findings to Fix
+
+        The code reviewer identified the following issues that MUST be fixed:
+
+        {review_findings}
+
+        ## Your Task
+
+        1. Read the findings above carefully.
+        2. Fix each P1 finding. Address P2 findings if feasible.
+        3. Run `make fmt` to auto-fix formatting.
+        4. Commit your changes:
+           ```bash
+           git add <files-you-changed>
+           git commit -m "fix(<scope>): address review findings (iter {iteration})"
+           ```
+
+        ## Important
+
+        {gate_bullet}- Do NOT re-read the full spec — you already have the context from
+          your previous session.
+        - Do NOT leave uncommitted changes.
+        - Focus ONLY on fixing the identified findings. Do not refactor
+          unrelated code.
+    """)
+
+
 # ── Synthesis prompt ──────────────────────────────────────────────────
 
 

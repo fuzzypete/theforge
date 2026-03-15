@@ -1,88 +1,165 @@
 """Tests for task.py prompt builders."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
-import pytest
-
-from theforge.task import TaskSpec, build_dev_prompt
+from theforge.task import TaskSpec, build_fix_prompt
 
 
-@pytest.fixture()
-def minimal_task(tmp_path: Path) -> TaskSpec:
-    spec_file = tmp_path / "spec.md"
-    spec_file.write_text("# Spec\nDo something.")
+def _make_task(tmp_path: Path) -> TaskSpec:
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
     return TaskSpec(
         name="Test Task",
-        spec_path=spec_file,
+        spec_path=spec,
         slug="test-task",
         file_scope=["src/foo.py", "tests/test_foo.py"],
     )
 
 
-def _make_prompt(task: TaskSpec, **kwargs) -> str:
-    defaults = dict(
-        workspace_path=Path("/workspace/test-task"),
-        branch_name="feat/test-task",
-        spec_content="# Spec\nDo something.",
-        gate_command="make gate",
-    )
-    defaults.update(kwargs)
-    return build_dev_prompt(task, **defaults)
+class TestBuildFixPrompt:
+    """Tests for the minimal fix prompt used on iteration 2+."""
 
-
-class TestBuildDevPromptScopeInstruction:
-    def test_scope_blocked_sentinel_in_prompt(self, minimal_task: TaskSpec) -> None:
-        prompt = _make_prompt(minimal_task)
-        assert "SCOPE_BLOCKED:" in prompt
-
-    def test_no_commit_instruction(self, minimal_task: TaskSpec) -> None:
-        prompt = _make_prompt(minimal_task)
-        assert "Do NOT commit any code changes" in prompt
-
-    def test_no_workaround_instruction(self, minimal_task: TaskSpec) -> None:
-        prompt = _make_prompt(minimal_task)
-        assert "Do NOT implement a workaround" in prompt
-
-    def test_old_permissive_text_absent(self, minimal_task: TaskSpec) -> None:
-        prompt = _make_prompt(minimal_task)
-        assert "Add a note in your commit message" not in prompt
-
-    def test_escalation_consequence_explained(self, minimal_task: TaskSpec) -> None:
-        prompt = _make_prompt(minimal_task)
-        assert "escalation" in prompt.lower()
-
-    def test_file_scope_listed_in_prompt(self, minimal_task: TaskSpec) -> None:
-        prompt = _make_prompt(minimal_task)
-        assert "src/foo.py" in prompt
-        assert "tests/test_foo.py" in prompt
-
-    def test_fallback_rule_excludes_scope_blocked(self, minimal_task: TaskSpec) -> None:
-        """The fallback 'commit what you have' rule must carve out scope-blocked cases."""
-        prompt = _make_prompt(minimal_task)
-        assert "scope block" in prompt.lower()
-        # The old unconditional fallback must not appear on its own
-        assert "If you cannot complete the task, commit what you have" not in prompt
-
-    def test_no_scope_restriction_when_empty(self, minimal_task: TaskSpec) -> None:
-        task = TaskSpec(
-            name=minimal_task.name,
-            spec_path=minimal_task.spec_path,
-            slug=minimal_task.slug,
-            file_scope=[],
+    def test_contains_workspace_info(self, tmp_path):
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=workspace,
+            branch_name="feat/test-task",
+            review_findings="- P1: Off by one in src/foo.py:10",
+            gate_command="make gate",
         )
-        prompt = _make_prompt(task)
-        assert "no scope restriction — all project files" in prompt
+        assert str(workspace) in prompt
+        assert "feat/test-task" in prompt
 
-    def test_scope_blocked_absent_when_no_file_scope(self, minimal_task: TaskSpec) -> None:
-        """SCOPE_BLOCKED instruction must not appear for unrestricted tasks."""
-        task = TaskSpec(
-            name=minimal_task.name,
-            spec_path=minimal_task.spec_path,
-            slug=minimal_task.slug,
-            file_scope=[],
+    def test_contains_review_findings(self, tmp_path):
+        task = _make_task(tmp_path)
+        findings = "- P1: Missing null check in src/foo.py:42\n- P2: Typo in comment"
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings=findings,
+            gate_command="make gate",
         )
-        prompt = _make_prompt(task)
-        assert "SCOPE_BLOCKED:" not in prompt
-        assert "Do NOT implement a workaround" not in prompt
+        assert findings in prompt
+
+    def test_does_not_contain_spec_content(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        # Spec content should NOT appear
+        assert "Do the thing." not in prompt
+
+    def test_does_not_contain_implementation_steps(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        # Full 9-step implementation instructions should NOT appear
+        assert "Read the spec above carefully before writing any code" not in prompt
+        assert "Implementation Steps" not in prompt
+
+    def test_does_not_contain_preflight_section(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "Codebase Context (from preflight)" not in prompt
+        assert "preflight" not in prompt.lower()
+
+    def test_instructs_agent_not_to_run_gate(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        # Should tell agent NOT to run the gate
+        assert "Do NOT re-run the gate" in prompt
+        assert "make gate" in prompt  # gate name mentioned but flagged as off-limits
+
+    def test_includes_iteration_number(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            iteration=3,
+        )
+        assert "iteration 3" in prompt
+
+    def test_default_iteration_is_2(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "iteration 2" in prompt
+
+    def test_instructs_make_fmt(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "make fmt" in prompt
+
+    def test_instructs_commit(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+        )
+        assert "git commit" in prompt
+
+    def test_gate_skipped_changes_instructions(self, tmp_path):
+        task = _make_task(tmp_path)
+        normal = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            gate_skipped=False,
+        )
+        skipped = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            gate_skipped=True,
+        )
+        # Normal: tells agent not to run gate (coordinator handles it)
+        assert "Do NOT re-run the gate" in normal
+        # Skip: gate note omitted entirely
+        assert "Do NOT re-run the gate" not in skipped
+        assert "Gate:" not in skipped
+        assert "make gate" not in skipped
