@@ -101,11 +101,62 @@ build a list of `(prompt, profile)` pairs. The coordinator calls
 list of prompts (one per profile). When a list is passed, each agent gets its
 own prompt.
 
-### 4. Parsing in forge.yaml (config.py)
+### 4. Wire `reasoning_effort` to CLI flags in runner.py
 
-Parse `review_role` from the review pool entries in `forge.yaml`. Pass it through
-to `ModelProfile`. No validation against a fixed set — unknown roles just fall
-back to the generic prompt.
+`ModelProfile` already has `reasoning_effort: str | None = None` but it is
+unused. Wire it through in `runner.py` when spawning reviewer subprocesses.
+
+**Gemini CLI** — pass as `--config` flags:
+
+| `reasoning_effort` | Gemini flags |
+|--------------------|-------------|
+| `"low"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=1024 --config modelConfigs.default.thinkingConfig.thinkingLevel=LOW` |
+| `"medium"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=4096 --config modelConfigs.default.thinkingConfig.thinkingLevel=MEDIUM` |
+| `"high"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=8192 --config modelConfigs.default.thinkingConfig.thinkingLevel=HIGH` |
+| `None` | No flags added (CLI default) |
+
+**Codex CLI** — pass as `--reasoning-effort`:
+
+| `reasoning_effort` | Codex flag |
+|--------------------|-----------|
+| `"low"` | `--reasoning-effort low` |
+| `"medium"` | `--reasoning-effort medium` |
+| `"high"` | `--reasoning-effort high` |
+| `None` | No flag added |
+
+**Claude CLI** — no flag needed; extended thinking is configured separately
+and not controlled per-invocation via CLI flag. Ignore `reasoning_effort` for
+claude profiles.
+
+These flags are injected into the subprocess argv list before the prompt
+argument. The runner already constructs argv per-CLI-type — add the effort
+flags to the gemini and codex branches.
+
+Example `forge.yaml` with both role and effort configured:
+```yaml
+review_pool:
+  - name: sonnet
+    cli: claude
+    model: sonnet
+    review_role: correctness
+  - name: codex
+    cli: codex
+    model: gpt-5.4
+    review_role: patterns
+    reasoning_effort: high
+  - name: gemini
+    cli: gemini
+    model: gemini-2.5-pro
+    review_role: edge-cases
+    reasoning_effort: high
+```
+
+### 5. Parsing in forge.yaml (config.py)
+
+Parse both `review_role` and `reasoning_effort` from the review pool entries
+in `forge.yaml`. Pass through to `ModelProfile`. No validation against a fixed
+set — unknown roles fall back to the generic prompt, unknown effort values are
+ignored.
 
 ## Acceptance Criteria
 
@@ -116,7 +167,14 @@ back to the generic prompt.
       the current generic prompt (backward compatible)
 - [ ] Coordinator builds per-reviewer prompts and passes them to the pool
 - [ ] `run_agent_pool()` accepts a list of prompts (one per profile)
-- [ ] `forge.yaml` parsing reads `review_role` from pool entries
+- [ ] `forge.yaml` parsing reads `review_role` and `reasoning_effort` from pool entries
+- [ ] `runner.py` injects `--config` thinking flags for gemini profiles with `reasoning_effort` set
+- [ ] `runner.py` injects `--reasoning-effort` flag for codex profiles with `reasoning_effort` set
+- [ ] Claude profiles: `reasoning_effort` is silently ignored
+- [ ] `reasoning_effort=None`: no extra flags added for any CLI type
 - [ ] Existing tests pass without modification
 - [ ] New tests verify role-specific prompt content for each built-in role
 - [ ] New tests verify fallback behavior for unknown roles
+- [ ] New tests verify gemini argv includes correct `--config` flags for each effort level
+- [ ] New tests verify codex argv includes `--reasoning-effort` flag
+- [ ] New tests verify claude argv is unchanged regardless of `reasoning_effort`
