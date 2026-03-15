@@ -108,12 +108,16 @@ unused. Wire it through in `runner.py` when spawning reviewer subprocesses.
 
 **Gemini CLI** — pass as `--config` flags:
 
+Note: Gemini CLI factory default is `thinkingBudget=0` (thinking **disabled**).
+All prior theforge Gemini reviews ran with zero reasoning. Explicitly setting
+a budget is essential for useful reviews.
+
 | `reasoning_effort` | Gemini flags |
 |--------------------|-------------|
-| `"low"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=1024 --config modelConfigs.default.thinkingConfig.thinkingLevel=LOW` |
-| `"medium"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=4096 --config modelConfigs.default.thinkingConfig.thinkingLevel=MEDIUM` |
-| `"high"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=8192 --config modelConfigs.default.thinkingConfig.thinkingLevel=HIGH` |
-| `None` | No flags added (CLI default) |
+| `"low"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=2048 --config modelConfigs.default.thinkingConfig.thinkingLevel=LOW` |
+| `"medium"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=8192 --config modelConfigs.default.thinkingConfig.thinkingLevel=MEDIUM` |
+| `"high"` | `--config modelConfigs.default.thinkingConfig.thinkingBudget=16384 --config modelConfigs.default.thinkingConfig.thinkingLevel=HIGH` |
+| `None` | No flags added (uses `~/.gemini/settings.json` default) |
 
 **Codex CLI** — pass as `--reasoning-effort`:
 
