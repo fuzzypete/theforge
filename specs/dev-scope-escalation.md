@@ -3,7 +3,9 @@ name: "Dev agent scope escalation — fail fast on out-of-scope requirements"
 slug: dev-scope-escalation
 file_scope:
   - src/theforge/task.py
+  - src/theforge/coordinator.py
   - tests/test_task.py
+  - tests/test_coordinator.py
 pytest_target: tests/
 ---
 
