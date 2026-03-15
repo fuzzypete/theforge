@@ -20,6 +20,7 @@ from theforge.config import (
     ModelProfile,
     NotificationConfig,
     NtfyConfig,
+    PlanConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -6845,3 +6846,322 @@ test_coverage:
         assert "APPROVE" in body
         assert "$" in body
         assert "Branch:" in body
+
+
+# ── PLAN phase tests ──────────────────────────────────────────────────
+
+PREFLIGHT_PROCEED_MEDIUM = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+reason: "Spec requirements are not yet implemented."
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "Not found in codebase"
+```
+"""
+
+PREFLIGHT_PROCEED_SMALL = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Small config change needed."
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "Not found in codebase"
+```
+"""
+
+
+def _make_plan_config(tmp_path: Path) -> ForgeConfig:
+    """Create a test config with PLAN phase enabled."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+    )
+
+
+class TestPlanPhase:
+    """Tests for the PLAN phase (implementation planning between PREFLIGHT and DEV)."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_plan_runs_for_medium_complexity(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """PLAN phase runs when preflight complexity is medium."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Implementation Plan\n\nStep 1: implement feature.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        results = [preflight_result, plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # PREFLIGHT + PLAN + DEV = 3 run_agent calls
+        assert mock_agent.call_count == 3
+        # plan_output is stored on state
+        assert result.state.plan_output is not None
+        assert "Implementation Plan" in result.state.plan_output
+        # forge_plan.md written to workspace
+        assert (workspace / "forge_plan.md").exists()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_plan_skipped_for_small_complexity(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """PLAN phase is skipped when preflight complexity is small."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_SMALL, cost_usd=0.05
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        results = [preflight_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # PREFLIGHT + DEV only (no PLAN) = 2 run_agent calls
+        assert mock_agent.call_count == 2
+        assert result.state.plan_output is None
+        assert not (workspace / "forge_plan.md").exists()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_plan_skipped_when_disabled(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """PLAN phase is skipped when plan.enabled is False."""
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+            plan=PlanConfig(enabled=False),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+        call_idx = {"n": 0}
+        results = [preflight_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # PREFLIGHT + DEV only (plan disabled) = 2 run_agent calls
+        assert mock_agent.call_count == 2
+        assert result.state.plan_output is None
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_plan_failure_is_warn_and_dev_proceeds(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """When PLAN agent fails, a warning is logged and DEV runs without a plan."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(
+            success=False,
+            output="Error: plan agent crashed.",
+            cost_usd=0.01,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        results = [preflight_result, plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # DEV should still run even though PLAN failed
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # plan_output is None (plan failed, no output stored)
+        assert result.state.plan_output is None
+        # forge_plan.md not written
+        assert not (workspace / "forge_plan.md").exists()
+        # plan_result is stored though
+        assert result.state.plan_result is not None
+        assert result.state.plan_result.success is False
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_plan_cost_included_in_total_cost(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """total_cost includes plan cost."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Implementation Plan\n\nStep 1.",
+            cost_usd=0.20,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        results = [preflight_result, plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review"),
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        state = result.state
+        assert state.total_plan_cost == pytest.approx(0.20)
+        # total_cost = dev(0.50) + review(0.50) + preflight(0.05) + plan(0.20)
+        assert state.total_cost == pytest.approx(0.50 + 0.50 + 0.05 + 0.20)
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coordinator._run_shell")
+    def test_plan_not_rerun_on_dev_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """On DEV retry (review sends REQUEST_CHANGES), PLAN does not re-run."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Implementation Plan\n\nStep 1.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        results = [preflight_result, plan_result, dev_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        # First review cycle: REQUEST_CHANGES; second: APPROVE
+        mock_pool.side_effect = [
+            [_make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="r")],
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r")],
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # PREFLIGHT(1) + PLAN(1) + DEV(1) + DEV-retry(1) = 4 calls; no second PLAN
+        assert mock_agent.call_count == 4
+        # plan_output is still the original plan (from first run)
+        assert result.state.plan_output is not None
+        assert "Implementation Plan" in result.state.plan_output
