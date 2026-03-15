@@ -15,7 +15,7 @@ This isn't just "split coordinator.py into files." There are six workstreams:
 | 2 | **Test file split** | 7,555-line test file → same problem, blocks parallel test dev |
 | 3 | **Code deduplication** | Merge block 3x, frontmatter 2x, manifest load 2x |
 | 4 | **Missing type abstractions** | Raw tuples for GateResult, WorktreeInfo → unclear contracts |
-| 5 | **Config mutation cleanup** | Complexity adaptation mutates config mid-run → invisible state |
+| 5 | **Complexity adaptation auditability** | Config swap after PREFLIGHT is invisible in audit trail |
 | 6 | **Notification abstraction** | osascript/ntfy/email fragmented across coordinator |
 
 Workstreams 1–2 are the critical path. 3–6 can be done incrementally.
@@ -73,21 +73,28 @@ coord_state     ← stdlib only
 coord_notify    ← coord_state, config, runner (or shell)
 coord_gate      ← coord_state, config, runner (or shell)
 coord_preflight ← coord_state, config, runner, task
-coord_workspace ← coord_state, config, runner (or shell), coord_notify
+coord_workspace ← coord_state, config, runner (or shell), coord_notify, coord_gate
 coordinator     ← all of the above + task, review, schemas
 ```
 
+**Why coord_workspace → coord_gate:** `_resolve_merge_conflicts()` calls
+`_run_gate()` at line 746 to verify that conflict resolution didn't break
+tests before completing the merge. This is a one-way dependency
+(coord_gate does not import coord_workspace), so no circular dep risk.
+
 ### Backward-Compat Re-exports
 
-These imports must continue working from `theforge.coordinator`:
+Every symbol imported from `theforge.coordinator` by cli.py, sprint.py,
+tests/test_coordinator.py, or tests/test_sprint.py must continue working
+after the split. Derived from grepping the actual imports:
 
 ```python
+# sprint.py imports (src/theforge/sprint.py:18–29)
 from theforge.coordinator import (
     CoordinatorResult,   # → coord_state
-    CoordinatorState,    # → coord_state
-    Phase,               # → coord_state
-    ReviewCycleMetadata, # → coord_state
+    StructuredLogger,    # stays in coordinator
     _fmt_duration,       # stays in coordinator
+    _generate_run_id,    # stays in coordinator
     _is_remote_mode,     # → coord_notify
     _notify,             # → coord_notify
     _ntfy_publish,       # → coord_notify
@@ -96,9 +103,61 @@ from theforge.coordinator import (
     run_from_dev,        # stays in coordinator
     run_from_review,     # stays in coordinator
     run_task,            # stays in coordinator
-    set_log_level,       # stays in coordinator
+)
+
+# cli.py imports (src/theforge/cli.py:21–28)
+from theforge.coordinator import (
+    CoordinatorResult,   # → coord_state
+    _fmt_duration,       # stays in coordinator
+    generate_audit_log,  # stays in coordinator
+    run_from_review,     # stays in coordinator
+    run_task,            # stays in coordinator
+    set_log_level,       # stays in coordinator (aliased)
+)
+
+# test_coordinator.py imports (tests/test_coordinator.py:29–47)
+from theforge.coordinator import (
+    Phase,                          # → coord_state
+    StructuredLogger,               # stays in coordinator
+    _apply_complexity_adaptation,   # → coord_preflight
+    _escalate_dev_model,            # → coord_preflight
+    _fmt_duration,                  # stays in coordinator
+    _generate_run_id,               # stays in coordinator
+    _has_persistent_p1,             # → coord_preflight
+    _is_remote_mode,                # → coord_notify
+    _is_stale_worktree,             # → coord_workspace
+    _ntfy_poll_reply,               # → coord_notify
+    _ntfy_reply_url,                # → coord_notify
+    _parse_preflight_complexity,    # → coord_preflight
+    _remove_worktree,               # → coord_workspace
+    generate_audit_log,             # stays in coordinator
+    run_from_review,                # stays in coordinator
+    run_review_only,                # stays in coordinator
+    run_task,                       # stays in coordinator
+)
+# Also inline imports of: _create_workspace (→ coord_workspace),
+# CoordinatorResult/CoordinatorState/ReviewCycleMetadata (→ coord_state)
+
+# test_sprint.py imports (tests/test_sprint.py:20–27)
+from theforge.coordinator import (
+    CoordinatorResult,   # → coord_state
+    CoordinatorState,    # → coord_state
+    Phase,               # → coord_state
+    _notify,             # → coord_notify
+    _osa_quote,          # → coord_notify
+    run_task,            # stays in coordinator
 )
 ```
+
+**Strategy for test imports:** Once source is split, tests should import
+from the canonical sub-module (e.g. `from theforge.coord_preflight import
+_apply_complexity_adaptation`). The re-exports in coordinator.py exist for
+backward compat of production code (cli.py, sprint.py) — tests should be
+updated to import from the new homes as part of workstream 2.
+
+**"What remains" in coordinator.py** must include `StructuredLogger` and
+`_generate_run_id` — sprint.py depends on both. Everything that moves to
+a sub-module gets a re-export line in coordinator.py.
 
 ### Execution Steps
 
@@ -108,10 +167,17 @@ Each step: implement → `make fmt` → `make test` → commit. Do NOT batch.
    CoordinatorResult. Add re-exports in coordinator.py. This is the lowest-risk
    move (pure data, no function deps).
 
-2. **`coord_notify.py`** — Move all notification functions: `_log()`,
-   `_log_verbose()`, `_notify()`, `_ntfy_publish()`, `_ntfy_poll_reply()`,
+2. **`coord_notify.py`** — Move notification functions: `_notify()`,
+   `_ntfy_publish()`, `_ntfy_poll_reply()`, `_ntfy_reply_url()`,
    `_ntfy_terminal_link()`, `_remote_human_review()`, `_human_review()`,
-   `_is_remote_mode()`. These form a natural cluster with minimal deps.
+   `_is_remote_mode()`, `_osa_quote()`. These form a natural cluster.
+
+   **`_log()` and `_log_verbose()` stay in coordinator.py** — they're used
+   by gate, workspace, merge, preflight, and the main loop. Moving them to
+   coord_notify.py would create noisy cross-module imports from every other
+   sub-module. They're logging utilities, not notification functions. If they
+   become awkward in coordinator.py after the split, extract to a small
+   `coord_logging.py` as a follow-up — but don't force them into notify.
 
 3. **Resolve `_run_shell` placement** — Based on verification 1a above,
    either move to `runner.py` or create `shell.py`.
@@ -130,7 +196,8 @@ Each step: implement → `make fmt` → `make test` → commit. Do NOT batch.
 7. **Slim `coordinator.py`** — Remove all moved code, add re-exports.
    Target: < 800 lines. What remains: `_coordinator_loop()`, entry points
    (`run_task`, `run_from_dev`, `run_from_review`, `run_review_only`),
-   `generate_audit_log()`, `_fmt_duration()`, `set_log_level()`.
+   `generate_audit_log()`, `_fmt_duration()`, `set_log_level()`,
+   `StructuredLogger`, `_generate_run_id()` (sprint.py depends on both).
 
 ---
 
@@ -228,28 +295,36 @@ which loads it again.
 
 ### 4a. `GateResult` dataclass
 
-Currently `_run_gate()` returns a raw tuple. Replace with:
+Currently `_run_gate()` returns `tuple[str | None, str | None, str]` where the
+three positions are `(decision, error, output)`. The coordinator uses `error`
+(second element) to distinguish infrastructure failures that must escalate
+immediately from ordinary gate FAILs that can retry. This distinction must be
+preserved.
 
 ```python
 @dataclasses.dataclass
 class GateResult:
-    decision: str | None   # "PASS", "FAIL", or None
-    summary: str | None     # human-readable gate output
-    raw_output: str         # full gate command stdout
+    decision: str | None   # "PASS", "FAIL", or None (unparseable)
+    error: str | None       # infrastructure error (subprocess crash, timeout, missing handoff)
+                            # non-None → immediate escalation, distinct from decision="FAIL"
+    output: str             # full gate command stdout (for logging/audit)
 ```
 
 Lives in `coord_state.py` (or `coord_gate.py` after split).
 
 ### 4b. `WorktreeInfo` dataclass
 
-Workspace creation returns `tuple[Path | None, str | None, str]`. Replace:
+`_create_workspace()` returns `tuple[Path | None, str | None, str | None]`
+where the three positions are `(path, branch, error)`. The caller (`run_task`)
+treats any non-None third element as a fatal workspace failure and skips to
+ESCALATE. This error channel must be preserved — it's not "setup output."
 
 ```python
 @dataclasses.dataclass
 class WorktreeInfo:
-    path: Path | None       # worktree directory
-    branch: str | None      # branch name
-    setup_output: str       # workspace setup stdout
+    path: Path | None       # worktree directory (None on failure)
+    branch: str | None      # branch name (None on failure)
+    error: str | None       # fatal workspace error; non-None → skip to ESCALATE
 ```
 
 Lives in `coord_state.py` (or `coord_workspace.py` after split).
@@ -262,26 +337,39 @@ makes the flow clear enough. **Evaluate after workstream 1.**
 
 ---
 
-## Workstream 5: Config Mutation Cleanup
+## Workstream 5: Complexity Adaptation Auditability
 
-`_apply_complexity_adaptation()` mutates the config object mid-run based on
-PREFLIGHT complexity verdict. This makes config mutable state that's invisible
-in the audit trail.
+`_apply_complexity_adaptation()` already returns a **new** `ForgeConfig` via
+`_dc_replace()` rather than mutating in place — the caller rebinds the local
+`config` name. So this is not a mutation bug. The problem is **auditability**:
+the config swap is invisible in the audit trail, and there's no record of what
+changed or why.
 
-**Fix:** Instead of mutating config, return an `Overrides` dataclass:
+**Fix:** Return an explicit `ComplexityOverrides` alongside the new config.
+The fields must reflect what `_apply_complexity_adaptation()` actually changes:
+
+- **small:** trims `review_pool` to cheapest single reviewer, drops `synthesis_profile`
+- **large:** upgrades `dev_profile` to strongest model/CLI, materializes `synthesis_profile`
 
 ```python
 @dataclasses.dataclass
 class ComplexityOverrides:
-    dev_timeout: int | None = None
-    dev_budget: float | None = None
-    review_timeout: int | None = None
+    complexity: str                          # "small", "medium", "large"
+    review_pool_changed: bool = False        # True if pool was trimmed (small)
+    review_pool_size: int | None = None      # new pool size after trim
+    synthesis_dropped: bool = False           # True if synthesis was removed (small)
+    synthesis_materialized: bool = False      # True if synthesis was created (large)
+    dev_model_changed: bool = False           # True if dev CLI/model upgraded (large)
+    dev_cli: str | None = None               # new dev CLI (if changed)
+    dev_model: str | None = None             # new dev model (if changed)
 ```
 
-The coordinator loop applies overrides explicitly when computing timeouts/budgets,
-leaving the original config immutable. Overrides are logged in the audit trail.
+The coordinator logs the overrides in the audit trail so the config delta is
+visible. The new config is still produced by `_dc_replace()` — this doesn't
+change the mechanics, just makes the decision surface auditable.
 
 **When:** After workstream 1 (coord_preflight.py exists to own this).
+**Priority:** Low — correctness is fine, this is a transparency improvement.
 
 ---
 
@@ -290,16 +378,29 @@ leaving the original config immutable. Overrides are logged in the audit trail.
 Current state: osascript (macOS), ntfy.sh (HTTP), email (stub) — all
 implemented as separate functions in coordinator.py with no shared interface.
 
-**Fix:** Define a `Notifier` protocol:
+**Fix:** The notification functions split into two concerns with different
+contracts:
+
+1. **Fire-and-forget notifications** (osascript, ntfy publish, email):
+   simple `notify(title, body)` — a shared protocol works here.
+
+2. **Interactive review polling** (ntfy poll): `_ntfy_poll_reply()` needs
+   `reply_url` + `since_ts`, returns `(decision, feedback)` where feedback
+   carries human rejection findings. This is ntfy-specific and cannot be
+   generalized to a `poll_reply(topic, timeout) -> str | None` protocol
+   without losing the rejection-feedback channel and replay protection.
+
+**Approach:** Extract a `Notifier` protocol for concern 1 only:
 
 ```python
 class Notifier(Protocol):
     def notify(self, title: str, body: str, *, priority: str = "default") -> None: ...
-    def poll_reply(self, topic: str, timeout: int) -> str | None: ...
 ```
 
-Implementations: `OsascriptNotifier`, `NtfyNotifier`, `EmailNotifier`.
-Coordinator receives a `list[Notifier]` and broadcasts.
+Keep `_ntfy_poll_reply()` and `_remote_human_review()` as standalone
+functions in coord_notify.py — they're ntfy-specific interactive flows,
+not generic notification. Don't force them into an abstraction that would
+lose the `(decision, feedback)` return or `(reply_url, since_ts)` inputs.
 
 **When:** During or after workstream 1 step 2 (coord_notify.py).
 **Priority:** Low — current approach works, this is a cleanliness improvement.
@@ -326,7 +427,7 @@ Phase 3: Cleanup (workstreams 3a, 4, 5, 6)
   - Can be done incrementally, independent of each other
   - 3a (merge dedup): 2 hours
   - 4 (type abstractions): 4 hours
-  - 5 (config immutability): 4 hours
+  - 5 (complexity auditability): 4 hours
   - 6 (notification protocol): 8 hours (lowest priority)
 ```
 
@@ -341,7 +442,7 @@ Phase 3: Cleanup (workstreams 3a, 4, 5, 6)
 5. `test_coordinator.py` < 2,000 lines
 6. Each new `test_coord_*.py` runs independently
 7. No raw tuple returns for gate/workspace results (workstream 4)
-8. Config object is never mutated after initial load (workstream 5)
+8. Complexity overrides logged in audit trail (workstream 5)
 9. Zero code duplication for merge blocks, frontmatter, manifest loading
 
 ---
