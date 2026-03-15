@@ -1,6 +1,6 @@
 gate_decision: PASS
 scope_completed:
-  - "task.py: SCOPE_BLOCKED instruction block only emitted when file_scope is non-empty; unrestricted tasks receive no false scope-blocked instructions"
-  - "test_task.py: test_scope_blocked_absent_when_no_file_scope verifies block is absent for empty-scope tasks"
+  - "coordinator.py: _parse_scope_blocked() helper anchors detection to terminal output — only escalates when SCOPE_BLOCKED: has at most 2 non-empty lines after it"
+  - "test_coordinator.py: TestParseScopeBlocked unit tests + test_scope_blocked_mid_output_does_not_escalate integration test covering false-positive prevention"
 deferred_followups: []
 next_recommended_step: "Review and merge feat/dev-scope-escalation into main"
