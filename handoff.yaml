@@ -1,8 +1,9 @@
 gate_decision: PASS
 scope_completed:
-  - "coordinator.py: detect SCOPE_BLOCKED: sentinel in dev_result.output and escalate immediately, skipping VALIDATE/REVIEW, with descriptive error naming the blocked files"
-  - "test_coordinator.py: TestScopeBlocked class with two tests — immediate escalation and no retry on scope-blocked output"
-  - "task.py already had the strict SCOPE_BLOCKED instruction (no change needed)"
-  - "test_task.py already had tests for strict scope instruction (no change needed)"
+  - "task.py: strict SCOPE_BLOCKED scope instruction in build_dev_prompt()"
+  - "coordinator.py: detect SCOPE_BLOCKED: sentinel in dev_result.output, escalate immediately skipping VALIDATE/REVIEW"
+  - "test_task.py: tests verifying strict scope instruction is present and permissive text is absent"
+  - "test_coordinator.py: TestScopeBlocked — immediate escalation and no retry on scope-blocked output"
+  - "reverted out-of-scope ideate.py change to match main"
 deferred_followups: []
 next_recommended_step: "Review and merge feat/dev-scope-escalation into main"
