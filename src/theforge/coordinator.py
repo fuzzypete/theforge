@@ -242,11 +242,12 @@ def _escalate_notify(
             last_p1 = p1s[0].description
     detail = (last_p1 or (state.error or ""))[:120]
     branch = state.branch_name or ""
-    cycles_line = (
-        f"{state.review_cycle} cycles exhausted"
-        f" — ${state.total_cost:.2f}  {_fmt_duration(elapsed)}"
-    )
-    body = "\n".join([cycles_line, detail, f"Branch: {branch}"])
+    cost_dur = f"${state.total_cost:.2f}  {_fmt_duration(elapsed)}"
+    if "exhausted" in (state.error or ""):
+        first_line = f"{state.review_cycle} cycles exhausted — {cost_dur}"
+    else:
+        first_line = f"escalated — {cost_dur}"
+    body = "\n".join([first_line, detail, f"Branch: {branch}"])
     _ntfy_publish(
         ntfy.url,
         f"TheForge: \u2717 escalated \u2014 {task.slug}",

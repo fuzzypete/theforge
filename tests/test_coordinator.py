@@ -6317,7 +6317,7 @@ class TestNtfyTerminalNotifications:
         assert "Branch:" in body
 
     def test_no_ntfy_when_not_configured(self, tmp_path):
-        """No ntfy call when config.notifications.ntfy is None."""
+        """No ntfy call at all when config.notifications.ntfy is None."""
         config = _make_config(tmp_path)  # no ntfy
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -6338,9 +6338,31 @@ class TestNtfyTerminalNotifications:
             result = run_task(config, task, notify=True)
 
         assert result.success is True
-        # _ntfy_publish must not have been called for DONE (no ntfy config)
-        done_calls = [c for c in mock_ntfy.call_args_list if "done" in str(c)]
-        assert len(done_calls) == 0
+        mock_ntfy.assert_not_called()
+
+    def test_escalate_non_cycle_body(self, tmp_path):
+        """Non-cycle ESCALATE body uses 'escalated' not 'N cycles exhausted'."""
+        config = _make_ntfy_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        with (
+            patch(
+                "theforge.coordinator._run_shell",
+                return_value=(False, "git error"),
+            ),
+            patch("theforge.coordinator._ntfy_publish") as mock_ntfy,
+        ):
+            result = run_task(config, task, notify=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        escalate_calls = [c for c in mock_ntfy.call_args_list if "escalated" in c.args[1]]
+        assert len(escalate_calls) >= 1
+        body = escalate_calls[0].args[2]
+        # Workspace failure has review_cycle=0; first line must NOT say "0 cycles exhausted"
+        assert "cycles exhausted" not in body
+        assert "escalated" in body
+        assert "Branch:" in body
 
     def test_no_ntfy_when_notify_false(self, tmp_path):
         """No ntfy call when notify=False even if ntfy is configured."""
