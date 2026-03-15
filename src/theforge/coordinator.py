@@ -2514,7 +2514,21 @@ def run_task(
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
         else:
-            _log("  ⚠ PLAN failed — proceeding to DEV without plan")
+            state.phase = Phase.ESCALATE
+            state.error = (
+                "PLAN phase failed — task requires a plan but the planning agent "
+                f"did not produce one (exit={plan_result.exit_code}). "
+                "Consider increasing plan timeout or simplifying the spec."
+            )
+            _log(f"  ✗ PLAN failed — escalating (not proceeding blind)")
+            _log(f"✗ ESCALATE   {state.error}")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
 
     # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
     result = _coordinator_loop(

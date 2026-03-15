@@ -79,8 +79,8 @@ retry:
 plan:
   enabled: true
   model: claude   # CLI name for the plan agent (uses opus model)
-  budget_usd: 0.50
-  timeout: 300
+  budget_usd: 1.00
+  timeout: 600
 
 notifications:
   backend: ntfy

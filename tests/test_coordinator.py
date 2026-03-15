@@ -7039,10 +7039,10 @@ class TestPlanPhase:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coordinator._run_shell")
-    def test_plan_failure_is_warn_and_dev_proceeds(
+    def test_plan_failure_escalates(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
-        """When PLAN agent fails, a warning is logged and DEV runs without a plan."""
+        """When PLAN agent fails, the run escalates (does not proceed blind)."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -7056,10 +7056,9 @@ class TestPlanPhase:
             output="Error: plan agent crashed.",
             cost_usd=0.01,
         )
-        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
 
         call_idx = {"n": 0}
-        results = [preflight_result, plan_result, dev_result]
+        results = [preflight_result, plan_result]
 
         def agent_side_effect(**kwargs):
             idx = min(call_idx["n"], len(results) - 1)
@@ -7068,22 +7067,22 @@ class TestPlanPhase:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = agent_side_effect
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
 
         result = run_task(config, task)
 
-        # DEV should still run even though PLAN failed
-        assert result.success is True
-        assert result.phase == Phase.DONE
+        # PLAN failure should escalate, not proceed to DEV
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "PLAN phase failed" in result.message
         # plan_output is None (plan failed, no output stored)
         assert result.state.plan_output is None
-        # forge_plan.md not written
-        assert not (workspace / "forge_plan.md").exists()
-        # plan_result is stored though
+        # plan_result is stored
         assert result.state.plan_result is not None
         assert result.state.plan_result.success is False
+        # DEV should NOT have run (only preflight + plan = 2 agent calls)
+        assert mock_agent.call_count == 2
+        # Review pool should NOT have run
+        assert mock_pool.call_count == 0
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
