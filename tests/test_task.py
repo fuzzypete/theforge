@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from theforge.task import TaskSpec, build_fix_prompt
+from theforge.task import TaskSpec, build_dev_prompt, build_fix_prompt
 
 
 def _make_task(tmp_path: Path) -> TaskSpec:
@@ -14,6 +14,51 @@ def _make_task(tmp_path: Path) -> TaskSpec:
         slug="test-task",
         file_scope=["src/foo.py", "tests/test_foo.py"],
     )
+
+
+class TestBuildDevPrompt:
+    """Tests for build_dev_prompt() file_scope advisory language."""
+
+    def test_non_empty_scope_uses_focus_language(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            spec_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+        )
+        assert "Focus your changes" in prompt
+
+    def test_non_empty_scope_does_not_contain_scope_blocked(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            spec_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+        )
+        assert "SCOPE_BLOCKED" not in prompt
+
+    def test_empty_scope_still_works(self, tmp_path):
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
+        task = TaskSpec(
+            name="No Scope Task",
+            spec_path=spec,
+            slug="no-scope",
+            file_scope=[],
+        )
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/no-scope",
+            spec_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+        )
+        assert "no scope restriction" in prompt
+        assert "SCOPE_BLOCKED" not in prompt
 
 
 class TestBuildFixPrompt:
