@@ -208,5 +208,8 @@ tests/test_coord_preflight.py     (new)
 tests/test_helpers.py             (new)
 tests/test_sprint.py
 tests/conftest.py
+forge.yaml
+pyproject.toml
+plans/coordinator-refactor.md
 pyproject.toml
 ```
