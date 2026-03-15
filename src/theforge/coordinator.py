@@ -45,6 +45,7 @@ from .runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agen
 from .task import (
     TaskSpec,
     build_dev_prompt,
+    build_fix_prompt,
     build_preflight_prompt,
     build_review_prompt,
     build_synthesis_prompt,
@@ -113,6 +114,9 @@ class CoordinatorState:
     preflight_result: AgentResult | None = None
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
+    retry_reason: str | None = (
+        None  # "review_changes" | "gate_fail" | "dirty_worktree" | "extend" | "reject" | None
+    )
 
     @property
     def total_dev_cost(self) -> float:
@@ -760,39 +764,6 @@ def _parse_preflight_complexity(output: str) -> str:
     return "medium"
 
 
-def _parse_scope_blocked(output: str) -> tuple[bool, str]:
-    """Detect a terminal SCOPE_BLOCKED sentinel in dev agent output.
-
-    The sentinel format is three lines (SCOPE_BLOCKED:, Required files:, Reason:).
-    To avoid false positives when the agent quotes the instruction text earlier
-    in its output, we only treat the output as scope-blocked when the last
-    occurrence of SCOPE_BLOCKED: has at most 2 non-empty lines after it —
-    matching the two expected follow-on lines of the sentinel block.
-
-    Returns (is_blocked, blocked_files_string).
-    """
-    lines = output.splitlines()
-    # Find the last occurrence of the sentinel line
-    sentinel_idx = None
-    for i in range(len(lines) - 1, -1, -1):
-        if "SCOPE_BLOCKED:" in lines[i]:
-            sentinel_idx = i
-            break
-    if sentinel_idx is None:
-        return False, ""
-    # Count non-empty lines after the sentinel; more than 2 means the agent
-    # continued working after mentioning SCOPE_BLOCKED (not a terminal output).
-    after_non_empty = [ln for ln in lines[sentinel_idx + 1 :] if ln.strip()]
-    if len(after_non_empty) > 2:
-        return False, ""
-    blocked_files = ""
-    for line in lines[sentinel_idx:]:
-        if "Required files not in scope:" in line:
-            blocked_files = line.split("Required files not in scope:", 1)[1].strip()
-            break
-    return True, blocked_files
-
-
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
     """Return (cost_rank, capability) for a profile using the model registry.
 
@@ -1254,35 +1225,55 @@ def _coordinator_loop(
     workspace_path = state.workspace_path
     branch_name = state.branch_name
     _skip_dev = skip_dev_first_iter
+    # Per-cycle retry counter for escalation: reset to 0 at the start of each
+    # new review cycle (and on human extend/reject).  state.dev_iteration is a
+    # CUMULATIVE counter across all review cycles.  Prompt routing uses
+    # state.retry_reason, not dev_iteration, to select build_fix_prompt vs
+    # build_dev_prompt.
+    _dev_calls_this_cycle: int = 0
 
     while True:
         if not _skip_dev:
             # ── DEV ───────────────────────────────────────────────
             state.phase = Phase.DEV
             state.dev_iteration += 1
+            _dev_calls_this_cycle += 1
             _log_phase(
                 state.phase,
                 f"{config.dev_profile.model}  iter={state.dev_iteration}",
             )
 
-            prompt = build_dev_prompt(
-                task,
-                workspace_path=workspace_path,
-                branch_name=branch_name,
-                spec_content=spec_content,
-                gate_command=(
-                    task.gate_override
-                    if task.gate_override is not None and not _is_gate_skip(task.gate_override)
-                    else config.validation.gate_command
-                ),
-                gate_skipped=_is_gate_skip(task.gate_override),
-                review_findings=state.last_review_findings,
-                human_feedback=state.human_feedback,
-                preflight_output=(
-                    state.preflight_result.output if state.preflight_result else None
-                ),
-                iteration=state.dev_iteration,
+            _gate_cmd = (
+                task.gate_override
+                if task.gate_override is not None and not _is_gate_skip(task.gate_override)
+                else config.validation.gate_command
             )
+            if state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
+                prompt = build_fix_prompt(
+                    task,
+                    workspace_path=workspace_path,
+                    branch_name=branch_name,
+                    review_findings=state.last_review_findings,
+                    gate_command=_gate_cmd,
+                    gate_skipped=_is_gate_skip(task.gate_override),
+                    iteration=state.dev_iteration,
+                )
+            else:
+                prompt = build_dev_prompt(
+                    task,
+                    workspace_path=workspace_path,
+                    branch_name=branch_name,
+                    spec_content=spec_content,
+                    gate_command=_gate_cmd,
+                    gate_skipped=_is_gate_skip(task.gate_override),
+                    review_findings=state.last_review_findings,
+                    human_feedback=state.human_feedback,
+                    preflight_output=(
+                        state.preflight_result.output if state.preflight_result else None
+                    ),
+                    iteration=state.dev_iteration,
+                )
+            state.retry_reason = None  # consumed
 
             _dev_start = time.monotonic()
             dev_result = run_agent(
@@ -1297,22 +1288,6 @@ def _coordinator_loop(
             state.dev_session_id = dev_result.session_id
             log_agent_result(dev_result, "DEV")
             _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_duration(_dev_elapsed)}")
-
-            _scope_blocked, _blocked_files = _parse_scope_blocked(dev_result.output)
-            if _scope_blocked:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"ESCALATE: Dev agent scope blocked. "
-                    f"Required files: {_blocked_files}. Update file_scope in spec."
-                )
-                _log(f"✗ ESCALATE   {state.error}")
-                _escalate_notify(task, state, notify)
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                )
 
             if state.total_dev_cost > config.dev_profile.budget_usd:
                 state.phase = Phase.ESCALATE
@@ -1368,7 +1343,7 @@ def _coordinator_loop(
                     )
                 # Handoff mode: retry dev with feedback (original behavior)
                 _log_verbose(f"Gate error: {gate_err}")
-                if state.dev_iteration >= config.retry.max_dev_iterations:
+                if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
                     state.phase = Phase.ESCALATE
                     state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
                     _log(f"✗ ESCALATE   {state.error}")
@@ -1380,6 +1355,7 @@ def _coordinator_loop(
                         message=state.error,
                     )
                 state.human_feedback = f"Gate validation failed: {gate_err}"
+                state.retry_reason = "gate_fail"
                 _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
                 continue
 
@@ -1409,7 +1385,7 @@ def _coordinator_loop(
                             line.strip().split(maxsplit=1)[-1] for line in dirty_lines
                         )
                         _log(f"Dirty worktree detected: {dirty_files}")
-                        if state.dev_iteration >= config.retry.max_dev_iterations:
+                        if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
                             state.phase = Phase.ESCALATE
                             state.error = f"Dev agent left uncommitted changes: {dirty_files}"
                             _log(f"✗ ESCALATE   {state.error}")
@@ -1425,9 +1401,10 @@ def _coordinator_loop(
                             f"worktree: {dirty_files}. You MUST commit ALL modified "
                             "files before running the gate. Stage and commit them now."
                         )
+                        state.retry_reason = "dirty_worktree"
                         continue
             elif gate_decision in ("FAIL", "BLOCKED"):
-                if state.dev_iteration >= config.retry.max_dev_iterations:
+                if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
                     state.phase = Phase.ESCALATE
                     state.error = (
                         f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
@@ -1447,6 +1424,7 @@ def _coordinator_loop(
                     f"Fix the issues and re-run the gate.\n\n"
                     f"Current handoff:\n{handoff_text}"
                 )
+                state.retry_reason = "gate_fail"
                 _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
                 _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
                 continue
@@ -1770,8 +1748,14 @@ def _coordinator_loop(
                     state.dev_iteration = 0
                     state.review_cycle = 0
                     state.human_review_extra_cycles += 1
-                    state.last_review_findings = findings_to_markdown(parsed_review.findings)
+                    state.last_review_findings = (
+                        findings_to_markdown(parsed_review.findings)
+                        if parsed_review.findings
+                        else None
+                    )
                     state.human_feedback = None
+                    state.retry_reason = "extend"
+                    _dev_calls_this_cycle = 0
                     _log(
                         f"Human extended — granting fresh budget "
                         f"(extra_cycles={state.human_review_extra_cycles})"
@@ -1780,7 +1764,9 @@ def _coordinator_loop(
                 # decision == "reject" — loop back to dev with human feedback
                 state.human_feedback = feedback
                 state.last_review_findings = None
+                state.retry_reason = "reject"
                 state.dev_iteration = 0
+                _dev_calls_this_cycle = 0
                 _log("Human rejected — looping back to dev with feedback")
                 continue
             else:
@@ -1925,6 +1911,8 @@ def _coordinator_loop(
                     state.human_review_extra_cycles += 1
                     state.last_review_findings = findings_to_markdown(parsed_review.findings)
                     state.human_feedback = None
+                    state.retry_reason = "extend"
+                    _dev_calls_this_cycle = 0
                     _log(
                         f"Human extended — granting fresh budget "
                         f"(extra_cycles={state.human_review_extra_cycles})"
@@ -1937,6 +1925,8 @@ def _coordinator_loop(
                 state.human_review_extra_cycles += 1
                 state.human_feedback = feedback
                 state.last_review_findings = None
+                state.retry_reason = "reject"
+                _dev_calls_this_cycle = 0
                 _log(
                     "Human rejected (cycles exhausted) — granting fresh budget "
                     f"(extra_cycles={state.human_review_extra_cycles})"
@@ -1959,8 +1949,10 @@ def _coordinator_loop(
 
         # Feed findings back to dev agent
         state.last_review_findings = findings_to_markdown(parsed_review.findings)
-        state.dev_iteration = 0  # reset iteration count for new review cycle
-        state.human_feedback = None  # clear any gate feedback
+        state.dev_iteration = 0
+        state.human_feedback = None
+        state.retry_reason = "review_changes"
+        _dev_calls_this_cycle = 0
         _log_verbose(f"Sending {len(parsed_review.findings)} findings back to dev agent")
 
 
