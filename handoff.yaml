@@ -1,6 +1,6 @@
 gate_decision: PASS
 scope_completed:
-  - "coordinator.py: SCOPE_BLOCKED check moved before dev-budget enforcement so scope-blocked escalation always takes priority"
-  - "test_coordinator.py: test_scope_blocked_takes_precedence_over_budget covers budget-exceeded + SCOPE_BLOCKED overlap"
+  - "task.py: SCOPE_BLOCKED instruction block only emitted when file_scope is non-empty; unrestricted tasks receive no false scope-blocked instructions"
+  - "test_task.py: test_scope_blocked_absent_when_no_file_scope verifies block is absent for empty-scope tasks"
 deferred_followups: []
 next_recommended_step: "Review and merge feat/dev-scope-escalation into main"
