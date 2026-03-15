@@ -1,12 +1,1 @@
 gate_decision: PASS
-scope_completed:
-  - LogConfig dataclass + load_config() logging: section parsing (config.py)
-  - StructuredLogger class with emit/_safe_emit, _generate_run_id (coordinator.py)
-  - _run_gate extended to return 3-tuple (decision, error, output)
-  - run_task/run_from_review/run_from_dev/run_review_only emit all 8 event types
-  - _coordinator_loop emits phase_start/phase_end/gate_result/review_result/merge_result/escalate
-  - sprint.py sprint-level run_start/run_end events; _triage_spec updated for 3-tuple _run_gate
-  - 15 new tests in TestStructuredLoggingIntegration covering full lifecycle, edge cases, config parsing
-  - test_sprint.py mocks updated to return 3-tuple from _run_gate
-deferred_followups: []
-next_recommended_step: "Submit for review"
