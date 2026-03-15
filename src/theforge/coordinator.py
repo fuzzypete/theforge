@@ -2312,6 +2312,7 @@ def run_task(
     interactive: bool = False,
     auto_merge: bool = False,
     notify: bool = False,
+    run_id: str | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -2335,7 +2336,7 @@ def run_task(
     spec_content = load_spec(task.spec_path)
 
     # ── Structured logger ──────────────────────────────────────────
-    _run_id = _generate_run_id()
+    _run_id = run_id or _generate_run_id()
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,
@@ -2548,6 +2549,7 @@ def run_from_review(
     interactive: bool = False,
     auto_merge: bool = False,
     notify: bool = False,
+    run_id: str | None = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -2573,7 +2575,7 @@ def run_from_review(
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
 
-    _run_id = _generate_run_id()
+    _run_id = run_id or _generate_run_id()
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,
@@ -2648,6 +2650,7 @@ def run_from_dev(
     interactive: bool = False,
     auto_merge: bool = False,
     notify: bool = False,
+    run_id: str | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -2670,7 +2673,7 @@ def run_from_dev(
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
 
-    _run_id = _generate_run_id()
+    _run_id = run_id or _generate_run_id()
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,

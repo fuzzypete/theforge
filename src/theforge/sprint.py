@@ -391,6 +391,7 @@ def run_sprint(
                     interactive=interactive,
                     auto_merge=auto_merge,
                     notify=notify,
+                    run_id=_sprint_run_id,
                 )
             elif triage and triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -400,14 +401,25 @@ def run_sprint(
                     interactive=interactive,
                     auto_merge=auto_merge,
                     notify=notify,
+                    run_id=_sprint_run_id,
                 )
             else:
                 result = run_task(
-                    config, task, interactive=interactive, auto_merge=auto_merge, notify=notify
+                    config,
+                    task,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    notify=notify,
+                    run_id=_sprint_run_id,
                 )
         else:
             result = run_task(
-                config, task, interactive=interactive, auto_merge=auto_merge, notify=notify
+                config,
+                task,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                notify=notify,
+                run_id=_sprint_run_id,
             )
         _spec_elapsed = (
             datetime.datetime.now(datetime.timezone.utc) - _spec_start
