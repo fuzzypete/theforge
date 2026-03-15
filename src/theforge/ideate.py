@@ -292,7 +292,7 @@ def _parse_synthesis_output(
     if spec_text.startswith("```"):
         first_newline = spec_text.find("\n")
         if first_newline != -1:
-            spec_text = spec_text[first_newline + 1 :]
+            spec_text = spec_text[first_newline + 1:]
     if spec_text.endswith("```"):
         spec_text = spec_text[: spec_text.rfind("```")].rstrip()
 
