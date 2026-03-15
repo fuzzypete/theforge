@@ -726,6 +726,13 @@ def main() -> None:
         help="Merge feature branch into base branch after review APPROVE",
     )
     review_parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        default=False,
+        help="Show tool activity, heartbeats, and raw agent output (verbose mode)",
+    )
+    review_parser.add_argument(
         "--no-notify",
         action="store_true",
         default=False,
