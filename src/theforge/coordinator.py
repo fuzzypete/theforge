@@ -1505,79 +1505,21 @@ def _coordinator_loop(
                     if dirty_lines:
                         parsed_files = _parse_dirty_files("\n".join(dirty_lines))
 
-                        # A file is in-scope if its path equals or starts with any scope entry.
+                        # A file is in-scope if its path equals a scope entry or is nested
+                        # under a scope directory.  Normalise to a trailing "/" so that
+                        # "src/theforge" never falsely matches "src/theforgery/...".
                         def _in_scope(f: str) -> bool:
-                            return any(f == s or f.startswith(s) for s in task.file_scope)
+                            for s in task.file_scope:
+                                if f == s:
+                                    return True
+                                prefix = s if s.endswith("/") else f"{s}/"
+                                if f.startswith(prefix):
+                                    return True
+                            return False
 
-                        # Auto-commit eligible only when:
-                        #   1. file_scope is set
-                        #   2. every dirty line is a tracked file (len match — no ??/!! dropped)
-                        #   3. no tracked file is in-scope
-                        all_tracked = len(parsed_files) == len(dirty_lines)
-                        if task.file_scope and parsed_files and all_tracked:
-                            in_scope = [f for f in parsed_files if _in_scope(f)]
-                            out_of_scope = [f for f in parsed_files if not _in_scope(f)]
-                            if not in_scope:
-                                # All dirty entries are tracked out-of-scope → auto-commit
-                                if _auto_commit_side_effects(workspace_path, out_of_scope):
-                                    # Fall through to REVIEW without a DEV retry
-                                    pass
-                                else:
-                                    # Auto-commit failed — fall back to DEV retry
-                                    dirty_files = ", ".join(out_of_scope)
-                                    _log(f"Dirty worktree detected: {dirty_files}")
-                                    if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
-                                        state.phase = Phase.ESCALATE
-                                        state.error = (
-                                            f"Dev agent left uncommitted changes: {dirty_files}"
-                                        )
-                                        _log(f"✗ ESCALATE   {state.error}")
-                                        _escalate_notify(task, state, notify, config)
-                                        return CoordinatorResult(
-                                            success=False,
-                                            phase=state.phase,
-                                            state=state,
-                                            message=state.error,
-                                        )
-                                    state.human_feedback = (
-                                        "PROCESS VIOLATION: You left uncommitted changes in"
-                                        f" the worktree: {dirty_files}. You MUST commit ALL"
-                                        " modified files before running the gate. Stage and"
-                                        " commit them now."
-                                    )
-                                    state.retry_reason = "dirty_worktree"
-                                    continue
-                            else:
-                                # Some tracked files are in-scope — existing DEV retry
-                                dirty_files = ", ".join(parsed_files)
-                                _log(f"Dirty worktree detected: {dirty_files}")
-                                if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
-                                    state.phase = Phase.ESCALATE
-                                    state.error = (
-                                        f"Dev agent left uncommitted changes: {dirty_files}"
-                                    )
-                                    _log(f"✗ ESCALATE   {state.error}")
-                                    _escalate_notify(task, state, notify, config)
-                                    return CoordinatorResult(
-                                        success=False,
-                                        phase=state.phase,
-                                        state=state,
-                                        message=state.error,
-                                    )
-                                state.human_feedback = (
-                                    "PROCESS VIOLATION: You left uncommitted changes in"
-                                    f" the worktree: {dirty_files}. You MUST commit ALL"
-                                    " modified files before running the gate. Stage and"
-                                    " commit them now."
-                                )
-                                state.retry_reason = "dirty_worktree"
-                                continue
-                        else:
-                            # Untracked/ignored entries present, empty file_scope, or no
-                            # parsed tracked files — treat all dirty as in-scope (existing)
-                            dirty_files = ", ".join(
-                                line.strip().split(maxsplit=1)[-1] for line in dirty_lines
-                            )
+                        # Shared helper: log the violation, set state for DEV retry or
+                        # ESCALATE, and return a CoordinatorResult on escalation (else None).
+                        def _dirty_dev_retry(dirty_files: str) -> CoordinatorResult | None:
                             _log(f"Dirty worktree detected: {dirty_files}")
                             if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
                                 state.phase = Phase.ESCALATE
@@ -1597,6 +1539,42 @@ def _coordinator_loop(
                                 " commit them now."
                             )
                             state.retry_reason = "dirty_worktree"
+                            return None
+
+                        # Auto-commit eligible only when:
+                        #   1. file_scope is set
+                        #   2. every dirty line is a tracked file (len match — no ??/!! dropped)
+                        #   3. no tracked file is in-scope
+                        all_tracked = len(parsed_files) == len(dirty_lines)
+                        if task.file_scope and parsed_files and all_tracked:
+                            in_scope = [f for f in parsed_files if _in_scope(f)]
+                            out_of_scope = [f for f in parsed_files if not _in_scope(f)]
+                            if not in_scope:
+                                # All dirty entries are tracked out-of-scope → auto-commit
+                                if _auto_commit_side_effects(workspace_path, out_of_scope):
+                                    # Fall through to REVIEW without a DEV retry
+                                    pass
+                                else:
+                                    # Auto-commit failed — fall back to DEV retry
+                                    escalate = _dirty_dev_retry(", ".join(out_of_scope))
+                                    if escalate is not None:
+                                        return escalate
+                                    continue
+                            else:
+                                # Some tracked files are in-scope — existing DEV retry
+                                escalate = _dirty_dev_retry(", ".join(parsed_files))
+                                if escalate is not None:
+                                    return escalate
+                                continue
+                        else:
+                            # Untracked/ignored entries present, empty file_scope, or no
+                            # parsed tracked files — treat all dirty as in-scope (existing)
+                            raw_names = ", ".join(
+                                line.strip().split(maxsplit=1)[-1] for line in dirty_lines
+                            )
+                            escalate = _dirty_dev_retry(raw_names)
+                            if escalate is not None:
+                                return escalate
                             continue
             elif gate_decision in ("FAIL", "BLOCKED"):
                 if _dev_calls_this_cycle >= config.retry.max_dev_iterations:
