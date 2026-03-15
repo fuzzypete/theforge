@@ -17,7 +17,9 @@ import yaml
 from .config import ForgeConfig
 from .coordinator import (
     CoordinatorResult,
+    StructuredLogger,
     _fmt_duration,
+    _generate_run_id,
     _is_remote_mode,
     _notify,
     _ntfy_publish,
@@ -237,7 +239,7 @@ def _triage_spec(
         )
 
     # 4. Gate pre-check to decide REVIEW vs DEV entry
-    gate_decision, gate_err = _run_gate(config, worktree_path, task=task)
+    gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
 
     if gate_err is None and gate_decision == "PASS":
         return SpecTriage(
@@ -307,6 +309,22 @@ def run_sprint(
         flush=True,
     )
     _log("⚠ Budget tracks Claude costs only (Codex/Gemini report $0.00)")
+
+    # Sprint-level structured logger
+    _sprint_run_id = _generate_run_id()
+    _sprint_logger = StructuredLogger(
+        run_id=_sprint_run_id,
+        project=config.project,
+        task=manifest.name,
+        log_file=config.log.log_file,
+        enabled=config.log.enabled,
+    )
+    _sprint_logger.emit(
+        "run_start",
+        specs=manifest.specs,
+        budget_usd=manifest.budget_usd,
+        resume=resume,
+    )
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
@@ -454,6 +472,13 @@ def run_sprint(
     _log(
         f"Sprint complete: {specs_succeeded} succeeded, {specs_failed} failed, "
         f"{specs_skipped} skipped. Total: ${final_cost:.2f}  {_sprint_dur}"
+    )
+    _sprint_outcome = "done" if specs_failed == 0 and stopped_reason is None else "partial"
+    _sprint_logger.emit(
+        "run_end",
+        outcome=_sprint_outcome,
+        total_cost_usd=round(final_cost, 6),
+        total_duration_s=round(_sprint_elapsed, 2),
     )
     if notify:
         _notify(
