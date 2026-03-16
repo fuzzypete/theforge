@@ -188,15 +188,37 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
 # ── Commit log extraction ──────────────────────────────────────────
 
 
+def _has_uncommitted_changes(workspace_path: Path) -> bool:
+    """Check if the worktree has uncommitted changes (staged or unstaged)."""
+    ok, status = _cu._run_shell("git status --porcelain", workspace_path)
+    return ok and bool(status.strip())
+
+
 def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
-    """Get the commit log vs the base branch (like a PR commit list)."""
+    """Get the commit log vs the base branch (like a PR commit list).
+
+    If the worktree has uncommitted changes, appends a warning so reviewers
+    know the commits don't tell the full story.
+    """
+    dirty = _has_uncommitted_changes(workspace_path)
+
     ok, log = _cu._run_shell(
         f"git log {base_branch}..HEAD --format='%h %s' --reverse", workspace_path
     )
-    if ok and log:
-        return log
 
-    return "(no commits ahead of base branch)"
+    parts: list[str] = []
+    if ok and log:
+        parts.append(log)
+    else:
+        parts.append("(no commits ahead of base branch)")
+
+    if dirty:
+        parts.append(
+            "\n⚠ WARNING: Worktree has uncommitted changes not reflected above. "
+            "Run `git diff` and `git diff --cached` to see them."
+        )
+
+    return "\n".join(parts)
 
 
 def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
