@@ -26,24 +26,70 @@ from __future__ import annotations
 
 import datetime
 import json
-import secrets
-import shlex
-import shutil
 import subprocess
-import sys
 import time
-import urllib.error
-import urllib.request
-from dataclasses import dataclass, field
 from dataclasses import replace as _dc_replace
-from enum import Enum, auto
 from pathlib import Path
 
-import yaml
-
+from . import coord_util as _cu
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
-from .review import ReviewFinding, ReviewResult, findings_to_markdown, parse_review_output
-from .runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agent_pool
+from .coord_gate import (  # noqa: F401
+    _auto_commit_side_effects,
+    _is_gate_skip,
+    _parse_dirty_files,
+    _read_gate_decision,
+    _run_gate,
+    _run_gate_full,
+)
+from .coord_notify import (  # noqa: F401
+    _escalate_notify,
+    _human_review,
+    _is_remote_mode,
+    _notify,
+    _ntfy_done_notify,
+    _ntfy_poll_reply,
+    _ntfy_publish,
+    _ntfy_reply_url,
+    _osa_quote,
+    _remote_human_review,
+)
+from .coord_preflight import (  # noqa: F401
+    _apply_complexity_adaptation,
+    _escalate_dev_model,
+    _find_registry_info_for_profile,
+    _find_registry_key_for_profile,
+    _has_persistent_p1,
+    _load_file_scope_contents,
+    _parse_preflight_complexity,
+    _parse_preflight_verdict,
+)
+
+# ── Re-exports for backward compatibility ────────────────────────────
+from .coord_state import (  # noqa: F401
+    CoordinatorResult,
+    CoordinatorState,
+    Phase,
+    ReviewCycleMetadata,
+)
+from .coord_util import (  # noqa: F401
+    _LOG_LEVEL,
+    _fmt_duration,
+    _generate_run_id,
+    _log,
+    _log_phase,
+    _log_verbose,
+    set_log_level,
+)
+from .coord_workspace import (  # noqa: F401
+    _create_workspace,
+    _fmt_age,
+    _is_stale_worktree,
+    _merge_branch,
+    _remove_worktree,
+    _resolve_merge_conflicts,
+)
+from .review import ReviewResult, findings_to_markdown, parse_review_output
+from .runner import log_agent_result, run_agent, run_agent_pool
 from .task import (
     TaskSpec,
     build_dev_prompt,
@@ -55,155 +101,7 @@ from .task import (
     load_spec,
 )
 
-
-class Phase(Enum):
-    """Coordinator state machine phases."""
-
-    INIT = auto()
-    WORKSPACE = auto()
-    PREFLIGHT = auto()
-    PLAN = auto()
-    DEV = auto()
-    VALIDATE = auto()
-    REVIEW = auto()
-    HUMAN_REVIEW = auto()
-    DONE = auto()
-    ESCALATE = auto()
-
-
-@dataclass
-class ReviewCycleMetadata:
-    """Per-cycle metadata for audit logging."""
-
-    pool_models: list[str]  # profile names of all pool agents
-    successful: list[str]  # profile names that succeeded
-    failed: list[str]  # profile names that failed
-    synthesized: bool  # whether synthesis ran
-    parse_retries: int = 0  # parse/schema retry count for this cycle
-    failed_detail: dict[str, str] = field(default_factory=dict)  # profile → "exit=N"
-
-
-@dataclass
-class CoordinatorState:
-    """Mutable state tracking for a single task execution."""
-
-    phase: Phase = Phase.INIT
-    started_at: str | None = None  # ISO timestamp set at INIT
-    workspace_path: Path | None = None
-    branch_name: str | None = None
-    dev_session_id: str | None = None
-    review_cycle: int = 0  # which dev→review loop we're on
-    dev_iteration: int = 0  # retries within the current review cycle
-    dev_results: list[AgentResult] = field(default_factory=list)
-    dev_durations: list[float] = field(default_factory=list)  # wall-clock seconds per dev call
-    review_agent_results: list[AgentResult] = field(default_factory=list)
-    review_durations: list[float] = field(
-        default_factory=list
-    )  # wall-clock seconds per review call
-    review_results: list[ReviewResult] = field(default_factory=list)
-    review_cycle_metadata: list[ReviewCycleMetadata] = field(default_factory=list)
-    gate_decisions: list[str] = field(default_factory=list)
-    last_review_findings: str | None = None
-    human_feedback: str | None = None
-    human_review_decision: str | None = (
-        None  # "approve" | "reject" | "escalate" | "extend" | "timeout"
-    )
-    human_review_feedback: str | None = None  # rejection text from human
-    human_review_extra_cycles: int = 0  # cycles granted by "extend" decisions
-    human_review_waited_seconds: float | None = None  # seconds waited in remote mode
-    human_review_mode: str | None = None  # "remote" | "interactive"
-    preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
-    preflight_reason: str | None = None
-    preflight_complexity: str | None = None  # "small" | "medium" | "large"
-    preflight_result: AgentResult | None = None
-    plan_result: AgentResult | None = None
-    plan_output: str | None = None  # contents of forge_plan.md, passed to dev
-    error: str | None = None
-    dev_escalated: bool = False  # True once model escalation has occurred this run
-    retry_reason: str | None = (
-        None  # "review_changes" | "gate_fail" | "dirty_worktree" | "extend" | "reject" | None
-    )
-
-    @property
-    def total_dev_cost(self) -> float:
-        return sum(r.cost_usd for r in self.dev_results)
-
-    @property
-    def total_review_cost(self) -> float:
-        return sum(r.cost_usd for r in self.review_agent_results)
-
-    @property
-    def total_preflight_cost(self) -> float:
-        return self.preflight_result.cost_usd if self.preflight_result else 0.0
-
-    @property
-    def total_plan_cost(self) -> float:
-        return self.plan_result.cost_usd if self.plan_result else 0.0
-
-    @property
-    def total_cost(self) -> float:
-        return (
-            self.total_dev_cost
-            + self.total_review_cost
-            + self.total_preflight_cost
-            + self.total_plan_cost
-        )
-
-
-@dataclass
-class CoordinatorResult:
-    """Final result from a coordinator run."""
-
-    success: bool
-    phase: Phase
-    state: CoordinatorState
-    message: str
-    merge: dict | None = None
-
-
-# ── Logging ──────────────────────────────────────────────────────────
-
-_LOG_LEVEL: LogLevel = LogLevel.PROGRESS
-
-
-def set_log_level(level: LogLevel) -> None:
-    global _LOG_LEVEL
-    _LOG_LEVEL = level
-
-
-def _fmt_duration(seconds: float) -> str:
-    """Format duration as '2h 14m 3s', '14m 3s', or '47s'."""
-    h, rem = divmod(int(seconds), 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m}m {s}s"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-
-def _log(msg: str) -> None:
-    """Print coordinator status to stderr (always shown)."""
-    print(f"[forge] {msg}", file=sys.stderr, flush=True)
-
-
-def _log_verbose(msg: str) -> None:
-    """Print coordinator detail to stderr (verbose mode only)."""
-    if _LOG_LEVEL >= LogLevel.VERBOSE:
-        print(f"[forge] {msg}", file=sys.stderr, flush=True)
-
-
-def _log_phase(phase: Phase, detail: str = "") -> None:
-    suffix = f"   {detail}" if detail else ""
-    _log(f"▸ {phase.name}{suffix}")
-
-
 # ── Structured logging ────────────────────────────────────────────────
-
-
-def _generate_run_id() -> str:
-    """Return a short random hex run ID (12 chars)."""
-    return secrets.token_hex(6)
 
 
 class StructuredLogger:
@@ -259,343 +157,17 @@ class StructuredLogger:
             pass
 
 
-# ── Notifications ─────────────────────────────────────────────────────
-
-
-def _osa_quote(s: str) -> str:
-    """Escape and wrap a string for use as an AppleScript string literal."""
-    s = s.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{s}"'
-
-
-def _notify(title: str, body: str) -> None:
-    """Send a native OS notification. Fails silently on unsupported platforms."""
-    if shutil.which("osascript") is None:
-        return
-    script = (
-        f"display notification {_osa_quote(body)} "
-        f"with title {_osa_quote(title)} "
-        f'sound name "default"'
-    )
-    try:
-        subprocess.run(
-            ["osascript", "-e", script],
-            timeout=5,
-            check=False,
-            capture_output=True,
-        )
-    except Exception:
-        pass
-
-
-def _escalate_notify(
-    task: "TaskSpec",
-    state: "CoordinatorState",
-    notify: bool,
-    config: "ForgeConfig | None" = None,
-) -> None:
-    """Send an escalation notification if notify is enabled."""
-    if not notify:
-        return
-    _notify(
-        f"TheForge: escalated — {task.slug}",
-        (state.error or "")[:120],
-    )
-    if config is None or config.notifications.ntfy is None:
-        return
-    ntfy = config.notifications.ntfy
-    elapsed = 0.0
-    if state.started_at:
-        try:
-            started = datetime.datetime.fromisoformat(state.started_at)
-            elapsed = (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds()
-        except Exception:
-            pass
-    last_p1: str | None = None
-    if state.review_results:
-        p1s = [f for f in state.review_results[-1].findings if f.severity == "P1"]
-        if p1s:
-            last_p1 = p1s[0].description
-    detail = (last_p1 or (state.error or ""))[:120]
-    branch = state.branch_name or ""
-    first_line = (
-        f"{state.review_cycle} cycles exhausted"
-        f" — ${state.total_cost:.2f}  {_fmt_duration(elapsed)}"
-    )
-    body = "\n".join([first_line, detail, f"Branch: {branch}"])
-    try:
-        _ntfy_publish(
-            ntfy.url,
-            f"TheForge: \u2717 escalated \u2014 {task.slug}",
-            body,
-            priority=ntfy.priority,
-        )
-    except Exception:
-        pass
-
-
-def _ntfy_done_notify(
-    task: "TaskSpec",
-    state: "CoordinatorState",
-    config: "ForgeConfig",
-    notify: bool,
-    summary: str,
-    elapsed: float,
-    branch_name: str,
-) -> None:
-    """Publish an ntfy notification when a task reaches DONE. Fails silently."""
-    if not notify or config.notifications.ntfy is None:
-        return
-    ntfy = config.notifications.ntfy
-    body = "\n".join(
-        [
-            f"APPROVE \u2014 ${state.total_cost:.2f}  {_fmt_duration(elapsed)}",
-            (summary or "Approved and merged.")[:120],
-            f"Branch: {branch_name}",
-        ]
-    )
-    try:
-        _ntfy_publish(
-            ntfy.url,
-            f"TheForge: \u2713 done \u2014 {task.slug}",
-            body,
-            priority=ntfy.priority,
-        )
-    except Exception:
-        pass
-
-
-# ── ntfy helpers ──────────────────────────────────────────────────────
-
-
-def _ntfy_reply_url(base_url: str) -> str:
-    """Append '-reply' to the topic segment of the ntfy URL."""
-    return base_url.rstrip("/") + "-reply"
-
-
-def _ntfy_publish(
-    url: str,
-    title: str,
-    body: str,
-    priority: str = "high",
-    actions: str | None = None,
-) -> None:
-    """POST a message to an ntfy topic. Fails silently."""
-    headers: dict[str, str] = {
-        "Title": title,
-        "Priority": priority,
-        "Content-Type": "text/plain; charset=utf-8",
-    }
-    if actions:
-        headers["Actions"] = actions
-    try:
-        req = urllib.request.Request(
-            url,
-            data=body.encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass
-
-
-def _ntfy_poll_reply(
-    reply_url: str,
-    since_ts: int,
-    timeout_seconds: int,
-) -> tuple[str, str | None]:
-    """Poll ntfy reply topic until a valid decision arrives or timeout.
-
-    Returns (decision, feedback):
-      "approve"  → transition to DONE
-      "extend"   → grant fresh review budget
-      "escalate" → transition to ESCALATE
-      "reject"   → feedback contains human findings text
-      "timeout"  → no reply within timeout_seconds
-    """
-    deadline = time.monotonic() + timeout_seconds
-    poll_url = f"{reply_url}/json?poll=1&since={since_ts}"
-
-    while time.monotonic() < deadline:
-        try:
-            req = urllib.request.Request(poll_url)
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                content = resp.read().decode("utf-8", errors="replace")
-            for line in content.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("event") not in ("message", None):
-                    continue
-                msg = (obj.get("message") or "").strip()
-                msg_lower = msg.lower()
-                if msg_lower == "approve":
-                    return "approve", None
-                if msg_lower == "extend":
-                    return "extend", None
-                if msg_lower == "escalate":
-                    return "escalate", None
-                if msg_lower.startswith("reject:"):
-                    findings = msg[7:].strip()
-                    return "reject", findings or None
-                # Unknown message — ignore, keep polling
-        except Exception:
-            pass
-
-        sleep_secs = min(10.0, max(0.0, deadline - time.monotonic()))
-        if sleep_secs > 0:
-            time.sleep(sleep_secs)
-
-    return "timeout", None
-
-
-def _is_remote_mode(notify: bool, config: "ForgeConfig") -> bool:
-    """Return True when all conditions for ntfy-based remote HUMAN_REVIEW are met."""
-    return (
-        notify and config.notifications.backend == "ntfy" and config.notifications.ntfy is not None
-    )
-
-
-def _remote_human_review(
-    state: "CoordinatorState",
-    parsed_review: "ReviewResult",
-    workspace_path: "Path",
-    branch_name: str,
-    task: "TaskSpec",
-    config: "ForgeConfig",
-    task_start: float,
-) -> tuple[str, str | None]:
-    """Async ntfy-based human review decision.
-
-    Publishes a push notification with action buttons, then polls the reply topic.
-    Returns (decision, feedback) matching _human_review's interface, plus the
-    additional decisions "extend" and "timeout".
-    """
-    ntfy = config.notifications.ntfy
-    assert ntfy is not None
-
-    reply_url = _ntfy_reply_url(ntfy.url)
-    timeout_seconds = config.notifications.human_review_timeout_seconds
-
-    p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
-    p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
-    elapsed = time.monotonic() - task_start
-
-    title = f"TheForge: review needed \u2014 {task.slug}"
-    body_lines = [
-        f"{parsed_review.verdict} ({p1} P1, {p2} P2) \u2014 ${state.total_cost:.2f}  "
-        f"{_fmt_duration(elapsed)}",
-        parsed_review.summary[:120],
-        f"Branch: {branch_name}",
-    ]
-    body = "\n".join(body_lines)
-    actions = (
-        f"http, Approve, {reply_url}, method=POST, body=approve; "
-        f"http, Extend+1, {reply_url}, method=POST, body=extend; "
-        f"http, Escalate, {reply_url}, method=POST, body=escalate"
-    )
-
-    _log("─── Remote Human Review (ntfy) ───")
-    _log(f"  Topic:   {ntfy.url}")
-    _log(f"  Reply:   {reply_url}")
-    _log(f"  Timeout: {_fmt_duration(timeout_seconds)}")
-
-    since_ts = int(time.time())
-    _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
-
-    _poll_start = time.monotonic()
-    decision, feedback = _ntfy_poll_reply(reply_url, since_ts, timeout_seconds)
-    state.human_review_waited_seconds = time.monotonic() - _poll_start
-    state.human_review_mode = "remote"
-
-    if decision == "timeout":
-        timeout_title = f"TheForge: timed out waiting for review decision \u2014 {task.slug}"
-        _ntfy_publish(
-            ntfy.url, timeout_title, "Auto-escalating after timeout.", priority=ntfy.priority
-        )
-        _log(f"Remote review timed out after {_fmt_duration(state.human_review_waited_seconds)}")
-    else:
-        waited_str = _fmt_duration(state.human_review_waited_seconds or 0)
-        _log(f"Remote review decision: {decision!r} (waited {waited_str})")
-
-    return decision, feedback
-
-
-# ── Human review ─────────────────────────────────────────────────────
-
-
-def _human_review(
-    state: CoordinatorState,
-    parsed_review: "ReviewResult",  # noqa: F821
-    workspace_path: "Path",  # noqa: F821
-    branch_name: str,
-) -> tuple[str, str | None]:
-    """Prompt the human operator for a review decision.
-
-    Returns (decision, feedback) where decision is one of:
-      "approve"   → transition to DONE
-      "reject"    → transition back to DEV with feedback text
-      "escalate"  → transition to ESCALATE
-    """
-
-    p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
-    p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
-    finding_summary = f"{p1} P1, {p2} P2" if (p1 or p2) else "no findings"
-
-    _log("─── Human Review ───")
-    _log(f"  Verdict:   {parsed_review.verdict} ({finding_summary})")
-    _log(f"  Summary:   {parsed_review.summary}")
-    _log(f"  Workspace: {workspace_path}")
-    _log(f"  Branch:    {branch_name}")
-    _log(f"  Cost:      ${state.total_cost:.3f}")
-    _log("")
-    _log("Options:")
-    _log("  [a]pprove  → DONE (ready to merge)")
-    _log("  [r]eject   → send findings back to dev")
-    _log("  [e]scalate → give up")
-    _log("")
-
-    state.human_review_mode = "interactive"
-    while True:
-        print("[forge] Choice [a/r/e]: ", end="", file=sys.stderr, flush=True)
-        raw = sys.stdin.readline()
-        if not raw:
-            # EOF (Ctrl+D or piped input exhausted) → treat as escalate
-            _log("EOF on stdin — escalating.")
-            return "escalate", None
-        choice = raw.strip().lower()
-        if choice in ("a", "approve"):
-            return "approve", None
-        if choice in ("e", "escalate"):
-            return "escalate", None
-        if choice in ("r", "reject"):
-            _log("Enter your findings (empty line to finish):")
-            lines: list[str] = []
-            while True:
-                print("> ", end="", file=sys.stderr, flush=True)
-                line = sys.stdin.readline()
-                if not line:
-                    # EOF during findings input
-                    break
-                stripped = line.rstrip("\n")
-                if stripped == "":
-                    break
-                lines.append(stripped)
-            return "reject", "\n".join(lines)
-        _log("Invalid choice. Enter 'a', 'r', or 'e'.")
-
-
-# ── Shell helpers ────────────────────────────────────────────────────
+# ── Shell helper ─────────────────────────────────────────────────────
 
 
 def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
-    """Run a shell command. Returns (success, combined output)."""
+    """Run a shell command. Returns (success, combined output).
+
+    Defined here (not re-exported from coord_util) so that
+    ``patch('theforge.coordinator._run_shell')`` intercepts calls made
+    directly within this module.  Sub-modules (coord_workspace, coord_gate)
+    call coord_util._run_shell; patch that symbol when testing those paths.
+    """
     try:
         proc = subprocess.run(
             cmd,
@@ -613,783 +185,17 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"ERROR: {e}"
 
 
-# ── Dirty-worktree helpers ───────────────────────────────────────────
-
-
-def _parse_dirty_files(raw_output: str) -> list[str]:
-    """Parse filenames from ``git status --porcelain`` output.
-
-    Returns tracked modified/added/deleted/renamed filenames.
-    Skips untracked (``??``) and ignored (``!!``) entries.
-    For renames (``R`` status) returns the destination filename.
-    """
-    dirty: list[str] = []
-    for line in raw_output.splitlines():
-        if len(line) < 4:
-            continue
-        xy = line[:2]
-        # Skip untracked and ignored — never auto-committed
-        if xy in ("??", "!!", " ?", " !"):
-            continue
-        rest = line[3:]
-        # Rename entries look like: "R  old/path -> new/path"
-        # Only the destination (new) filename matters
-        if " -> " in rest:
-            rest = rest.split(" -> ", 1)[1]
-        dirty.append(rest.strip())
-    return dirty
-
-
-def _auto_commit_side_effects(workspace_path: Path, files: list[str]) -> bool:
-    """Stage and commit out-of-scope files as fmt side-effects.
-
-    Uses explicit filenames (not ``-A``) so only the intended files are staged.
-    Returns True if the commit succeeded, False on any git error (fail-safe).
-    """
-    try:
-        quoted = " ".join(shlex.quote(f) for f in files)
-        add_ok, add_out = _run_shell(f"git add -- {quoted}", workspace_path)
-        if not add_ok:
-            _log(f"Auto-commit: git add failed: {add_out}")
-            return False
-        commit_ok, commit_out = _run_shell(
-            'git commit -m "chore: auto-commit fmt side-effects"', workspace_path
-        )
-        if not commit_ok:
-            _log(f"Auto-commit: git commit failed: {commit_out}")
-            return False
-        n = len(files)
-        _log(f"Auto-committed {n} out-of-scope fmt side-effects: {', '.join(files)}")
-        return True
-    except Exception as e:  # noqa: BLE001
-        _log(f"Auto-commit: unexpected error: {e}")
-        return False
-
-
-# ── Merge ────────────────────────────────────────────────────────────
-
-_MAX_AUTO_RESOLVE_FILES = 5
-_CONFLICT_RESOLUTION_TIMEOUT = 120
-
-
-def _resolve_merge_conflicts(
-    project_root: Path,
-    branch_name: str,
-    task_name: str,
-    config: ForgeConfig,
-    workspace_path: Path,
-) -> bool:
-    """Attempt to auto-resolve merge conflicts using the dev agent.
-
-    Returns True if conflicts were resolved and the gate passed, False otherwise.
-    On failure, aborts the in-progress merge.
-    """
-    # Get list of conflicted files
-    ok, conflict_out = _run_shell("git diff --name-only --diff-filter=U", project_root)
-    if not ok or not conflict_out.strip():
-        return False
-
-    conflicted_files = [f.strip() for f in conflict_out.strip().splitlines() if f.strip()]
-    if not conflicted_files:
-        return False
-
-    # Complexity guard: too many files → skip
-    if len(conflicted_files) > _MAX_AUTO_RESOLVE_FILES:
-        _log(f"  ⚠ Too many conflicted files ({len(conflicted_files)}) — skipping auto-resolution")
-        return False
-
-    _log(f"  Merge conflict in {len(conflicted_files)} file(s): {', '.join(conflicted_files)}")
-    _log("  Attempting auto-resolution...")
-
-    # Read conflicted file contents
-    file_sections: list[str] = []
-    for rel_path in conflicted_files:
-        full_path = project_root / rel_path
-        try:
-            content = full_path.read_text(encoding="utf-8")
-            file_sections.append(f"### {rel_path}\n\n```\n{content}\n```")
-        except OSError:
-            file_sections.append(f"### {rel_path}\n\n(could not read file)")
-
-    conflicted_files_with_content = "\n\n".join(file_sections)
-    base_branch = config.workspace.base_branch
-
-    prompt = (
-        f"You are resolving a git merge conflict. The branch `{branch_name}` is being\n"
-        f"merged into `{base_branch}`.\n\n"
-        f"Branch purpose: {task_name}\n\n"
-        f"The following files have conflicts:\n\n"
-        f"{conflicted_files_with_content}\n\n"
-        f"Resolve each conflict by editing the files to remove all conflict markers\n"
-        f"(<<<<<<, =======, >>>>>>>). Preserve the intent of both sides. When both\n"
-        f"sides add code in the same location, keep both additions.\n\n"
-        f"After resolving, run the project's test suite to verify nothing is broken."
-    )
-
-    _resolve_start = time.monotonic()
-    resolve_result = run_agent(
-        prompt=prompt,
-        profile=config.dev_profile,
-        working_dir=project_root,
-        session_id=None,
-    )
-    _resolve_elapsed = time.monotonic() - _resolve_start
-    _log(f"  ... resolution done ({int(_resolve_elapsed)}s)")
-
-    if not resolve_result.success:
-        _log("  ⚠ Conflict resolution agent failed — aborting merge")
-        _run_shell("git merge --abort", project_root)
-        return False
-
-    # Run gate to verify resolution didn't break anything
-    _log("  Running gate to verify resolution...")
-    gate_decision, gate_error = _run_gate(config, workspace_path)
-    if gate_error or gate_decision != "PASS":
-        _log("  ⚠ Conflict resolution broke tests — aborting merge")
-        _run_shell("git merge --abort", project_root)
-        return False
-
-    # Complete the merge: git add resolved files + git commit
-    files_arg = " ".join(f'"{f}"' for f in conflicted_files)
-    ok_add, _ = _run_shell(f"git add {files_arg}", project_root)
-    if not ok_add:
-        _log("  ⚠ Failed to stage resolved files — aborting merge")
-        _run_shell("git merge --abort", project_root)
-        return False
-
-    ok_commit, _ = _run_shell("git commit --no-edit", project_root)
-    if not ok_commit:
-        _log("  ⚠ Failed to commit resolution — aborting merge")
-        _run_shell("git merge --abort", project_root)
-        return False
-
-    _log("  ✓ Conflict resolved and merged")
-    return True
-
-
-def _merge_branch(
-    project_root: Path,
-    base_branch: str,
-    branch_name: str,
-    slug: str,
-    workspace_path: Path,
-    *,
-    auto_push: bool = False,
-    config: ForgeConfig | None = None,
-    task_name: str = "",
-) -> dict:
-    """Merge branch_name into base_branch in project_root.
-
-    Returns a merge info dict with keys: attempted, merged, base_branch, error.
-    When config is provided, auto-resolve merge conflicts using the dev agent.
-    """
-    info: dict = {
-        "attempted": True,
-        "merged": False,
-        "base_branch": base_branch,
-        "error": None,
-    }
-
-    # Safety check 1: verify base branch exists
-    ok, out = _run_shell(f"git branch --list {base_branch}", project_root)
-    if not ok or not out.strip():
-        info["error"] = f"Base branch {base_branch!r} not found in project root"
-        _log(f"Auto-merge skipped: {info['error']}")
-        return info
-
-    # Safety check 2: no uncommitted changes in project root
-    ok, dirty = _run_shell("git status --porcelain", project_root)
-    if ok and dirty.strip():
-        info["error"] = f"Uncommitted changes in project root: {dirty.strip()[:200]}"
-        _log(f"Auto-merge skipped: {info['error']}")
-        return info
-
-    # Safety check 3: verify branch has commits not on base
-    ok, log_out = _run_shell(f"git log {base_branch}..{branch_name} --oneline", project_root)
-    if not ok or not log_out.strip():
-        info["error"] = f"Branch {branch_name!r} has no commits ahead of {base_branch!r}"
-        _log(f"Auto-merge skipped: {info['error']}")
-        return info
-
-    # Checkout base branch
-    ok, out = _run_shell(f"git checkout {base_branch}", project_root)
-    if not ok:
-        info["error"] = f"Failed to checkout {base_branch!r}: {out}"
-        _log(f"Auto-merge failed: {info['error']}")
-        return info
-
-    # Attempt fast-forward merge
-    ok, out = _run_shell(f"git merge --ff-only {branch_name}", project_root)
-    if not ok:
-        _log(f"Fast-forward merge failed, falling back to regular merge: {out}")
-        ok, out = _run_shell(f"git merge --no-edit {branch_name}", project_root)
-
-    if not ok:
-        # Attempt auto-resolution if config is available
-        print(
-            f"[DEBUG merge] config={config is not None} workspace_path={workspace_path}",
-            file=sys.stderr,
-            flush=True,
-        )
-        if config is not None:
-            resolved = _resolve_merge_conflicts(
-                project_root,
-                branch_name,
-                task_name,
-                config,
-                workspace_path,
-            )
-            if not resolved:
-                info["error"] = f"Merge failed: {out}"
-                _log(f"Auto-merge failed: {info['error']}")
-                return info
-            # Resolution succeeded — fall through to mark merged
-        else:
-            info["error"] = f"Merge failed: {out}"
-            _log(f"Auto-merge failed: {info['error']}")
-            return info
-
-    info["merged"] = True
-    _log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
-
-    if auto_push:
-        try:
-            subprocess.run(
-                ["git", "push", "origin", base_branch],
-                cwd=str(project_root),
-                timeout=30,
-                capture_output=True,
-                check=True,
-            )
-            _log(f"  Pushed {base_branch} to origin")
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            _log(f"  ⚠ Push failed: {e} (merge succeeded locally)")
-
-    # Worktree cleanup (best-effort)
-    worktree_rel = f".forge/worktrees/{slug}"
-    ok_rm, rm_out = _run_shell(f"git worktree remove --force {worktree_rel}", project_root)
-    if not ok_rm:
-        _log(f"Warning: worktree cleanup failed: {rm_out}")
-    else:
-        _log(f"Worktree removed: {worktree_rel}")
-
-    return info
-
-
-# ── Preflight ───────────────────────────────────────────────────────
-
-
-_VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
-
-
-def _load_file_scope_contents(task: TaskSpec, project_root: Path) -> dict[str, str]:
-    """Read current contents of files in task.file_scope.
-
-    Returns a dict of {relative_path: content}. Missing files are
-    silently skipped (the preflight agent will note their absence).
-    """
-    contents: dict[str, str] = {}
-    for rel_path in task.file_scope:
-        full_path = project_root / rel_path
-        if full_path.is_file():
-            try:
-                contents[rel_path] = full_path.read_text(encoding="utf-8")
-            except OSError:
-                pass
-    return contents
-
-
-def _parse_preflight_verdict(output: str) -> tuple[str, str]:
-    """Extract verdict and reason from preflight agent output.
-
-    Returns (verdict, reason). If parsing fails, returns ("PROCEED", reason)
-    to avoid blocking on a broken preflight — it's cheaper to try DEV than
-    to stall.
-    """
-    # Extract YAML block from markdown fences
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-
-    try:
-        parsed = yaml.safe_load(yaml_text)
-    except yaml.YAMLError:
-        return "PROCEED", f"Failed to parse preflight YAML; proceeding anyway. Raw: {output[:200]}"
-
-    if not isinstance(parsed, dict):
-        return "PROCEED", "Preflight output is not a dict; proceeding anyway."
-
-    verdict = str(parsed.get("verdict", "PROCEED")).upper()
-    reason = str(parsed.get("reason", "(no reason provided)"))
-
-    if verdict not in _VALID_PREFLIGHT_VERDICTS:
-        return "PROCEED", f"Unknown preflight verdict {verdict!r}; proceeding anyway. {reason}"
-
-    return verdict, reason
-
-
-_VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
-
-
-def _parse_preflight_complexity(output: str) -> str:
-    """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-
-    try:
-        parsed = yaml.safe_load(yaml_text)
-        if isinstance(parsed, dict):
-            raw = str(parsed.get("complexity", "medium")).lower()
-            if raw in _VALID_COMPLEXITIES:
-                return raw
-    except yaml.YAMLError:
-        pass
-
-    return "medium"
-
-
-def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
-    """Return (cost_rank, capability) for a profile using the model registry.
-
-    Falls back to (2, 5) for unknown models.
-    """
-    for info in MODEL_REGISTRY.values():
-        if info.cli == profile.cli and info.model == profile.model:
-            return info.cost_rank, info.capability
-    return 2, 5
-
-
-def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
-    """Return the MODEL_REGISTRY key for a profile, or None if unknown."""
-    for key, info in MODEL_REGISTRY.items():
-        if info.cli == profile.cli and info.model == profile.model:
-            return key
-    return None
-
-
-def _has_persistent_p1(
-    current_findings: list[ReviewFinding],
-    previous_findings: list[ReviewFinding],
-) -> bool:
-    """Return True if any P1 appears in both current and previous cycles.
-
-    Matches on description similarity alone (substring containment or
-    >=60% token overlap) regardless of file.
-    """
-    current_p1s = [f for f in current_findings if f.severity == "P1"]
-    previous_p1s = [f for f in previous_findings if f.severity == "P1"]
-
-    if not current_p1s or not previous_p1s:
-        return False
-
-    for curr in current_p1s:
-        for prev in previous_p1s:
-            # Substring containment
-            if curr.description in prev.description or prev.description in curr.description:
-                return True
-            # Token overlap >= 60%
-            curr_tokens = set(curr.description.lower().split())
-            prev_tokens = set(prev.description.lower().split())
-            if curr_tokens and prev_tokens:
-                overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
-                if overlap >= 0.6:
-                    return True
-
-    return False
-
-
-def _escalate_dev_model(
-    current_model: str,
-    available_models: list[str],
-) -> str | None:
-    """Return the next higher-capability dev-capable model, or None.
-
-    Selects the lowest-capability model that is still higher than current
-    and has dev_capable=True in MODEL_REGISTRY.
-    """
-    current_info = MODEL_REGISTRY.get(current_model)
-    if current_info is None:
-        return None
-
-    candidates = [
-        (key, MODEL_REGISTRY[key])
-        for key in available_models
-        if key in MODEL_REGISTRY
-        and MODEL_REGISTRY[key].dev_capable
-        and MODEL_REGISTRY[key].capability > current_info.capability
-    ]
-
-    if not candidates:
-        return None
-
-    candidates.sort(key=lambda x: x[1].capability)
-    return candidates[0][0]
-
-
-def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
-    """Adjust model assignments based on complexity signal.
-
-    Only applies when smart_config_models is set. Explicit profiles are unchanged.
-    - small: single cheapest reviewer, skip synthesis
-    - medium: no change (auto-assigned defaults)
-    - large: upgrade dev to strongest available model
-    """
-    if config.smart_config_models is None or complexity == "medium":
-        return config
-
-    if complexity == "small":
-        if len(config.review_pool) <= 1:
-            return _dc_replace(config, synthesis_profile=None)
-        cheapest = min(
-            config.review_pool,
-            key=lambda p: (
-                _find_registry_info_for_profile(p)[0],
-                -_find_registry_info_for_profile(p)[1],
-            ),
-        )
-        return _dc_replace(config, review_pool=[cheapest], synthesis_profile=None)
-
-    if complexity == "large":
-        # Find strongest model across all profiles
-        candidates: list[ModelProfile] = list(config.review_pool) + [config.dev_profile]
-        if config.synthesis_profile is not None:
-            candidates.append(config.synthesis_profile)
-        strongest = max(candidates, key=lambda p: _find_registry_info_for_profile(p)[1])
-        new_dev = _dc_replace(config.dev_profile, cli=strongest.cli, model=strongest.model)
-        # Spec: large complexity always runs synthesis; materialize it if absent
-        synthesis = config.synthesis_profile
-        if synthesis is None:
-            # Derive a synthesis budget as 2% of dev budget (min $1)
-            synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
-            synth_base = config.review_pool[0]
-            synthesis = _dc_replace(
-                synth_base,
-                name="synthesis",
-                cli=strongest.cli,
-                model=strongest.model,
-                budget_usd=synth_budget,
-            )
-        if (
-            new_dev.cli == config.dev_profile.cli
-            and new_dev.model == config.dev_profile.model
-            and synthesis is config.synthesis_profile
-        ):
-            return config  # already using strongest, synthesis unchanged
-        return _dc_replace(config, dev_profile=new_dev, synthesis_profile=synthesis)
-
-    return config
-
-
-# ── Workspace ────────────────────────────────────────────────────────
-
-
-def _fmt_age(seconds: int) -> str:
-    """Format an age in seconds as a human-readable string (e.g. '3 days', '12 minutes')."""
-    if seconds < 3600:
-        m = max(0, seconds // 60)
-        return f"{m} minute{'s' if m != 1 else ''}"
-    if seconds < 86400:
-        h = seconds // 3600
-        return f"{h} hour{'s' if h != 1 else ''}"
-    d = seconds // 86400
-    return f"{d} day{'s' if d != 1 else ''}"
-
-
-def _is_stale_worktree(path: Path, base_branch: str, config: "ForgeConfig") -> tuple[bool, str]:
-    """Check whether an existing worktree is stale and should be removed.
-
-    Returns (is_stale, info_line) where info_line is a human-readable description
-    of the staleness decision suitable for log output.
-
-    A worktree is stale (returns True) when ANY of:
-    - Branch not found / detached HEAD (corrupted state)
-    - stale_worktree_days == 0 (always remove)
-    - 0 commits ahead of base branch (prior run escalated with no work done)
-    - Last commit is older than stale_worktree_days days
-    """
-    stale_days: int = config.workspace.stale_worktree_days
-
-    # Get branch name from the worktree's HEAD
-    ok, branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", path)
-    if not ok or not branch_out.strip() or branch_out.strip() == "HEAD":
-        return True, "branch not found or detached HEAD — removing (corrupted state)"
-
-    branch_name = branch_out.strip()
-
-    # stale_worktree_days=0 → always remove any existing worktree
-    if stale_days == 0:
-        return True, "stale_worktree_days=0 — always removing (CI/automated mode)"
-
-    # Check commits ahead of base
-    ok, log_out = _run_shell(
-        f"git log {base_branch}..{branch_name} --oneline",
-        config.project_root,
-    )
-    commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok else []
-
-    if not commits_ahead:
-        return True, f"0 commits ahead of {base_branch} — removing (stale)"
-
-    # Check last commit age
-    ok, ts_out = _run_shell(
-        f"git log -1 --format=%ct {branch_name}",
-        config.project_root,
-    )
-    if not ok or not ts_out.strip():
-        return True, "could not determine last commit timestamp — removing (stale)"
-
-    try:
-        last_commit_ts = int(ts_out.strip())
-    except ValueError:
-        return True, "could not parse commit timestamp — removing (stale)"
-
-    now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    age_seconds = max(0, now_ts - last_commit_ts)
-    age_days_float = age_seconds / 86400
-    n_commits = len(commits_ahead)
-    age_str = _fmt_age(age_seconds)
-
-    if age_days_float > stale_days:
-        return (
-            True,
-            f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}, "
-            f"last commit {age_str} ago — removing (stale)",
-        )
-
-    return (
-        False,
-        f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}, "
-        f"last commit {age_str} ago",
-    )
-
-
-def _remove_worktree(path: Path, branch: str, project_root: Path, info_line: str = "") -> None:
-    """Remove a stale worktree and its branch. Logs warnings but does not raise.
-
-    Both commands are best-effort — failures are logged but do not prevent
-    the subsequent git worktree add from running (which will fail clearly
-    if cleanup was incomplete).
-    """
-    _log(f"⚠ WORKSPACE  stale worktree detected — removing {branch}")
-    if info_line:
-        _log(f"  {info_line}")
-
-    ok, out = _run_shell(f"git worktree remove --force {path}", project_root)
-    if not ok:
-        _log(f"  Warning: git worktree remove failed: {out}")
-    else:
-        _log(f"  Removed stale worktree: {path}")
-
-    ok2, out2 = _run_shell(f"git branch -D {branch}", project_root)
-    if not ok2:
-        _log(f"  Warning: git branch -D failed: {out2}")
-    else:
-        _log(f"  Deleted branch {branch}")
-
-
-def _create_workspace(
-    config: ForgeConfig, task: TaskSpec
-) -> tuple[Path | None, str | None, str | None]:
-    """Create an isolated workspace. Returns (path, branch, error).
-
-    Before creating the workspace, checks whether a worktree already exists
-    for this slug. If it does, determines whether it is safe to reuse (recent
-    commits ahead of base) or stale (should be removed and recreated).
-    """
-    slug = task.slug
-    cmd = config.workspace.create_command.format(slug=slug)
-    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=slug)
-    branch_name = config.workspace.branch_pattern.format(slug=slug)
-
-    if workspace_path.exists():
-        _log(f"⚠ WORKSPACE  existing worktree found: {workspace_path}")
-        is_stale, info_line = _is_stale_worktree(
-            workspace_path, config.workspace.base_branch, config
-        )
-        _log(f"  {info_line}")
-        if is_stale:
-            _remove_worktree(workspace_path, branch_name, config.project_root, info_line)
-            # Fall through to recreate the workspace below
-        else:
-            _log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
-            return workspace_path, branch_name, None
-
-    _log(f"Creating workspace: {cmd}")
-    ok, output = _run_shell(cmd, config.project_root)
-    if not ok:
-        return None, None, f"Failed to create workspace: {output}"
-
-    if not workspace_path.exists():
-        return None, None, f"Workspace path does not exist after creation: {workspace_path}"
-
-    if config.workspace.setup_command:
-        _log(f"Running workspace setup: {config.workspace.setup_command}")
-        ok, output = _run_shell(config.workspace.setup_command, workspace_path)
-        if not ok:
-            return None, None, f"Workspace setup command failed: {output}"
-
-    return workspace_path, branch_name, None
-
-
-# ── Validation ───────────────────────────────────────────────────────
-
-
-def _is_gate_skip(gate_override: str | None) -> bool:
-    """Return True if the gate_override value means 'skip the gate entirely'.
-
-    The special value 'none' (case-insensitive) triggers skip mode.
-    None (absent) does NOT trigger skip mode.
-    """
-    return isinstance(gate_override, str) and gate_override.lower() == "none"
-
-
-def _read_gate_decision(
-    config: ForgeConfig, workspace_path: Path
-) -> tuple[str | None, str | None]:
-    """Read gate decision from handoff.yaml. Returns (decision, error)."""
-    handoff_path = workspace_path / config.validation.handoff_file
-    if not handoff_path.exists():
-        return None, f"handoff file not found: {handoff_path}"
-
-    try:
-        with open(handoff_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        return None, f"Failed to parse handoff YAML: {e}"
-    except OSError as e:
-        return None, f"Failed to read handoff file: {e}"
-
-    decision = data.get(config.validation.gate_decision_key)
-    if decision is None:
-        return None, (
-            f"Key {config.validation.gate_decision_key!r} not found in "
-            f"{config.validation.handoff_file}"
-        )
-
-    return str(decision).upper(), None
-
-
-def _run_gate_full(
-    config: ForgeConfig, workspace_path: Path, task: "TaskSpec | None" = None
-) -> tuple[str | None, str | None, str]:
-    """Run the gate command and read the decision. Returns (decision, error, output_tail).
-
-    Supports two modes:
-    1. Handoff-based: gate_command writes a handoff file with a gate decision key.
-    2. Exit-code-based: if no handoff_file/gate_decision_key is configured,
-       gate PASS/FAIL is determined purely by the command's exit code.
-
-    The gate_command supports {pytest_target} substitution from the TaskSpec.
-
-    When task.gate_override is a non-"none" string, that command is used instead
-    of config.validation.gate_command, and exit-code mode is always used.
-    """
-    # Determine gate command and exit-code mode
-    # _is_gate_skip handles None internally, so 'task.gate_override and ...' is sufficient.
-    has_override = (
-        task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
-    )
-    if has_override:
-        # Custom gate command: always exit-code mode (no handoff expected).
-        # Stale-handoff deletion is skipped — custom gates don't read the handoff file.
-        gate_cmd = task.gate_override  # type: ignore[union-attr]
-        use_exit_code = True
-    else:
-        # Global gate command: delete any stale handoff before running (handoff-based mode).
-        # This prevents a prior PASS from leaking through on gate failure.
-        if config.validation.handoff_file:
-            stale_handoff = workspace_path / config.validation.handoff_file
-            if stale_handoff.exists():
-                try:
-                    stale_handoff.unlink()
-                except OSError as e:
-                    return None, f"Cannot remove stale handoff file: {e}", ""
-        # Global gate command with task-specific substitutions
-        gate_cmd = config.validation.gate_command
-        if task is not None:
-            pytest_target = task.pytest_target or "tests/"
-            gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
-            gate_cmd = gate_cmd.replace("{slug}", task.slug)
-        use_exit_code = not config.validation.handoff_file
-
-    _log_verbose(f"Running gate: {gate_cmd}")
-    gate_timeout = config.validation.gate_timeout or 600
-    ok, output = _run_shell(
-        gate_cmd,
-        workspace_path,
-        timeout=gate_timeout,
-    )
-
-    tail_chars = config.validation.gate_output_tail_chars
-    output_tail = output[-tail_chars:]
-
-    # Exit-code mode: use command exit code directly
-    if use_exit_code:
-        if ok:
-            return "PASS", None, output_tail
-        # Distinguish infrastructure failures (timeout, shell error) from code failures.
-        # _run_shell prefixes these with "TIMEOUT" or "ERROR:" — surface them as errors
-        # so the coordinator escalates immediately rather than burning dev retries.
-        if output.startswith("TIMEOUT"):
-            return (
-                None,
-                f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
-                " Consider increasing gate_timeout.",
-                output_tail,
-            )
-        if output.startswith("ERROR:"):
-            return None, f"Gate infrastructure error: {output[:300]}", output_tail
-        _log(f"Gate command failed (exit non-zero): {output_tail}")
-        return "FAIL", None, output_tail
-
-    # Handoff-based mode: read decision from handoff file
-    if not ok:
-        _log_verbose(f"Gate command failed: {output[:200]}")
-        # Gate may have still produced a handoff with FAIL/BLOCKED
-        decision, err = _read_gate_decision(config, workspace_path)
-        if decision:
-            return decision, None, output_tail
-        return None, f"Gate command failed and no handoff produced: {output[:500]}", output_tail
-
-    decision, err = _read_gate_decision(config, workspace_path)
-    return decision, err, output_tail
-
-
-def _run_gate(
-    config: ForgeConfig, workspace_path: Path, task: "TaskSpec | None" = None
-) -> tuple[str | None, str | None]:
-    """Run the gate command. Returns (decision, error).
-
-    Backward-compatible 2-tuple wrapper around _run_gate_full.
-    """
-    decision, err, _ = _run_gate_full(config, workspace_path, task)
-    return decision, err
-
-
 # ── Diff extraction ─────────────────────────────────────────────────
 
 
 def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
     """Get a compact git diff --stat summary vs the base branch."""
-    ok, stat = _run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
+    ok, stat = _cu._run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
     if ok and stat:
         return stat
 
     # Fallback: stat of staged + unstaged
-    ok, stat = _run_shell("git diff --stat HEAD", workspace_path)
+    ok, stat = _cu._run_shell("git diff --stat HEAD", workspace_path)
     if ok and stat:
         return stat
 
@@ -1617,7 +423,7 @@ def _coordinator_loop(
                 pre_validate_cmd = config.validation.pre_validate_command
                 if pre_validate_cmd:
                     _log(f"  Running pre-validate command: {pre_validate_cmd}")
-                    pv_ok, pv_out = _run_shell(pre_validate_cmd, workspace_path)
+                    pv_ok, pv_out = _cu._run_shell(pre_validate_cmd, workspace_path)
                     if not pv_ok:
                         _log(f"  ⚠ Pre-validate command failed (non-fatal): {pv_out[:200]}")
                     else:
@@ -1625,7 +431,7 @@ def _coordinator_loop(
                 # Verify worktree is clean — the dev agent must commit all changes.
                 # The gate runs against the working tree, so it can pass even with
                 # uncommitted files. This check catches that process violation.
-                dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
+                dirty_ok, dirty_out = _cu._run_shell("git status --porcelain", workspace_path)
                 if dirty_ok and dirty_out.strip():
                     # Filter out handoff.yaml and other gate artifacts
                     handoff_file = config.validation.handoff_file
@@ -1825,7 +631,7 @@ def _coordinator_loop(
             )
             _pool_start = time.monotonic()
             pool_results = run_agent_pool(
-                prompt=review_prompt,
+                prompt=review_prompts,
                 profiles=config.review_pool,
                 working_dir=workspace_path,
             )
@@ -2665,7 +1471,7 @@ def run_from_review(
     state.workspace_path = workspace_path
 
     # Resolve branch name from actual worktree HEAD (P1 fix: don't compute from pattern)
-    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
     if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
         branch_name = _branch_out.strip()
     else:
@@ -2763,7 +1569,7 @@ def run_from_dev(
     state.workspace_path = workspace_path
 
     # Resolve branch name from actual worktree HEAD (same as run_from_review)
-    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
     if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
         branch_name = _branch_out.strip()
     else:

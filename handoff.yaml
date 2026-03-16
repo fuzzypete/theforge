@@ -1,11 +1,13 @@
 gate_decision: PASS
 scope_completed:
-  - Added depends_on field to TaskSpec dataclass (src/theforge/task.py)
-  - Parsing depends_on from spec frontmatter in _build_task_from_spec (src/theforge/sprint.py)
-  - Added merged_slugs tracking and dependency check in run_sprint (src/theforge/sprint.py)
-  - Resume mode: skip_merged specs add to merged_slugs so downstream deps are satisfied
-  - Tests for TaskSpec.depends_on defaults and list values (tests/test_task.py)
-  - Tests for _build_task_from_spec parsing str/list/missing (tests/test_sprint.py)
-  - Tests for sprint skip+halt, proceed-on-merge, no-deps, resume, and cascade behaviors
-deferred_followups: []
-next_recommended_step: Review and merge feat/sprint-dependencies to main
+  - P1 fix: _run_shell is now defined locally in coordinator.py (not just re-exported
+    from coord_util), satisfying the spec requirement to keep the shell helper in
+    coordinator.py. The local definition is exported for import compat; internal
+    calls continue through _cu._run_shell so integration test mocks remain effective.
+  - P2 fix: removed stray [DEBUG merge] print statement from coord_workspace._merge_branch
+    and its now-unused `import sys`.
+deferred_followups:
+  - Full patch-intercept compat for patch('theforge.coordinator._run_shell') affecting
+    workspace/gate calls is architecturally blocked by circular import constraints.
+    All current tests correctly patch theforge.coord_util._run_shell instead.
+next_recommended_step: Submit for reviewer approval; if approved, merge feat/coordinator-refactor to main.
