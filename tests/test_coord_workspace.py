@@ -43,7 +43,7 @@ from theforge.coordinator import (
 class TestCoordinatorWorkspaceFailure:
     """Test that workspace creation failure escalates immediately."""
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_workspace_creation_fails(self, mock_shell, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -97,7 +97,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_success_on_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """auto_merge=True: merge occurs after APPROVE, result.merge.merged is True."""
         config = _make_config(tmp_path)
@@ -126,7 +126,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_false_no_merge(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """auto_merge=False (default): no merge, result.merge is None."""
         config = _make_config(tmp_path)
@@ -150,7 +150,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_no_merge_on_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """auto_merge=True: no merge when result is ESCALATE (not APPROVE)."""
         config = _make_config(tmp_path)
@@ -175,7 +175,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_ff_fails_falls_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """auto_merge=True: non-ff fallback used when ff-only fails."""
         config = _make_config(tmp_path)
@@ -199,7 +199,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_safety_no_base_branch(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """auto_merge=True: skips merge if base branch doesn't exist."""
         config = _make_config(tmp_path)
@@ -235,7 +235,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_safety_dirty_project_root(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -279,7 +279,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_safety_no_commits_ahead(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """auto_merge=True: skips merge if branch has no commits ahead of base."""
         config = _make_config(tmp_path)
@@ -316,7 +316,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_merge_info_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Merge info appears in audit log under 'merge' key."""
         from theforge.coordinator import generate_audit_log
@@ -346,7 +346,7 @@ class TestCoordinatorAutoMerge:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_merge_false_no_merge_key_in_audit(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -423,7 +423,7 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coord_workspace.subprocess.run")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_push_after_merge(
         self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
     ):
@@ -459,7 +459,7 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coord_workspace.subprocess.run")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_push_disabled_by_default(
         self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
     ):
@@ -493,7 +493,7 @@ class TestCoordinatorAutoPush:
     @patch("theforge.coord_workspace.subprocess.run")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_push_failure_non_fatal(
         self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
     ):
@@ -554,7 +554,7 @@ class TestStaleWorktree:
 
     # -- _is_stale_worktree unit tests --
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_stale_zero_commits_ahead(self, mock_shell, tmp_path):
         """Branch has 0 commits ahead of base -> stale."""
         workspace = tmp_path / "my-spec"
@@ -574,7 +574,7 @@ class TestStaleWorktree:
         assert is_stale is True
         assert "0 commits ahead" in info
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_stale_old_commit(self, mock_shell, tmp_path):
         """Branch has commits but last commit is >1 day old -> stale."""
         workspace = tmp_path / "my-spec"
@@ -601,7 +601,7 @@ class TestStaleWorktree:
         assert is_stale is True
         assert "stale" in info
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_fresh_worktree_reused(self, mock_shell, tmp_path):
         """Branch has commits ahead, last commit recent -> not stale (safe to reuse)."""
         workspace = tmp_path / "my-spec"
@@ -631,7 +631,7 @@ class TestStaleWorktree:
         assert "3 commits ahead" in info
         assert "stale" not in info
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_stale_worktree_days_zero_always_removes(self, mock_shell, tmp_path):
         """stale_worktree_days=0 -> always stale regardless of commit state."""
         workspace = tmp_path / "my-spec"
@@ -660,7 +660,7 @@ class TestStaleWorktree:
         assert is_stale is True
         assert "stale_worktree_days=0" in info
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_stale_branch_not_found(self, mock_shell, tmp_path):
         """Worktree dir exists but branch is gone (corrupted state) -> stale."""
         workspace = tmp_path / "my-spec"
@@ -674,7 +674,7 @@ class TestStaleWorktree:
 
     # -- _remove_worktree unit tests --
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_remove_worktree_logs_warning(self, mock_shell, tmp_path, capsys):
         """Warning is logged before removal."""
         mock_shell.return_value = (True, "")
@@ -685,7 +685,7 @@ class TestStaleWorktree:
         assert "stale worktree detected" in captured.err
         assert "feat/my-spec" in captured.err
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_remove_failure_does_not_raise(self, mock_shell, tmp_path, capsys):
         """git worktree remove failure is logged but does not raise."""
         mock_shell.return_value = (False, "error: not a git worktree")
@@ -698,7 +698,7 @@ class TestStaleWorktree:
 
     # -- Integration: _create_workspace stale detection --
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_no_existing_worktree(self, mock_shell, tmp_path):
         """Path doesn't exist -> no staleness check, normal workspace creation."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -727,7 +727,7 @@ class TestStaleWorktree:
             cmd_arg = call[0][0]
             assert "rev-parse" not in cmd_arg
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_stale_worktree_removed_on_create(self, mock_shell, tmp_path):
         """Stale worktree (0 commits ahead) is removed and workspace recreated."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -767,7 +767,7 @@ class TestStaleWorktree:
         calls = [c[0][0] for c in mock_shell.call_args_list]
         assert any("worktree remove" in c for c in calls)
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_fresh_worktree_not_removed(self, mock_shell, tmp_path):
         """Fresh worktree (recent commits ahead) is reused without removal."""
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
@@ -886,7 +886,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coord_workspace.run_agent")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_conflict_resolution_succeeds(
         self, mock_shell, mock_agent, mock_ws_agent, mock_pool, tmp_path
     ):
@@ -919,7 +919,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coord_workspace.run_agent")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_conflict_resolution_gate_fails(
         self, mock_shell, mock_agent, mock_ws_agent, mock_pool, tmp_path
     ):
@@ -985,7 +985,7 @@ class TestConflictResolution:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_conflict_too_many_files_skipped(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """More than 5 conflicted files -> auto-resolution skipped, merge fails."""
         config = _make_config(tmp_path)
@@ -1014,7 +1014,7 @@ class TestConflictResolution:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_no_conflict_no_resolution(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Clean merge (no conflict) -> conflict resolution never invoked."""
         config = _make_config(tmp_path)
@@ -1069,7 +1069,7 @@ class TestConflictResolution:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coord_workspace.run_agent")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_conflict_resolution_timeout(
         self, mock_shell, mock_agent, mock_ws_agent, mock_pool, tmp_path
     ):

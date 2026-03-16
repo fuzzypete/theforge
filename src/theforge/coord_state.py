@@ -1,20 +1,19 @@
-"""Coordinator state: enums, dataclasses, logging helpers, and shell utility.
+"""Coordinator state: enums and dataclasses only (stdlib-only imports).
 
-These are extracted from coordinator.py to avoid circular imports — every
-other coord_* module depends on items defined here.
+Contains Phase, ReviewCycleMetadata, CoordinatorState, and CoordinatorResult.
+All helper functions (logging, shell, run-id) live in coord_util.py.
 """
 
 from __future__ import annotations
 
-import secrets
-import subprocess
-import sys
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .review import ReviewResult
-from .runner import AgentResult, LogLevel
+if TYPE_CHECKING:
+    from .review import ReviewResult
+    from .runner import AgentResult
 
 # ── Phase enum ────────────────────────────────────────────────────────
 
@@ -125,70 +124,3 @@ class CoordinatorResult:
     state: CoordinatorState
     message: str
     merge: dict | None = None
-
-
-# ── Logging ──────────────────────────────────────────────────────────
-
-_LOG_LEVEL: LogLevel = LogLevel.PROGRESS
-
-
-def set_log_level(level: LogLevel) -> None:
-    global _LOG_LEVEL
-    _LOG_LEVEL = level
-
-
-def _fmt_duration(seconds: float) -> str:
-    """Format duration as '2h 14m 3s', '14m 3s', or '47s'."""
-    h, rem = divmod(int(seconds), 3600)
-    m, s = divmod(rem, 60)
-    if h:
-        return f"{h}h {m}m {s}s"
-    if m:
-        return f"{m}m {s}s"
-    return f"{s}s"
-
-
-def _log(msg: str) -> None:
-    """Print coordinator status to stderr (always shown)."""
-    print(f"[forge] {msg}", file=sys.stderr, flush=True)
-
-
-def _log_verbose(msg: str) -> None:
-    """Print coordinator detail to stderr (verbose mode only)."""
-    if _LOG_LEVEL >= LogLevel.VERBOSE:
-        print(f"[forge] {msg}", file=sys.stderr, flush=True)
-
-
-def _log_phase(phase: Phase, detail: str = "") -> None:
-    suffix = f"   {detail}" if detail else ""
-    _log(f"▸ {phase.name}{suffix}")
-
-
-# ── Run ID ───────────────────────────────────────────────────────────
-
-
-def _generate_run_id() -> str:
-    """Return a short random hex run ID (12 chars)."""
-    return secrets.token_hex(6)
-
-
-# ── Shell helper ─────────────────────────────────────────────────────
-
-
-def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
-    """Run a shell command. Returns (success, combined output)."""
-    try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
-            timeout=timeout,
-        )
-        output = (proc.stdout + proc.stderr).strip()
-        return proc.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        return False, f"TIMEOUT after {timeout}s: {cmd}"
-    except Exception as e:
-        return False, f"ERROR: {e}"

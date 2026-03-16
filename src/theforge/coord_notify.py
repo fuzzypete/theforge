@@ -11,8 +11,12 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from . import coord_state as _cs
+from . import coord_util as _cu
+
+if TYPE_CHECKING:
+    from . import coord_state as _cs
 from .config import ForgeConfig
 from .review import ReviewResult
 from .task import TaskSpec
@@ -76,7 +80,7 @@ def _escalate_notify(
     branch = state.branch_name or ""
     first_line = (
         f"{state.review_cycle} cycles exhausted"
-        f" — ${state.total_cost:.2f}  {_cs._fmt_duration(elapsed)}"
+        f" — ${state.total_cost:.2f}  {_cu._fmt_duration(elapsed)}"
     )
     body = "\n".join([first_line, detail, f"Branch: {branch}"])
     try:
@@ -105,7 +109,7 @@ def _ntfy_done_notify(
     ntfy = config.notifications.ntfy
     body = "\n".join(
         [
-            f"APPROVE \u2014 ${state.total_cost:.2f}  {_cs._fmt_duration(elapsed)}",
+            f"APPROVE \u2014 ${state.total_cost:.2f}  {_cu._fmt_duration(elapsed)}",
             (summary or "Approved and merged.")[:120],
             f"Branch: {branch_name}",
         ]
@@ -232,7 +236,7 @@ def _remote_human_review(
     title = f"TheForge: review needed \u2014 {task.slug}"
     body_lines = [
         f"{parsed_review.verdict} ({p1} P1, {p2} P2) \u2014 ${state.total_cost:.2f}  "
-        f"{_cs._fmt_duration(elapsed)}",
+        f"{_cu._fmt_duration(elapsed)}",
         parsed_review.summary[:120],
         f"Branch: {branch_name}",
     ]
@@ -243,10 +247,10 @@ def _remote_human_review(
         f"http, Escalate, {reply_url}, method=POST, body=escalate"
     )
 
-    _cs._log("─── Remote Human Review (ntfy) ───")
-    _cs._log(f"  Topic:   {ntfy.url}")
-    _cs._log(f"  Reply:   {reply_url}")
-    _cs._log(f"  Timeout: {_cs._fmt_duration(timeout_seconds)}")
+    _cu._log("─── Remote Human Review (ntfy) ───")
+    _cu._log(f"  Topic:   {ntfy.url}")
+    _cu._log(f"  Reply:   {reply_url}")
+    _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
 
     since_ts = int(time.time())
     _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
@@ -261,12 +265,12 @@ def _remote_human_review(
         _ntfy_publish(
             ntfy.url, timeout_title, "Auto-escalating after timeout.", priority=ntfy.priority
         )
-        _cs._log(
-            f"Remote review timed out after {_cs._fmt_duration(state.human_review_waited_seconds)}"
+        _cu._log(
+            f"Remote review timed out after {_cu._fmt_duration(state.human_review_waited_seconds)}"
         )
     else:
-        waited_str = _cs._fmt_duration(state.human_review_waited_seconds or 0)
-        _cs._log(f"Remote review decision: {decision!r} (waited {waited_str})")
+        waited_str = _cu._fmt_duration(state.human_review_waited_seconds or 0)
+        _cu._log(f"Remote review decision: {decision!r} (waited {waited_str})")
 
     return decision, feedback
 
@@ -286,25 +290,25 @@ def _human_review(
     p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
     finding_summary = f"{p1} P1, {p2} P2" if (p1 or p2) else "no findings"
 
-    _cs._log("─── Human Review ───")
-    _cs._log(f"  Verdict:   {parsed_review.verdict} ({finding_summary})")
-    _cs._log(f"  Summary:   {parsed_review.summary}")
-    _cs._log(f"  Workspace: {workspace_path}")
-    _cs._log(f"  Branch:    {branch_name}")
-    _cs._log(f"  Cost:      ${state.total_cost:.3f}")
-    _cs._log("")
-    _cs._log("Options:")
-    _cs._log("  [a]pprove  → DONE (ready to merge)")
-    _cs._log("  [r]eject   → send findings back to dev")
-    _cs._log("  [e]scalate → give up")
-    _cs._log("")
+    _cu._log("─── Human Review ───")
+    _cu._log(f"  Verdict:   {parsed_review.verdict} ({finding_summary})")
+    _cu._log(f"  Summary:   {parsed_review.summary}")
+    _cu._log(f"  Workspace: {workspace_path}")
+    _cu._log(f"  Branch:    {branch_name}")
+    _cu._log(f"  Cost:      ${state.total_cost:.3f}")
+    _cu._log("")
+    _cu._log("Options:")
+    _cu._log("  [a]pprove  → DONE (ready to merge)")
+    _cu._log("  [r]eject   → send findings back to dev")
+    _cu._log("  [e]scalate → give up")
+    _cu._log("")
 
     state.human_review_mode = "interactive"
     while True:
         print("[forge] Choice [a/r/e]: ", end="", file=sys.stderr, flush=True)
         raw = sys.stdin.readline()
         if not raw:
-            _cs._log("EOF on stdin — escalating.")
+            _cu._log("EOF on stdin — escalating.")
             return "escalate", None
         choice = raw.strip().lower()
         if choice in ("a", "approve"):
@@ -312,7 +316,7 @@ def _human_review(
         if choice in ("e", "escalate"):
             return "escalate", None
         if choice in ("r", "reject"):
-            _cs._log("Enter your findings (empty line to finish):")
+            _cu._log("Enter your findings (empty line to finish):")
             lines: list[str] = []
             while True:
                 print("> ", end="", file=sys.stderr, flush=True)
@@ -324,4 +328,4 @@ def _human_review(
                     break
                 lines.append(stripped)
             return "reject", "\n".join(lines)
-        _cs._log("Invalid choice. Enter 'a', 'r', or 'e'.")
+        _cu._log("Invalid choice. Enter 'a', 'r', or 'e'.")

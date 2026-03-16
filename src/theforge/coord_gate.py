@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from . import coord_state as _cs
+from . import coord_util as _cu
 from .config import ForgeConfig
 from .task import TaskSpec
 
@@ -41,21 +41,21 @@ def _auto_commit_side_effects(workspace_path: Path, files: list[str]) -> bool:
     """
     try:
         quoted = " ".join(shlex.quote(f) for f in files)
-        add_ok, add_out = _cs._run_shell(f"git add -- {quoted}", workspace_path)
+        add_ok, add_out = _cu._run_shell(f"git add -- {quoted}", workspace_path)
         if not add_ok:
-            _cs._log(f"Auto-commit: git add failed: {add_out}")
+            _cu._log(f"Auto-commit: git add failed: {add_out}")
             return False
-        commit_ok, commit_out = _cs._run_shell(
+        commit_ok, commit_out = _cu._run_shell(
             'git commit -m "chore: auto-commit fmt side-effects"', workspace_path
         )
         if not commit_ok:
-            _cs._log(f"Auto-commit: git commit failed: {commit_out}")
+            _cu._log(f"Auto-commit: git commit failed: {commit_out}")
             return False
         n = len(files)
-        _cs._log(f"Auto-committed {n} out-of-scope fmt side-effects: {', '.join(files)}")
+        _cu._log(f"Auto-committed {n} out-of-scope fmt side-effects: {', '.join(files)}")
         return True
     except Exception as e:  # noqa: BLE001
-        _cs._log(f"Auto-commit: unexpected error: {e}")
+        _cu._log(f"Auto-commit: unexpected error: {e}")
         return False
 
 
@@ -115,9 +115,9 @@ def _run_gate_full(
             gate_cmd = gate_cmd.replace("{slug}", task.slug)
         use_exit_code = not config.validation.handoff_file
 
-    _cs._log_verbose(f"Running gate: {gate_cmd}")
+    _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
-    ok, output = _cs._run_shell(
+    ok, output = _cu._run_shell(
         gate_cmd,
         workspace_path,
         timeout=gate_timeout,
@@ -138,11 +138,11 @@ def _run_gate_full(
             )
         if output.startswith("ERROR:"):
             return None, f"Gate infrastructure error: {output[:300]}", output_tail
-        _cs._log(f"Gate command failed (exit non-zero): {output_tail}")
+        _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
         return "FAIL", None, output_tail
 
     if not ok:
-        _cs._log_verbose(f"Gate command failed: {output[:200]}")
+        _cu._log_verbose(f"Gate command failed: {output[:200]}")
         decision, err = _read_gate_decision(config, workspace_path)
         if decision:
             return decision, None, output_tail

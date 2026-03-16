@@ -81,7 +81,7 @@ class TestCoordinatorHumanReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_interactive_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Human enters 'a' → DONE."""
         config, task, workspace = self._make_interactive_base(tmp_path)
@@ -103,7 +103,7 @@ class TestCoordinatorHumanReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_interactive_reject_loops_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Human enters 'r' + findings → dev called again with human_feedback, then approves."""
         config, task, workspace = self._make_interactive_base(tmp_path)
@@ -132,7 +132,7 @@ class TestCoordinatorHumanReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_interactive_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Human enters 'e' → ESCALATE."""
         config, task, workspace = self._make_interactive_base(tmp_path)
@@ -153,7 +153,7 @@ class TestCoordinatorHumanReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_auto_mode_skips_human_review(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """interactive=False never enters HUMAN_REVIEW."""
         config, task, workspace = self._make_interactive_base(tmp_path)
@@ -176,7 +176,7 @@ class TestCoordinatorHumanReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_interactive_on_exhausted_cycles(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """When review cycles exhaust with REQUEST_CHANGES, human can still choose."""
         config, task, workspace = self._make_interactive_base(tmp_path)
@@ -249,7 +249,7 @@ class TestRemoteHumanReview:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish"),
             patch(
                 "theforge.coord_notify._ntfy_poll_reply",
@@ -279,7 +279,7 @@ class TestRemoteHumanReview:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish"),
             patch(
                 "theforge.coord_notify._ntfy_poll_reply",
@@ -313,7 +313,7 @@ class TestRemoteHumanReview:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish", side_effect=capture_ntfy),
             patch(
                 "theforge.coord_notify._ntfy_poll_reply",
@@ -358,7 +358,7 @@ class TestRemoteHumanReview:
         with (
             patch("theforge.coordinator.run_agent", side_effect=dev_side_effect),
             patch("theforge.coordinator.run_agent_pool", return_value=approve_result),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish"),
             patch("theforge.coord_notify._ntfy_poll_reply", side_effect=poll_side_effect),
         ):
@@ -404,7 +404,7 @@ class TestRemoteHumanReview:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish"),
             patch("theforge.coord_notify._ntfy_poll_reply", side_effect=poll_side_effect),
         ):
@@ -614,7 +614,7 @@ class TestNtfyTerminalNotifications:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -666,7 +666,7 @@ test_coverage:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([long_approve], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -698,7 +698,7 @@ test_coverage:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([REQUEST_CHANGES_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             # max_review_cycles=2 in _make_ntfy_config; run until exhausted (no interactive)
@@ -764,7 +764,7 @@ test_coverage:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([long_p1_review], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -784,7 +784,7 @@ test_coverage:
 
         with (
             patch(
-                "theforge.coordinator._run_shell",
+                "theforge.coord_util._run_shell",
                 return_value=(False, "git error"),
             ),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
@@ -817,7 +817,7 @@ test_coverage:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)
@@ -841,7 +841,7 @@ test_coverage:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=False)
@@ -865,7 +865,7 @@ test_coverage:
                 "theforge.coordinator.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch(
                 "theforge.coordinator._ntfy_publish",
                 side_effect=OSError("network unreachable"),
@@ -889,7 +889,7 @@ test_coverage:
 
         with (
             patch("theforge.coordinator.run_agent", return_value=preflight_already_done),
-            patch("theforge.coord_state._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
         ):
             result = run_task(config, task, notify=True)

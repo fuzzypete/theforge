@@ -30,7 +30,7 @@ import time
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
-from . import coord_state as _cs
+from . import coord_util as _cu
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from .coord_gate import (  # noqa: F401
     _auto_commit_side_effects,
@@ -65,11 +65,13 @@ from .coord_preflight import (  # noqa: F401
 
 # ── Re-exports for backward compatibility ────────────────────────────
 from .coord_state import (  # noqa: F401
-    _LOG_LEVEL,
     CoordinatorResult,
     CoordinatorState,
     Phase,
     ReviewCycleMetadata,
+)
+from .coord_util import (  # noqa: F401
+    _LOG_LEVEL,
     _fmt_duration,
     _generate_run_id,
     _log,
@@ -160,12 +162,12 @@ class StructuredLogger:
 
 def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
     """Get a compact git diff --stat summary vs the base branch."""
-    ok, stat = _cs._run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
+    ok, stat = _cu._run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
     if ok and stat:
         return stat
 
     # Fallback: stat of staged + unstaged
-    ok, stat = _cs._run_shell("git diff --stat HEAD", workspace_path)
+    ok, stat = _cu._run_shell("git diff --stat HEAD", workspace_path)
     if ok and stat:
         return stat
 
@@ -393,7 +395,7 @@ def _coordinator_loop(
                 pre_validate_cmd = config.validation.pre_validate_command
                 if pre_validate_cmd:
                     _log(f"  Running pre-validate command: {pre_validate_cmd}")
-                    pv_ok, pv_out = _cs._run_shell(pre_validate_cmd, workspace_path)
+                    pv_ok, pv_out = _cu._run_shell(pre_validate_cmd, workspace_path)
                     if not pv_ok:
                         _log(f"  ⚠ Pre-validate command failed (non-fatal): {pv_out[:200]}")
                     else:
@@ -401,7 +403,7 @@ def _coordinator_loop(
                 # Verify worktree is clean — the dev agent must commit all changes.
                 # The gate runs against the working tree, so it can pass even with
                 # uncommitted files. This check catches that process violation.
-                dirty_ok, dirty_out = _cs._run_shell("git status --porcelain", workspace_path)
+                dirty_ok, dirty_out = _cu._run_shell("git status --porcelain", workspace_path)
                 if dirty_ok and dirty_out.strip():
                     # Filter out handoff.yaml and other gate artifacts
                     handoff_file = config.validation.handoff_file
@@ -1426,7 +1428,7 @@ def run_from_review(
     state.workspace_path = workspace_path
 
     # Resolve branch name from actual worktree HEAD (P1 fix: don't compute from pattern)
-    _ok_branch, _branch_out = _cs._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
     if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
         branch_name = _branch_out.strip()
     else:
@@ -1524,7 +1526,7 @@ def run_from_dev(
     state.workspace_path = workspace_path
 
     # Resolve branch name from actual worktree HEAD (same as run_from_review)
-    _ok_branch, _branch_out = _cs._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
     if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
         branch_name = _branch_out.strip()
     else:

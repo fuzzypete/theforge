@@ -279,7 +279,7 @@ class TestCoordinatorHappyPath:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_single_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -309,7 +309,7 @@ class TestCoordinatorGateFailRetry:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_gate_fail_then_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -334,7 +334,7 @@ class TestCoordinatorReviewRequestChanges:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_then_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -369,7 +369,7 @@ class TestCoordinatorEscalation:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_gate_exhaustion(self, mock_shell, mock_agent, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -390,7 +390,7 @@ class TestCoordinatorEscalation:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_exhaustion(self, mock_shell, mock_agent, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -415,7 +415,7 @@ class TestCoordinatorSchemaErrorOverride:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_approve_with_schema_errors_triggers_retry(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -463,7 +463,7 @@ class TestCoordinatorCostTracking:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_total_cost_includes_review(self, mock_shell, mock_agent, mock_pool, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -544,7 +544,7 @@ class TestCoordinatorBudgetEnforcement:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_dev_budget_exceeded_first_call(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Dev agent exceeds budget on first call → ESCALATE with budget error."""
         config = self._make_budget_config(tmp_path, dev_budget=0.40, review_budget=1.00)
@@ -578,7 +578,7 @@ class TestCoordinatorBudgetEnforcement:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_dev_budget_exceeded_on_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Dev agent exceeds budget on second call (retry) → ESCALATE."""
         config = self._make_budget_config(tmp_path, dev_budget=0.50, review_budget=1.00)
@@ -609,7 +609,7 @@ class TestCoordinatorBudgetEnforcement:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_budget_exceeded(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Review agent exceeds per-profile budget → ESCALATE."""
         config = self._make_budget_config(tmp_path, dev_budget=2.00, review_budget=0.40)
@@ -657,7 +657,7 @@ class TestCoordinatorSchemaErrorOnRequestChanges:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_malformed_request_changes_triggers_retry(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -733,7 +733,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_pool_of_2_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Pool of 2 reviews → synthesis → APPROVE."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -762,7 +762,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_pool_of_2_request_changes(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Pool of 2 reviews → synthesis → REQUEST_CHANGES → ESCALATE after max cycles."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -796,7 +796,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_pool_of_1_skips_synthesis(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Pool of 1 → uses output directly, no synthesis call."""
         # synthesis_profile is set but pool has only 1 entry
@@ -836,7 +836,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_mixed_success_failure_degrades_to_single_no_synthesis(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -865,7 +865,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_all_reviewers_fail_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """All reviewers fail → ESCALATE."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -891,7 +891,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_synthesis_failure_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Synthesis agent failure → ESCALATE (no fallback)."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -920,7 +920,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_per_profile_budget_enforcement(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """One pool profile over budget → ESCALATE."""
         tight_profile = _make_review_profile("tight", budget_usd=0.10)
@@ -949,7 +949,7 @@ class TestCoordinatorMultiModelReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_synthesis_budget_enforcement(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Synthesis agent over budget → ESCALATE."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -995,7 +995,7 @@ class TestCoordinatorAuditTiming:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_started_at_set_in_state(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """CoordinatorState.started_at is set when run_task() begins."""
         config = _make_config(tmp_path)
@@ -1019,7 +1019,7 @@ class TestCoordinatorAuditTiming:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_audit_log_timing_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """generate_audit_log() includes started_at, finished_at, duration_seconds."""
 
@@ -1052,7 +1052,7 @@ class TestCoordinatorAuditAgentBreakdown:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_cost_agents_list(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """cost.agents contains one entry per dev and review invocation."""
 
@@ -1105,7 +1105,7 @@ class TestCoordinatorAuditAgentBreakdown:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_synthesis_agent_tagged_correctly(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Synthesis agent entry has role='synthesis' in agents list."""
 
@@ -1177,7 +1177,7 @@ class TestProgressShowsPhaseTransitions:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_phase_transitions_always_shown(
         self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
     ):
@@ -1215,7 +1215,7 @@ class TestCampaignSpecHeaderPrinted:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_spec_header_emitted(self, mock_shell, mock_agent, mock_pool, tmp_path, capsys):
         import yaml as _yaml
 
@@ -1266,7 +1266,7 @@ class TestCoordinatorAuditFindings:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_findings_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Audit reviews[] entries include findings list with severity, file, line, description."""
 
@@ -1316,7 +1316,7 @@ class TestCoordinatorAuditFindings:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_approve_review_has_empty_findings(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """APPROVE review in audit has findings: [] (not missing key)."""
 
@@ -1344,7 +1344,7 @@ class TestCoordinatorReviewCycleMetadata:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_metadata_present_on_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Audit metadata is populated after successful pool+synthesis."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
@@ -1375,7 +1375,7 @@ class TestCoordinatorReviewCycleMetadata:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_metadata_present_on_all_reviewers_fail(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -1407,7 +1407,7 @@ class TestCoordinatorReviewCycleMetadata:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_metadata_present_on_synthesis_failure(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -1440,7 +1440,7 @@ class TestCoordinatorReviewCycleMetadata:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_audit_log_contains_pool_metadata(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """generate_audit_log includes pool_models, synthesized, successful, failed."""
 
@@ -1494,7 +1494,7 @@ class TestReviewParseRetry:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_parse_error_does_not_increment_cycle(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -1530,7 +1530,7 @@ class TestReviewParseRetry:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_parse_error_then_request_changes(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Parse error then real REQUEST_CHANGES → cycle increments once, DEV retried."""
         config = _make_config(tmp_path)
@@ -1586,7 +1586,7 @@ class TestReviewParseRetry:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_all_parse_retries_exhausted(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """All parse retries exhausted → ESCALATE with 'unreliable' in message."""
         config = _make_config(tmp_path)
@@ -1613,7 +1613,7 @@ class TestReviewParseRetry:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_parse_retry_count_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Audit log records parse_retries: 1 when one retry occurred."""
 
@@ -1648,7 +1648,7 @@ class TestReviewParseRetry:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_schema_error_also_retried(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Schema validation error (not just YAML parse error) also triggers retry."""
         config = _make_config(tmp_path)
@@ -1691,7 +1691,7 @@ class TestReviewOnly:
     """Tests for run_review_only — skips WORKSPACE/PREFLIGHT/DEV/VALIDATE."""
 
     @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_only_approve(self, mock_shell, mock_pool, tmp_path):
         """APPROVE → success, phase=DONE, dev_iteration=0."""
         config = _make_config(tmp_path)
@@ -1716,7 +1716,7 @@ class TestReviewOnly:
         assert len(result.state.dev_results) == 0
 
     @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_only_request_changes(self, mock_shell, mock_pool, tmp_path):
         """REQUEST_CHANGES → failure, phase=ESCALATE, findings in result."""
         config = _make_config(tmp_path)
@@ -1754,7 +1754,7 @@ class TestReviewOnly:
         assert str(missing) in result.message
 
     @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_only_no_dev_cycles(self, mock_shell, mock_pool, tmp_path):
         """dev_iteration == 0 in all cases (APPROVE and REQUEST_CHANGES)."""
         config = _make_config(tmp_path)
@@ -1780,7 +1780,7 @@ class TestRunFromReview:
     """Tests for the run_from_review() full iteration loop entry point."""
 
     @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_run_from_review_approve_merges(self, mock_shell, mock_pool, tmp_path):
         """APPROVE on first review → DONE; auto_merge triggers merge attempt."""
         config = _make_config(tmp_path)
@@ -1819,7 +1819,7 @@ class TestRunFromReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_run_from_review_request_changes_iterates(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -1860,7 +1860,7 @@ class TestRunFromReview:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_run_from_review_exhausts_cycles(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """REQUEST_CHANGES × max_review_cycles → ESCALATE."""
         config = _make_config(tmp_path)  # max_review_cycles=2
@@ -1882,7 +1882,7 @@ class TestRunFromReview:
         assert result.state.review_cycle == config.retry.max_review_cycles
 
     @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_run_from_review_skips_preflight(self, mock_shell, mock_pool, tmp_path):
         """preflight_verdict is 'SKIPPED' and no preflight agent is ever invoked."""
         config = _make_config(tmp_path)

@@ -31,7 +31,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coord_state import _generate_run_id
+from theforge.coord_util import _generate_run_id
 from theforge.coordinator import (
     Phase,
     StructuredLogger,
@@ -214,7 +214,7 @@ class TestStructuredLoggingIntegration:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_run_task_emits_lifecycle_events(self, mock_shell, mock_agent, mock_pool, tmp_path):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -273,7 +273,7 @@ class TestStructuredLoggingIntegration:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_gate_result_includes_output_tail(self, mock_shell, mock_agent, mock_pool, tmp_path):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -319,7 +319,7 @@ class TestStructuredLoggingIntegration:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_review_result_event_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -355,7 +355,7 @@ class TestStructuredLoggingIntegration:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_escalate_event_emitted_on_gate_failure(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -403,7 +403,7 @@ class TestStructuredLoggingIntegration:
         with (
             patch("theforge.coordinator.run_agent_pool") as mock_pool,
             patch("theforge.coordinator.run_agent") as mock_agent,
-            patch("theforge.coord_state._run_shell") as mock_shell,
+            patch("theforge.coord_util._run_shell") as mock_shell,
             patch("theforge.coordinator.StructuredLogger.emit", side_effect=OSError("disk full")),
         ):
             mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
@@ -429,7 +429,7 @@ class TestStructuredLoggingIntegration:
 class TestGetDiffStat:
     """Tests for the _get_diff_stat() helper."""
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_success(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Returns stat output when first command succeeds."""
         stat = " src/foo.py | 5 ++---\n 1 file changed, 2 insertions(+), 3 deletions(-)"
@@ -438,7 +438,7 @@ class TestGetDiffStat:
         assert result == stat
         mock_shell.assert_called_once_with("git diff --stat main...HEAD", tmp_path)
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_fallback_when_first_empty(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Falls back to git diff --stat HEAD when first call returns empty."""
         fallback = " src/bar.py | 3 +++\n 1 file changed, 3 insertions(+)"
@@ -447,7 +447,7 @@ class TestGetDiffStat:
         assert result == fallback
         assert mock_shell.call_count == 2
 
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_both_fail(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Returns placeholder when both commands fail."""
         mock_shell.return_value = (False, "")
@@ -486,7 +486,7 @@ class TestAuditReviewPoolFields:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_audit_review_pool_fields_populated(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """When pool has 2 reviewers and one fails, audit has correct pool/successful/failed."""
         config = _make_pool_config(
@@ -558,7 +558,7 @@ class TestAuditReviewPoolFields:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_audit_failed_reviewer_detail(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Failed reviewer includes exit code in failed_detail."""
         config = _make_pool_config(
@@ -627,7 +627,7 @@ class TestAuditReviewPoolFields:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_audit_synthesized_flag_true(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """synthesized=True when synthesis agent ran (both reviewers succeeded)."""
         synthesis_profile = ModelProfile(
@@ -724,7 +724,7 @@ class TestAuditReviewPoolFields:
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_state._run_shell")
+    @patch("theforge.coord_util._run_shell")
     def test_audit_synthesized_flag_false_degraded(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):

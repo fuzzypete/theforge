@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import coord_state as _cs
+from . import coord_util as _cu
 from .config import ForgeConfig
 from .coord_gate import _run_gate
 from .runner import run_agent
@@ -30,7 +30,7 @@ def _resolve_merge_conflicts(
     Returns True if conflicts were resolved and the gate passed, False otherwise.
     On failure, aborts the in-progress merge.
     """
-    ok, conflict_out = _cs._run_shell("git diff --name-only --diff-filter=U", project_root)
+    ok, conflict_out = _cu._run_shell("git diff --name-only --diff-filter=U", project_root)
     if not ok or not conflict_out.strip():
         return False
 
@@ -39,13 +39,13 @@ def _resolve_merge_conflicts(
         return False
 
     if len(conflicted_files) > _MAX_AUTO_RESOLVE_FILES:
-        _cs._log(
+        _cu._log(
             f"  ⚠ Too many conflicted files ({len(conflicted_files)}) — skipping auto-resolution"
         )
         return False
 
-    _cs._log(f"  Merge conflict in {len(conflicted_files)} file(s): {', '.join(conflicted_files)}")
-    _cs._log("  Attempting auto-resolution...")
+    _cu._log(f"  Merge conflict in {len(conflicted_files)} file(s): {', '.join(conflicted_files)}")
+    _cu._log("  Attempting auto-resolution...")
 
     file_sections: list[str] = []
     for rel_path in conflicted_files:
@@ -79,34 +79,34 @@ def _resolve_merge_conflicts(
         session_id=None,
     )
     _resolve_elapsed = time.monotonic() - _resolve_start
-    _cs._log(f"  ... resolution done ({int(_resolve_elapsed)}s)")
+    _cu._log(f"  ... resolution done ({int(_resolve_elapsed)}s)")
 
     if not resolve_result.success:
-        _cs._log("  ⚠ Conflict resolution agent failed — aborting merge")
-        _cs._run_shell("git merge --abort", project_root)
+        _cu._log("  ⚠ Conflict resolution agent failed — aborting merge")
+        _cu._run_shell("git merge --abort", project_root)
         return False
 
-    _cs._log("  Running gate to verify resolution...")
+    _cu._log("  Running gate to verify resolution...")
     gate_decision, gate_error = _run_gate(config, workspace_path)
     if gate_error or gate_decision != "PASS":
-        _cs._log("  ⚠ Conflict resolution broke tests — aborting merge")
-        _cs._run_shell("git merge --abort", project_root)
+        _cu._log("  ⚠ Conflict resolution broke tests — aborting merge")
+        _cu._run_shell("git merge --abort", project_root)
         return False
 
     files_arg = " ".join(f'"{f}"' for f in conflicted_files)
-    ok_add, _ = _cs._run_shell(f"git add {files_arg}", project_root)
+    ok_add, _ = _cu._run_shell(f"git add {files_arg}", project_root)
     if not ok_add:
-        _cs._log("  ⚠ Failed to stage resolved files — aborting merge")
-        _cs._run_shell("git merge --abort", project_root)
+        _cu._log("  ⚠ Failed to stage resolved files — aborting merge")
+        _cu._run_shell("git merge --abort", project_root)
         return False
 
-    ok_commit, _ = _cs._run_shell("git commit --no-edit", project_root)
+    ok_commit, _ = _cu._run_shell("git commit --no-edit", project_root)
     if not ok_commit:
-        _cs._log("  ⚠ Failed to commit resolution — aborting merge")
-        _cs._run_shell("git merge --abort", project_root)
+        _cu._log("  ⚠ Failed to commit resolution — aborting merge")
+        _cu._run_shell("git merge --abort", project_root)
         return False
 
-    _cs._log("  ✓ Conflict resolved and merged")
+    _cu._log("  ✓ Conflict resolved and merged")
     return True
 
 
@@ -133,34 +133,34 @@ def _merge_branch(
         "error": None,
     }
 
-    ok, out = _cs._run_shell(f"git branch --list {base_branch}", project_root)
+    ok, out = _cu._run_shell(f"git branch --list {base_branch}", project_root)
     if not ok or not out.strip():
         info["error"] = f"Base branch {base_branch!r} not found in project root"
-        _cs._log(f"Auto-merge skipped: {info['error']}")
+        _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
-    ok, dirty = _cs._run_shell("git status --porcelain", project_root)
+    ok, dirty = _cu._run_shell("git status --porcelain", project_root)
     if ok and dirty.strip():
         info["error"] = f"Uncommitted changes in project root: {dirty.strip()[:200]}"
-        _cs._log(f"Auto-merge skipped: {info['error']}")
+        _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
-    ok, log_out = _cs._run_shell(f"git log {base_branch}..{branch_name} --oneline", project_root)
+    ok, log_out = _cu._run_shell(f"git log {base_branch}..{branch_name} --oneline", project_root)
     if not ok or not log_out.strip():
         info["error"] = f"Branch {branch_name!r} has no commits ahead of {base_branch!r}"
-        _cs._log(f"Auto-merge skipped: {info['error']}")
+        _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
-    ok, out = _cs._run_shell(f"git checkout {base_branch}", project_root)
+    ok, out = _cu._run_shell(f"git checkout {base_branch}", project_root)
     if not ok:
         info["error"] = f"Failed to checkout {base_branch!r}: {out}"
-        _cs._log(f"Auto-merge failed: {info['error']}")
+        _cu._log(f"Auto-merge failed: {info['error']}")
         return info
 
-    ok, out = _cs._run_shell(f"git merge --ff-only {branch_name}", project_root)
+    ok, out = _cu._run_shell(f"git merge --ff-only {branch_name}", project_root)
     if not ok:
-        _cs._log(f"Fast-forward merge failed, falling back to regular merge: {out}")
-        ok, out = _cs._run_shell(f"git merge --no-edit {branch_name}", project_root)
+        _cu._log(f"Fast-forward merge failed, falling back to regular merge: {out}")
+        ok, out = _cu._run_shell(f"git merge --no-edit {branch_name}", project_root)
 
     if not ok:
         print(
@@ -178,15 +178,15 @@ def _merge_branch(
             )
             if not resolved:
                 info["error"] = f"Merge failed: {out}"
-                _cs._log(f"Auto-merge failed: {info['error']}")
+                _cu._log(f"Auto-merge failed: {info['error']}")
                 return info
         else:
             info["error"] = f"Merge failed: {out}"
-            _cs._log(f"Auto-merge failed: {info['error']}")
+            _cu._log(f"Auto-merge failed: {info['error']}")
             return info
 
     info["merged"] = True
-    _cs._log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
+    _cu._log(f"Auto-merge succeeded: {branch_name} → {base_branch}")
 
     if auto_push:
         try:
@@ -197,16 +197,16 @@ def _merge_branch(
                 capture_output=True,
                 check=True,
             )
-            _cs._log(f"  Pushed {base_branch} to origin")
+            _cu._log(f"  Pushed {base_branch} to origin")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            _cs._log(f"  ⚠ Push failed: {e} (merge succeeded locally)")
+            _cu._log(f"  ⚠ Push failed: {e} (merge succeeded locally)")
 
     worktree_rel = f".forge/worktrees/{slug}"
-    ok_rm, rm_out = _cs._run_shell(f"git worktree remove --force {worktree_rel}", project_root)
+    ok_rm, rm_out = _cu._run_shell(f"git worktree remove --force {worktree_rel}", project_root)
     if not ok_rm:
-        _cs._log(f"Warning: worktree cleanup failed: {rm_out}")
+        _cu._log(f"Warning: worktree cleanup failed: {rm_out}")
     else:
-        _cs._log(f"Worktree removed: {worktree_rel}")
+        _cu._log(f"Worktree removed: {worktree_rel}")
 
     return info
 
@@ -230,7 +230,7 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
     """Check whether an existing worktree is stale and should be removed."""
     stale_days: int = config.workspace.stale_worktree_days
 
-    ok, branch_out = _cs._run_shell("git rev-parse --abbrev-ref HEAD", path)
+    ok, branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", path)
     if not ok or not branch_out.strip() or branch_out.strip() == "HEAD":
         return True, "branch not found or detached HEAD — removing (corrupted state)"
 
@@ -239,7 +239,7 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
     if stale_days == 0:
         return True, "stale_worktree_days=0 — always removing (CI/automated mode)"
 
-    ok, log_out = _cs._run_shell(
+    ok, log_out = _cu._run_shell(
         f"git log {base_branch}..{branch_name} --oneline",
         config.project_root,
     )
@@ -248,7 +248,7 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
     if not commits_ahead:
         return True, f"0 commits ahead of {base_branch} — removing (stale)"
 
-    ok, ts_out = _cs._run_shell(
+    ok, ts_out = _cu._run_shell(
         f"git log -1 --format=%ct {branch_name}",
         config.project_root,
     )
@@ -282,21 +282,21 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
 
 def _remove_worktree(path: Path, branch: str, project_root: Path, info_line: str = "") -> None:
     """Remove a stale worktree and its branch. Logs warnings but does not raise."""
-    _cs._log(f"⚠ WORKSPACE  stale worktree detected — removing {branch}")
+    _cu._log(f"⚠ WORKSPACE  stale worktree detected — removing {branch}")
     if info_line:
-        _cs._log(f"  {info_line}")
+        _cu._log(f"  {info_line}")
 
-    ok, out = _cs._run_shell(f"git worktree remove --force {path}", project_root)
+    ok, out = _cu._run_shell(f"git worktree remove --force {path}", project_root)
     if not ok:
-        _cs._log(f"  Warning: git worktree remove failed: {out}")
+        _cu._log(f"  Warning: git worktree remove failed: {out}")
     else:
-        _cs._log(f"  Removed stale worktree: {path}")
+        _cu._log(f"  Removed stale worktree: {path}")
 
-    ok2, out2 = _cs._run_shell(f"git branch -D {branch}", project_root)
+    ok2, out2 = _cu._run_shell(f"git branch -D {branch}", project_root)
     if not ok2:
-        _cs._log(f"  Warning: git branch -D failed: {out2}")
+        _cu._log(f"  Warning: git branch -D failed: {out2}")
     else:
-        _cs._log(f"  Deleted branch {branch}")
+        _cu._log(f"  Deleted branch {branch}")
 
 
 def _create_workspace(
@@ -309,19 +309,19 @@ def _create_workspace(
     branch_name = config.workspace.branch_pattern.format(slug=slug)
 
     if workspace_path.exists():
-        _cs._log(f"⚠ WORKSPACE  existing worktree found: {workspace_path}")
+        _cu._log(f"⚠ WORKSPACE  existing worktree found: {workspace_path}")
         is_stale, info_line = _is_stale_worktree(
             workspace_path, config.workspace.base_branch, config
         )
-        _cs._log(f"  {info_line}")
+        _cu._log(f"  {info_line}")
         if is_stale:
             _remove_worktree(workspace_path, branch_name, config.project_root, info_line)
         else:
-            _cs._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
+            _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
             return workspace_path, branch_name, None
 
-    _cs._log(f"Creating workspace: {cmd}")
-    ok, output = _cs._run_shell(cmd, config.project_root)
+    _cu._log(f"Creating workspace: {cmd}")
+    ok, output = _cu._run_shell(cmd, config.project_root)
     if not ok:
         return None, None, f"Failed to create workspace: {output}"
 
@@ -329,8 +329,8 @@ def _create_workspace(
         return None, None, f"Workspace path does not exist after creation: {workspace_path}"
 
     if config.workspace.setup_command:
-        _cs._log(f"Running workspace setup: {config.workspace.setup_command}")
-        ok, output = _cs._run_shell(config.workspace.setup_command, workspace_path)
+        _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+        ok, output = _cu._run_shell(config.workspace.setup_command, workspace_path)
         if not ok:
             return None, None, f"Workspace setup command failed: {output}"
 
