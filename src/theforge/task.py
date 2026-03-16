@@ -105,11 +105,12 @@ def build_preflight_prompt(
             If file_scope is non-empty, scan the spec body for files explicitly named
             as requiring modification (look for file paths, function signatures tied to
             specific files, "in X.py change Y", acceptance criteria referencing specific
-            files). For each such file, verify it appears in the file_scope list below.
-            If any required file is absent from file_scope, verdict is BLOCKED — do not
-            return PROCEED.
+            files). For each such file, note whether it appears in the file_scope list below.
+            If required files are absent from file_scope, include a warning in your reason
+            but still return PROCEED — the dev agent will receive guidance about the scope
+            mismatch and can work around it.
 
-            This check is mandatory when file_scope is non-empty.
+            This check is advisory when file_scope is non-empty.
         """)
     else:
         scope_feasibility_section = ""

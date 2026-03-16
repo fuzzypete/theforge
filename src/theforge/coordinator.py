@@ -671,7 +671,10 @@ def _coordinator_loop(
 
             meta.successful = [r.profile_name for r in successful]
             meta.failed = [r.profile_name for r in failed_results]
-            meta.failed_detail = {r.profile_name: f"exit={r.exit_code}" for r in failed_results}
+            meta.failed_detail = {
+                r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
+                for r in failed_results
+            }
 
             if not successful:
                 state.phase = Phase.ESCALATE
@@ -1701,7 +1704,10 @@ def run_review_only(
         successful=[r.profile_name for r in successful],
         failed=[r.profile_name for r in failed_results],
         synthesized=False,
-        failed_detail={r.profile_name: f"exit={r.exit_code}" for r in failed_results},
+        failed_detail={
+            r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
+            for r in failed_results
+        },
     )
     state.review_cycle_metadata.append(meta)
 

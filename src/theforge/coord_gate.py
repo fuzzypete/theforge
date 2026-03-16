@@ -154,10 +154,6 @@ def _run_gate_full(
 
 def _run_gate(
     config: ForgeConfig, workspace_path: Path, task: TaskSpec | None = None
-) -> tuple[str | None, str | None]:
-    """Run the gate command. Returns (decision, error).
-
-    Backward-compatible 2-tuple wrapper around _run_gate_full.
-    """
-    decision, err, _ = _run_gate_full(config, workspace_path, task)
-    return decision, err
+) -> tuple[str | None, str | None, str]:
+    """Run the gate command. Returns (decision, error, output_tail)."""
+    return _run_gate_full(config, workspace_path, task)

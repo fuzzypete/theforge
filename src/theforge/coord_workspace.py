@@ -86,7 +86,7 @@ def _resolve_merge_conflicts(
         return False
 
     _cu._log("  Running gate to verify resolution...")
-    gate_decision, gate_error = _run_gate(config, workspace_path)
+    gate_decision, gate_error, _ = _run_gate(config, workspace_path)
     if gate_error or gate_decision != "PASS":
         _cu._log("  ⚠ Conflict resolution broke tests — aborting merge")
         _cu._run_shell("git merge --abort", project_root)

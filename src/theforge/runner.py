@@ -650,10 +650,14 @@ def _run_gemini(
     if not quiet:
         _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
 
-    # Parse JSON output (-o json requests structured response)
+    # Parse JSON output (-o json requests structured response).
+    # The gemini CLI emits preamble lines (e.g. "YOLO mode is enabled.") to
+    # stdout before the JSON object, so find the first '{' and parse from there.
     result_json: dict[str, Any] = {}
+    json_start = proc.stdout.find("{")
+    json_candidate = proc.stdout[json_start:] if json_start != -1 else proc.stdout
     try:
-        result_json = json.loads(proc.stdout)
+        result_json = json.loads(json_candidate)
     except (json.JSONDecodeError, ValueError):
         return AgentResult(
             success=proc.returncode == 0,
@@ -684,3 +688,6 @@ def log_agent_result(result: AgentResult, role: str) -> None:
         f"cost=${result.cost_usd:.3f} | "
         f"output={len(result.output)} chars"
     )
+    if not result.success and result.output:
+        preview = result.output[:300].replace("\n", " ").strip()
+        _log_verbose(f"  [{role}] error output: {preview}")
