@@ -364,6 +364,148 @@ class TestCoordinatorReviewRequestChanges:
         assert result.state.review_cycle == 2
 
 
+class TestCoordinatorPromptRouting:
+    """Test that the correct prompt builder is called based on retry_reason."""
+
+    @patch("theforge.coordinator.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_review_changes_routes_to_fix_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """retry_reason='review_changes' → build_fix_prompt() on second dev call."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(), _make_agent_result())
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] <= 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_fix_prompt.called, "build_fix_prompt should be called on review iteration"
+        assert mock_dev_prompt.call_count >= 1, "build_dev_prompt should be called on first run"
+
+    @patch("theforge.coordinator.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_gate_fail_routes_to_dev_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+    ):
+        """retry_reason='gate_fail' → build_dev_prompt() on retry, not build_fix_prompt()."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_agent.side_effect = _preflight_then(_make_agent_result(), _make_agent_result())
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.dev_iteration == 2
+        assert not mock_fix_prompt.called, "build_fix_prompt must NOT be called on gate_fail retry"
+        assert mock_dev_prompt.call_count == 2, "build_dev_prompt should be called both times"
+
+    @patch("theforge.coordinator.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator._human_review")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_extend_routes_to_fix_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_human_review,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        """retry_reason='extend' → build_fix_prompt() when human extends after APPROVE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(), _make_agent_result())
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+
+        extend_review = """\
+```yaml
+verdict: APPROVE
+summary: "Acceptable but please also add logging."
+findings:
+  - severity: P2
+    file: src/foo.py
+    line: 5
+    description: "Missing log statement"
+    suggestion: "Add logger.info(...)"
+spec_compliance:
+  matches_spec: true
+test_coverage:
+  adequate: true
+```
+"""
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] <= 1:
+                return [
+                    _make_agent_result(success=True, output=extend_review, profile_name="review")
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        # First call: human extends; second call: human approves
+        human_call = {"n": 0}
+
+        def human_review_side_effect(*args, **kwargs):
+            human_call["n"] += 1
+            if human_call["n"] == 1:
+                return ("extend", "")
+            return ("approve", "")
+
+        mock_human_review.side_effect = human_review_side_effect
+
+        run_task(config, task, interactive=True)
+
+        assert mock_fix_prompt.called, "build_fix_prompt should be called after extend"
+
+
 class TestCoordinatorEscalation:
     """Test that exhausting retries escalates to human."""
 
