@@ -1,0 +1,72 @@
+---
+name: Sprint spec dependencies
+slug: sprint-dependencies
+---
+
+# Spec: Sprint Spec Dependencies
+
+## Problem
+
+Sprint runs specs sequentially but has no concept of dependencies between
+specs. If spec A fails to merge, spec B starts anyway from stale main and
+builds on broken foundations. For decomposed refactors (where spec 2 requires
+spec 1's changes to be on main), this produces cascading failures.
+
+## Solution
+
+Add optional `depends_on` field to spec frontmatter. Sprint checks after each
+merge: if a spec that another depends on did not merge cleanly, halt the sprint
+before starting the dependent spec and surface the failure.
+
+## Spec Frontmatter
+
+```yaml
+---
+name: Extract coord_notify module
+slug: extract-coord-notify
+depends_on: extract-coord-state
+---
+```
+
+`depends_on` accepts a single slug or a list of slugs.
+
+## Sprint Behaviour
+
+1. After each spec completes, sprint checks if its branch was merged to main.
+2. Before starting each spec, sprint checks if all `depends_on` slugs merged
+   successfully in this sprint run.
+3. If any dependency did not merge, sprint marks the dependent spec as
+   `SKIPPED (dependency failed)` and halts the sprint with a clear message.
+4. If `depends_on` is absent or empty, spec runs unconditionally (current
+   behaviour preserved).
+
+## Changes Required
+
+### `src/theforge/task.py`
+- Add `depends_on: list[str]` field to `TaskSpec` dataclass (default: `[]`)
+- Parse `depends_on` from spec frontmatter (single string or list)
+
+### `src/theforge/sprint.py`
+- Track which slugs merged successfully during the sprint run
+- Before each `run_task` call, check `task.depends_on` against merged set
+- If dependency missing: log clear error, mark spec SKIPPED, halt sprint
+
+### `src/theforge/config.py`
+- No changes needed — dependency tracking is sprint-level, not config-level
+
+## Acceptance Criteria
+
+1. `TaskSpec.depends_on` parses correctly from frontmatter (str → list, list → list, missing → [])
+2. Sprint skips a spec and halts when its dependency did not merge
+3. Sprint proceeds normally when dependency merged successfully
+4. Sprint proceeds normally when `depends_on` is absent
+5. `make test` passes. `make lint` passes.
+
+## File Scope
+
+```
+src/theforge/task.py
+src/theforge/sprint.py
+tests/test_task.py
+tests/test_sprint.py
+```
