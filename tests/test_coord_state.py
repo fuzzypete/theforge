@@ -1,6 +1,6 @@
 """Tests for coordinator state helpers.
 
-Covers: StructuredLogger, LogConfig, _get_diff_stat, audit fields.
+Covers: StructuredLogger, LogConfig, _get_commit_log, audit fields.
 """
 
 import json as _json
@@ -36,7 +36,7 @@ from theforge.coordinator import (
     Phase,
     StructuredLogger,
     _fmt_duration,
-    _get_diff_stat,
+    _get_commit_log,
     generate_audit_log,
     run_task,
 )
@@ -423,36 +423,52 @@ class TestStructuredLoggingIntegration:
         assert result.success is True
 
 
-# ── _get_diff_stat ────────────────────────────────────────────────────
+# ── _get_commit_log ───────────────────────────────────────────────────
 
 
-class TestGetDiffStat:
-    """Tests for the _get_diff_stat() helper."""
-
-    @patch("theforge.coord_util._run_shell")
-    def test_success(self, mock_shell: MagicMock, tmp_path: Path) -> None:
-        """Returns stat output when first command succeeds."""
-        stat = " src/foo.py | 5 ++---\n 1 file changed, 2 insertions(+), 3 deletions(-)"
-        mock_shell.return_value = (True, stat)
-        result = _get_diff_stat(tmp_path, "main")
-        assert result == stat
-        mock_shell.assert_called_once_with("git diff --stat main...HEAD", tmp_path)
+class TestGetCommitLog:
+    """Tests for the _get_commit_log() helper."""
 
     @patch("theforge.coord_util._run_shell")
-    def test_fallback_when_first_empty(self, mock_shell: MagicMock, tmp_path: Path) -> None:
-        """Falls back to git diff --stat HEAD when first call returns empty."""
-        fallback = " src/bar.py | 3 +++\n 1 file changed, 3 insertions(+)"
-        mock_shell.side_effect = [(True, ""), (True, fallback)]
-        result = _get_diff_stat(tmp_path, "main")
-        assert result == fallback
-        assert mock_shell.call_count == 2
+    def test_success_clean_worktree(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns commit log when command succeeds and worktree is clean."""
+        log = "abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests"
+        mock_shell.side_effect = [(True, ""), (True, log)]  # status clean, log ok
+        result = _get_commit_log(tmp_path, "main")
+        assert result == log
+        assert "WARNING" not in result
 
     @patch("theforge.coord_util._run_shell")
-    def test_both_fail(self, mock_shell: MagicMock, tmp_path: Path) -> None:
-        """Returns placeholder when both commands fail."""
-        mock_shell.return_value = (False, "")
-        result = _get_diff_stat(tmp_path, "main")
-        assert result == "(no diff stat available)"
+    def test_no_commits_clean(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns placeholder when no commits ahead of base."""
+        mock_shell.side_effect = [(True, ""), (True, "")]  # clean, no commits
+        result = _get_commit_log(tmp_path, "main")
+        assert result == "(no commits ahead of base branch)"
+
+    @patch("theforge.coord_util._run_shell")
+    def test_command_fails(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns placeholder when git command fails."""
+        mock_shell.side_effect = [(True, ""), (False, "")]  # clean, log fails
+        result = _get_commit_log(tmp_path, "main")
+        assert result == "(no commits ahead of base branch)"
+
+    @patch("theforge.coord_util._run_shell")
+    def test_dirty_worktree_with_commits(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Appends warning when worktree has uncommitted changes."""
+        log = "abc1234 feat(foo): implement the thing"
+        mock_shell.side_effect = [(True, " M src/foo.py\n"), (True, log)]
+        result = _get_commit_log(tmp_path, "main")
+        assert "abc1234" in result
+        assert "WARNING" in result
+        assert "uncommitted" in result
+
+    @patch("theforge.coord_util._run_shell")
+    def test_dirty_worktree_no_commits(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Warns about uncommitted changes even when no commits ahead."""
+        mock_shell.side_effect = [(True, " M src/foo.py\n"), (True, "")]
+        result = _get_commit_log(tmp_path, "main")
+        assert "(no commits ahead of base branch)" in result
+        assert "WARNING" in result
 
 
 # ── _fmt_duration ─────────────────────────────────────────────────────

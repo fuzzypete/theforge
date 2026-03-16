@@ -144,7 +144,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
     review_prompt = build_review_prompt(
         task,
         spec_content=spec_content,
-        diff_stat="(dry run — no diff available)",
+        commit_log="(dry run — no commits available)",
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content="(dry run — no handoff available)",

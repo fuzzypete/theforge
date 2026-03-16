@@ -663,7 +663,7 @@ def build_review_prompt(
     task: TaskSpec,
     *,
     spec_content: str,
-    diff_stat: str,
+    commit_log: str,
     workspace_path: str,
     branch: str,
     handoff_content: str,
@@ -672,10 +672,13 @@ def build_review_prompt(
     """Build the review agent prompt.
 
     The reviewer receives:
-    - A git diff --stat summary of changed files
+    - The commit log (git log main..HEAD) as the primary handoff artifact
     - The spec (to verify compliance)
     - The handoff.yaml (to cross-check validation claims)
     - Instructions to use Read/Bash/Glob/Grep tools to inspect actual source
+
+    This mirrors a PR review workflow: reviewers discover files from commits,
+    not from a pre-enumerated file list.
 
     When review_role is set to a known role ("correctness", "patterns",
     "edge-cases"), the "Your Role" section uses a role-specific lens.
@@ -695,16 +698,16 @@ def build_review_prompt(
 
         {spec_content}
 
-        ## Changed Files (git diff --stat)
+        ## Commits
+
+        The following commits implement the spec on branch `{branch}`.
+        Review them as you would a pull request — read the commit messages to
+        understand what was done, then use `git show <sha>` or your Read/Bash/Glob/Grep
+        tools to inspect the actual source in the worktree at: {workspace_path}
 
         ```
-        {diff_stat}
+        {commit_log}
         ```
-
-        Use your Read, Bash, Glob, and Grep tools to inspect the changed files in the
-        worktree at: {workspace_path}
-
-        The branch under review is: {branch}
 
         ## Handoff from Dev Agent
 

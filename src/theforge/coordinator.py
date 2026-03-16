@@ -185,21 +185,40 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"ERROR: {e}"
 
 
-# ── Diff extraction ─────────────────────────────────────────────────
+# ── Commit log extraction ──────────────────────────────────────────
 
 
-def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
-    """Get a compact git diff --stat summary vs the base branch."""
-    ok, stat = _cu._run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
-    if ok and stat:
-        return stat
+def _has_uncommitted_changes(workspace_path: Path) -> bool:
+    """Check if the worktree has uncommitted changes (staged or unstaged)."""
+    ok, status = _cu._run_shell("git status --porcelain", workspace_path)
+    return ok and bool(status.strip())
 
-    # Fallback: stat of staged + unstaged
-    ok, stat = _cu._run_shell("git diff --stat HEAD", workspace_path)
-    if ok and stat:
-        return stat
 
-    return "(no diff stat available)"
+def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
+    """Get the commit log vs the base branch (like a PR commit list).
+
+    If the worktree has uncommitted changes, appends a warning so reviewers
+    know the commits don't tell the full story.
+    """
+    dirty = _has_uncommitted_changes(workspace_path)
+
+    ok, log = _cu._run_shell(
+        f"git log {base_branch}..HEAD --format='%h %s' --reverse", workspace_path
+    )
+
+    parts: list[str] = []
+    if ok and log:
+        parts.append(log)
+    else:
+        parts.append("(no commits ahead of base branch)")
+
+    if dirty:
+        parts.append(
+            "\n⚠ WARNING: Worktree has uncommitted changes not reflected above. "
+            "Run `git diff` and `git diff --cached` to see them."
+        )
+
+    return "\n".join(parts)
 
 
 def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
@@ -576,7 +595,7 @@ def _coordinator_loop(
         _pool_model_names = "+".join(p.model for p in config.review_pool)
         _log_phase(state.phase, f"{_pool_model_names}  cycle={state.review_cycle + 1}")
 
-        diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
+        commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
 
         review_prompts: str | list[str] = (
@@ -584,7 +603,7 @@ def _coordinator_loop(
                 build_review_prompt(
                     task,
                     spec_content=spec_content,
-                    diff_stat=diff_stat,
+                    commit_log=commit_log,
                     workspace_path=str(workspace_path),
                     branch=branch_name,
                     handoff_content=handoff_content,
@@ -596,7 +615,7 @@ def _coordinator_loop(
             else build_review_prompt(
                 task,
                 spec_content=spec_content,
-                diff_stat=diff_stat,
+                commit_log=commit_log,
                 workspace_path=str(workspace_path),
                 branch=branch_name,
                 handoff_content=handoff_content,
@@ -1667,13 +1686,13 @@ def run_review_only(
     _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
     _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
 
-    diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
+    commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
     handoff_content = _get_handoff_content(config, workspace_path)
 
     review_prompt = build_review_prompt(
         task,
         spec_content=spec_content,
-        diff_stat=diff_stat,
+        commit_log=commit_log,
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content=handoff_content,
