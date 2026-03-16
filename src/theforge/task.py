@@ -6,7 +6,7 @@ No LLM is involved in prompt construction.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import dedent
 
@@ -23,6 +23,7 @@ class TaskSpec:
     file_scope: list[str]  # paths the agent may modify
     pytest_target: str | None = None  # specific test target, or None for all
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
+    depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
 
 
 def load_spec(spec_path: Path) -> str:

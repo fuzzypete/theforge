@@ -447,3 +447,24 @@ class TestBuildReviewPrompt:
         assert "# Spec" in prompt
         # ## Spec heading must be on its own line (newline before it)
         assert "\n        ## Spec" in prompt or "\n## Spec" in prompt
+
+
+# ── TaskSpec.depends_on ──────────────────────────────────────────────
+
+
+class TestTaskSpecDependsOn:
+    def test_depends_on_default_empty(self, tmp_path: Path) -> None:
+        """TaskSpec without depends_on argument defaults to []."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec", encoding="utf-8")
+        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        assert task.depends_on == []
+
+    def test_depends_on_list(self, tmp_path: Path) -> None:
+        """TaskSpec accepts depends_on as a list of strings."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec", encoding="utf-8")
+        task = TaskSpec(
+            name="Test", spec_path=spec, slug="test", file_scope=[], depends_on=["a", "b"]
+        )
+        assert task.depends_on == ["a", "b"]

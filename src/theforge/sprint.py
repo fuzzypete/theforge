@@ -128,6 +128,13 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
 
     slug = fm.get("slug") or spec_path.stem
     name = fm.get("name", spec_path.stem.replace("_", " ").replace("-", " ").title())
+    raw_deps = fm.get("depends_on", [])
+    if isinstance(raw_deps, str):
+        depends_on = [raw_deps]
+    elif isinstance(raw_deps, list):
+        depends_on = [str(d) for d in raw_deps]
+    else:
+        depends_on = []
     return TaskSpec(
         name=name,
         spec_path=spec_path,
@@ -135,6 +142,7 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
         file_scope=fm.get("file_scope", []),
         pytest_target=fm.get("pytest_target"),
         gate_override=fm.get("gate"),
+        depends_on=depends_on,
     )
 
 
@@ -334,6 +342,7 @@ def run_sprint(
     specs_failed = 0
     specs_skipped = 0
     stopped_reason: str | None = None
+    merged_slugs: set[str] = set()
 
     # Resume mode: triage all specs and carry forward prior costs
     triages: dict[str, SpecTriage] = {}
@@ -359,6 +368,7 @@ def run_sprint(
             if triage and triage.action == "skip_merged":
                 _log(f"[{idx}/{total}] SKIP {task.slug} ({triage.reason})")
                 specs_succeeded += 1
+                merged_slugs.add(task.slug)
                 continue
 
         # Budget check before starting (cumulative: prior + current run)
@@ -372,6 +382,18 @@ def run_sprint(
             # Mark remaining specs as skipped too
             for remaining_idx in range(idx + 1, total + 1):
                 _log(f"[{remaining_idx}/{total}] SKIPPED (budget exhausted)")
+                specs_skipped += 1
+            break
+
+        # Dependency check: all depends_on slugs must have merged
+        missing_deps = [dep for dep in task.depends_on if dep not in merged_slugs]
+        if missing_deps:
+            dep_list = ", ".join(missing_deps)
+            _log(f"[{idx}/{total}] SKIPPED {task.slug} (dependency failed: {dep_list})")
+            specs_skipped += 1
+            stopped_reason = f"Dependency failed for {task.slug}: {dep_list} did not merge"
+            for remaining_idx in range(idx + 1, total + 1):
+                _log(f"[{remaining_idx}/{total}] SKIPPED (sprint halted)")
                 specs_skipped += 1
             break
 
@@ -446,6 +468,10 @@ def run_sprint(
             specs_succeeded += 1
         else:
             specs_failed += 1
+
+        # Track merged slugs for dependency checking
+        if result.merge is not None and result.merge.get("merged", False):
+            merged_slugs.add(task.slug)
 
         # Emit spec completion summary
         icon = "✓" if result.success else "✗"

@@ -27,6 +27,7 @@ from theforge.coordinator import (
 )
 from theforge.sprint import (
     SpecTriage,
+    _build_task_from_spec,
     _triage_spec,
     load_sprint_manifest,
     run_sprint,
@@ -53,10 +54,18 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _make_spec_file(tmp_path: Path, name: str, slug: str) -> Path:
+def _make_spec_file(
+    tmp_path: Path, name: str, slug: str, depends_on: list[str] | None = None
+) -> Path:
     spec = tmp_path / f"{slug}.md"
+    frontmatter = f"name: {name}\nslug: {slug}"
+    if depends_on is not None:
+        if len(depends_on) == 1:
+            frontmatter += f"\ndepends_on: {depends_on[0]}"
+        else:
+            frontmatter += "\ndepends_on:\n" + "".join(f"  - {d}\n" for d in depends_on)
     spec.write_text(
-        f"---\nname: {name}\nslug: {slug}\n---\n# {name}\nDo the thing.",
+        f"---\n{frontmatter}\n---\n# {name}\nDo the thing.",
         encoding="utf-8",
     )
     return spec
@@ -848,3 +857,142 @@ class TestResumeSprintIntegration:
         mock_triage.assert_not_called()
         mock_task.assert_called_once()
         assert result.specs_succeeded == 1
+
+
+# ── _build_task_from_spec depends_on parsing ─────────────────────────
+
+
+class TestBuildTaskDependsOn:
+    def test_depends_on_missing(self, tmp_path: Path) -> None:
+        """No depends_on in frontmatter → depends_on == []."""
+        spec = _make_spec_file(tmp_path, "Spec A", "spec-a")
+        task = _build_task_from_spec(spec)
+        assert task.depends_on == []
+
+    def test_depends_on_single_string(self, tmp_path: Path) -> None:
+        """depends_on as single string → normalized to single-element list."""
+        spec = _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["single-slug"])
+        task = _build_task_from_spec(spec)
+        assert task.depends_on == ["single-slug"]
+
+    def test_depends_on_list(self, tmp_path: Path) -> None:
+        """depends_on as list → preserved as list."""
+        spec = _make_spec_file(tmp_path, "Spec C", "spec-c", depends_on=["slug-a", "slug-b"])
+        task = _build_task_from_spec(spec)
+        assert task.depends_on == ["slug-a", "slug-b"]
+
+
+# ── Sprint dependency checking ────────────────────────────────────────
+
+
+class TestSprintDependencies:
+    def test_skips_and_halts_on_failed_dependency(self, tmp_path: Path) -> None:
+        """Spec B is skipped and sprint halts when spec-a did not merge."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+
+        # Spec A succeeds but does NOT merge (merge=None)
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            result = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert mock_run.call_count == 1  # only spec-a ran
+        assert result.specs_succeeded == 1
+        assert result.specs_skipped == 1  # spec-b skipped
+        assert result.stopped_reason is not None
+        assert "spec-a" in result.stopped_reason
+        assert "dependency" in result.stopped_reason.lower()
+
+    def test_proceeds_when_dependency_merged(self, tmp_path: Path) -> None:
+        """Spec B proceeds when spec-a merged successfully."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+            result = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert mock_run.call_count == 2
+        assert result.specs_succeeded == 2
+        assert result.stopped_reason is None
+
+    def test_proceeds_normally_when_no_depends_on(self, tmp_path: Path) -> None:
+        """Existing behavior preserved: specs without depends_on always run."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b")
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
+        result_b = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+            result = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 2
+        assert result.specs_failed == 1
+        assert result.specs_succeeded == 1
+        assert result.stopped_reason is None
+
+    def test_resume_merged_satisfies_dependency(self, tmp_path: Path) -> None:
+        """Resume mode: spec triaged as skip_merged counts as merged for deps."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+
+        merged_triage = SpecTriage(
+            spec_path="spec-a.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+            slug="spec-a",
+        )
+        full_triage = SpecTriage(
+            spec_path="spec-b.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+            slug="spec-b",
+        )
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
+
+        def triage_side_effect(spec_path, config, project_root):
+            if "spec-a" in spec_path:
+                return merged_triage
+            return full_triage
+
+        with patch("theforge.sprint._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.run_task", return_value=result_b) as mock_run:
+                result = run_sprint(config, manifest_path, resume=True)
+
+        # spec-a was skip_merged (counted as succeeded), spec-b ran successfully
+        mock_run.assert_called_once()
+        assert result.specs_succeeded == 2
+        assert result.stopped_reason is None
+
+    def test_halts_remaining_on_dependency_failure(self, tmp_path: Path) -> None:
+        """Three specs: A, B (depends on spec-a), C. A doesn't merge → B and C skipped."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
+        _make_spec_file(tmp_path, "Spec C", "spec-c")
+        manifest_path = _make_manifest(
+            tmp_path, ["spec-a.md", "spec-b.md", "spec-c.md"], budget=10.0
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            result = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 1
+        assert result.specs_skipped == 2  # B and C both skipped
+        assert result.stopped_reason is not None
