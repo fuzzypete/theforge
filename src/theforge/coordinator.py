@@ -1773,13 +1773,28 @@ def _coordinator_loop(
         diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
 
-        review_prompt = build_review_prompt(
-            task,
-            spec_content=spec_content,
-            diff_stat=diff_stat,
-            workspace_path=str(workspace_path),
-            branch=branch_name,
-            handoff_content=handoff_content,
+        review_prompts: str | list[str] = (
+            [
+                build_review_prompt(
+                    task,
+                    spec_content=spec_content,
+                    diff_stat=diff_stat,
+                    workspace_path=str(workspace_path),
+                    branch=branch_name,
+                    handoff_content=handoff_content,
+                    review_role=p.review_role,
+                )
+                for p in config.review_pool
+            ]
+            if any(p.review_role for p in config.review_pool)
+            else build_review_prompt(
+                task,
+                spec_content=spec_content,
+                diff_stat=diff_stat,
+                workspace_path=str(workspace_path),
+                branch=branch_name,
+                handoff_content=handoff_content,
+            )
         )
 
         # Create metadata now and append immediately — mutations will be visible

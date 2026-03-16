@@ -92,6 +92,7 @@ class ModelProfile:
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
+    review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
 
 
 @dataclass(frozen=True)
@@ -370,6 +371,7 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
         allowed_tools=tuple(tools) if tools is not None else default.allowed_tools,
         reasoning_effort=reasoning_effort,
+        review_role=data.get("review_role"),
     )
 
 
@@ -533,6 +535,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         else:
             review_pool = [DEFAULT_REVIEW_PROFILE]
             synthesis_profile = None
+
+    # smart_config_models — escalation chain; works alongside explicit profiles
+    if smart_config_models is None and "smart_config_models" in raw:
+        models_raw = raw["smart_config_models"]
+        if isinstance(models_raw, list) and models_raw:
+            smart_config_models = [str(m) for m in models_raw]
 
     # Retry
     retry_data = raw.get("retry", {})
