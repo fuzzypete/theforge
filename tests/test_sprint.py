@@ -996,3 +996,23 @@ class TestSprintDependencies:
         assert mock_run.call_count == 1
         assert result.specs_skipped == 2  # B and C both skipped
         assert result.stopped_reason is not None
+
+    def test_already_done_satisfies_dependency(self, tmp_path: Path) -> None:
+        """ALREADY_DONE spec counts as merged for dependency purposes (changes already on main)."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(
+            success=True, cost=0.1, preflight_verdict="ALREADY_DONE", phase=Phase.DONE
+        )
+        result_b = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+            result = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 2  # both specs ran
+        assert result.specs_skipped == 1  # spec-a counted as skipped (ALREADY_DONE)
+        assert result.specs_succeeded == 1  # spec-b succeeded
+        assert result.stopped_reason is None  # no halt

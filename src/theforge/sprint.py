@@ -469,8 +469,11 @@ def run_sprint(
         else:
             specs_failed += 1
 
-        # Track merged slugs for dependency checking
-        if result.merge is not None and result.merge.get("merged", False):
+        # Track merged slugs for dependency checking.
+        # ALREADY_DONE means the spec's changes are already on main, so it satisfies deps.
+        if preflight_verdict == "ALREADY_DONE" or (
+            result.merge is not None and result.merge.get("merged", False)
+        ):
             merged_slugs.add(task.slug)
 
         # Emit spec completion summary
