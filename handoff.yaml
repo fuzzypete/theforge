@@ -1,13 +1,1 @@
 gate_decision: PASS
-scope_completed:
-  - P1 fix: _run_shell is now defined locally in coordinator.py (not just re-exported
-    from coord_util), satisfying the spec requirement to keep the shell helper in
-    coordinator.py. The local definition is exported for import compat; internal
-    calls continue through _cu._run_shell so integration test mocks remain effective.
-  - P2 fix: removed stray [DEBUG merge] print statement from coord_workspace._merge_branch
-    and its now-unused `import sys`.
-deferred_followups:
-  - Full patch-intercept compat for patch('theforge.coordinator._run_shell') affecting
-    workspace/gate calls is architecturally blocked by circular import constraints.
-    All current tests correctly patch theforge.coord_util._run_shell instead.
-next_recommended_step: Submit for reviewer approval; if approved, merge feat/coordinator-refactor to main.

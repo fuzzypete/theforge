@@ -691,7 +691,9 @@ def _coordinator_loop(
             meta.successful = [r.profile_name for r in successful]
             meta.failed = [r.profile_name for r in failed_results]
             meta.failed_detail = {
-                r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
+                r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}"
+                if r.output
+                else f"exit={r.exit_code}"
                 for r in failed_results
             }
 
@@ -1724,7 +1726,9 @@ def run_review_only(
         failed=[r.profile_name for r in failed_results],
         synthesized=False,
         failed_detail={
-            r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
+            r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}"
+            if r.output
+            else f"exit={r.exit_code}"
             for r in failed_results
         },
     )
