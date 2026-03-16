@@ -13,6 +13,8 @@ def _block_real_notifications():
     with (
         patch("theforge.coordinator._notify"),
         patch("theforge.coordinator._ntfy_publish"),
+        patch("theforge.coord_notify._notify"),
+        patch("theforge.coord_notify._ntfy_publish"),
         patch("theforge.sprint._notify"),
     ):
         yield

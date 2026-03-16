@@ -465,7 +465,7 @@ class TestEscalationNotifications:
 
         task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
 
-        with patch("theforge.coordinator._notify") as mock_notify:
+        with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(
                 "theforge.coordinator._create_workspace",
                 return_value=(None, None, "disk full"),
@@ -491,7 +491,7 @@ class TestEscalationNotifications:
         task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
         long_error = "x" * 200
 
-        with patch("theforge.coordinator._notify") as mock_notify:
+        with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(
                 "theforge.coordinator._create_workspace",
                 return_value=(None, None, long_error),
@@ -513,7 +513,7 @@ class TestEscalationNotifications:
 
         task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
 
-        with patch("theforge.coordinator._notify") as mock_notify:
+        with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(
                 "theforge.coordinator._create_workspace",
                 return_value=(None, None, "disk full"),
@@ -526,15 +526,15 @@ class TestEscalationNotifications:
 class TestNotifyFunction:
     def test_notify_fail_silent(self) -> None:
         """_notify swallows subprocess errors and never raises."""
-        with patch("theforge.coordinator.shutil.which", return_value="/usr/bin/osascript"):
-            with patch("theforge.coordinator.subprocess.run", side_effect=OSError("broken pipe")):
+        with patch("theforge.coord_notify.shutil.which", return_value="/usr/bin/osascript"):
+            with patch("theforge.coord_notify.subprocess.run", side_effect=OSError("broken pipe")):
                 # Must not raise
                 _notify("Title", "Body")
 
     def test_notify_noop_without_osascript(self) -> None:
         """_notify does nothing when osascript is not available."""
-        with patch("theforge.coordinator.shutil.which", return_value=None):
-            with patch("theforge.coordinator.subprocess.run") as mock_run:
+        with patch("theforge.coord_notify.shutil.which", return_value=None):
+            with patch("theforge.coord_notify.subprocess.run") as mock_run:
                 _notify("Title", "Body")
 
         mock_run.assert_not_called()
