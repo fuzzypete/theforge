@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from theforge.review import ReviewFinding, ReviewResult, review_to_dev_handoff
 from theforge.task import (
     TaskSpec,
     build_dev_prompt,
@@ -469,3 +470,187 @@ class TestTaskSpecDependsOn:
             name="Test", spec_path=spec, slug="test", file_scope=[], depends_on=["a", "b"]
         )
         assert task.depends_on == ["a", "b"]
+
+
+# ── review_to_dev_handoff ─────────────────────────────────────────────
+
+
+def _make_review_result(
+    verdict: str = "REQUEST_CHANGES",
+    summary: str = "Review summary.",
+    findings: list[ReviewFinding] | None = None,
+    spec_matches: bool = True,
+    spec_mismatches: list[str] | None = None,
+    test_adequate: bool = True,
+    test_gaps: list[str] | None = None,
+) -> ReviewResult:
+    return ReviewResult(
+        verdict=verdict,
+        summary=summary,
+        findings=findings or [],
+        spec_matches=spec_matches,
+        spec_mismatches=spec_mismatches or [],
+        test_adequate=test_adequate,
+        test_gaps=test_gaps or [],
+        parse_errors=[],
+        raw_yaml={},
+    )
+
+
+class TestReviewToDevHandoff:
+    def test_full_result(self):
+        finding = ReviewFinding(
+            severity="P1",
+            file="src/foo.py",
+            line=42,
+            description="Off by one",
+            suggestion="Fix the index",
+        )
+        result = _make_review_result(
+            summary="Found a bug.",
+            findings=[finding],
+            spec_matches=False,
+            spec_mismatches=["Missing batch config"],
+            test_adequate=False,
+            test_gaps=["No edge case test"],
+        )
+        output = review_to_dev_handoff(result)
+        assert "## Review Summary" in output
+        assert "Found a bug." in output
+        assert "## Spec Compliance Issues" in output
+        assert "Missing batch config" in output
+        assert "## Missing Test Coverage" in output
+        assert "No edge case test" in output
+        assert "## Findings" in output
+        assert "### [P1]" in output
+        assert "**Issue:** Off by one" in output
+        assert "**Fix:** Fix the index" in output
+
+    def test_empty_findings(self):
+        result = _make_review_result(
+            summary="All good.",
+            findings=[],
+            spec_matches=True,
+            test_adequate=True,
+        )
+        output = review_to_dev_handoff(result)
+        assert "## Review Summary" in output
+        assert "## Findings" in output
+        assert "No findings." in output
+        assert "## Spec Compliance Issues" not in output
+        assert "## Missing Test Coverage" not in output
+
+    def test_no_mismatches(self):
+        finding = ReviewFinding(
+            severity="P2",
+            file="src/bar.py",
+            line=10,
+            description="Minor issue",
+            suggestion="Improve it",
+        )
+        result = _make_review_result(
+            summary="Minor issue only.",
+            findings=[finding],
+            spec_matches=True,
+            test_adequate=True,
+        )
+        output = review_to_dev_handoff(result)
+        assert "## Spec Compliance Issues" not in output
+        assert "## Missing Test Coverage" not in output
+        assert "### [P2]" in output
+
+    def test_finding_no_line(self):
+        finding = ReviewFinding(
+            severity="P1",
+            file="src/foo.py",
+            line=None,
+            description="Missing validation",
+            suggestion="Add it",
+        )
+        result = _make_review_result(findings=[finding])
+        output = review_to_dev_handoff(result)
+        assert "### [P1] `src/foo.py`" in output
+        # Header line should not contain "(line ...)" when line is None
+        header_line = [ln for ln in output.splitlines() if "### [P1]" in ln][0]
+        assert "(line" not in header_line
+
+    def test_finding_no_suggestion(self):
+        finding = ReviewFinding(
+            severity="P2",
+            file="src/foo.py",
+            line=5,
+            description="Needs cleanup",
+            suggestion=None,
+        )
+        result = _make_review_result(findings=[finding])
+        output = review_to_dev_handoff(result)
+        assert "**Issue:** Needs cleanup" in output
+        assert "**Fix:**" not in output
+
+    def test_spec_false_but_empty_mismatches_omits_section(self):
+        result = _make_review_result(spec_matches=False, spec_mismatches=[])
+        output = review_to_dev_handoff(result)
+        assert "## Spec Compliance Issues" not in output
+
+    def test_test_adequate_false_but_empty_gaps_omits_section(self):
+        result = _make_review_result(test_adequate=False, test_gaps=[])
+        output = review_to_dev_handoff(result)
+        assert "## Missing Test Coverage" not in output
+
+
+# ── build_review_prompt dev_notes ─────────────────────────────────────
+
+
+class TestBuildReviewPromptDevNotes:
+    def test_dev_notes_present(self, review_task: TaskSpec) -> None:
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            dev_notes="I deviated from spec because X.",
+        )
+        assert "## Developer Notes" in prompt
+        assert "I deviated from spec because X." in prompt
+        # Dev Notes section appears before Commits
+        assert prompt.index("## Developer Notes") < prompt.index("## Commits")
+
+    def test_dev_notes_none(self, review_task: TaskSpec) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, dev_notes=None)
+        assert "## Developer Notes" not in prompt
+
+    def test_dev_notes_empty_string(self, review_task: TaskSpec) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, dev_notes="")
+        assert "## Developer Notes" not in prompt
+
+
+# ── build_dev_prompt dev_notes instruction ────────────────────────────
+
+
+class TestBuildDevPromptDevNotesInstruction:
+    def test_gate_not_skipped_includes_dev_notes(self, tmp_path: Path) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec", encoding="utf-8")
+        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            gate_skipped=False,
+        )
+        assert "dev_notes" in prompt
+        assert "handoff.yaml" in prompt
+
+    def test_gate_skipped_excludes_dev_notes(self, tmp_path: Path) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec", encoding="utf-8")
+        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            gate_skipped=True,
+        )
+        assert "dev_notes" not in prompt

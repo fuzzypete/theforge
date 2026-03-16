@@ -88,7 +88,7 @@ from .coord_workspace import (  # noqa: F401
     _remove_worktree,
     _resolve_merge_conflicts,
 )
-from .review import ReviewResult, findings_to_markdown, parse_review_output
+from .review import ReviewResult, parse_review_output, review_to_dev_handoff
 from .runner import log_agent_result, run_agent, run_agent_pool
 from .task import (
     TaskSpec,
@@ -229,6 +229,27 @@ def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
     if handoff_path.exists():
         return handoff_path.read_text(encoding="utf-8")
     return "(handoff.yaml not found)"
+
+
+def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
+    """Extract dev_notes from handoff.yaml, or None if absent/unparseable."""
+    if not config.validation.handoff_file:
+        return None
+    handoff_path = workspace_path / config.validation.handoff_file
+    if not handoff_path.exists():
+        return None
+    try:
+        import yaml
+
+        data = yaml.safe_load(handoff_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    val = data.get("dev_notes")
+    if isinstance(val, str) and val.strip():
+        return val
+    return None
 
 
 # ── State machine ────────────────────────────────────────────────────
@@ -597,6 +618,7 @@ def _coordinator_loop(
 
         commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
+        dev_notes = _get_dev_notes(config, workspace_path)
 
         review_prompts: str | list[str] = (
             [
@@ -608,6 +630,7 @@ def _coordinator_loop(
                     branch=branch_name,
                     handoff_content=handoff_content,
                     review_role=p.review_role,
+                    dev_notes=dev_notes,
                 )
                 for p in config.review_pool
             ]
@@ -619,6 +642,7 @@ def _coordinator_loop(
                 workspace_path=str(workspace_path),
                 branch=branch_name,
                 handoff_content=handoff_content,
+                dev_notes=dev_notes,
             )
         )
 
@@ -691,7 +715,9 @@ def _coordinator_loop(
             meta.successful = [r.profile_name for r in successful]
             meta.failed = [r.profile_name for r in failed_results]
             meta.failed_detail = {
-                r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
+                r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}"
+                if r.output
+                else f"exit={r.exit_code}"
                 for r in failed_results
             }
 
@@ -933,9 +959,7 @@ def _coordinator_loop(
                     state.review_cycle = 0
                     state.human_review_extra_cycles += 1
                     state.last_review_findings = (
-                        findings_to_markdown(parsed_review.findings)
-                        if parsed_review.findings
-                        else None
+                        review_to_dev_handoff(parsed_review) if parsed_review.findings else None
                     )
                     state.human_feedback = None
                     state.retry_reason = "extend"
@@ -1120,7 +1144,7 @@ def _coordinator_loop(
                     state.dev_iteration = 0
                     state.review_cycle = 0
                     state.human_review_extra_cycles += 1
-                    state.last_review_findings = findings_to_markdown(parsed_review.findings)
+                    state.last_review_findings = review_to_dev_handoff(parsed_review)
                     state.human_feedback = None
                     state.retry_reason = "extend"
                     _dev_calls_this_cycle = 0
@@ -1170,7 +1194,7 @@ def _coordinator_loop(
                 cost_usd=round(_review_cost, 6),
                 duration_s=round(_review_elapsed, 2),
             )
-        state.last_review_findings = findings_to_markdown(parsed_review.findings)
+        state.last_review_findings = review_to_dev_handoff(parsed_review)
         state.dev_iteration = 0
         state.human_feedback = None
         state.retry_reason = "review_changes"
@@ -1688,6 +1712,7 @@ def run_review_only(
 
     commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
     handoff_content = _get_handoff_content(config, workspace_path)
+    dev_notes = _get_dev_notes(config, workspace_path)
 
     review_prompt = build_review_prompt(
         task,
@@ -1696,6 +1721,7 @@ def run_review_only(
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content=handoff_content,
+        dev_notes=dev_notes,
     )
 
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
@@ -1724,7 +1750,9 @@ def run_review_only(
         failed=[r.profile_name for r in failed_results],
         synthesized=False,
         failed_detail={
-            r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
+            r.profile_name: f"exit={r.exit_code}: {r.output[:200].strip()}"
+            if r.output
+            else f"exit={r.exit_code}"
             for r in failed_results
         },
     )

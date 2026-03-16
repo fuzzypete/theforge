@@ -127,6 +127,39 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     )
 
 
+def review_to_dev_handoff(result: ReviewResult) -> str:
+    """Convert a ReviewResult to a rich action-oriented markdown block for the dev agent.
+
+    Includes summary, spec compliance issues (if any), test gaps (if any),
+    and findings. Sections with no content are omitted.
+    """
+    parts: list[str] = []
+
+    parts.append(f"## Review Summary\n{result.summary}")
+
+    if not result.spec_matches and result.spec_mismatches:
+        bullets = "\n".join(f"- {m}" for m in result.spec_mismatches)
+        parts.append(f"## Spec Compliance Issues\n{bullets}")
+
+    if not result.test_adequate and result.test_gaps:
+        bullets = "\n".join(f"- {g}" for g in result.test_gaps)
+        parts.append(f"## Missing Test Coverage\n{bullets}")
+
+    if not result.findings:
+        parts.append("## Findings\n\nNo findings.")
+    else:
+        finding_lines: list[str] = ["## Findings"]
+        for f in result.findings:
+            line_ref = f" (line {f.line})" if f.line is not None else ""
+            finding_lines.append(f"\n### [{f.severity}] `{f.file}`{line_ref}")
+            finding_lines.append(f"**Issue:** {f.description}")
+            if f.suggestion:
+                finding_lines.append(f"**Fix:** {f.suggestion}")
+        parts.append("\n".join(finding_lines))
+
+    return "\n\n".join(parts)
+
+
 def findings_to_markdown(findings: list[ReviewFinding]) -> str:
     """Convert review findings to markdown for injection into dev agent prompt.
 

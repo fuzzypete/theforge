@@ -398,6 +398,17 @@ def build_dev_prompt(
                - `scope_completed`: list what you implemented
                - `deferred_followups`: list anything you couldn't finish
                - `next_recommended_step`: single next action
+            10. Add a `dev_notes` section to handoff.yaml:
+
+                  dev_notes: |
+                    What was implemented and any spec deviations with justification.
+                    If you deviated from the spec, explain why — the reviewer will
+                    read this before looking at the diff. Be specific: cite the spec
+                    section and your reason. Example: "Spec called for X in coordinator.py
+                    but I extracted to coord_util.py because 4 modules needed the same
+                    helper — duplication would be worse than an undocumented module."
+
+                This is your voice in the review. Use it.
         """)
 
     return dedent(f"""\
@@ -668,6 +679,7 @@ def build_review_prompt(
     branch: str,
     handoff_content: str,
     review_role: str | None = None,
+    dev_notes: str | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -687,6 +699,20 @@ def build_review_prompt(
     The reviewer outputs ONLY a YAML block. No prose.
     """
     role_section = _REVIEW_ROLE_SECTIONS.get(review_role or "", _REVIEW_ROLE_GENERIC)
+    dev_notes_section = (
+        dedent(f"""\
+
+            ## Developer Notes
+
+            {dev_notes}
+
+            Read this before examining the diff. The developer has flagged intentional
+            decisions and spec deviations here. If a deviation is justified, do NOT
+            flag it as a spec violation — flag only unjustified or incorrect deviations.
+        """)
+        if dev_notes
+        else ""
+    )
     return dedent(f"""\
         You are reviewing an implementation of **{task.name}**.
 
@@ -697,7 +723,7 @@ def build_review_prompt(
         ## Spec
 
         {spec_content}
-
+        {dev_notes_section}
         ## Commits
 
         The following commits implement the spec on branch `{branch}`.

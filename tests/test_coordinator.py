@@ -1911,4 +1911,104 @@ class TestRunFromReview:
         assert audit["preflight"]["cost_usd"] == 0.0
 
 
+# ── Dev notes / review_to_dev_handoff coordinator tests ───────────────
+
+
+class TestCoordinatorDevNotes:
+    """Test that coordinator reads dev_notes from handoff.yaml and passes to review prompt."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_dev_notes_passed_to_review_prompt(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Coordinator reads dev_notes from handoff.yaml and injects into review prompt."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Write handoff.yaml with dev_notes
+        handoff = {
+            "gate_decision": "PASS",
+            "validation": {"make_fmt": {"status": "PASS"}},
+            "scope_completed": ["test item"],
+            "dev_notes": "I deviated from spec because it was better.",
+        }
+        (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                # handoff.yaml already exists — gate re-writes it
+                (Path(cwd) / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+                return (True, "OK")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        captured_prompts: list[str] = []
+
+        def pool_side_effect(**kwargs):
+            prompt = kwargs.get("prompt", "")
+            if isinstance(prompt, list):
+                captured_prompts.extend(prompt)
+            elif isinstance(prompt, str):
+                captured_prompts.append(prompt)
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # At least one review prompt should contain the dev_notes content
+        assert any("I deviated from spec because it was better." in p for p in captured_prompts), (
+            f"dev_notes not found in any review prompt. Captured: {captured_prompts[:1]}"
+        )
+        assert any("## Developer Notes" in p for p in captured_prompts)
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_review_to_dev_handoff_used_on_request_changes(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Coordinator uses review_to_dev_handoff (not findings_to_markdown) on REQUEST_CHANGES."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] <= 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # last_review_findings should contain the richer format from review_to_dev_handoff
+        assert result.state.last_review_findings is not None
+        assert "## Review Summary" in result.state.last_review_findings
+
+
 # ── Structured logging tests ──────────────────────────────────────────
