@@ -1,6 +1,1 @@
 gate_decision: PASS
-scope_completed:
-  - Verified _has_persistent_p1() already had the file-guard removed and uses description-only matching (substring containment + >=60% token overlap)
-  - Added 5 new unit tests in TestHasPersistentP1 covering: same description/different files -> True, same description/same files -> True, different descriptions -> False, empty current findings -> False, empty previous findings -> False
-deferred_followups: []
-next_recommended_step: Submit for review -- all acceptance criteria satisfied and gate passes (492 tests).
