@@ -190,26 +190,4 @@ The dev agent MUST follow this order to avoid broken intermediate states:
 
 ## File Scope
 
-```
-src/theforge/coordinator.py
-src/theforge/coord_state.py       (new)
-src/theforge/coord_notify.py      (new)
-src/theforge/coord_gate.py        (new)
-src/theforge/coord_preflight.py   (new)
-src/theforge/coord_workspace.py   (new)
-src/theforge/coord_logging.py     (new)
-src/theforge/coord_loop.py        (new)
-tests/test_coordinator.py
-tests/test_coord_state.py         (new)
-tests/test_coord_notify.py        (new)
-tests/test_coord_workspace.py     (new)
-tests/test_coord_gate.py          (new)
-tests/test_coord_preflight.py     (new)
-tests/test_helpers.py             (new)
-tests/test_sprint.py
-tests/conftest.py
-forge.yaml
-pyproject.toml
-plans/coordinator-refactor.md
-pyproject.toml
-```
+(no restriction — this is a codebase-wide restructuring)
