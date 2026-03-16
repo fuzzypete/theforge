@@ -1911,4 +1911,69 @@ class TestRunFromReview:
         assert audit["preflight"]["cost_usd"] == 0.0
 
 
+# ── _has_persistent_p1 unit tests ────────────────────────────────────
+
+
+class TestHasPersistentP1:
+    """Unit tests for _has_persistent_p1 in coord_preflight."""
+
+    def _make_finding(self, severity: str, description: str, file: str = "coordinator.py"):
+        from theforge.review import ReviewFinding
+
+        return ReviewFinding(
+            severity=severity,
+            file=file,
+            line=None,
+            description=description,
+            suggestion="fix it",
+        )
+
+    def test_same_description_different_files_returns_true(self):
+        from theforge.coord_preflight import _has_persistent_p1
+
+        curr = [
+            self._make_finding(
+                "P1", "coordinator routing ignores extend path", file="coordinator.py"
+            )
+        ]
+        prev = [
+            self._make_finding("P1", "coordinator routing ignores extend path", file="task.py")
+        ]
+        assert _has_persistent_p1(curr, prev) is True
+
+    def test_same_description_same_files_returns_true(self):
+        from theforge.coord_preflight import _has_persistent_p1
+
+        curr = [
+            self._make_finding(
+                "P1", "coordinator routing ignores extend path", file="coordinator.py"
+            )
+        ]
+        prev = [
+            self._make_finding(
+                "P1", "coordinator routing ignores extend path", file="coordinator.py"
+            )
+        ]
+        assert _has_persistent_p1(curr, prev) is True
+
+    def test_different_descriptions_returns_false(self):
+        from theforge.coord_preflight import _has_persistent_p1
+
+        curr = [self._make_finding("P1", "missing null check on session id")]
+        prev = [self._make_finding("P1", "wrong HTTP method used in upload endpoint")]
+        assert _has_persistent_p1(curr, prev) is False
+
+    def test_empty_current_findings_returns_false(self):
+        from theforge.coord_preflight import _has_persistent_p1
+
+        prev = [self._make_finding("P1", "coordinator routing ignores extend path")]
+        assert _has_persistent_p1([], prev) is False
+
+    def test_empty_previous_findings_returns_false(self):
+        from theforge.coord_preflight import _has_persistent_p1
+
+        curr = [self._make_finding("P1", "coordinator routing ignores extend path")]
+        assert _has_persistent_p1(curr, []) is False
+
+
 # ── Structured logging tests ──────────────────────────────────────────
