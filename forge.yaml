@@ -3,12 +3,12 @@ project: theforge
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
-  setup_command: "echo 'theforge dogfood — use PYTHONPATH=src, no editable install'"
+  setup_command: "python -m venv .venv && .venv/bin/pip install -e . -q"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
 
 validation:
-  gate_command: "PYTHONPATH=src python -m pytest tests/ -q && echo 'gate_decision: PASS' > handoff.yaml"
+  gate_command: ".venv/bin/python -m pytest tests/ -q && echo 'gate_decision: PASS' > handoff.yaml"
   handoff_file: "handoff.yaml"
   gate_decision_key: "gate_decision"
 
