@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import datetime
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -163,11 +162,6 @@ def _merge_branch(
         ok, out = _cu._run_shell(f"git merge --no-edit {branch_name}", project_root)
 
     if not ok:
-        print(
-            f"[DEBUG merge] config={config is not None} workspace_path={workspace_path}",
-            file=sys.stderr,
-            flush=True,
-        )
         if config is not None:
             resolved = _resolve_merge_conflicts(
                 project_root,

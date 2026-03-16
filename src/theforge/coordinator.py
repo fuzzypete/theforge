@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import datetime
 import json
+import subprocess
 import time
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
-from . import coord_util as _cu
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from .coord_gate import (  # noqa: F401
     _auto_commit_side_effects,
@@ -77,7 +77,6 @@ from .coord_util import (  # noqa: F401
     _log,
     _log_phase,
     _log_verbose,
-    _run_shell,
     set_log_level,
 )
 from .coord_workspace import (  # noqa: F401
@@ -157,17 +156,45 @@ class StructuredLogger:
             pass
 
 
+# ── Shell helper ─────────────────────────────────────────────────────
+
+
+def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
+    """Run a shell command. Returns (success, combined output).
+
+    Defined here (not re-exported from coord_util) so that
+    ``patch('theforge.coordinator._run_shell')`` intercepts calls made
+    directly within this module.  Sub-modules (coord_workspace, coord_gate)
+    call coord_util._run_shell; patch that symbol when testing those paths.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=str(cwd),
+            timeout=timeout,
+        )
+        output = (proc.stdout + proc.stderr).strip()
+        return proc.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, f"TIMEOUT after {timeout}s: {cmd}"
+    except Exception as e:
+        return False, f"ERROR: {e}"
+
+
 # ── Diff extraction ─────────────────────────────────────────────────
 
 
 def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
     """Get a compact git diff --stat summary vs the base branch."""
-    ok, stat = _cu._run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
+    ok, stat = _run_shell(f"git diff --stat {base_branch}...HEAD", workspace_path)
     if ok and stat:
         return stat
 
     # Fallback: stat of staged + unstaged
-    ok, stat = _cu._run_shell("git diff --stat HEAD", workspace_path)
+    ok, stat = _run_shell("git diff --stat HEAD", workspace_path)
     if ok and stat:
         return stat
 
@@ -395,7 +422,7 @@ def _coordinator_loop(
                 pre_validate_cmd = config.validation.pre_validate_command
                 if pre_validate_cmd:
                     _log(f"  Running pre-validate command: {pre_validate_cmd}")
-                    pv_ok, pv_out = _cu._run_shell(pre_validate_cmd, workspace_path)
+                    pv_ok, pv_out = _run_shell(pre_validate_cmd, workspace_path)
                     if not pv_ok:
                         _log(f"  ⚠ Pre-validate command failed (non-fatal): {pv_out[:200]}")
                     else:
@@ -403,7 +430,7 @@ def _coordinator_loop(
                 # Verify worktree is clean — the dev agent must commit all changes.
                 # The gate runs against the working tree, so it can pass even with
                 # uncommitted files. This check catches that process violation.
-                dirty_ok, dirty_out = _cu._run_shell("git status --porcelain", workspace_path)
+                dirty_ok, dirty_out = _run_shell("git status --porcelain", workspace_path)
                 if dirty_ok and dirty_out.strip():
                     # Filter out handoff.yaml and other gate artifacts
                     handoff_file = config.validation.handoff_file
@@ -1428,7 +1455,7 @@ def run_from_review(
     state.workspace_path = workspace_path
 
     # Resolve branch name from actual worktree HEAD (P1 fix: don't compute from pattern)
-    _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
     if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
         branch_name = _branch_out.strip()
     else:
@@ -1526,7 +1553,7 @@ def run_from_dev(
     state.workspace_path = workspace_path
 
     # Resolve branch name from actual worktree HEAD (same as run_from_review)
-    _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
+    _ok_branch, _branch_out = _run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
     if _ok_branch and _branch_out.strip() and _branch_out.strip() != "HEAD":
         branch_name = _branch_out.strip()
     else:
