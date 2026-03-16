@@ -1,1 +1,9 @@
 gate_decision: PASS
+scope_completed:
+  - coord_state.py now stdlib-only (Phase, ReviewCycleMetadata, CoordinatorState, CoordinatorResult)
+  - coord_util.py created with logging helpers (_log, _log_verbose, _log_phase, _fmt_duration), run-id (_generate_run_id), and shell helper (_run_shell)
+  - coordinator.py imports all helpers via coord_util module; re-exports for backward compat preserved
+  - Fixed test_coord_notify patch target: theforge.coordinator._run_shell -> theforge.coord_util._run_shell
+  - All 474 tests pass; coordinator.py is 1976 lines (under 2100 limit)
+deferred_followups: []
+next_recommended_step: Run make gate to validate full acceptance criteria and trigger reviewer
