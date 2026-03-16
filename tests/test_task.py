@@ -571,7 +571,7 @@ class TestReviewToDevHandoff:
         output = review_to_dev_handoff(result)
         assert "### [P1] `src/foo.py`" in output
         # Header line should not contain "(line ...)" when line is None
-        header_line = [l for l in output.splitlines() if "### [P1]" in l][0]
+        header_line = [ln for ln in output.splitlines() if "### [P1]" in ln][0]
         assert "(line" not in header_line
 
     def test_finding_no_suggestion(self):

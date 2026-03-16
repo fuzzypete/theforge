@@ -1712,6 +1712,7 @@ def run_review_only(
 
     commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
     handoff_content = _get_handoff_content(config, workspace_path)
+    dev_notes = _get_dev_notes(config, workspace_path)
 
     review_prompt = build_review_prompt(
         task,
@@ -1720,6 +1721,7 @@ def run_review_only(
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content=handoff_content,
+        dev_notes=dev_notes,
     )
 
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
