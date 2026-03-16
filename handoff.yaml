@@ -1,1 +1,10 @@
 gate_decision: PASS
+scope_completed:
+  - retry_reason field in CoordinatorState (already implemented)
+  - retry_reason set at all 8 retry sites in coordinator.py (already implemented)
+  - build_fix_prompt() in task.py (already implemented)
+  - TestBuildFixPrompt tests in test_task.py (already implemented)
+  - Added TestCoordinatorPromptRouting with 3 routing unit tests in test_coordinator.py
+  - Committed ruff formatting changes to coordinator.py that were left unstaged
+deferred_followups: []
+next_recommended_step: Review and merge feat/targeted-fix-prompt to main
