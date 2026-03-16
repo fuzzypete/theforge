@@ -339,7 +339,7 @@ _REVIEW_TASK_SCOPE = ["src/"]
 
 _REVIEW_COMMON_KWARGS = dict(
     spec_content="# Spec",
-    diff_stat=" src/foo.py | 10 +++---\n 1 file changed",
+    commit_log="abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests",
     workspace_path="/tmp/ws",
     branch="feat/test",
     handoff_content="gate_decision: PASS",
@@ -423,13 +423,14 @@ class TestBuildReviewPrompt:
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "Test Task" in prompt
 
-    def test_includes_diff_stat(self, review_task: TaskSpec) -> None:
-        """Diff stat summary is embedded in the prompt."""
+    def test_includes_commit_log(self, review_task: TaskSpec) -> None:
+        """Commit log is embedded in the prompt as primary handoff."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
-        assert "Changed Files (git diff --stat)" in prompt
-        assert "src/foo.py | 10" in prompt
-        assert "```diff" not in prompt
-        assert "## Diff to Review" not in prompt
+        assert "## Commits" in prompt
+        assert "abc1234 feat(foo): implement the thing" in prompt
+        assert "def5678 test(foo): add tests" in prompt
+        assert "git show" in prompt
+        assert "Changed Files (git diff --stat)" not in prompt
 
     def test_includes_tool_instructions(self, review_task: TaskSpec) -> None:
         """Reviewer is instructed to use Read/Bash/Glob/Grep tools."""

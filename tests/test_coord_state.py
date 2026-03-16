@@ -1,6 +1,6 @@
 """Tests for coordinator state helpers.
 
-Covers: StructuredLogger, LogConfig, _get_diff_stat, audit fields.
+Covers: StructuredLogger, LogConfig, _get_commit_log, audit fields.
 """
 
 import json as _json
@@ -36,7 +36,7 @@ from theforge.coordinator import (
     Phase,
     StructuredLogger,
     _fmt_duration,
-    _get_diff_stat,
+    _get_commit_log,
     generate_audit_log,
     run_task,
 )
@@ -423,36 +423,36 @@ class TestStructuredLoggingIntegration:
         assert result.success is True
 
 
-# ── _get_diff_stat ────────────────────────────────────────────────────
+# ── _get_commit_log ───────────────────────────────────────────────────
 
 
-class TestGetDiffStat:
-    """Tests for the _get_diff_stat() helper."""
+class TestGetCommitLog:
+    """Tests for the _get_commit_log() helper."""
 
     @patch("theforge.coord_util._run_shell")
     def test_success(self, mock_shell: MagicMock, tmp_path: Path) -> None:
-        """Returns stat output when first command succeeds."""
-        stat = " src/foo.py | 5 ++---\n 1 file changed, 2 insertions(+), 3 deletions(-)"
-        mock_shell.return_value = (True, stat)
-        result = _get_diff_stat(tmp_path, "main")
-        assert result == stat
-        mock_shell.assert_called_once_with("git diff --stat main...HEAD", tmp_path)
+        """Returns commit log when command succeeds."""
+        log = "abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests"
+        mock_shell.return_value = (True, log)
+        result = _get_commit_log(tmp_path, "main")
+        assert result == log
+        mock_shell.assert_called_once_with(
+            "git log main..HEAD --format='%h %s' --reverse", tmp_path
+        )
 
     @patch("theforge.coord_util._run_shell")
-    def test_fallback_when_first_empty(self, mock_shell: MagicMock, tmp_path: Path) -> None:
-        """Falls back to git diff --stat HEAD when first call returns empty."""
-        fallback = " src/bar.py | 3 +++\n 1 file changed, 3 insertions(+)"
-        mock_shell.side_effect = [(True, ""), (True, fallback)]
-        result = _get_diff_stat(tmp_path, "main")
-        assert result == fallback
-        assert mock_shell.call_count == 2
+    def test_no_commits(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns placeholder when no commits ahead of base."""
+        mock_shell.return_value = (True, "")
+        result = _get_commit_log(tmp_path, "main")
+        assert result == "(no commits ahead of base branch)"
 
     @patch("theforge.coord_util._run_shell")
-    def test_both_fail(self, mock_shell: MagicMock, tmp_path: Path) -> None:
-        """Returns placeholder when both commands fail."""
+    def test_command_fails(self, mock_shell: MagicMock, tmp_path: Path) -> None:
+        """Returns placeholder when git command fails."""
         mock_shell.return_value = (False, "")
-        result = _get_diff_stat(tmp_path, "main")
-        assert result == "(no diff stat available)"
+        result = _get_commit_log(tmp_path, "main")
+        assert result == "(no commits ahead of base branch)"
 
 
 # ── _fmt_duration ─────────────────────────────────────────────────────
