@@ -167,7 +167,7 @@ statements would only need the target sub-module plus coordinator.py itself.
    Phase, ReviewCycleMetadata, _fmt_duration, _is_remote_mode, _notify,
    _ntfy_publish, _run_gate, generate_audit_log, run_from_dev,
    run_from_review, run_task, set_log_level)` — all succeed without error.
-4. coordinator.py is under 1,500 lines after the split.
+4. coordinator.py is under 2,100 lines after the split.
 5. No new public API: every function moved to a sub-module is still a private
    `_name` function (or explicitly re-exported). Sub-modules are implementation
    details, not public API.
