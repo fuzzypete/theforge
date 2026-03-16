@@ -1,13 +1,11 @@
 gate_decision: PASS
 scope_completed:
-  - Added _get_diff_stat() helper in coordinator.py (replaces _get_diff() in review path)
-  - Removed _get_diff() — dead code after both call sites replaced
-  - Updated build_review_prompt() in task.py: diff_text -> diff_stat, added workspace_path and branch params
-  - Updated reviewer prompt template: "Changed Files (git diff --stat)" section with tool-use instructions
-  - Updated both review call sites in coordinator.py (run_coordinator ~L1773, run_review_only ~L2844)
-  - Updated _REVIEW_COMMON_KWARGS in test_task.py with new parameter names
-  - Replaced test_includes_diff with test_includes_diff_stat and added test_includes_tool_instructions
-  - Added TestGetDiffStat class in test_coordinator.py (success, fallback, both-fail scenarios)
-  - Added _get_diff_stat to imports in test_coordinator.py
+  - Added depends_on field to TaskSpec dataclass (src/theforge/task.py)
+  - Parsing depends_on from spec frontmatter in _build_task_from_spec (src/theforge/sprint.py)
+  - Added merged_slugs tracking and dependency check in run_sprint (src/theforge/sprint.py)
+  - Resume mode: skip_merged specs add to merged_slugs so downstream deps are satisfied
+  - Tests for TaskSpec.depends_on defaults and list values (tests/test_task.py)
+  - Tests for _build_task_from_spec parsing str/list/missing (tests/test_sprint.py)
+  - Tests for sprint skip+halt, proceed-on-merge, no-deps, resume, and cascade behaviors
 deferred_followups: []
-next_recommended_step: "Run forge review on the coordinator-refactor worktree to validate that Gemini/Codex reviewers complete successfully on a large diff"
+next_recommended_step: Review and merge feat/sprint-dependencies to main
