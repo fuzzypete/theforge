@@ -178,30 +178,9 @@ def _run_review_phase(
             notify=notify,
         )
 
-        # Per-profile budget enforcement (cumulative across cycles)
-        for profile in config.review_pool:
-            profile_cost = sum(
-                r.cost_usd for r in state.review_agent_results if r.profile_name == profile.name
-            )
-            if profile_cost > profile.budget_usd:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Review budget exceeded for {profile.name}: "
-                    f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
-                )
-                _escalate_notify(task, state, notify, config)
-                return (
-                    _ReviewOutcome.ESCALATE,
-                    CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    ),
-                    config,
-                )
-
         if synthesis_output is None:
+            # All reviewers failed, budget exceeded, or synthesis failed —
+            # state.error already set by _run_review_pool
             _escalate_notify(task, state, notify, config)
             return (
                 _ReviewOutcome.ESCALATE,
@@ -213,30 +192,6 @@ def _run_review_phase(
                 ),
                 config,
             )
-
-        # Synthesis budget enforcement
-        if config.synthesis_profile is not None:
-            synth_cost = sum(
-                r.cost_usd for r in state.review_agent_results if r.profile_name == "synthesis"
-            )
-            if synth_cost > config.synthesis_profile.budget_usd:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Synthesis budget exceeded: "
-                    f"spent ${synth_cost:.4f} "
-                    f"(limit ${config.synthesis_profile.budget_usd:.4f})"
-                )
-                _escalate_notify(task, state, notify, config)
-                return (
-                    _ReviewOutcome.ESCALATE,
-                    CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    ),
-                    config,
-                )
 
         _candidate = parse_review_output(synthesis_output)
 

@@ -297,47 +297,55 @@ def _run_review_pool(
     meta: ReviewCycleMetadata,
     *,
     notify: bool,
+    review_prompts: str | list[str] | None = None,
+    enforce_budgets: bool = True,
 ) -> tuple[list, list, str | None]:
     """Run the review pool + synthesis.  Returns (successful, failed, synthesis_output).
 
     Updates *meta* in-place (successful, failed, failed_detail, synthesized).
-    synthesis_output is None when all reviewers failed or synthesis agent failed;
-    in that case state.phase and state.error are already set — caller just needs to
-    call _escalate_notify and return a CoordinatorResult.
+    synthesis_output is None when all reviewers failed, budget exceeded, or synthesis
+    agent failed; in that case state.phase and state.error are already set — caller
+    just needs to call _escalate_notify and return a CoordinatorResult.
 
-    Does NOT parse output, enforce budgets, or handle verdicts.
+    Args:
+        review_prompts: Pre-built prompts. If None, builds them (with role-aware
+            prompts when review_role is configured). Pass explicitly to control
+            prompt construction (e.g. run_review_only always uses generic prompts).
+        enforce_budgets: When True (default), enforces per-profile and synthesis
+            budgets. When False (run_review_only), skips budget checks.
     """
     pool_size = len(config.review_pool)
 
-    commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
-    handoff_content = _get_handoff_content(config, workspace_path)
-    dev_notes = _get_dev_notes(config, workspace_path)
+    if review_prompts is None:
+        commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
+        handoff_content = _get_handoff_content(config, workspace_path)
+        dev_notes = _get_dev_notes(config, workspace_path)
 
-    review_prompts: str | list[str] = (
-        [
-            build_review_prompt(
+        review_prompts = (
+            [
+                build_review_prompt(
+                    task,
+                    spec_content=spec_content,
+                    commit_log=commit_log,
+                    workspace_path=str(workspace_path),
+                    branch=branch_name,
+                    handoff_content=handoff_content,
+                    review_role=p.review_role,
+                    dev_notes=dev_notes,
+                )
+                for p in config.review_pool
+            ]
+            if any(p.review_role for p in config.review_pool)
+            else build_review_prompt(
                 task,
                 spec_content=spec_content,
                 commit_log=commit_log,
                 workspace_path=str(workspace_path),
                 branch=branch_name,
                 handoff_content=handoff_content,
-                review_role=p.review_role,
                 dev_notes=dev_notes,
             )
-            for p in config.review_pool
-        ]
-        if any(p.review_role for p in config.review_pool)
-        else build_review_prompt(
-            task,
-            spec_content=spec_content,
-            commit_log=commit_log,
-            workspace_path=str(workspace_path),
-            branch=branch_name,
-            handoff_content=handoff_content,
-            dev_notes=dev_notes,
         )
-    )
 
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
     _pool_start = time.monotonic()
@@ -352,6 +360,20 @@ def _run_review_pool(
         state.review_agent_results.append(r)
         state.review_durations.append(_per_agent_dur)
         log_agent_result(r, f"REVIEW/{r.profile_name}")
+
+    # Per-profile budget enforcement BEFORE synthesis (original ordering)
+    if enforce_budgets:
+        for profile in config.review_pool:
+            profile_cost = sum(
+                r.cost_usd for r in state.review_agent_results if r.profile_name == profile.name
+            )
+            if profile_cost > profile.budget_usd:
+                state.phase = Phase.ESCALATE
+                state.error = (
+                    f"Review budget exceeded for {profile.name}: "
+                    f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
+                )
+                return [], [], None
 
     successful = [r for r in pool_results if r.success]
     failed_results = [r for r in pool_results if not r.success]
@@ -408,6 +430,20 @@ def _run_review_pool(
     state.review_agent_results.append(synthesis_result)
     state.review_durations.append(_synth_elapsed)
     log_agent_result(synthesis_result, "SYNTHESIS")
+
+    # Synthesis budget enforcement (original ordering: after synthesis, before returning)
+    if enforce_budgets and config.synthesis_profile is not None:
+        synth_cost = sum(
+            r.cost_usd for r in state.review_agent_results if r.profile_name == "synthesis"
+        )
+        if synth_cost > config.synthesis_profile.budget_usd:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Synthesis budget exceeded: "
+                f"spent ${synth_cost:.4f} "
+                f"(limit ${config.synthesis_profile.budget_usd:.4f})"
+            )
+            return successful, failed_results, None
 
     if not synthesis_result.success:
         state.phase = Phase.ESCALATE
@@ -1006,6 +1042,20 @@ def run_review_only(
     _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
     _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
 
+    # Build generic prompt (no review_role) — review-only always used this
+    commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
+    handoff_content = _get_handoff_content(config, workspace_path)
+    dev_notes = _get_dev_notes(config, workspace_path)
+    review_prompt = build_review_prompt(
+        task,
+        spec_content=spec_content,
+        commit_log=commit_log,
+        workspace_path=str(workspace_path),
+        branch=branch_name,
+        handoff_content=handoff_content,
+        dev_notes=dev_notes,
+    )
+
     meta = ReviewCycleMetadata(
         pool_models=[p.name for p in config.review_pool],
         successful=[],
@@ -1024,6 +1074,8 @@ def run_review_only(
         branch_name,
         meta,
         notify=notify,
+        review_prompts=review_prompt,
+        enforce_budgets=False,
     )
     _pool_elapsed = time.monotonic() - _pool_start
 
