@@ -1,105 +1,231 @@
 ---
-name: Session resume for dev iterations
+name: Universal session resume across all forge agents
 slug: session-resume
 ---
 
-# Spec: Session Resume for Dev Iterations
+# Spec: Universal Session Resume
 
 ## Problem
 
-When a dev agent times out (exit=-9, SIGKILL), forge discards all session
-context and starts the next iteration cold. The agent re-reads files it already
-read, re-discovers what it was doing, and often repeats work it already completed.
-This is the primary cause of repeated 30-minute timeouts on large tasks.
+When forge agents run multiple times across a task (dev iterations, review
+cycles), each invocation starts cold. The agent re-reads files, re-discovers
+context, and repeats work. This is especially costly on timeout recovery where
+the agent was killed mid-thought.
 
-Claude Code (`claude`) supports `--resume <session-id>` to continue an existing
-conversation. Codex supports `codex resume <session-id>`. Session resume means
-the next iteration picks up mid-thought with full context intact — dramatically
-faster convergence and no repeated file reads.
+Claude Code supports `--resume <session-id>` to continue an existing
+conversation with full context. Session resume should work for dev and
+reviewer agents — the two roles that are invoked multiple times across a
+forge run.
+
+## Scope
+
+| Agent | Session resume | Rationale |
+|-------|---------------|-----------|
+| Dev | Yes — across iterations and review cycles | Core use case; `build_fix_prompt` relies on resumed context |
+| Reviewer | Yes — across review cycles | Reviewer knows what it flagged before, checks if fixed |
+| Synthesis | **No** — one-shot per cycle | Fresh reconciliation by design; resuming contaminates with stale cycle context |
+| Plan | **No** — single-shot, no retry loop | No multi-invocation scenario exists today |
 
 ## What Needs To Change
 
-### `src/theforge/runner.py`
+### 1. `src/theforge/runner.py` — Fix timeout session extraction
 
-1. **Capture session ID from agent output.**
+Add `_get_claude_session_id()` helper:
+```python
+def _get_claude_session_id(
+    output: str,
+    cwd: Path,
+    *,
+    fallback_to_file: bool = True,   # False for pool agents
+    min_mtime: float | None = None,  # monotonic filter for dev fallback
+) -> str | None:
+```
+- Primary: scan JSONL lines for any event containing `session_id` field
+- Fallback (dev only, `fallback_to_file=True`): newest `.jsonl` under
+  `~/.claude/projects/<project-slug>/` with `mtime > min_mtime`
+  (Claude encodes cwd by replacing `/` with `-`)
+- Pool agents call with `fallback_to_file=False` to avoid cross-contamination
+  when multiple reviewers run in the same `working_dir` concurrently
 
-   After a successful or timed-out Claude run, parse the session ID from the
-   agent's output. Claude Code writes its session ID to the JSONL transcript
-   at `~/.claude/projects/<project-slug>/<session-id>.jsonl`. The session ID
-   is also available in the agent's stdout in some invocation modes.
+Fix the timeout return block (currently lines 423-432):
+- Join collected `lines` and pass through `_get_claude_session_id()`
+- Change `session_id=None` → `session_id=_get_claude_session_id(partial, working_dir)`
+- Change `exit_code=-1` → `exit_code=-9` to distinguish timeout from other failures
 
-   Add `_get_claude_session_id(output: str, cwd: Path) -> str | None` helper
-   that:
-   - Checks stdout/stderr for a session ID pattern
-   - Falls back to finding the most recently modified JSONL under
-     `~/.claude/projects/` matching the worktree path
+Fix the no-result-json fallback (currently lines 460-468):
+- Also extract session_id via `_get_claude_session_id()` when `type=result`
+  event is missing but other JSONL events may contain it
 
-2. **Pass `--resume` on subsequent iterations.**
+Add `session_ids` parameter to `run_agent_pool()`:
+```python
+def run_agent_pool(
+    *,
+    prompt: str | list[str],
+    profiles: list[ModelProfile],
+    working_dir: Path,
+    session_ids: list[str | None] | None = None,  # NEW
+) -> list[AgentResult]:
+```
+When provided, each agent gets its corresponding session_id via `run_agent()`.
+Default `None` means no resume (backward compatible). When a list, must
+satisfy `assert len(session_ids) == len(profiles)`.
 
-   `_run_claude()` gains an optional `session_id: str | None = None` parameter.
-   When set, append `--resume {session_id}` to the claude CLI command.
+### 2. `src/theforge/coord_state.py` — Reviewer session tracking
 
-3. **Codex resume support.**
+Add field to `CoordinatorState`:
+```python
+reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
+```
 
-   `_run_codex()` gains `session_id: str | None = None`. When set, use
-   `codex resume {session_id}` as the command instead of `codex -p <prompt>`.
-   Codex resume re-enters the previous session with an appended message.
+Update `retry_reason` docstring to include `"timeout_resume"` as a valid value.
 
-4. **`RunResult` gains `session_id` field.**
+### 3. `src/theforge/coord_phases.py` — Dev session lifecycle
 
-   ```python
-   @dataclass
-   class RunResult:
-       output: str
-       exit_code: int
-       cost_usd: float
-       session_id: str | None = None  # NEW
-   ```
+Replace unconditional session update (currently line 785):
+```python
+if dev_result.exit_code == -9:
+    # Timeout: carry forward session_id for resume (prefer new, fallback to previous)
+    state.dev_session_id = dev_result.session_id or state.dev_session_id
+else:
+    # Normal exit: use whatever agent returned (may be None)
+    state.dev_session_id = dev_result.session_id
+```
 
-5. **`run_agent()` passes session_id through.**
+Add timeout_resume prompt routing (insert before existing retry_reason check
+at line 749):
+```python
+if state.retry_reason == "timeout_resume":
+    prompt = state.human_feedback or (
+        "You were cut off by a timeout. Continue from where you left off."
+    )
+    state.retry_reason = None
+    state.human_feedback = None
+elif state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
+    # ... existing build_fix_prompt path
+```
 
-   Signature gains `session_id: str | None = None`, passes to the CLI runner,
-   returns `RunResult` with `session_id` populated.
+After `_run_validate_phase()` returns `RETRY_DEV`, conditionally override
+retry_reason — **only when existing reason is `gate_fail`**, never
+`dirty_worktree` (process violation guidance must not be erased):
+```python
+if (
+    state.dev_results
+    and state.dev_results[-1].exit_code == -9
+    and state.dev_session_id
+    and state.retry_reason == "gate_fail"  # only override gate_fail
+):
+    state.retry_reason = "timeout_resume"
+    state.human_feedback = (
+        "You were cut off by a timeout. Continue from where you left off. "
+        f"Gate result: {gate_info}"
+    )
+```
 
-### `src/theforge/coordinator.py`
+### 4. `src/theforge/coordinator.py` — Review pool session tracking
 
-1. **Store session ID in `CoordinatorState`.**
+In `_run_review_pool()`, pass session_ids from state to `run_agent_pool()`:
+```python
+pool_session_ids = [
+    state.reviewer_session_ids.get(p.name)
+    for p in config.review_pool
+]
+pool_results = run_agent_pool(
+    prompt=review_prompts,
+    profiles=config.review_pool,
+    working_dir=workspace_path,
+    session_ids=pool_session_ids,
+)
+```
 
-   ```python
-   dev_session_id: str | None = None  # last dev agent session ID
-   ```
+After pool completes, update stored session_ids:
+```python
+for profile, result in zip(config.review_pool, pool_results):
+    if result.session_id:
+        state.reviewer_session_ids[profile.name] = result.session_id
+```
 
-2. **Pass session ID into dev invocation.**
+### 5. Codex/Gemini — No changes
 
-   In the dev iteration loop, pass `state.dev_session_id` to `run_agent()`.
-   After each dev run, store `result.session_id` back to `state.dev_session_id`.
+Codex and Gemini CLIs do not support session resume. Their `session_id`
+parameters are accepted but unused. They return `session_id=None`. This is
+fine — the coordinator handles None gracefully (no resume attempted).
 
-3. **Resume semantics on timeout.**
+## Session Lifecycle Rules
 
-   If `result.exit_code == -9` (timeout) AND `result.session_id` is not None,
-   the next iteration resumes the same session. The dev prompt for a resumed
-   session is a short continuation message: "You were cut off by a timeout.
-   Continue from where you left off. Gate result: {gate_result}."
-
-4. **Clear session ID on clean iteration start.**
-
-   Session ID is only carried forward on timeout (exit=-9). On a clean
-   completion (exit=0), the session ID is cleared so the next review cycle
-   starts fresh.
+| Agent | Carry forward | Clear |
+|-------|--------------|-------|
+| Dev | Always when returned; on timeout (exit=-9), keep previous if new is None | Only when agent returns None (non-timeout) |
+| Reviewer | Always (accumulate across cycles) | Never within a run |
 
 ## Acceptance Criteria
 
-1. `RunResult` has a `session_id: str | None` field.
-2. `_run_claude()` accepts `session_id` and appends `--resume <id>` when set.
-3. `_run_codex()` accepts `session_id` and uses `codex resume <id>` when set.
-4. `CoordinatorState` has `dev_session_id: str | None`.
-5. After a timeout (exit=-9), the next dev iteration passes `session_id` to
-   `run_agent()`.
-6. After a clean exit (exit=0), `dev_session_id` is cleared.
-7. `make test` passes. `make lint` passes.
-8. A coordinator test verifies that session_id is passed on timeout retry and
-   cleared on clean exit.
+1. `_get_claude_session_id()` extracts session_id from partial JSONL output
+2. `_get_claude_session_id()` has dev-only filesystem fallback filtered by run start time
+3. `_get_claude_session_id()` with `fallback_to_file=False` skips filesystem (pool safety)
+4. Timeout returns `exit_code=-9` and populated `session_id`
+5. No-result-json fallback also extracts session_id
+6. `run_agent_pool()` accepts and passes `session_ids` parameter
+7. `run_agent_pool()` asserts `len(session_ids) == len(profiles)` when provided
+8. `CoordinatorState` has `reviewer_session_ids` dict
+9. Dev session carried on timeout (exit=-9), uses previous if new is None
+10. Dev session uses agent's returned session_id on normal exit
+11. Timeout retry uses `retry_reason="timeout_resume"` with short continuation prompt
+12. Timeout-resume only overrides `gate_fail`, never `dirty_worktree`
+13. Review pool passes stored session_ids per reviewer
+14. Reviewer session_ids accumulate across review cycles
+15. `make test` passes — all existing tests + new tests
+16. `make lint` passes
 
-## File Scope
+## Test Requirements
 
-(no restriction)
+### `tests/test_runner.py`
+- `test_timeout_returns_session_id` — partial JSONL with session_id on timeout
+- `test_timeout_exit_code_is_minus_9` — verify exit code distinction
+- `test_get_claude_session_id_from_jsonl` — unit test the helper
+- `test_get_claude_session_id_fallback_to_file` — filesystem fallback with mtime filter
+- `test_get_claude_session_id_no_fallback_for_pool` — `fallback_to_file=False` skips disk
+- `test_pool_passes_session_ids` — verify pool passes per-agent session_ids
+- `test_pool_session_ids_length_mismatch` — assert on length mismatch
+
+### `tests/test_coordinator.py`
+- `test_dev_session_carried_on_timeout` — exit=-9 preserves session_id
+- `test_dev_session_carried_across_review_cycles` — session persists
+- `test_timeout_resume_uses_short_prompt` — continuation prompt, not full dev prompt
+- `test_timeout_resume_only_overrides_gate_fail` — dirty_worktree not clobbered
+- `test_reviewer_sessions_accumulate` — reviewer session_ids tracked across cycles
+- `test_reviewer_sessions_passed_to_pool` — session_ids flow to run_agent_pool
+
+## Reference: Prior Implementation
+
+Commits a01cec0..41c440b on `feat/session-resume` contain a working
+implementation against the pre-refactor monolithic coordinator.py. The logic
+is correct but targets the wrong code structure. Key patterns to reuse:
+
+- `_get_claude_session_id()` helper (runner.py) — port with added `fallback_to_file` and `min_mtime` params
+- `_set_timeout_resume()` helper (coordinator.py) — adapt for coord_phases.py with gate_fail guard
+- exit_code=-9 on timeout (runner.py) — port as-is
+- Session lifecycle in dev loop (coordinator.py) — adapt for coord_phases.py
+
+The worktree at `.forge/worktrees/session-resume/` contains this code but is
+stale (pre-refactor). Do not rebase — implement fresh against current main.
+
+## Review History
+
+### Round 1 (2026-03-16)
+Reviewed by Gemini (technical audit) and Codex (contract audit).
+
+**Codex P1 — Synthesis contamination**: Synthesis is fresh reconciliation per
+cycle. Resuming prior session bleeds earlier findings. → Dropped from scope.
+
+**Codex P1 — Transcript fallback race**: Parallel reviewers in same working_dir
+make "newest .jsonl" ambiguous. → `fallback_to_file=False` for pool agents.
+
+**Codex P2 — Timeout override clobbering**: Blanket override erases dirty_worktree
+guidance. → Only override when `retry_reason == "gate_fail"`.
+
+**Codex P2 — Plan has no retry loop**: `plan_session_id` is dead weight. → Dropped.
+
+**Gemini P2 — Temporal determinism**: Filesystem fallback could pick up sessions
+from prior runs. → `min_mtime` filter based on run start time.
+
+**Gemini suggestion — Pool validation**: → Assert length match in `run_agent_pool`.
