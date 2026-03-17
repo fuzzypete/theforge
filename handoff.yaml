@@ -1,38 +1,53 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Fixed the escalation note delivery on the reject-after-escalation path. When
-    persistent P1 escalation fires and the human subsequently rejects on exhausted cycles,
-    the retry goes through build_dev_prompt (not build_fix_prompt), which previously did not
-    accept or render the escalation note. Added escalation_note param back to build_dev_prompt,
-    rendered unconditionally (not gated on review_findings), and passed state.escalation_note
-    at the call site in _run_dev_phase so the upgraded dev model is always told why it was
-    escalated. Added an integration test covering persistent P1 + exhausted cycles + human
-    reject, asserting the escalation note appears in the subsequent dev prompt."
+  summary: "Added a thin `src/theforge/traces.py` module exposing a single `write_trace(path, content)`
+    helper that creates parent dirs, writes the file UTF-8, and catches all exceptions as warnings
+    (never crashing the pipeline). Wired trace writes at all required integration points: dev prompt
+    and dev output in `coord_phases._run_dev_phase_impl`; gate output in `coord_gate._run_gate_full`
+    via a new optional `iter_num` parameter; reviewer raw outputs and synthesis in
+    `coordinator._run_review_pool` via a new optional `pool_attempt` parameter; and plan.txt at all
+    four plan write points in `coordinator.py`. All new parameters default to safe values so no
+    existing call sites required changes. Added 5 unit tests for `traces.write_trace` covering
+    creation, parent-dir creation, overwrite, empty content, and failure-path warning."
   commits:
-    - sha: "c319b5f"
-      message: "fix(cycle-aware-feedback): address review findings (iter 1)"
+    - sha: "0f05d53"
+      message: "feat(traces): add best-effort trace artifact capture for post-mortem debugging"
   acceptance_criteria:
-    - criterion: "CoordinatorState accumulates review cycle summaries (not just raw ReviewResult objects — a lightweight history)"
+    - criterion: "Dev prompt written to .forge/traces/{iter}-dev-prompt.txt before each dev invocation"
       status: MET
-      notes: "CycleHistory dataclass; cycle_history + cycle_history_total fields; all review paths append history"
-    - criterion: "build_fix_prompt includes a 'Previous Cycles' section showing what was flagged and attempted in earlier cycles"
+      notes: "write_trace called in coord_phases._run_dev_phase_impl before run_agent(), using state.dev_iteration"
+    - criterion: "Dev agent output written to .forge/traces/{iter}-dev-output.txt after each dev invocation"
       status: MET
-      notes: "build_fix_prompt renders Previous Review Cycles section when cycle_history is non-empty"
-    - criterion: "When no previous cycles exist (first review), no history section appears"
+      notes: "write_trace called immediately after run_agent() returns, before state.dev_results.append()"
+    - criterion: "Each reviewer's raw output written to .forge/traces/{cycle}-review-{profile}.txt per review cycle"
       status: MET
-      notes: "Section only rendered when cycle_history is non-empty"
-    - criterion: "When model escalation fires, the dev prompt includes an explicit note about the escalation and which finding triggered it"
+      notes: "Written in _run_review_pool loop using state.review_cycle+1 (matching log output) and pool_attempt. Filename is {cycle}-{attempt}-review-{profile}.txt — see spec_deviations."
+    - criterion: "Synthesis output written to .forge/traces/{cycle}-synthesis.txt per review cycle"
       status: MET
-      notes: "escalation_note set on persistent P1; rendered in build_fix_prompt and build_dev_prompt; delivered even on reject-after-escalation path"
-    - criterion: "Cycle history is capped at 3 most recent cycles to bound prompt size"
+      notes: "Written as {cycle}-{attempt}-synthesis.txt. Single-reviewer: raw output. Multi-reviewer: YAML-serialized merged ReviewResult via dataclasses.asdict+yaml.dump."
+    - criterion: "Plan output written to .forge/traces/plan.txt when PLAN phase runs"
       status: MET
-      notes: "_append_cycle_history trims to last 3; cycle_history_total counter keeps numbering monotonic after trimming"
-    - criterion: "review_to_dev_handoff output is unchanged (reviewer->dev format stays)"
+      notes: "Written at all four plan write points: initial success, agent-review regen, human-review approve+reread, and human-review regen."
+    - criterion: "Gate output written to .forge/traces/{iter}-gate.txt after each gate run"
       status: MET
-      notes: "review_to_dev_handoff not modified; existing tests confirm no regression"
+      notes: "Written in coord_gate._run_gate_full before output_tail truncation, when iter_num is not None. Workspace-setup and sprint gate calls pass iter_num=None (default) so no trace written there."
+    - criterion: "Trace write failures are caught and logged as warnings"
+      status: MET
+      notes: "traces.write_trace wraps all I/O in except Exception and calls _cu._log() with 'Warning: trace write failed' prefix."
+    - criterion: ".forge/traces/ is gitignored (or traces are written outside the git tree)"
+      status: MET
+      notes: ".gitignore already contains .forge/ (line 26). No change required."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "673 tests pass"
-  spec_deviations: none
+      notes: "673 tests pass (672 pre-existing + 5 new)."
+    - criterion: "No new CLI commands, no forge.yaml schema changes"
+      status: MET
+      notes: "No CLI or schema changes made."
+  spec_deviations:
+    - "Reviewer trace filename uses {cycle}-{attempt}-review-{profile}.txt instead of spec's
+      {cycle}-review-{profile}.txt. Justification: the codebase has parse retries that re-invoke
+      _run_review_pool within the same cycle; without the attempt suffix, consecutive retries would
+      overwrite each other. The no-overwrite requirement (spec req 4) takes precedence over the
+      literal filename in the AC."
   deferred_items: none
   gate_result: PASS
