@@ -1,11 +1,11 @@
 ---
-name: "Agent trace artifacts"
+name: "Agent trace artifacts in worktree"
 slug: agent-trace-artifacts
 file_scope:
   - src/theforge/coordinator.py
   - src/theforge/runner.py
-  - src/theforge/sprint.py
-  - .gitignore
+  - tests/test_coordinator.py
+  - tests/test_runner.py
 pytest_target: tests/
 ---
 
@@ -13,57 +13,50 @@ pytest_target: tests/
 
 ## Problem
 
-When a sprint stalls — a story cycling through 3+ review iterations without
-converging — there is no way to understand why after the fact. The audit YAML
-records verdicts and costs. The event log records transitions. Neither records
-what actually flowed between agents.
+When a story doesn't finish review — REQUEST_CHANGES loops, persistent P1s,
+budget exhaustion — there's no way to understand WHY after the fact. The audit
+log records what happened (verdict, cost, findings summary) but not the full
+context needed to diagnose root causes:
 
-To diagnose convergence failure you need to answer:
-- Did the dev receive the reviewer's feedback in the next iteration's prompt?
-- Did two reviewers contradict each other, leaving the dev with no clear fix?
-- Did the dev acknowledge the P1 finding but implement something different?
-- Did the gate handoff describe a different problem than the reviewer flagged?
+- What did the dev agent actually produce? (raw output, not just "Done.")
+- What did each reviewer actually say? (full review text, not just parsed P1s)
+- What was the synthesis reasoning? (why did it pick REQUEST_CHANGES?)
+- What did the plan agent recommend? (was the plan wrong, or did dev ignore it?)
+- What was the gate output? (did tests fail? which ones? what error?)
 
-Without the actual content that passed through each handoff, these questions
-are unanswerable. You're left re-running the story and watching it fail again.
+Today, debugging a failed run means: read the audit summary, guess what went
+wrong, maybe re-run with `--verbose` and watch the terminal. This is the same
+manual reconstruction problem TheForge was built to eliminate.
 
 ## Requirements
 
-1. For each story run, the worktree contains a trace directory with one file
-   per agent invocation capturing the prompt sent and the raw output received
-2. Gate handoff content is captured after each gate execution
-3. The feedback text passed back to the dev at the start of each repair
-   iteration is captured (this is what the dev actually sees, not the raw
-   review output)
-4. Trace files are written incrementally — each file appears as soon as that
-   agent invocation completes, not only at the end of the run
-5. Trace artifacts are ignored by git and do not appear as worktree dirt
-6. Trace capture is unconditional — no config flag required, no verbose mode
-   required. Visibility into data flow should not be opt-in.
-7. Sprint runs produce traces for every story, in each story's own worktree
+1. After each agent invocation (plan, dev, each reviewer, synthesis), write
+   the full agent output to a trace file in the worktree
+2. After each gate run, write the full gate output (stdout + stderr) to a
+   trace file
+3. Trace files are organized by phase and iteration so multiple dev passes
+   and review cycles don't overwrite each other
+4. The dev prompt sent to the agent is also preserved (so you can see exactly
+   what the agent was asked to do)
+5. Trace files survive in the worktree after the run completes — they're
+   available for post-mortem even if the run escalated or failed
+6. `forge audit` can optionally display trace content for a specific phase
+   (e.g., "show me what reviewer-codex said in cycle 2")
+7. Trace writing is best-effort — failures to write traces never block or
+   crash the pipeline
+8. Traces are not committed to git — they're local debugging artifacts in
+   the worktree only
 
 ## Acceptance Criteria
 
-- [ ] After `forge run`, the worktree contains `.forge/traces/` with at least
-      one file per agent invocation that occurred
-- [ ] The dev prompt file for iteration N contains the full prompt text sent
-      to the dev agent, including any repair feedback from the prior review cycle
-- [ ] The dev output file for iteration N contains the raw text the dev agent
-      produced
-- [ ] The gate handoff file for iteration N contains the handoff.yaml content
-      written after that iteration's gate ran
-- [ ] A reviewer output file exists for each reviewer that produced output in
-      each review cycle (named to identify both the reviewer and the cycle)
-- [ ] The repair feedback file for each dev iteration (after cycle 1) contains
-      the exact text passed back to the dev as "here is what to fix"
-- [ ] All trace files are present even when the story escalates or fails
-- [ ] `.forge/traces/` does not appear in `git status` output in the worktree
-- [ ] After `forge sprint`, each story's worktree has its own `.forge/traces/`
-- [ ] A story that was ALREADY_DONE produces no trace directory (no agents ran)
-
-## Out of Scope
-
-- Surfacing trace content in `forge audit` display (separate story)
-- Compressing or rotating old traces
-- Capturing plan agent output (plan traces can follow in a later story)
-- Capturing preflight agent output
+- [ ] Dev agent output written to worktree trace file after each iteration
+- [ ] Each reviewer's raw output written to separate trace files per cycle
+- [ ] Synthesis output written to trace file per review cycle
+- [ ] Plan agent output written to trace file (when PLAN runs)
+- [ ] Gate stdout+stderr written to trace file after each gate run
+- [ ] Dev prompt written to trace file before each dev invocation
+- [ ] Trace files named to distinguish iterations and cycles (no overwrites)
+- [ ] `forge audit <file> --trace <phase>` displays the relevant trace content
+- [ ] Trace write failures are logged as warnings, never crash the run
+- [ ] Traces are .gitignored or in a directory that's not committed
+- [ ] Existing tests pass unchanged
