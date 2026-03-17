@@ -13,16 +13,18 @@ New config section alongside the existing `PlanReviewConfig`:
 ```yaml
 plan_agent_review:
   enabled: false
-  model: claude    # CLI name — lightweight/fast
+  profile: sonnet   # references a named profile from the profiles section
   budget_usd: 0.50
   timeout: 300
 ```
+
+The `profile` field references a named profile from the `profiles` section in forge.yaml (e.g. `sonnet`, `opus`, `codex`), which already specifies both CLI and model. This avoids ambiguity — `claude` is a CLI provider, not a model. `run_agent()` requires a full `ModelProfile` with both.
 
 Parsed into a new `PlanAgentReviewConfig` dataclass. When `plan_agent_review.enabled` is true, it takes precedence over `plan_review.enabled` — they're mutually exclusive (agent review replaces human review, not stacks on top).
 
 ### 2. Add `build_plan_review_prompt()` to `task.py`
 
-New prompt builder. Inputs: story content, plan content. Output: a prompt asking the agent to produce a structured verdict:
+New prompt builder. Inputs: story content, plan content, file_scope contents (current source of scoped files), preflight output. Output: a prompt asking the agent to produce a structured verdict:
 
 ```yaml
 verdict: APPROVE | REJECT
@@ -36,8 +38,9 @@ The prompt instructs the agent to evaluate:
 - Does the plan address all acceptance criteria in the story?
 - Are there technical errors (wrong APIs, hallucinated functions, blast radius gaps)?
 - Is the implementation order sound?
+- Do the proposed function signatures and module references match the actual codebase?
 
-No code review — this is plan review only.
+The agent needs real code context to catch hallucinated APIs and blast radius issues — story + plan alone is not enough. Include the same `file_scope` contents that `build_dev_prompt` uses, plus preflight output if available.
 
 ### 3. Add plan review verdict parser to `review.py`
 
@@ -71,11 +74,12 @@ The agent review path:
 3. On APPROVE → set `state.plan_review_decision = "approve"`, continue to DEV
 4. On REJECT → if not already regenerated, regenerate plan and loop back
 5. On second REJECT → escalate with rejection findings
-6. Track cost in `state.plan_results` (same as plan agent)
+6. Track cost in a new `state.plan_review_results: list[AgentResult]` — do NOT append to `state.plan_results` which is used for plan generation invocations, `total_plan_cost`, regeneration accounting, and tests that assume its length matches the number of plan generations
 
 ### 5. Add state tracking fields to `coord_state.py`
 
-- `plan_agent_review_findings: str | None = None` — rejection findings for audit/logging
+- `plan_agent_review_findings: str | None = None` — rejection findings for audit/logging and for feeding back into plan regeneration
+- `plan_review_results: list[AgentResult] = field(default_factory=list)` — separate from `plan_results` to avoid corrupting plan generation cost tracking
 - Reuse existing `plan_review_decision`, `plan_regenerated`, `plan_review_waited_seconds` — these are phase-level, not human-specific
 
 ### 6. Update audit log in `coord_audit.py`
@@ -94,7 +98,7 @@ Already handled — line 757-763 skips PLAN_REVIEW when plan is injected. No cha
 ```yaml
 plan_agent_review:
   enabled: true
-  model: claude
+  profile: sonnet   # fast, cheap — plan review doesn't need opus
   budget_usd: 0.50
   timeout: 300
 
@@ -130,7 +134,7 @@ In `tests/test_review.py`:
 | `src/theforge/task.py` | Add `build_plan_review_prompt()` |
 | `src/theforge/review.py` | Add `PlanReviewResult`, parser |
 | `src/theforge/coordinator.py` | Agent review path in PLAN_REVIEW block |
-| `src/theforge/coord_state.py` | Add `plan_agent_review_findings` field |
+| `src/theforge/coord_state.py` | Add `plan_agent_review_findings` and `plan_review_results` fields |
 | `src/theforge/coord_audit.py` | Add reviewer type and findings to plan_review audit |
 | `forge.yaml` | Add `plan_agent_review` section |
 | `tests/test_coordinator.py` | 7 new tests |
@@ -141,4 +145,4 @@ In `tests/test_review.py`:
 
 - **Parse reliability** — plan review agent may not produce clean YAML. Mitigation: reuse the existing `_extract_yaml_block` logic with retry (same as code review parsing). Treat unparseable output as REJECT.
 - **Config collision** — both `plan_review.enabled` and `plan_agent_review.enabled` set to true. Mitigation: agent review takes precedence, log a warning.
-- **Regeneration uses same prompt** — if the plan was bad because the story was bad, regeneration won't help. Mitigation: on REJECT, the rejection findings are appended to the plan prompt so the plan agent knows what to fix. This is the same pattern as dev retry with review findings.
+- **Regeneration uses same prompt** — if the plan was bad because the story was bad, regeneration won't help. Mitigation: on REJECT, the rejection findings are appended to the plan prompt so the plan agent knows what to fix. This is the same pattern as dev retry with review findings. **This must be implemented explicitly in step 4**: when regenerating after REJECT, pass `state.plan_agent_review_findings` to `build_plan_prompt()` (or append to the existing prompt) so the plan agent sees what was wrong. Add a test for this: `test_plan_regen_receives_rejection_findings`.
