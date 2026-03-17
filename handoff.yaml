@@ -1,17 +1,19 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Added a thin `src/theforge/traces.py` module exposing a single `write_trace(path, content)`
+  summary: "Added a thin src/theforge/traces.py module exposing a single write_trace(path, content)
     helper that creates parent dirs, writes the file UTF-8, and catches all exceptions as warnings
     (never crashing the pipeline). Wired trace writes at all required integration points: dev prompt
-    and dev output in `coord_phases._run_dev_phase_impl`; gate output in `coord_gate._run_gate_full`
-    via a new optional `iter_num` parameter; reviewer raw outputs and synthesis in
-    `coordinator._run_review_pool` via a new optional `pool_attempt` parameter; and plan.txt at all
-    four plan write points in `coordinator.py`. All new parameters default to safe values so no
-    existing call sites required changes. Added 5 unit tests for `traces.write_trace` covering
+    and dev output in coord_phases._run_dev_phase_impl; gate output in coord_gate._run_gate_full
+    via a new optional iter_num parameter; reviewer raw outputs and synthesis in
+    coordinator._run_review_pool via a new optional pool_attempt parameter; and plan.txt at all
+    four plan write points in coordinator.py. All new parameters default to safe values so no
+    existing call sites required changes. Added 5 unit tests for traces.write_trace covering
     creation, parent-dir creation, overwrite, empty content, and failure-path warning."
   commits:
     - sha: "0f05d53"
       message: "feat(traces): add best-effort trace artifact capture for post-mortem debugging"
+    - sha: "e204827"
+      message: "chore(handoff): write dev_notes for trace-capture implementation"
   acceptance_criteria:
     - criterion: "Dev prompt written to .forge/traces/{iter}-dev-prompt.txt before each dev invocation"
       status: MET
@@ -44,10 +46,7 @@ dev_notes: |
       status: MET
       notes: "No CLI or schema changes made."
   spec_deviations:
-    - "Reviewer trace filename uses {cycle}-{attempt}-review-{profile}.txt instead of spec's
-      {cycle}-review-{profile}.txt. Justification: the codebase has parse retries that re-invoke
-      _run_review_pool within the same cycle; without the attempt suffix, consecutive retries would
-      overwrite each other. The no-overwrite requirement (spec req 4) takes precedence over the
-      literal filename in the AC."
+    - description: "Reviewer trace filename uses {cycle}-{attempt}-review-{profile}.txt instead of spec's {cycle}-review-{profile}.txt"
+      justification: "The codebase has parse retries that re-invoke _run_review_pool within the same cycle; without the attempt suffix, consecutive retries would overwrite each other. The no-overwrite requirement (spec req 4) takes precedence over the literal filename in the AC."
   deferred_items: none
   gate_result: PASS
