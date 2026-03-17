@@ -251,12 +251,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     # --interactive enables human review checkpoint on APPROVE; default is unattended
     interactive = getattr(args, "interactive", False)
     auto_merge = getattr(args, "auto_merge", False)
+    plan_path = Path(args.plan).resolve() if args.plan else None
     result = run_task(
         config,
         task,
         interactive=interactive,
         auto_merge=auto_merge,
         notify=not args.no_notify,
+        plan_path=plan_path,
     )
 
     # Write audit log
@@ -712,6 +714,12 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Suppress OS notifications",
+    )
+    run_parser.add_argument(
+        "--plan",
+        metavar="PATH",
+        default=None,
+        help="Inject an existing plan file, skipping the PLAN phase",
     )
 
     # forge review
