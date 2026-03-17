@@ -1,19 +1,20 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Added a thin src/theforge/traces.py module exposing a single write_trace(path, content)
-    helper that creates parent dirs, writes the file UTF-8, and catches all exceptions as warnings
-    (never crashing the pipeline). Wired trace writes at all required integration points: dev prompt
-    and dev output in coord_phases._run_dev_phase_impl; gate output in coord_gate._run_gate_full
-    via a new optional iter_num parameter; reviewer raw outputs and synthesis in
-    coordinator._run_review_pool via a new optional pool_attempt parameter; and plan.txt at all
-    four plan write points in coordinator.py. All new parameters default to safe values so no
-    existing call sites required changes. Added 5 unit tests for traces.write_trace covering
-    creation, parent-dir creation, overwrite, empty content, and failure-path warning."
+  summary: "Added src/theforge/traces.py with write_trace(path, content) — creates parent dirs,
+    writes UTF-8, catches all exceptions as warnings. Wired traces at all pipeline integration
+    points: dev prompt/output in coord_phases._run_dev_phase_impl; gate output in
+    coord_gate._run_gate_full (iter_num param); reviewer outputs and synthesis in
+    coordinator._run_review_pool (pool_attempt param); plan.txt at every PLAN agent invocation
+    in coordinator.py (both success and failure paths, including all regen paths). Iter 1 fix:
+    moved plan.txt write_trace to immediately after each run_agent() call, before the success
+    check, so failed PLAN invocations also capture their raw output."
   commits:
     - sha: "0f05d53"
       message: "feat(traces): add best-effort trace artifact capture for post-mortem debugging"
     - sha: "e204827"
       message: "chore(handoff): write dev_notes for trace-capture implementation"
+    - sha: "4112ff1"
+      message: "fix(trace-capture): rewrite dev handoff to match schema"
   acceptance_criteria:
     - criterion: "Dev prompt written to .forge/traces/{iter}-dev-prompt.txt before each dev invocation"
       status: MET
@@ -29,7 +30,7 @@ dev_notes: |
       notes: "Written as {cycle}-{attempt}-synthesis.txt. Single-reviewer: raw output. Multi-reviewer: YAML-serialized merged ReviewResult via dataclasses.asdict+yaml.dump."
     - criterion: "Plan output written to .forge/traces/plan.txt when PLAN phase runs"
       status: MET
-      notes: "Written at all four plan write points: initial success, agent-review regen, human-review approve+reread, and human-review regen."
+      notes: "write_trace called immediately after every run_agent() for PLAN (before success check), covering initial call, agent-review regen, and human-review regen — including failure paths."
     - criterion: "Gate output written to .forge/traces/{iter}-gate.txt after each gate run"
       status: MET
       notes: "Written in coord_gate._run_gate_full before output_tail truncation, when iter_num is not None. Workspace-setup and sprint gate calls pass iter_num=None (default) so no trace written there."

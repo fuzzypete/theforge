@@ -961,11 +961,11 @@ def run_task(
         _plan_elapsed = time.monotonic() - _plan_start
         state.plan_results.append(plan_result)
         state.plan_session_id = plan_result.session_id or state.plan_session_id
+        write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
 
         if plan_result.success:
             plan_text = plan_result.output
             (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
-            write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_text)
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
 
@@ -1126,6 +1126,7 @@ def run_task(
                     _plan_elapsed = time.monotonic() - _plan_start
                     state.plan_results.append(plan_result)
                     state.plan_session_id = plan_result.session_id or state.plan_session_id
+                    write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
 
                     if not plan_result.success:
                         state.phase = Phase.ESCALATE
@@ -1141,7 +1142,6 @@ def run_task(
 
                     plan_text = plan_result.output
                     (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
-                    write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_text)
                     state.plan_output = plan_text
                     _log(
                         "  ✓ PLAN (regenerated)  "
@@ -1243,6 +1243,9 @@ def run_task(
                         _plan_elapsed = time.monotonic() - _plan_start
                         state.plan_results.append(plan_result)
                         state.plan_session_id = plan_result.session_id or state.plan_session_id
+                        write_trace(
+                            workspace_path / ".forge/traces" / "plan.txt", plan_result.output
+                        )
 
                         if not plan_result.success:
                             state.phase = Phase.ESCALATE
@@ -1258,7 +1261,6 @@ def run_task(
 
                         plan_text = plan_result.output
                         (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
-                        write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_text)
                         state.plan_output = plan_text
                         _log(
                             "  ✓ PLAN (regenerated)  "
