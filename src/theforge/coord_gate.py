@@ -97,7 +97,10 @@ def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: st
         data: dict = {}
         if handoff_path.exists():
             with open(handoff_path, encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
+                loaded = yaml.safe_load(f)
+            # Only reuse the file if it parsed as a mapping; otherwise start fresh.
+            if isinstance(loaded, dict):
+                data = loaded
         data[config.validation.gate_decision_key] = decision
         with open(handoff_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True)

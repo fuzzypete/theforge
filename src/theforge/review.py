@@ -307,6 +307,14 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         for g in r.test_gaps:
             test_gaps.append(f"[{name}] {g}")
 
+    # Propagate parse errors from any reviewer so the parse-retry loop in
+    # _run_review_phase() can fire instead of treating malformed output as a
+    # real REQUEST_CHANGES verdict.
+    all_parse_errors: list[str] = []
+    for name, r in zip(names, results):
+        for e in r.parse_errors:
+            all_parse_errors.append(f"[{name}] {e}")
+
     return ReviewResult(
         verdict=verdict,
         summary=summary,
@@ -315,7 +323,7 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         spec_mismatches=spec_mismatches,
         test_adequate=test_adequate,
         test_gaps=test_gaps,
-        parse_errors=[],
+        parse_errors=all_parse_errors,
         raw_yaml={},
     )
 
