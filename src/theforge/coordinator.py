@@ -681,7 +681,7 @@ def run_task(
             )
         try:
             plan_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             msg = f"--plan path is not readable: {plan_path}: {exc}"
             _log(f"✗ {msg}")
             return CoordinatorResult(

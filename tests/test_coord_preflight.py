@@ -1361,3 +1361,24 @@ class TestPlanPhase:
         assert "not readable" in result.message
         assert mock_agent.call_count == 0
         assert mock_shell.call_count == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_injection_non_utf8_file_aborts_before_workspace(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--plan with a file that exists but is not valid UTF-8 aborts before WORKSPACE runs."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        plan_file = tmp_path / "binary_plan.md"
+        plan_file.write_bytes(b"\xff\xfe invalid utf-8 \x80\x81")
+
+        result = run_task(config, task, plan_path=plan_file)
+
+        assert result.success is False
+        assert result.phase == Phase.INIT
+        assert "not readable" in result.message
+        assert mock_agent.call_count == 0
+        assert mock_shell.call_count == 0
