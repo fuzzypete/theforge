@@ -669,15 +669,27 @@ def run_task(
         _log(f"  Auto-config: dev={dev_model}, review=[{review_models}], synthesis={synth_model}")
 
     # ── Validate --plan path (before touching anything) ─────────
-    if plan_path is not None and not plan_path.is_file():
-        msg = f"--plan path does not exist or is not a file: {plan_path}"
-        _log(f"✗ {msg}")
-        return CoordinatorResult(
-            success=False,
-            phase=Phase.INIT,
-            state=state,
-            message=msg,
-        )
+    if plan_path is not None:
+        if not plan_path.is_file():
+            msg = f"--plan path does not exist or is not a file: {plan_path}"
+            _log(f"✗ {msg}")
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.INIT,
+                state=state,
+                message=msg,
+            )
+        try:
+            plan_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            msg = f"--plan path is not readable: {plan_path}: {exc}"
+            _log(f"✗ {msg}")
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.INIT,
+                state=state,
+                message=msg,
+            )
 
     # ── WORKSPACE ─────────────────────────────────────────────────
     state.phase = Phase.WORKSPACE

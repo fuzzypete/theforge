@@ -1334,3 +1334,30 @@ class TestPlanPhase:
         # No agents or shell commands ran
         assert mock_agent.call_count == 0
         assert mock_shell.call_count == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_injection_unreadable_file_aborts_before_workspace(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--plan with an existing but unreadable file aborts before WORKSPACE runs."""
+        import os
+
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        plan_file = tmp_path / "unreadable_plan.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        os.chmod(plan_file, 0o000)
+
+        try:
+            result = run_task(config, task, plan_path=plan_file)
+        finally:
+            os.chmod(plan_file, 0o644)
+
+        assert result.success is False
+        assert result.phase == Phase.INIT
+        assert "not readable" in result.message
+        assert mock_agent.call_count == 0
+        assert mock_shell.call_count == 0
