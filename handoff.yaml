@@ -1,45 +1,40 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented cycle-aware dev feedback by adding a CycleHistory frozen dataclass
-    (cycle, verdict, summary, p1_findings truncated to 200 chars) to coord_state.py, along
-    with two new fields on CoordinatorState: cycle_history (list[CycleHistory], capped at 3)
-    and escalation_note (str|None, cleared after consumption). A new _append_cycle_history()
-    helper in coord_phases.py is called in all four RETRY_DEV return paths of
-    _run_review_phase. A _persistent_p1_descriptions() helper in coord_preflight.py returns
-    matched P1 description strings using the same token-overlap logic as _has_persistent_p1.
-    When persistent P1 triggers model escalation, an escalation_note is built with old/new
-    model names and matched finding descriptions. Both build_fix_prompt and build_dev_prompt
-    accept optional cycle_history and escalation_note params, rendering Previous Review Cycles
-    and Model Escalation sections before the review findings block. Escalation note is cleared
-    in _run_dev_phase after the prompt is built. Cycle numbers are monotonically increasing
-    (len+1), not tied to the resettable review_cycle counter. 25 new tests added."
+  summary: "Fixed two P1 review findings and one P2. P1 fix 1: replaced len(state.cycle_history)+1
+    as the cycle number source with a new monotonically increasing counter cycle_history_total on
+    CoordinatorState, preventing duplicate cycle numbers after the 3-entry cap trims older entries.
+    P1 fix 2: added _append_cycle_history() calls before all three APPROVE/DONE return paths in
+    _run_review_phase (non-interactive APPROVE, interactive human-approve, and cycles-exhausted
+    human-approve), so the final approved review cycle is always recorded in state.cycle_history.
+    P2 fix: removed the cycle_history and escalation_note parameters from build_dev_prompt and its
+    call site, since that code path is unreachable (review-driven retries use build_fix_prompt
+    exclusively). Updated tests to cover monotonic numbering past the cap, the APPROVE integration
+    path, and the simplified build_dev_prompt signature."
   commits:
-    - sha: "03d4ed2"
-      message: "feat(cycle-aware-feedback): accumulate cycle history and inject into dev prompts"
-    - sha: "be14097"
-      message: "chore(cycle-aware-feedback): write dev handoff artifact"
+    - sha: "b0e5583"
+      message: "fix(cycle-aware-feedback): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "CoordinatorState accumulates review cycle summaries (not just raw ReviewResult objects — a lightweight history)"
       status: MET
-      notes: "CycleHistory frozen dataclass added; cycle_history field on CoordinatorState; populated in all RETRY_DEV paths via _append_cycle_history()"
+      notes: "CycleHistory frozen dataclass; cycle_history + cycle_history_total fields; populated in all RETRY_DEV and DONE paths"
     - criterion: "build_fix_prompt includes a 'Previous Cycles' section showing what was flagged and attempted in earlier cycles"
       status: MET
-      notes: "build_fix_prompt renders '## Previous Review Cycles' with per-cycle verdict, summary, and P1 findings when cycle_history is non-empty"
+      notes: "build_fix_prompt renders Previous Review Cycles section when cycle_history is non-empty"
     - criterion: "When no previous cycles exist (first review), no history section appears"
       status: MET
-      notes: "Section only rendered when cycle_history is non-empty; empty list and None both skip the section; covered by tests"
+      notes: "Section only rendered when cycle_history is non-empty; covered by tests"
     - criterion: "When model escalation fires, the dev prompt includes an explicit note about the escalation and which finding triggered it"
       status: MET
-      notes: "escalation_note built in _run_review_phase when _has_persistent_p1 fires; rendered as '## Warning Model Escalation' section; cleared after consumption"
+      notes: "escalation_note built in _run_review_phase when persistent P1 fires; rendered in build_fix_prompt; cleared after consumption"
     - criterion: "Cycle history is capped at 3 most recent cycles to bound prompt size"
       status: MET
-      notes: "_append_cycle_history() trims to last 3 entries after each append; covered by test_cycle_history_capped_at_3"
+      notes: "_append_cycle_history trims to last 3 entries; cycle_history_total ensures monotonic numbering after trimming"
     - criterion: "review_to_dev_handoff output is unchanged (reviewer->dev format stays)"
       status: MET
       notes: "review_to_dev_handoff was not modified; existing tests confirm no regression"
     - criterion: "All existing tests pass"
       status: MET
-      notes: "670 tests pass including all pre-existing tests"
+      notes: "670 tests pass"
   spec_deviations: none
   deferred_items: none
   gate_result: PASS
