@@ -17,7 +17,7 @@ profiles:
     cli: claude
     model: sonnet
     budget_usd: 50.00
-    timeout_seconds: 600
+    timeout_seconds: 1800  # bumped from 600 — large specs need headroom; replace with complexity-based timeouts spec
     allowed_tools:
       - Read
       - Edit
