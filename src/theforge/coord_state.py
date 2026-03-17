@@ -68,6 +68,7 @@ class CoordinatorState:
     workspace_path: Path | None = None
     branch_name: str | None = None
     dev_session_id: str | None = None
+    plan_session_id: str | None = None
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     review_cycle: int = 0  # which dev→review loop we're on
     dev_iteration: int = 0  # retries within the current review cycle

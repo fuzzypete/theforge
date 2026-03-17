@@ -937,6 +937,7 @@ def run_task(
         )
         _plan_elapsed = time.monotonic() - _plan_start
         state.plan_results.append(plan_result)
+        state.plan_session_id = plan_result.session_id or state.plan_session_id
 
         if plan_result.success:
             plan_text = plan_result.output
@@ -1082,9 +1083,11 @@ def run_task(
                         prompt=regen_prompt,
                         profile=plan_profile,
                         working_dir=workspace_path,
+                        session_id=state.plan_session_id,
                     )
                     _plan_elapsed = time.monotonic() - _plan_start
                     state.plan_results.append(plan_result)
+                    state.plan_session_id = plan_result.session_id or state.plan_session_id
 
                     if not plan_result.success:
                         state.phase = Phase.ESCALATE
@@ -1195,9 +1198,11 @@ def run_task(
                             prompt=plan_prompt,
                             profile=plan_profile,
                             working_dir=workspace_path,
+                            session_id=state.plan_session_id,
                         )
                         _plan_elapsed = time.monotonic() - _plan_start
                         state.plan_results.append(plan_result)
+                        state.plan_session_id = plan_result.session_id or state.plan_session_id
 
                         if not plan_result.success:
                             state.phase = Phase.ESCALATE
