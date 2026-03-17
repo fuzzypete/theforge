@@ -85,7 +85,7 @@ plan:
   timeout: 600
 
 plan_review:
-  enabled: true
+  enabled: false
 
 notifications:
   backend: ntfy
