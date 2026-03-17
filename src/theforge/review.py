@@ -127,6 +127,122 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     )
 
 
+@dataclass(frozen=True)
+class PlanReviewFinding:
+    """A single finding from plan review."""
+
+    severity: str  # "P1"
+    description: str
+    suggestion: str | None
+
+
+@dataclass(frozen=True)
+class PlanReviewResult:
+    """Parsed plan review verdict."""
+
+    verdict: str  # "APPROVE" or "REJECT"
+    findings: list[PlanReviewFinding]
+    parse_errors: list[str]
+
+
+def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
+    """Extract and parse plan review YAML from agent output.
+
+    Reuses the same YAML extraction strategy as code review parsing.
+    REJECT without findings is treated as a parse error.
+    Unparseable output is treated as REJECT.
+    """
+    yaml_match = re.search(
+        r"```ya?ml\s*\n(.*?)```",
+        agent_output,
+        flags=re.DOTALL,
+    )
+    yaml_text = yaml_match.group(1) if yaml_match else agent_output
+
+    try:
+        data = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=[f"YAML parse error: {e}"],
+        )
+
+    if not isinstance(data, dict):
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=["Plan review output root is not a YAML mapping"],
+        )
+
+    verdict = data.get("verdict", "").upper()
+    if verdict not in ("APPROVE", "REJECT"):
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=[f"verdict must be APPROVE or REJECT, got: {verdict!r}"],
+        )
+
+    errors: list[str] = []
+
+    # Validate findings structure
+    raw_findings = data.get("findings")
+    if raw_findings is not None and not isinstance(raw_findings, list):
+        errors.append(f"findings must be a list, got: {type(raw_findings).__name__}")
+        raw_findings = []
+
+    findings: list[PlanReviewFinding] = []
+    p1_count = 0
+    for i, f in enumerate(raw_findings or []):
+        if not isinstance(f, dict):
+            errors.append(f"findings[{i}] must be a mapping")
+            continue
+        severity = f.get("severity", "P1")
+        if severity == "P1":
+            p1_count += 1
+        desc = f.get("description", "")
+        if not desc:
+            errors.append(f"findings[{i}].description must be non-empty")
+        findings.append(
+            PlanReviewFinding(
+                severity=severity,
+                description=desc,
+                suggestion=f.get("suggestion"),
+            )
+        )
+
+    # Cross-validation: same principle as code review schema
+    if verdict == "REJECT" and not findings:
+        errors.append("REJECT verdict without findings — cannot justify rejection")
+    if verdict == "APPROVE" and p1_count > 0:
+        errors.append(
+            f"verdict is APPROVE but {p1_count} P1 finding(s) exist — "
+            "cannot approve with blocking findings"
+        )
+
+    # Any parse error on APPROVE → demote to REJECT
+    if verdict == "APPROVE" and errors:
+        verdict = "REJECT"
+
+    return PlanReviewResult(
+        verdict=verdict,
+        findings=findings,
+        parse_errors=errors,
+    )
+
+
+def plan_review_findings_to_text(result: PlanReviewResult) -> str:
+    """Convert plan review findings to text for feeding back into plan regeneration."""
+    if not result.findings:
+        return "No specific findings provided."
+    lines: list[str] = []
+    for f in result.findings:
+        lines.append(f"- [{f.severity}] {f.description}")
+        if f.suggestion:
+            lines.append(f"  Suggestion: {f.suggestion}")
+    return "\n".join(lines)
+
+
 def review_to_dev_handoff(result: ReviewResult) -> str:
     """Convert a ReviewResult to a rich action-oriented markdown block for the dev agent.
 

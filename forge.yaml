@@ -85,7 +85,14 @@ plan:
   timeout: 600
 
 plan_review:
-  enabled: false
+  enabled: false  # human gate disabled — agent review replaces it
+
+plan_agent_review:
+  enabled: true
+  cli: claude
+  model: sonnet
+  budget_usd: 0.50
+  timeout: 300
 
 notifications:
   backend: ntfy

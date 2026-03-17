@@ -10,6 +10,7 @@ from theforge.task import (
     build_dev_prompt,
     build_fix_prompt,
     build_plan_prompt,
+    build_plan_review_prompt,
     build_review_prompt,
 )
 
@@ -654,3 +655,65 @@ class TestBuildDevPromptDevNotesInstruction:
             gate_skipped=True,
         )
         assert "dev_notes" not in prompt
+
+
+# ── build_plan_review_prompt ──────────────────────────────────────────
+
+
+class TestBuildPlanReviewPrompt:
+    def test_contains_story_and_plan(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story\n\nDo the unique thing.",
+            plan_content="# Plan\n\nStep 1: implement X.",
+            file_contents={},
+        )
+        assert "Do the unique thing." in prompt
+        assert "Step 1: implement X." in prompt
+
+    def test_contains_evaluation_criteria(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content="# Plan",
+            file_contents={},
+        )
+        assert "APPROVE" in prompt
+        assert "REJECT" in prompt
+        assert "acceptance criteria" in prompt
+
+    def test_includes_file_contents(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content="# Plan",
+            file_contents={"src/foo.py": "def foo(): pass"},
+        )
+        assert "src/foo.py" in prompt
+        assert "def foo(): pass" in prompt
+
+    def test_includes_rejection_findings(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content="# Plan",
+            file_contents={},
+            rejection_findings="- [P1] Bad API reference",
+        )
+        assert "Previous Rejection Findings" in prompt
+        assert "Bad API reference" in prompt
+
+    def test_omits_rejection_findings_when_none(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content="# Plan",
+            file_contents={},
+            rejection_findings=None,
+        )
+        assert "Previous Rejection Findings" not in prompt

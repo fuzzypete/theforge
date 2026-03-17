@@ -89,6 +89,10 @@ class CoordinatorState:
     plan_regenerated: bool = False  # guard against infinite regen loop
     plan_review_waited_seconds: float | None = None
     plan_review_mode: str | None = None  # "interactive" | "remote" | "advisory-timeout"
+    plan_agent_review_findings: str | None = None  # rejection findings for regen feedback
+    plan_review_results: list[AgentResult] = field(
+        default_factory=list
+    )  # separate from plan_results to avoid corrupting plan generation cost tracking
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
     retry_reason: str | None = (
@@ -114,12 +118,17 @@ class CoordinatorState:
         return sum(r.cost_usd for r in self.plan_results)
 
     @property
+    def total_plan_review_cost(self) -> float:
+        return sum(r.cost_usd for r in self.plan_review_results)
+
+    @property
     def total_cost(self) -> float:
         return (
             self.total_dev_cost
             + self.total_review_cost
             + self.total_preflight_cost
             + self.total_plan_cost
+            + self.total_plan_review_cost
         )
 
 

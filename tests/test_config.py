@@ -114,6 +114,38 @@ class TestLoadConfig:
         assert config.plan_review.mode == "blocking"
         assert config.plan_review.timeout_seconds == 14400
 
+    def test_plan_agent_review_defaults_disabled(self, tmp_path):
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan_agent_review.enabled is False
+
+    def test_plan_agent_review_enabled_parsed(self, tmp_path):
+        config_path = _write_config(
+            {"plan_agent_review": {"enabled": True, "cli": "claude", "model": "sonnet"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan_agent_review.enabled is True
+        assert config.plan_agent_review.cli == "claude"
+        assert config.plan_agent_review.model == "sonnet"
+
+    def test_plan_agent_review_unsupported_cli_raises(self, tmp_path):
+        config_path = _write_config(
+            {"plan_agent_review": {"enabled": True, "cli": "bogus"}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="Unsupported CLI.*bogus.*plan_agent_review"):
+            load_config(config_path)
+
+    def test_plan_agent_review_disabled_unsupported_cli_ok(self, tmp_path):
+        """Unsupported CLI is not validated when plan_agent_review is disabled."""
+        config_path = _write_config(
+            {"plan_agent_review": {"enabled": False, "cli": "bogus"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan_agent_review.enabled is False
+
 
 class TestAllowedToolsConfig:
     def test_empty_allowed_tools_is_empty(self, tmp_path):

@@ -160,6 +160,21 @@ class PlanReviewConfig:
 
 
 @dataclass(frozen=True)
+class PlanAgentReviewConfig:
+    """Configuration for automated agent review of plans before dev.
+
+    When enabled, takes precedence over PlanReviewConfig (human review).
+    They are mutually exclusive — agent review replaces human review.
+    """
+
+    enabled: bool = False
+    cli: str = "claude"
+    model: str = "sonnet"
+    budget_usd: float = 0.50
+    timeout: int = 300
+
+
+@dataclass(frozen=True)
 class LogConfig:
     """Configuration for persistent structured logging."""
 
@@ -184,6 +199,7 @@ class ForgeConfig:
     smart_config_models: list[str] | None = None  # None = classic config; list = smart config
     plan: PlanConfig = field(default_factory=PlanConfig)
     plan_review: PlanReviewConfig = field(default_factory=PlanReviewConfig)
+    plan_agent_review: PlanAgentReviewConfig = field(default_factory=PlanAgentReviewConfig)
     log: LogConfig = field(default_factory=LogConfig)
 
     @property
@@ -596,6 +612,23 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout_seconds=int(plan_review_data.get("timeout_seconds", 14400)),
     )
 
+    # Plan agent review
+    par_data = raw.get("plan_agent_review", {})
+    par_cli = str(par_data.get("cli", "claude"))
+    par_enabled = bool(par_data.get("enabled", False))
+    if par_enabled and par_cli not in SUPPORTED_CLIS:
+        raise ValueError(
+            f"Unsupported CLI {par_cli!r} in plan_agent_review. "
+            f"Supported: {sorted(SUPPORTED_CLIS)}"
+        )
+    plan_agent_review_cfg = PlanAgentReviewConfig(
+        enabled=par_enabled,
+        cli=par_cli,
+        model=str(par_data.get("model", "sonnet")),
+        budget_usd=float(par_data.get("budget_usd", 0.50)),
+        timeout=int(par_data.get("timeout", 300)),
+    )
+
     # Logging
     log_data = raw.get("logging", {})
     log_cfg = LogConfig(
@@ -617,6 +650,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         smart_config_models=smart_config_models,
         plan=plan_cfg,
         plan_review=plan_review_cfg,
+        plan_agent_review=plan_agent_review_cfg,
         log=log_cfg,
     )
 

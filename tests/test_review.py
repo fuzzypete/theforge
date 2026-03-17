@@ -3,6 +3,7 @@
 from theforge.review import (
     ReviewFinding,
     findings_to_markdown,
+    parse_plan_review_output,
     parse_review_output,
 )
 
@@ -133,3 +134,85 @@ class TestFindingsToMarkdown:
         assert "**Fix:** Fix it" in md
         assert "[P2]" in md
         assert "`src/bar.py`" in md
+
+
+class TestParsePlanReviewOutput:
+    def test_parse_plan_review_approve(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings: []
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "APPROVE"
+        assert result.findings == []
+        assert result.parse_errors == []
+
+    def test_parse_plan_review_reject_with_findings(self):
+        yaml_text = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P1
+    description: "Plan references nonexistent function"
+    suggestion: "Use load_config() instead"
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert len(result.findings) == 1
+        assert result.findings[0].severity == "P1"
+        assert result.findings[0].description == "Plan references nonexistent function"
+        assert result.findings[0].suggestion == "Use load_config() instead"
+        assert result.parse_errors == []
+
+    def test_parse_plan_review_reject_no_findings_error(self):
+        yaml_text = """\
+```yaml
+verdict: REJECT
+findings: []
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert len(result.parse_errors) == 1
+
+    def test_approve_with_p1_findings_demoted_to_reject(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P1
+    description: "Hallucinated API"
+    suggestion: "Fix it"
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert len(result.parse_errors) >= 1
+        assert any("cannot approve" in e.lower() for e in result.parse_errors)
+
+    def test_approve_with_malformed_findings_demoted_to_reject(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P1
+    description: ""
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert any("non-empty" in e for e in result.parse_errors)
+
+    def test_approve_with_non_list_findings_demoted_to_reject(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings: "not a list"
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert any("must be a list" in e for e in result.parse_errors)
