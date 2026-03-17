@@ -1079,6 +1079,11 @@ def run_task(
                     )
 
                     _plan_start = time.monotonic()
+                    _resuming = state.plan_session_id is not None
+                    _resume_tag = (
+                        f"resuming {state.plan_session_id[:8]}" if _resuming else "new session"
+                    )
+                    _log(f"  Starting plan regen (model={plan_profile.model}, {_resume_tag})...")
                     plan_result = run_agent(
                         prompt=regen_prompt,
                         profile=plan_profile,
