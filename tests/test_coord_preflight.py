@@ -1271,3 +1271,114 @@ class TestPlanPhase:
         # plan_output is still the original plan (from first run)
         assert result.state.plan_output is not None
         assert "Implementation Plan" in result.state.plan_output
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_injection_copies_file_and_skips_agent(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--plan copies the file into worktree, sets plan_output, and skips the PLAN agent."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        plan_content = "# Implementation Plan\n\nDo the thing."
+        plan_file = tmp_path / "my_plan.md"
+        plan_file.write_text(plan_content, encoding="utf-8")
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        results = [preflight_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, plan_path=plan_file)
+
+        assert result.success is True
+        # PREFLIGHT + DEV only — no plan agent (2 calls)
+        assert mock_agent.call_count == 2
+        assert result.state.plan_output == plan_content
+        assert result.state.plan_result is None
+        assert (workspace / "forge_plan.md").read_text(encoding="utf-8") == plan_content
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_injection_missing_file_aborts_before_workspace(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--plan with missing file aborts before WORKSPACE runs."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        result = run_task(config, task, plan_path=tmp_path / "nonexistent.md")
+
+        assert result.success is False
+        assert result.phase == Phase.INIT
+        assert "does not exist" in result.message
+        # No agents or shell commands ran
+        assert mock_agent.call_count == 0
+        assert mock_shell.call_count == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_injection_unreadable_file_aborts_before_workspace(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--plan with an existing but unreadable file aborts before WORKSPACE runs."""
+        import os
+
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        plan_file = tmp_path / "unreadable_plan.md"
+        plan_file.write_text("# Plan", encoding="utf-8")
+        os.chmod(plan_file, 0o000)
+
+        try:
+            result = run_task(config, task, plan_path=plan_file)
+        finally:
+            os.chmod(plan_file, 0o644)
+
+        assert result.success is False
+        assert result.phase == Phase.INIT
+        assert "not readable" in result.message
+        assert mock_agent.call_count == 0
+        assert mock_shell.call_count == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_injection_non_utf8_file_aborts_before_workspace(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--plan with a file that exists but is not valid UTF-8 aborts before WORKSPACE runs."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        plan_file = tmp_path / "binary_plan.md"
+        plan_file.write_bytes(b"\xff\xfe invalid utf-8 \x80\x81")
+
+        result = run_task(config, task, plan_path=plan_file)
+
+        assert result.success is False
+        assert result.phase == Phase.INIT
+        assert "not readable" in result.message
+        assert mock_agent.call_count == 0
+        assert mock_shell.call_count == 0

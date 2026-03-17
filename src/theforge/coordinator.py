@@ -620,6 +620,7 @@ def run_task(
     auto_merge: bool = False,
     notify: bool = False,
     run_id: str | None = None,
+    plan_path: Path | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -667,6 +668,29 @@ def run_task(
         _log(f"  Models: {models_str}")
         _log(f"  Auto-config: dev={dev_model}, review=[{review_models}], synthesis={synth_model}")
 
+    # ── Validate --plan path (before touching anything) ─────────
+    if plan_path is not None:
+        if not plan_path.is_file():
+            msg = f"--plan path does not exist or is not a file: {plan_path}"
+            _log(f"✗ {msg}")
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.INIT,
+                state=state,
+                message=msg,
+            )
+        try:
+            plan_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            msg = f"--plan path is not readable: {plan_path}: {exc}"
+            _log(f"✗ {msg}")
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.INIT,
+                state=state,
+                message=msg,
+            )
+
     # ── WORKSPACE ─────────────────────────────────────────────────
     state.phase = Phase.WORKSPACE
     _log_phase(state.phase, task.slug)
@@ -692,6 +716,13 @@ def run_task(
     state.workspace_path = workspace_path
     state.branch_name = branch_name
     logger._safe_emit("phase_end", phase="WORKSPACE", outcome="success")
+
+    # ── Plan injection (--plan) ─────────────────────────────────
+    if plan_path is not None:
+        plan_text = plan_path.read_text(encoding="utf-8")
+        (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+        state.plan_output = plan_text
+        _log(f"  ✓ PLAN   (injected from {plan_path.name})")
 
     # ── PREFLIGHT ──────────────────────────────────────────────────
     state.phase = Phase.PREFLIGHT
@@ -786,7 +817,11 @@ def run_task(
     # verdict == "PROCEED" — continue to DEV (possibly via PLAN)
 
     # ── PLAN ──────────────────────────────────────────────────────
-    should_plan = config.plan.enabled and state.preflight_complexity in ("medium", "large")
+    should_plan = (
+        plan_path is None
+        and config.plan.enabled
+        and state.preflight_complexity in ("medium", "large")
+    )
     if should_plan:
         state.phase = Phase.PLAN
         plan_profile = ModelProfile(
