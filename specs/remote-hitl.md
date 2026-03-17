@@ -257,7 +257,7 @@ Used in: log lines, campaign summary, notification bodies.
 
 ## Dependencies
 
-- `specs/human-in-the-loop.md` must be implemented first (`HUMAN_REVIEW`
+- `specs/archive/human-in-the-loop.md` must be implemented first (`HUMAN_REVIEW`
   phase, `run_task(interactive=)` signature)
 - `specs/notifications.md` is already implemented (`--no-notify` flag,
   `_notify()` osascript helper). This spec extends `NotificationConfig`

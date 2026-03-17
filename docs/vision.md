@@ -56,7 +56,7 @@ Each has its own command builder, output parser, and heartbeat.
 Config validates CLI names at load time. Cost tracking is Claude-only
 for now (Codex/Gemini report 0.0).
 
-**Spec:** `specs/multi-cli-support.md`
+**Spec:** `specs/archive/multi-cli-support.md`
 
 ---
 
@@ -66,7 +66,7 @@ for now (Codex/Gemini report 0.0).
 Human can approve, reject (with findings fed back to dev), or escalate.
 Non-interactive mode skips HUMAN_REVIEW. EOF on stdin → auto-escalate.
 
-**Spec:** `specs/human-in-the-loop.md`
+**Spec:** `specs/archive/human-in-the-loop.md`
 
 ---
 
@@ -78,7 +78,7 @@ then synthesis reconciles into a single verdict. Per-profile budget
 enforcement. Degraded mode when reviewers fail (skip synthesis if
 only 1 succeeds).
 
-**Spec:** `specs/multi-model-review.md`
+**Spec:** `specs/archive/multi-model-review.md`
 
 ---
 
@@ -110,7 +110,7 @@ changes in project root, branch has commits ahead of base. Worktree
 cleanup attempted after successful merge. Merge outcome recorded in
 audit log.
 
-**Spec:** `specs/auto-merge.md`
+**Spec:** `specs/archive/auto-merge.md`
 
 ---
 
@@ -123,7 +123,7 @@ list and aggregate budget ceiling. Budget enforcement is Claude-only
 individual spec failures. ALREADY_DONE specs counted as skipped.
 Writes `sprint-audit.yaml` with per-spec outcomes and costs.
 
-**Spec:** `specs/campaign-mode.md`
+**Spec:** `specs/archive/campaign-mode.md`
 
 ---
 

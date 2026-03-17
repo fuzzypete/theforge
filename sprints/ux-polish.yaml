@@ -17,6 +17,6 @@ budget_usd: 80.00
 specs:
   - specs/notifications.md
   - specs/audit-improvements.md
-  - specs/human-in-the-loop.md
+  - specs/archive/human-in-the-loop.md
   - specs/remote-hitl.md
   - specs/forge-ideate.md

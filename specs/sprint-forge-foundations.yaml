@@ -3,5 +3,5 @@ budget_usd: 20
 auto_merge: true
 specs:
   - specs/gate-output-tail.md
-  - specs/preflight-scope-check.md
+  - specs/archive/preflight-scope-check.md
   - specs/dev-scope-escalation.md

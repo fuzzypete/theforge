@@ -18,7 +18,7 @@ budget_usd: 80.00
 
 specs:
   - specs/audit-improvements.md
-  - specs/human-in-the-loop.md
+  - specs/archive/human-in-the-loop.md
   - specs/gate-hardening.md
   - specs/reasoning-effort.md
   - specs/remote-hitl.md
