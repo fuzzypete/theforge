@@ -472,7 +472,7 @@ criteria_checked: []
                 return _make_agent_result(output=preflight_small)
             return _make_agent_result()
 
-        def fake_run_pool(prompt, profiles, working_dir):
+        def fake_run_pool(prompt, profiles, working_dir, session_ids=None):
             pool_calls.append([p.name for p in profiles])
             return _make_pool_result([APPROVE_REVIEW], [profiles[0].name])
 
@@ -634,7 +634,7 @@ criteria_checked: []
 
         pool_profiles_used: list[str] = []
 
-        def fake_run_pool(prompt, profiles, working_dir):
+        def fake_run_pool(prompt, profiles, working_dir, session_ids=None):
             pool_profiles_used.extend(p.name for p in profiles)
             return _make_pool_result([APPROVE_REVIEW], [profiles[0].name])
 

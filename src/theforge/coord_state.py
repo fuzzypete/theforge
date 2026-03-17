@@ -57,6 +57,7 @@ class CoordinatorState:
     workspace_path: Path | None = None
     branch_name: str | None = None
     dev_session_id: str | None = None
+    reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     review_cycle: int = 0  # which dev→review loop we're on
     dev_iteration: int = 0  # retries within the current review cycle
     dev_results: list[AgentResult] = field(default_factory=list)
@@ -86,7 +87,9 @@ class CoordinatorState:
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
     retry_reason: str | None = (
-        None  # "review_changes" | "gate_fail" | "dirty_worktree" | "extend" | "reject" | None
+        None
+        # "review_changes" | "gate_fail" | "dirty_worktree" | "extend"
+        # | "reject" | "timeout_resume" | None
     )
 
     @property

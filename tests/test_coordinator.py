@@ -506,6 +506,304 @@ test_coverage:
         assert mock_fix_prompt.called, "build_fix_prompt should be called after extend"
 
 
+class TestCoordinatorSessionResume:
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_dev_session_carried_on_timeout(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        timeout_result = AgentResult(
+            success=False,
+            output="TIMEOUT",
+            session_id="sess-timeout",
+            cost_usd=0.10,
+            exit_code=-9,
+            raw={},
+            profile_name="dev",
+        )
+        resumed_result = _make_agent_result(
+            success=True, output="Done.", session_id="sess-resumed", profile_name="dev"
+        )
+        dev_session_ids: list[str | None] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _PREFLIGHT_RESULT
+            dev_session_ids.append(session_id)
+            if len(dev_session_ids) == 1:
+                return timeout_result
+            return resumed_result
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_agent.side_effect = fake_run_agent
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert dev_session_ids == [None, "sess-timeout"]
+        assert result.state.dev_session_id == "sess-resumed"
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_dev_session_carried_across_review_cycles(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        dev_session_ids: list[str | None] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _PREFLIGHT_RESULT
+            dev_session_ids.append(session_id)
+            if len(dev_session_ids) == 1:
+                return _make_agent_result(
+                    success=True,
+                    output="Implemented.",
+                    session_id="dev-sess-1",
+                    profile_name="dev",
+                )
+            return _make_agent_result(
+                success=True, output="Fixed.", session_id="dev-sess-2", profile_name="dev"
+            )
+
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=REQUEST_CHANGES_REVIEW,
+                        session_id="review-sess-1",
+                        profile_name="review",
+                    )
+                ]
+            return [
+                _make_agent_result(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id="review-sess-2",
+                    profile_name="review",
+                )
+            ]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_agent.side_effect = fake_run_agent
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert dev_session_ids == [None, "dev-sess-1"]
+        assert result.state.dev_session_id == "dev-sess-2"
+
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_timeout_resume_uses_short_prompt(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "full dev prompt"
+        dev_prompts: list[str] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _PREFLIGHT_RESULT
+            dev_prompts.append(prompt)
+            if len(dev_prompts) == 1:
+                return AgentResult(
+                    success=False,
+                    output="TIMEOUT",
+                    session_id="sess-timeout",
+                    cost_usd=0.10,
+                    exit_code=-9,
+                    raw={},
+                    profile_name="dev",
+                )
+            return _make_agent_result(success=True, output="Done.", profile_name="dev")
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_agent.side_effect = fake_run_agent
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert dev_prompts[0] == "full dev prompt"
+        assert "You were cut off by a timeout." in dev_prompts[1]
+        assert dev_prompts[1] != "full dev prompt"
+
+    @patch("theforge.coordinator.build_dev_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_timeout_resume_only_overrides_gate_fail(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_dev_prompt.return_value = "full dev prompt"
+        dev_prompts: list[str] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            if profile.name == "preflight":
+                return _PREFLIGHT_RESULT
+            dev_prompts.append(prompt)
+            if len(dev_prompts) == 1:
+                return AgentResult(
+                    success=False,
+                    output="TIMEOUT",
+                    session_id="sess-timeout",
+                    cost_usd=0.10,
+                    exit_code=-9,
+                    raw={},
+                    profile_name="dev",
+                )
+            return _make_agent_result(success=True, output="Done.", profile_name="dev")
+
+        shell_calls = {"status": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                shell_calls["status"] += 1
+                if shell_calls["status"] == 1:
+                    return (True, " M src/foo.py")
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = fake_run_agent
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_dev_prompt.call_count == 2
+        assert dev_prompts == ["full dev prompt", "full dev prompt"]
+        second_feedback = mock_dev_prompt.call_args_list[1].kwargs["human_feedback"]
+        assert "PROCESS VIOLATION" in second_feedback
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_reviewer_sessions_accumulate(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
+            _make_agent_result(success=True, output="Fixed.", profile_name="dev"),
+        )
+
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=REQUEST_CHANGES_REVIEW,
+                        session_id="review-sess-1",
+                        profile_name="review",
+                    )
+                ]
+            return [
+                _make_agent_result(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id="review-sess-2",
+                    profile_name="review",
+                )
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.reviewer_session_ids == {"review": "review-sess-2"}
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_reviewer_sessions_passed_to_pool(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured_session_ids: list[list[str | None]] = []
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
+            _make_agent_result(success=True, output="Fixed.", profile_name="dev"),
+        )
+
+        def pool_side_effect(**kwargs):
+            captured_session_ids.append(list(kwargs["session_ids"]))
+            if len(captured_session_ids) == 1:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=REQUEST_CHANGES_REVIEW,
+                        session_id="review-sess-1",
+                        profile_name="review",
+                    )
+                ]
+            return [
+                _make_agent_result(
+                    success=True,
+                    output=APPROVE_REVIEW,
+                    session_id="review-sess-2",
+                    profile_name="review",
+                )
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert captured_session_ids == [[None], ["review-sess-1"]]
+
+
 class TestCoordinatorEscalation:
     """Test that exhausting retries escalates to human."""
 

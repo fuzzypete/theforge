@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -207,7 +208,38 @@ class TestRunAgentClaude:
 
         assert result.success is False
         assert "TIMEOUT" in result.output
-        assert result.exit_code == -1
+        assert result.exit_code == -9
+
+    def test_timeout_returns_session_id(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=1,
+            allowed_tools=(),
+        )
+
+        class _PartialStdout:
+            def __iter__(self):
+                yield json.dumps({"type": "assistant", "session_id": "sess-timeout"}) + "\n"
+                time.sleep(2)
+                return
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = _PartialStdout()
+        mock_proc.stdin = MagicMock()
+        mock_proc.stderr = MagicMock()
+        mock_proc.returncode = -1
+        mock_proc.wait.return_value = -1
+        mock_proc.poll.return_value = None
+
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.exit_code == -9
+        assert result.session_id == "sess-timeout"
 
     def test_cli_not_found(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
@@ -325,6 +357,66 @@ class TestRunAgentClaude:
 
         captured = capsys.readouterr()
         assert "↳ Bash: pytest tests/ -q" in captured.err
+
+    def test_no_result_json_fallback_extracts_session_id(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        mock_proc = _make_stream_mock(
+            [json.dumps({"type": "assistant", "session_id": "sess-fallback"}) + "\n"]
+        )
+        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.success is True
+        assert result.session_id == "sess-fallback"
+        assert result.output == json.dumps({"type": "assistant", "session_id": "sess-fallback"})
+
+
+class TestClaudeSessionIdHelper:
+    def test_get_claude_session_id_from_jsonl(self, tmp_path: Path) -> None:
+        output = "\n".join(
+            [
+                json.dumps({"type": "assistant", "session_id": "sess-from-jsonl"}),
+                json.dumps({"type": "result", "result": "done"}),
+            ]
+        )
+
+        sid = runner_mod._get_claude_session_id(output, tmp_path)
+
+        assert sid == "sess-from-jsonl"
+
+    def test_get_claude_session_id_fallback_to_file(self, tmp_path: Path) -> None:
+        project_slug = str(tmp_path.resolve()).replace("/", "-")
+        claude_dir = tmp_path / ".claude" / "projects" / project_slug
+        claude_dir.mkdir(parents=True)
+        old_file = claude_dir / "sess-old.jsonl"
+        new_file = claude_dir / "sess-new.jsonl"
+        old_file.write_text("", encoding="utf-8")
+        new_file.write_text("", encoding="utf-8")
+        now = time.time()
+        os.utime(old_file, (now - 20, now - 20))
+        os.utime(new_file, (now - 5, now - 5))
+
+        with patch("theforge.runner.Path.home", return_value=tmp_path):
+            sid = runner_mod._get_claude_session_id("", tmp_path, min_mtime=now - 10)
+
+        assert sid == "sess-new"
+
+    def test_get_claude_session_id_no_fallback_for_pool(self, tmp_path: Path) -> None:
+        project_slug = str(tmp_path.resolve()).replace("/", "-")
+        claude_dir = tmp_path / ".claude" / "projects" / project_slug
+        claude_dir.mkdir(parents=True)
+        (claude_dir / "sess-from-disk.jsonl").write_text("", encoding="utf-8")
+
+        with patch("theforge.runner.Path.home", return_value=tmp_path):
+            sid = runner_mod._get_claude_session_id(
+                "",
+                tmp_path,
+                fallback_to_file=False,
+                min_mtime=time.time() - 10,
+            )
+
+        assert sid is None
 
 
 class TestRunAgentCostCoercion:
@@ -572,8 +664,105 @@ class TestRunAgentPool:
         assert set(dispatched_clis) == {"claude", "gemini"}
         assert results[0].profile_name == "claude-reviewer"
         assert results[1].profile_name == "gemini-reviewer"
-        assert results[0].output == "output from claude"
-        assert results[1].output == "output from gemini"
+
+    def test_pool_passes_session_ids(self, tmp_path: Path) -> None:
+        profiles = [
+            ModelProfile(
+                name="r1",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+            ModelProfile(
+                name="r2",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            ),
+        ]
+        seen_session_ids: list[str | None] = []
+
+        def mock_run_agent(**kwargs):
+            seen_session_ids.append(kwargs.get("session_id"))
+            profile = kwargs["profile"]
+            return AgentResult(
+                success=True,
+                output=f"output-{profile.name}",
+                session_id=None,
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name=profile.name,
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+            run_agent_pool(
+                prompt="review",
+                profiles=profiles,
+                working_dir=tmp_path,
+                session_ids=["sess-1", "sess-2"],
+            )
+
+        assert seen_session_ids == ["sess-1", "sess-2"]
+
+    def test_pool_session_ids_length_mismatch(self, tmp_path: Path) -> None:
+        profiles = [
+            ModelProfile(
+                name="solo",
+                cli="claude",
+                model="opus",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=(),
+            )
+        ]
+
+        with pytest.raises(AssertionError, match="session_ids must match profiles length"):
+            run_agent_pool(
+                prompt="review",
+                profiles=profiles,
+                working_dir=tmp_path,
+                session_ids=["a", "b"],
+            )
+
+    def test_pool_single_agent_passes_session_id(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="solo",
+            cli="claude",
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        seen_kwargs: dict[str, object] = {}
+
+        def mock_run_agent(**kwargs):
+            seen_kwargs.update(kwargs)
+            return AgentResult(
+                success=True,
+                output="solo review",
+                session_id="sess-solo",
+                cost_usd=0.0,
+                exit_code=0,
+                raw={},
+                profile_name="solo",
+            )
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+            results = run_agent_pool(
+                prompt="review",
+                profiles=[profile],
+                working_dir=tmp_path,
+                session_ids=["sess-prev"],
+            )
+
+        assert results[0].session_id == "sess-solo"
+        assert seen_kwargs["session_id"] == "sess-prev"
+        assert results[0].output == "solo review"
 
     def test_pool_profile_name_set_on_results(self, tmp_path: Path) -> None:
         """Each result in the pool has profile_name matching the profile."""
