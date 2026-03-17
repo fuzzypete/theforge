@@ -37,7 +37,7 @@ from .coord_preflight import (
 from .coord_state import CoordinatorResult, CoordinatorState, Phase, ReviewCycleMetadata
 from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose
 from .coord_workspace import _merge_branch
-from .review import ReviewResult, parse_review_output, review_to_dev_handoff
+from .review import ReviewResult, review_to_dev_handoff
 from .runner import log_agent_result
 from .task import TaskSpec
 
@@ -167,7 +167,7 @@ def _run_review_phase(
                 f"for review cycle {state.review_cycle + 1}"
             )
 
-        successful, failed_results, synthesis_output = mod._run_review_pool(
+        successful, failed_results, _candidate = mod._run_review_pool(
             state,
             config,
             task,
@@ -178,8 +178,8 @@ def _run_review_phase(
             notify=notify,
         )
 
-        if synthesis_output is None:
-            # All reviewers failed, budget exceeded, or synthesis failed —
+        if _candidate is None:
+            # All reviewers failed or budget exceeded —
             # state.error already set by _run_review_pool
             _escalate_notify(task, state, notify, config)
             return (
@@ -192,8 +192,6 @@ def _run_review_phase(
                 ),
                 config,
             )
-
-        _candidate = parse_review_output(synthesis_output)
 
         if _candidate.parse_errors:
             last_parse_error = str(_candidate.parse_errors)

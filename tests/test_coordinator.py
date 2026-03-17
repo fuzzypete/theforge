@@ -236,10 +236,11 @@ def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
 
 
 def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
-    """Create a _run_shell side_effect that writes handoff.yaml during gate execution.
+    """Create a _run_shell side_effect that simulates gate execution via exit code.
 
-    With the stale-handoff fix, _run_gate() deletes handoff before running the gate
-    command, so tests must produce handoff *during* (not before) gate execution.
+    Gate pass/fail is determined by exit code. On PASS, also writes a valid
+    handoff.yaml so downstream handoff validation succeeds. On FAIL, returns a
+    non-zero exit so the coordinator treats it as a gate failure.
 
     Also handles stale-worktree detection commands by returning a "fresh" worktree
     (recent commit, commits ahead of base) so pre-created workspaces are reused.
@@ -254,8 +255,11 @@ def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
         if "gate" in cmd:
             d = decisions_list[min(gate_idx["n"], len(decisions_list) - 1)]
             gate_idx["n"] += 1
-            _write_handoff(Path(cwd), d)
-            return (True, "OK")
+            if d == "PASS":
+                _write_handoff(Path(cwd), d)
+                return (True, "OK")
+            else:
+                return (False, "FAIL: tests failed")
         if "git status --porcelain" in cmd:
             return (True, "")  # clean worktree
         stale_resp = _handle_stale_check_cmd(cmd)
@@ -1723,7 +1727,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_pool_of_2_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Pool of 2 reviews → synthesis → APPROVE."""
+        """Pool of 2 reviews → merge → APPROVE."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
         config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
         task = _make_task(tmp_path)
@@ -1731,15 +1735,14 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # run_agent: DEV (first call), SYNTHESIS (second call)
+        # run_agent: DEV (first call)
         mock_agent.side_effect = [
             _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
         mock_pool.return_value = [
-            _make_agent_result(success=True, output="Reviewer 1 output", profile_name="r1"),
-            _make_agent_result(success=True, output="Reviewer 2 output", profile_name="r2"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
         ]
 
         result = run_task(config, task)
@@ -1880,35 +1883,6 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_synthesis_failure_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Synthesis agent failure → ESCALATE (no fallback)."""
-        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
-        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # run_agent: DEV then SYNTHESIS (fails)
-        mock_agent.side_effect = [
-            _PREFLIGHT_RESULT,
-            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(success=False, output="CRASH", profile_name="synthesis"),
-        ]
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1", profile_name="r1"),
-            _make_agent_result(success=True, output="R2", profile_name="r2"),
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "synthesis" in result.message.lower()
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
     def test_per_profile_budget_enforcement(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """One pool profile over budget → ESCALATE."""
         tight_profile = _make_review_profile("tight", budget_usd=0.10)
@@ -1934,48 +1908,6 @@ class TestCoordinatorMultiModelReview:
         assert result.phase == Phase.ESCALATE
         assert "budget" in result.message.lower()
         assert "tight" in result.message
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_synthesis_budget_enforcement(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Synthesis agent over budget → ESCALATE."""
-        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
-        tight_synthesis = ModelProfile(
-            name="synthesis",
-            cli="claude",
-            model="opus",
-            budget_usd=0.10,  # very tight
-            timeout_seconds=300,
-            allowed_tools=(),
-        )
-        config = _make_pool_config(tmp_path, profiles, tight_synthesis)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = [
-            _PREFLIGHT_RESULT,
-            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            # synthesis costs $0.50 > budget $0.10
-            _make_agent_result(
-                success=True,
-                output=APPROVE_REVIEW,
-                profile_name="synthesis",
-                cost_usd=0.50,
-            ),
-        ]
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1", profile_name="r1"),
-            _make_agent_result(success=True, output="R2", profile_name="r2"),
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "synthesis" in result.message.lower()
 
 
 class TestCoordinatorAuditTiming:
@@ -2090,39 +2022,6 @@ class TestCoordinatorAuditAgentBreakdown:
         assert review_entry["cost_usd"] == 0.20
         assert review_entry["duration_seconds"] is not None
         assert review_entry["duration_seconds"] >= 0
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_synthesis_agent_tagged_correctly(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Synthesis agent entry has role='synthesis' in agents list."""
-
-        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
-        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = [
-            _PREFLIGHT_RESULT,
-            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
-        ]
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1", profile_name="r1"),
-            _make_agent_result(success=True, output="R2", profile_name="r2"),
-        ]
-
-        result = run_task(config, task)
-        audit = generate_audit_log(config, task, result)
-
-        agents = audit["cost"]["agents"]
-        roles = [a["role"] for a in agents]
-        assert "synthesis" in roles
-
-        synth_entry = next(a for a in agents if a["role"] == "synthesis")
-        assert synth_entry["profile"] == "synthesis"
 
 
 # ── Structured logging tests ──────────────────────────────────────────
@@ -2334,7 +2233,7 @@ class TestCoordinatorReviewCycleMetadata:
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_metadata_present_on_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Audit metadata is populated after successful pool+synthesis."""
+        """Audit metadata is populated after successful pool merge."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
         config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
         task = _make_task(tmp_path)
@@ -2345,11 +2244,10 @@ class TestCoordinatorReviewCycleMetadata:
         mock_agent.side_effect = [
             _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
         mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1", profile_name="r1"),
-            _make_agent_result(success=True, output="R2", profile_name="r2"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
         ]
 
         result = run_task(config, task)
@@ -2359,7 +2257,7 @@ class TestCoordinatorReviewCycleMetadata:
         assert meta.pool_models == ["r1", "r2"]
         assert meta.successful == ["r1", "r2"]
         assert meta.failed == []
-        assert meta.synthesized is True
+        assert meta.synthesized is False
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -2396,39 +2294,6 @@ class TestCoordinatorReviewCycleMetadata:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_metadata_present_on_synthesis_failure(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """Metadata is populated even when synthesis fails (P2 fix)."""
-        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
-        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = [
-            _PREFLIGHT_RESULT,
-            _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(success=False, output="CRASH", profile_name="synthesis"),
-        ]
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1", profile_name="r1"),
-            _make_agent_result(success=True, output="R2", profile_name="r2"),
-        ]
-
-        result = run_task(config, task)
-
-        assert result.phase == Phase.ESCALATE
-        # Metadata must be present despite synthesis failure
-        assert len(result.state.review_cycle_metadata) == 1
-        meta = result.state.review_cycle_metadata[0]
-        assert meta.successful == ["r1", "r2"]
-        assert meta.synthesized is True  # synthesis was attempted
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
     def test_audit_log_contains_pool_metadata(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """generate_audit_log includes pool_models, synthesized, successful, failed."""
 
@@ -2442,11 +2307,10 @@ class TestCoordinatorReviewCycleMetadata:
         mock_agent.side_effect = [
             _PREFLIGHT_RESULT,
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis"),
         ]
         mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1", profile_name="r1"),
-            _make_agent_result(success=True, output="R2", profile_name="r2"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
         ]
 
         result = run_task(config, task)
@@ -2458,7 +2322,7 @@ class TestCoordinatorReviewCycleMetadata:
         assert rev["pool_models"] == ["r1", "r2"]
         assert rev["successful"] == ["r1", "r2"]
         assert rev["failed"] == []
-        assert rev["synthesized"] is True
+        assert rev["synthesized"] is False
         assert rev["verdict"] == "APPROVE"
 
 

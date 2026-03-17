@@ -34,7 +34,6 @@ import datetime
 import subprocess
 import sys as _sys
 import time
-from dataclasses import replace as _dc_replace
 from pathlib import Path
 
 from . import coord_util as _cu
@@ -102,6 +101,7 @@ from .coord_workspace import (  # noqa: F401
 from .devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
 from .review import (  # noqa: F401
     ReviewResult,
+    merge_review_results,
     parse_plan_review_output,
     parse_review_output,
     plan_review_findings_to_text,
@@ -117,7 +117,6 @@ from .task import (  # noqa: F401
     build_plan_review_prompt,
     build_preflight_prompt,
     build_review_prompt,
-    build_synthesis_prompt,
     load_spec,
 )
 
@@ -369,20 +368,23 @@ def _run_review_pool(
     notify: bool,
     review_prompts: str | list[str] | None = None,
     enforce_budgets: bool = True,
-) -> tuple[list, list, str | None]:
-    """Run the review pool + synthesis.  Returns (successful, failed, synthesis_output).
+) -> tuple[list, list, ReviewResult | None]:
+    """Run the review pool and merge results.  Returns (successful, failed, merged_result).
 
-    Updates *meta* in-place (successful, failed, failed_detail, synthesized).
-    synthesis_output is None when all reviewers failed, budget exceeded, or synthesis
-    agent failed; in that case state.phase and state.error are already set — caller
+    Updates *meta* in-place (successful, failed, failed_detail).
+    merged_result is None when all reviewers failed or budget exceeded;
+    in that case state.phase and state.error are already set — caller
     just needs to call _escalate_notify and return a CoordinatorResult.
+
+    When multiple reviewers succeed, results are merged deterministically:
+    strictest verdict wins, findings are unioned. No LLM synthesis call.
 
     Args:
         review_prompts: Pre-built prompts. If None, builds them (with role-aware
             prompts when review_role is configured). Pass explicitly to control
             prompt construction (e.g. run_review_only always uses generic prompts).
-        enforce_budgets: When True (default), enforces per-profile and synthesis
-            budgets. When False (run_review_only), skips budget checks.
+        enforce_budgets: When True (default), enforces per-profile budgets.
+            When False (run_review_only), skips budget checks.
     """
     pool_size = len(config.review_pool)
 
@@ -471,61 +473,19 @@ def _run_review_pool(
         state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
         return successful, failed_results, None
 
-    # Determine synthesis output
-    _is_degraded = len(failed_results) > 0 and pool_size > 1
-    if config.synthesis_profile is None or _is_degraded:
-        if _is_degraded:
-            _log_verbose(
-                f"Degraded: {len(successful)} of {pool_size} reviewers succeeded, "
-                "skipping synthesis"
-            )
-        return successful, failed_results, successful[0].output
+    # Merge all successful reviewer outputs — no synthesis LLM call.
+    # If only one succeeded, parse directly. If multiple, merge (strictest verdict,
+    # union of findings) so the dev agent sees every finding from every reviewer.
+    if len(successful) == 1:
+        return successful, failed_results, parse_review_output(successful[0].output)
 
-    # Multi-model: run synthesis over all successful outputs
-    meta.synthesized = True
     _log_verbose(
-        f"Synthesizing {len(successful)} review outputs (+{len(failed_results)} failed excluded)"
+        f"Merging {len(successful)} review outputs (+{len(failed_results)} failed excluded)"
     )
-    synthesis_prompt = build_synthesis_prompt(
-        task,
-        review_outputs=[r.output for r in successful],
-        review_names=[r.profile_name for r in successful],
-        spec_content=spec_content,
-        failed_count=len(failed_results),
-        total_count=pool_size,
-    )
-    _synth_start = time.monotonic()
-    synthesis_result = run_agent(
-        prompt=synthesis_prompt,
-        profile=config.synthesis_profile,
-        working_dir=workspace_path,
-    )
-    _synth_elapsed = time.monotonic() - _synth_start
-    synthesis_result = _dc_replace(synthesis_result, profile_name="synthesis")
-    state.review_agent_results.append(synthesis_result)
-    state.review_durations.append(_synth_elapsed)
-    log_agent_result(synthesis_result, "SYNTHESIS")
-
-    # Synthesis budget enforcement (original ordering: after synthesis, before returning)
-    if enforce_budgets and config.synthesis_profile is not None:
-        synth_cost = sum(
-            r.cost_usd for r in state.review_agent_results if r.profile_name == "synthesis"
-        )
-        if synth_cost > config.synthesis_profile.budget_usd:
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Synthesis budget exceeded: "
-                f"spent ${synth_cost:.4f} "
-                f"(limit ${config.synthesis_profile.budget_usd:.4f})"
-            )
-            return successful, failed_results, None
-
-    if not synthesis_result.success:
-        state.phase = Phase.ESCALATE
-        state.error = f"Synthesis agent failed (exit={synthesis_result.exit_code})"
-        return successful, failed_results, None
-
-    return successful, failed_results, synthesis_result.output
+    parsed_results = [parse_review_output(r.output) for r in successful]
+    names = [r.profile_name for r in successful]
+    merged = merge_review_results(parsed_results, names)
+    return successful, failed_results, merged
 
 
 def _setup_resume_entry(
@@ -1462,7 +1422,7 @@ def run_review_only(
     state.review_cycle_metadata.append(meta)
 
     _pool_start = time.monotonic()
-    successful, failed_results, synthesis_output = _run_review_pool(
+    successful, failed_results, parsed_review = _run_review_pool(
         state,
         config,
         task,
@@ -1476,8 +1436,8 @@ def run_review_only(
     )
     _pool_elapsed = time.monotonic() - _pool_start
 
-    if synthesis_output is None:
-        # All reviewers failed or synthesis failed — state.error already set
+    if parsed_review is None:
+        # All reviewers failed — state.error already set
         _log(f"✗ ESCALATE   {state.error}")
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
@@ -1487,8 +1447,6 @@ def run_review_only(
             message=state.error,
         )
 
-    # Single-shot parse — no retries in review-only mode
-    parsed_review = parse_review_output(synthesis_output)
     state.review_results.append(parsed_review)
 
     if parsed_review.parse_errors:

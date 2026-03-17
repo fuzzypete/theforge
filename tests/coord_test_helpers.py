@@ -160,7 +160,7 @@ def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
 
 
 def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
-    """Create a _run_shell side_effect that writes handoff.yaml during gate execution."""
+    """Create a _run_shell side_effect that simulates gate execution via exit code."""
     if isinstance(decisions, str):
         decisions_list = [decisions] * 20
     else:
@@ -171,8 +171,13 @@ def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
         if "gate" in cmd:
             d = decisions_list[min(gate_idx["n"], len(decisions_list) - 1)]
             gate_idx["n"] += 1
-            _write_handoff(Path(cwd), d)
-            return (True, "OK")
+            # Gate pass/fail is determined by exit code; write dev_notes on PASS so
+            # handoff validation succeeds.
+            if d == "PASS":
+                _write_handoff(Path(cwd), d)
+                return (True, "OK")
+            else:
+                return (False, "FAIL: tests failed")
         if "git status --porcelain" in cmd:
             return (True, "")  # clean worktree
         stale_resp = _handle_stale_check_cmd(cmd)

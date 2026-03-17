@@ -8,7 +8,7 @@ workspace:
   branch_pattern: "feat/{slug}"
 
 validation:
-  gate_command: ".venv/bin/python -m pytest tests/ -q && echo 'gate_decision: PASS' > handoff.yaml"
+  gate_command: ".venv/bin/python -m pytest tests/ -q"
   handoff_file: "handoff.yaml"
   gate_decision_key: "gate_decision"
 
@@ -61,13 +61,6 @@ profiles:
         - Glob
         - Grep
 
-  synthesis:
-    cli: codex
-    model: gpt-5.4
-    budget_usd: 1.00
-    timeout_seconds: 300
-    allowed_tools:
-      - Read
 
 smart_config_models:
   - sonnet
@@ -89,8 +82,8 @@ plan_review:
 
 plan_agent_review:
   enabled: true
-  cli: claude
-  model: sonnet
+  cli: codex
+  model: gpt-5.4
   budget_usd: 0.50
   timeout: 300
 

@@ -276,6 +276,50 @@ def review_to_dev_handoff(result: ReviewResult) -> str:
     return "\n\n".join(parts)
 
 
+def merge_review_results(results: list[ReviewResult], names: list[str]) -> ReviewResult:
+    """Merge multiple ReviewResults into one without an LLM call.
+
+    - Verdict: REQUEST_CHANGES if any reviewer says so, else APPROVE
+    - Summary: one line per reviewer labelled by name
+    - Findings: union of all findings (preserves duplicates — dev sees full picture)
+    - spec_matches: False if any reviewer says False
+    - test_adequate: False if any reviewer says False
+    """
+    verdict = (
+        "REQUEST_CHANGES" if any(r.verdict == "REQUEST_CHANGES" for r in results) else "APPROVE"
+    )
+    summary_parts = [f"[{name}] {r.summary}" for name, r in zip(names, results)]
+    summary = " | ".join(summary_parts)
+
+    all_findings: list[ReviewFinding] = []
+    for r in results:
+        all_findings.extend(r.findings)
+
+    spec_matches = all(r.spec_matches for r in results)
+    spec_mismatches: list[str] = []
+    for name, r in zip(names, results):
+        for m in r.spec_mismatches:
+            spec_mismatches.append(f"[{name}] {m}")
+
+    test_adequate = all(r.test_adequate for r in results)
+    test_gaps: list[str] = []
+    for name, r in zip(names, results):
+        for g in r.test_gaps:
+            test_gaps.append(f"[{name}] {g}")
+
+    return ReviewResult(
+        verdict=verdict,
+        summary=summary,
+        findings=all_findings,
+        spec_matches=spec_matches,
+        spec_mismatches=spec_mismatches,
+        test_adequate=test_adequate,
+        test_gaps=test_gaps,
+        parse_errors=[],
+        raw_yaml={},
+    )
+
+
 def findings_to_markdown(findings: list[ReviewFinding]) -> str:
     """Convert review findings to markdown for injection into dev agent prompt.
 

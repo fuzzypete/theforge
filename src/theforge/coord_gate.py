@@ -90,6 +90,21 @@ def _read_gate_decision(
     return str(decision).upper(), None
 
 
+def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: str) -> None:
+    """Merge gate_decision into handoff.yaml without overwriting other keys."""
+    handoff_path = workspace_path / config.validation.handoff_file
+    try:
+        data: dict = {}
+        if handoff_path.exists():
+            with open(handoff_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        data[config.validation.gate_decision_key] = decision
+        with open(handoff_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
+    except (OSError, yaml.YAMLError) as e:
+        _cu._log(f"Warning: could not write gate_decision to handoff.yaml: {e}")
+
+
 def _run_gate_full(
     config: ForgeConfig, workspace_path: Path, task: TaskSpec | None = None
 ) -> tuple[str | None, str | None, str]:
@@ -99,21 +114,12 @@ def _run_gate_full(
     )
     if has_override:
         gate_cmd = task.gate_override  # type: ignore[union-attr]
-        use_exit_code = True
     else:
-        if config.validation.handoff_file:
-            stale_handoff = workspace_path / config.validation.handoff_file
-            if stale_handoff.exists():
-                try:
-                    stale_handoff.unlink()
-                except OSError as e:
-                    return None, f"Cannot remove stale handoff file: {e}", ""
         gate_cmd = config.validation.gate_command
         if task is not None:
             pytest_target = task.pytest_target or "tests/"
             gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
             gate_cmd = gate_cmd.replace("{slug}", task.slug)
-        use_exit_code = not config.validation.handoff_file
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
@@ -126,30 +132,24 @@ def _run_gate_full(
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]
 
-    if use_exit_code:
-        if ok:
-            return "PASS", None, output_tail
-        if output.startswith("TIMEOUT"):
-            return (
-                None,
-                f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
-                " Consider increasing gate_timeout.",
-                output_tail,
-            )
-        if output.startswith("ERROR:"):
-            return None, f"Gate infrastructure error: {output[:300]}", output_tail
-        _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
-        return "FAIL", None, output_tail
+    if output.startswith("TIMEOUT"):
+        return (
+            None,
+            f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
+            " Consider increasing gate_timeout.",
+            output_tail,
+        )
+    if output.startswith("ERROR:"):
+        return None, f"Gate infrastructure error: {output[:300]}", output_tail
 
+    # Gate decision comes from exit code. Write it into handoff.yaml (merging, not
+    # overwriting) so downstream validation sees gate_decision alongside dev notes.
+    decision = "PASS" if ok else "FAIL"
+    if config.validation.handoff_file:
+        _write_gate_decision(config, workspace_path, decision)
     if not ok:
-        _cu._log_verbose(f"Gate command failed: {output[:200]}")
-        decision, err = _read_gate_decision(config, workspace_path)
-        if decision:
-            return decision, None, output_tail
-        return None, f"Gate command failed and no handoff produced: {output[:500]}", output_tail
-
-    decision, err = _read_gate_decision(config, workspace_path)
-    return decision, err, output_tail
+        _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
+    return decision, None, output_tail
 
 
 def _run_gate(
