@@ -822,6 +822,7 @@ def _run_dev_phase(
             preflight_output=(state.preflight_result.output if state.preflight_result else None),
             plan_output=state.plan_output,
             iteration=state.dev_iteration,
+            escalation_note=state.escalation_note,
         )
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed

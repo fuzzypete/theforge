@@ -329,11 +329,11 @@ class TestBuildFixPromptCycleHistory:
         assert "Beta finding" in prompt
 
 
-class TestBuildDevPromptNoCycleHistory:
-    """build_dev_prompt never renders cycle history or escalation sections.
+class TestBuildDevPromptEscalation:
+    """build_dev_prompt renders escalation note when provided (reject-after-escalation path).
 
-    Review-driven retries use build_fix_prompt (which has history rendering).
-    build_dev_prompt is only for first-run, gate-fail, reject, and timeout-resume paths.
+    Cycle history is not rendered (review-driven retries use build_fix_prompt for that).
+    build_dev_prompt handles first-run, gate-fail, reject, and timeout-resume paths.
     """
 
     def test_no_history_section_ever(self, tmp_path):
@@ -348,7 +348,7 @@ class TestBuildDevPromptNoCycleHistory:
         )
         assert "Previous Review Cycles" not in prompt
 
-    def test_no_escalation_section_ever(self, tmp_path):
+    def test_no_escalation_when_not_provided(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_dev_prompt(
             task,
@@ -358,6 +358,36 @@ class TestBuildDevPromptNoCycleHistory:
             gate_command="make gate",
         )
         assert "Model Escalation" not in prompt
+
+    def test_escalation_note_rendered_when_provided(self, tmp_path):
+        """Escalation note is shown on reject-after-escalation path."""
+        task = _make_task(tmp_path)
+        note = "MODEL ESCALATION: Persistent P1. Old: sonnet. New: opus."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            escalation_note=note,
+        )
+        assert "Model Escalation" in prompt
+        assert "MODEL ESCALATION" in prompt
+
+    def test_escalation_note_rendered_without_review_findings(self, tmp_path):
+        """Escalation note appears even when review_findings is None (reject path)."""
+        task = _make_task(tmp_path)
+        note = "MODEL ESCALATION: Upgraded."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            review_findings=None,
+            escalation_note=note,
+        )
+        assert "Model Escalation" in prompt
 
 
 class TestBuildPlanPrompt:

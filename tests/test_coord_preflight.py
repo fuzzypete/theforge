@@ -1628,3 +1628,78 @@ class TestApprovePathCycleHistory:
         assert len(result.state.cycle_history) == 1
         assert result.state.cycle_history[0].verdict == "APPROVE"
         assert result.state.cycle_history[0].cycle == 1
+
+
+class TestEscalationNoteOnRejectPath:
+    """Integration test: escalation note is delivered on reject-after-escalation path."""
+
+    @patch("theforge.coordinator._human_review")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_escalation_note_in_prompt_after_reject(
+        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+    ):
+        """Persistent P1 + exhausted cycles + human reject: next dev prompt has escalation note."""
+        config = _make_smart_config(tmp_path, max_review_cycles=2)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        # Capture prompts passed to dev agent (skip preflight call index 0)
+        captured_prompts: list[str] = []
+        agent_call_count = {"n": 0}
+
+        def agent_side_effect(**kwargs):
+            agent_call_count["n"] += 1
+            if agent_call_count["n"] > 1:  # skip preflight
+                captured_prompts.append(kwargs.get("prompt", ""))
+            return _make_agent_result(success=True, output="Done.")
+
+        mock_agent.side_effect = agent_side_effect
+
+        # Cycle 1 + Cycle 2: same P1 → persistent P1 fires on cycle 2, exhausted
+        pool_call = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_call["n"] += 1
+            if pool_call["n"] <= 2:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=_PERSISTENT_P1_REVIEW,
+                        profile_name="claude-opus",
+                    )
+                ]
+            # After reject: approve so the run completes
+            return [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        # Cycle 2 exhausted → human review: reject once, then approve
+        human_review_call = {"n": 0}
+
+        def human_review_side_effect(*args, **kwargs):
+            human_review_call["n"] += 1
+            if human_review_call["n"] == 1:
+                return ("reject", "Start fresh with the escalated model.")
+            return ("approve", None)
+
+        mock_human_review.side_effect = human_review_side_effect
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.dev_escalated is True
+
+        # Flow: prompts[0]=initial dev, prompts[1]=after cycle-1 (build_fix_prompt),
+        # prompts[2]=after reject (build_dev_prompt with escalation_note)
+        assert len(captured_prompts) >= 3, f"Expected >=3 dev prompts, got {len(captured_prompts)}"
+        post_reject_prompt = captured_prompts[2]  # dev call after exhausted+reject
+        assert "MODEL ESCALATION" in post_reject_prompt, (
+            "Escalation note missing from dev prompt after reject"
+        )

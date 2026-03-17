@@ -417,6 +417,7 @@ def build_dev_prompt(
     preflight_output: str | None = None,
     plan_output: str | None = None,
     iteration: int = 1,
+    escalation_note: str | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -436,6 +437,14 @@ def build_dev_prompt(
         file_scope_str = "- (no scope restriction — all project files)"
 
     feedback_section = ""
+    if escalation_note:
+        feedback_section += dedent(f"""\
+
+            ## ⚠ Model Escalation
+
+            {escalation_note}
+        """)
+
     if review_findings:
         feedback_section += dedent(f"""\
 
