@@ -37,7 +37,7 @@ def _get_claude_session_id(
     cwd: Path,
     *,
     fallback_to_file: bool = True,   # False for pool agents
-    min_mtime: float | None = None,  # monotonic filter for dev fallback
+    min_mtime: float | None = None,  # wall-clock epoch (time.time()) filter for dev fallback
 ) -> str | None:
 ```
 - Primary: scan JSONL lines for any event containing `session_id` field
@@ -69,6 +69,16 @@ def run_agent_pool(
 When provided, each agent gets its corresponding session_id via `run_agent()`.
 Default `None` means no resume (backward compatible). When a list, must
 satisfy `assert len(session_ids) == len(profiles)`.
+
+**IMPORTANT**: The single-agent fast path (line 239-240) must also pass
+session_id. Currently it calls `run_agent(...)` without session_id, which
+breaks reviewer resume for the common single-reviewer pool config:
+```python
+if len(profiles) == 1:
+    sid = session_ids[0] if session_ids else None
+    return [run_agent(prompt=prompts[0], profile=profiles[0],
+                      working_dir=working_dir, session_id=sid)]
+```
 
 ### 2. `src/theforge/coord_state.py` — Reviewer session tracking
 
@@ -186,6 +196,7 @@ fine — the coordinator handles None gracefully (no resume attempted).
 - `test_get_claude_session_id_no_fallback_for_pool` — `fallback_to_file=False` skips disk
 - `test_pool_passes_session_ids` — verify pool passes per-agent session_ids
 - `test_pool_session_ids_length_mismatch` — assert on length mismatch
+- `test_pool_single_agent_passes_session_id` — single-reviewer fast path includes session_id
 
 ### `tests/test_coordinator.py`
 - `test_dev_session_carried_on_timeout` — exit=-9 preserves session_id
@@ -209,6 +220,14 @@ is correct but targets the wrong code structure. Key patterns to reuse:
 The worktree at `.forge/worktrees/session-resume/` contains this code but is
 stale (pre-refactor). Do not rebase — implement fresh against current main.
 
+## Scope Clarification
+
+Session resume operates within a single `forge run` process. `CoordinatorState`
+is in-memory only. There is no cross-process persistence of session IDs — each
+`forge run` starts with empty session state. The Claude sessions themselves
+persist on disk (in `~/.claude/projects/`), but forge does not attempt to
+restore session mappings across process restarts.
+
 ## Review History
 
 ### Round 1 (2026-03-16)
@@ -229,3 +248,17 @@ guidance. → Only override when `retry_reason == "gate_fail"`.
 from prior runs. → `min_mtime` filter based on run start time.
 
 **Gemini suggestion — Pool validation**: → Assert length match in `run_agent_pool`.
+
+### Round 2 (2026-03-16)
+Reviewed by Codex (contract audit) and Gemini (technical audit).
+
+**Codex P1 — Single-reviewer fast path**: `run_agent_pool()` line 239-240 has
+a `len(profiles) == 1` early return that skips session_id entirely. Most configs
+use a single reviewer. → Added explicit fix and test for this path.
+
+**Codex P2 — monotonic vs wall-clock mtime**: `min_mtime` documented as
+"monotonic filter" but file mtimes are wall-clock. `time.monotonic()` is not
+comparable to `os.stat().st_mtime`. → Changed to "wall-clock epoch (time.time())".
+
+**Codex open question — cross-process scope**: Scope is within a single
+`forge run`. No cross-process persistence. → Added scope clarification section.

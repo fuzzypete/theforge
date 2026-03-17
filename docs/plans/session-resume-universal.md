@@ -100,3 +100,17 @@ pre-refactor monolithic coordinator.py. The logic is sound:
 - Session lifecycle — adapt for coord_phases.py
 
 Worktree at `.forge/worktrees/session-resume/` is stale. Implement fresh.
+
+## Review Round 2 Findings (2026-03-16)
+
+**Codex P1 — Single-reviewer fast path**: `run_agent_pool()` has a
+`len(profiles) == 1` early return (line 239-240) that calls `run_agent()`
+without session_id. Most configs use a single reviewer. This path must
+also thread `session_ids` through.
+
+**Codex P2 — Wall-clock vs monotonic**: `min_mtime` must use `time.time()`
+(wall-clock epoch), not `time.monotonic()`. File `stat().st_mtime` is
+wall-clock — the two are not comparable.
+
+**Scope**: Within a single `forge run` only. No cross-process persistence
+of session ID mappings.
