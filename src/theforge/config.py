@@ -147,7 +147,8 @@ class PlanConfig:
     """
 
     enabled: bool = False
-    model: str = "claude"  # CLI name for the plan agent
+    model: str = "claude"  # CLI name (the CLI binary, e.g. "claude")
+    model_name: str = "sonnet"  # model identifier passed to the CLI
     budget_usd: float = 0.50
     timeout: int = 300
 
@@ -601,6 +602,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     plan_cfg = PlanConfig(
         enabled=bool(plan_data.get("enabled", False)),
         model=str(plan_data.get("model", "claude")),
+        model_name=str(plan_data.get("model_name", "sonnet")),
         budget_usd=float(plan_data.get("budget_usd", 0.50)),
         timeout=int(plan_data.get("timeout", 300)),
     )

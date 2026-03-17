@@ -915,7 +915,7 @@ def run_task(
         plan_profile = ModelProfile(
             name="plan",
             cli=config.plan.model,
-            model="opus",
+            model=config.plan.model_name,
             budget_usd=config.plan.budget_usd,
             timeout_seconds=config.plan.timeout,
             allowed_tools=config.preflight_profile.allowed_tools,
@@ -963,7 +963,8 @@ def run_task(
                         "agent review takes precedence"
                     )
 
-                for _attempt in range(2):
+                _max = config.retry.max_plan_regen_attempts
+                for _attempt in range(_max + 1):
                     _log_phase(state.phase, f"agent review (model={par_profile.model})")
 
                     pr_prompt = build_plan_review_prompt(
@@ -1007,6 +1008,24 @@ def run_task(
                             f"  ✓ PLAN_REVIEW   approve (agent)  "
                             f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
                         )
+                        # Commit the approved plan so it's preserved in git history
+                        try:
+                            _cu._run_shell(
+                                ["git", "add", "forge_plan.md"],
+                                cwd=workspace_path,
+                            )
+                            _cu._run_shell(
+                                [
+                                    "git",
+                                    "commit",
+                                    "-m",
+                                    f"docs(plan): approved implementation plan for {task.slug}",
+                                ],
+                                cwd=workspace_path,
+                            )
+                            _log("  ✓ PLAN   committed forge_plan.md")
+                        except Exception as _commit_err:
+                            _log(f"  ⚠ PLAN   could not commit forge_plan.md: {_commit_err}")
                         break
 
                     # REJECT path
@@ -1037,7 +1056,6 @@ def run_task(
 
                     # REJECT → regenerate plan with findings
                     state.plan_review_decision = "regenerate"
-                    _max = config.retry.max_plan_regen_attempts
                     _log(
                         f"  ↺ PLAN_REVIEW   reject → regenerating plan "
                         f"(attempt {state.plan_regen_count}/{_max})"
@@ -1059,7 +1077,6 @@ def run_task(
                         f"{findings_text}\n"
                     )
 
-                    (workspace_path / "forge_plan.md").unlink(missing_ok=True)
                     _plan_start = time.monotonic()
                     plan_result = run_agent(
                         prompt=regen_prompt,
@@ -1090,7 +1107,7 @@ def run_task(
                     )
 
             elif config.plan_review.enabled:
-                for _ in range(2):
+                for _ in range(config.retry.max_plan_regen_attempts + 1):
                     state.phase = Phase.PLAN_REVIEW
                     _log_phase(state.phase, "waiting for human decision...")
                     _log(f"  Plan written to: {workspace_path / 'forge_plan.md'}")
@@ -1130,6 +1147,24 @@ def run_task(
                             "  ✓ PLAN_REVIEW   approve  "
                             f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
                         )
+                        # Commit the approved plan so it's preserved in git history
+                        try:
+                            _cu._run_shell(
+                                ["git", "add", "forge_plan.md"],
+                                cwd=workspace_path,
+                            )
+                            _cu._run_shell(
+                                [
+                                    "git",
+                                    "commit",
+                                    "-m",
+                                    f"docs(plan): approved implementation plan for {task.slug}",
+                                ],
+                                cwd=workspace_path,
+                            )
+                            _log("  ✓ PLAN   committed forge_plan.md")
+                        except Exception as _commit_err:
+                            _log(f"  ⚠ PLAN   could not commit forge_plan.md: {_commit_err}")
                         break
 
                     if plan_review_decision == "regenerate":
@@ -1155,7 +1190,6 @@ def run_task(
                             f"(attempt {state.plan_regen_count}/{_max2})"
                         )
 
-                        (workspace_path / "forge_plan.md").unlink(missing_ok=True)
                         _plan_start = time.monotonic()
                         plan_result = run_agent(
                             prompt=plan_prompt,

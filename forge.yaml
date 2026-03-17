@@ -73,7 +73,8 @@ retry:
 
 plan:
   enabled: true
-  model: claude   # CLI name for the plan agent (uses opus model)
+  model: claude      # CLI binary name
+  model_name: sonnet # sonnet is sufficient; opus is overkill for focused specs
   budget_usd: 1.00
   timeout: 600
 

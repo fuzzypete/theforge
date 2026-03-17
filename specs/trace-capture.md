@@ -29,7 +29,9 @@ This spec is capture only. Write the files. That's it.
    dev agent
 3. After each gate run, write the gate output (stdout+stderr)
 4. Trace files are named to distinguish phase, iteration, and cycle — no
-   overwrites across multiple passes
+   overwrites across multiple passes. Exception: `plan.txt` is always the
+   most recent accepted plan (overwrite on regen is acceptable since only
+   the approved plan matters downstream).
 5. Trace writing is best-effort — failures log a warning, never crash or
    block the pipeline
 6. Trace files are not committed to git
