@@ -1,1 +1,58 @@
 gate_decision: PASS
+scope_completed:
+  - CycleHistory frozen dataclass added to coord_state.py
+  - cycle_history and escalation_note fields added to CoordinatorState
+  - _persistent_p1_descriptions() helper added to coord_preflight.py
+  - _append_cycle_history() helper added to coord_phases.py
+  - History accumulation in all 4 RETRY_DEV paths in _run_review_phase
+  - Escalation note construction when persistent P1 triggers model escalation
+  - build_fix_prompt updated with cycle_history and escalation_note params
+  - build_dev_prompt updated with cycle_history and escalation_note params
+  - _run_dev_phase updated to thread history into both prompt call-sites
+  - escalation_note cleared after dev prompt consumes it
+  - History capped at 3 most recent entries
+  - 25 new tests covering all acceptance criteria
+deferred_followups: none
+next_recommended_step: reviewer evaluates diff against spec acceptance criteria
+dev_notes: |
+  summary: "Implemented cycle-aware dev feedback by adding a CycleHistory frozen
+    dataclass that captures per-cycle verdict, summary, and P1 findings (truncated
+    to 200 chars). CoordinatorState gains cycle_history (list, capped at 3) and
+    escalation_note (str|None, cleared after consumption). A new _append_cycle_history()
+    helper in coord_phases.py is called in all four RETRY_DEV return paths of
+    _run_review_phase, and a _persistent_p1_descriptions() helper in coord_preflight.py
+    returns matched P1 description strings using the same logic as _has_persistent_p1.
+    Both build_fix_prompt and build_dev_prompt accept optional cycle_history and
+    escalation_note params, rendering 'Previous Review Cycles' and 'Model Escalation'
+    sections before the review findings block. The escalation note is built at the same
+    location where the model swap occurs, then cleared in _run_dev_phase after the
+    prompt is built. Cycle numbers in history are monotonically increasing (len+1),
+    not tied to the resettable review_cycle counter."
+  commits:
+    - sha: "03d4ed2"
+      message: "feat(cycle-aware-feedback): accumulate cycle history and inject into dev prompts"
+  acceptance_criteria:
+    - criterion: "CoordinatorState accumulates review cycle summaries (not just raw ReviewResult objects — a lightweight history)"
+      status: MET
+      notes: "CycleHistory frozen dataclass added; cycle_history field on CoordinatorState; populated in all RETRY_DEV paths via _append_cycle_history()"
+    - criterion: "build_fix_prompt includes a 'Previous Cycles' section showing what was flagged and attempted in earlier cycles"
+      status: MET
+      notes: "build_fix_prompt renders '## Previous Review Cycles' with per-cycle verdict, summary, and P1 findings when cycle_history is non-empty"
+    - criterion: "When no previous cycles exist (first review), no history section appears"
+      status: MET
+      notes: "Section only rendered when cycle_history is non-empty; empty list and None both skip the section; covered by tests"
+    - criterion: "When model escalation fires, the dev prompt includes an explicit note about the escalation and which finding triggered it"
+      status: MET
+      notes: "escalation_note built in _run_review_phase when _has_persistent_p1 fires; rendered as '## Warning Model Escalation' section; cleared after consumption"
+    - criterion: "Cycle history is capped at 3 most recent cycles to bound prompt size"
+      status: MET
+      notes: "_append_cycle_history() trims to last 3 entries after each append; covered by test_cycle_history_capped_at_3"
+    - criterion: "review_to_dev_handoff output is unchanged (reviewer->dev format stays)"
+      status: MET
+      notes: "review_to_dev_handoff was not modified; existing tests confirm no regression"
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "670 tests pass including all pre-existing tests"
+  spec_deviations: none
+  deferred_items: none
+  gate_result: PASS
