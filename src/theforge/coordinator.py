@@ -107,6 +107,15 @@ from .task import (  # noqa: F401
 # ── Shell helper ─────────────────────────────────────────────────────
 
 
+def _set_timeout_resume(state: CoordinatorState, gate_result: str) -> None:
+    """Mark state for a timeout-resume retry with a short continuation prompt."""
+    state.retry_reason = "timeout_resume"
+    state.human_feedback = (
+        "You were cut off by a timeout. Continue from where you left off. "
+        f"Gate result: {gate_result}"
+    )
+
+
 def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
     """Run a shell command. Returns (success, combined output).
 
@@ -349,12 +358,17 @@ def _run_review_pool(
 
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
     _pool_start = time.monotonic()
+    pool_session_ids = [state.reviewer_session_ids.get(p.name) for p in config.review_pool]
     pool_results = run_agent_pool(
         prompt=review_prompts,
         profiles=config.review_pool,
         working_dir=workspace_path,
+        session_ids=pool_session_ids,
     )
     _pool_elapsed = time.monotonic() - _pool_start
+    for profile, result in zip(config.review_pool, pool_results):
+        if result.session_id:
+            state.reviewer_session_ids[profile.name] = result.session_id
     _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
     for r in pool_results:
         state.review_agent_results.append(r)
@@ -586,6 +600,20 @@ def _coordinator_loop(
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
             if _val_outcome == _ValidateOutcome.RETRY_DEV:
+                if (
+                    state.dev_results
+                    and state.dev_results[-1].exit_code == -9
+                    and state.dev_session_id
+                    and state.retry_reason == "gate_fail"
+                ):
+                    gate_result = "FAIL"
+                    if state.gate_decisions:
+                        gate_result = state.gate_decisions[-1]
+                    elif state.human_feedback:
+                        prefix = "Gate validation failed: "
+                        if state.human_feedback.startswith(prefix):
+                            gate_result = f"FAIL - {state.human_feedback.removeprefix(prefix)}"
+                    _set_timeout_resume(state, gate_result)
                 continue
 
         if logger:

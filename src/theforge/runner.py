@@ -182,6 +182,7 @@ def run_agent(
     profile: ModelProfile,
     working_dir: Path,
     session_id: str | None = None,
+    fallback_to_file: bool = True,
     quiet: bool = False,
 ) -> AgentResult:
     """Run an agent using the CLI specified in profile.cli.
@@ -209,13 +210,16 @@ def run_agent(
             profile_name=profile.name,
         )
 
-    return runner_fn(
-        prompt=prompt,
-        profile=profile,
-        working_dir=working_dir,
-        session_id=session_id,
-        quiet=quiet,
-    )
+    runner_kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "profile": profile,
+        "working_dir": working_dir,
+        "session_id": session_id,
+        "quiet": quiet,
+    }
+    if profile.cli == "claude":
+        runner_kwargs["fallback_to_file"] = fallback_to_file
+    return runner_fn(**runner_kwargs)
 
 
 def run_agent_pool(
@@ -223,6 +227,7 @@ def run_agent_pool(
     prompt: str | list[str],
     profiles: list[ModelProfile],
     working_dir: Path,
+    session_ids: list[str | None] | None = None,
 ) -> list[AgentResult]:
     """Run multiple agents concurrently, each with its own prompt or a shared prompt.
 
@@ -235,9 +240,20 @@ def run_agent_pool(
     with no shared context.
     """
     prompts: list[str] = [prompt] * len(profiles) if isinstance(prompt, str) else prompt
+    if session_ids is not None:
+        assert len(session_ids) == len(profiles), "session_ids must match profiles length"
 
     if len(profiles) == 1:
-        return [run_agent(prompt=prompts[0], profile=profiles[0], working_dir=working_dir)]
+        sid = session_ids[0] if session_ids else None
+        return [
+            run_agent(
+                prompt=prompts[0],
+                profile=profiles[0],
+                working_dir=working_dir,
+                session_id=sid,
+                fallback_to_file=False,
+            )
+        ]
 
     names = ", ".join(p.name or f"{p.cli}/{p.model}" for p in profiles)
     _log(f"  Starting review pool: {names} (parallel)")
@@ -249,8 +265,14 @@ def run_agent_pool(
     def _timed_agent(idx: int, profile: ModelProfile) -> AgentResult:
         t0 = time.monotonic()
         try:
+            sid = session_ids[idx] if session_ids else None
             return run_agent(
-                prompt=prompts[idx], profile=profile, working_dir=working_dir, quiet=True
+                prompt=prompts[idx],
+                profile=profile,
+                working_dir=working_dir,
+                session_id=sid,
+                fallback_to_file=False,
+                quiet=True,
             )
         finally:
             agent_durations[idx] = time.monotonic() - t0
@@ -330,12 +352,60 @@ def _process_stream_event(line: str, label: str = "", *, label_prefix: str = "")
                 _log_verbose(f"  ↳ {label_prefix}{tool_name}: {preview}")
 
 
+def _get_claude_session_id(
+    output: str,
+    cwd: Path,
+    *,
+    fallback_to_file: bool = True,
+    min_mtime: float | None = None,
+) -> str | None:
+    """Extract a Claude session id from stream output or transcript files."""
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        sid = event.get("session_id")
+        if isinstance(sid, str) and sid:
+            return sid
+
+    if not fallback_to_file:
+        return None
+
+    claude_projects = Path.home() / ".claude" / "projects"
+    if not claude_projects.is_dir():
+        return None
+
+    try:
+        project_slug = str(cwd.resolve()).replace("/", "-")
+        project_dir = claude_projects / project_slug
+        if not project_dir.is_dir():
+            return None
+
+        candidates = []
+        for path in project_dir.glob("*.jsonl"):
+            mtime = path.stat().st_mtime
+            if min_mtime is not None and mtime <= min_mtime:
+                continue
+            candidates.append((mtime, path))
+    except OSError:
+        return None
+
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1].stem
+
+
 def _run_claude(
     *,
     prompt: str,
     profile: ModelProfile,
     working_dir: Path,
     session_id: str | None = None,
+    fallback_to_file: bool = True,
     quiet: bool = False,
 ) -> AgentResult:
     """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
@@ -363,6 +433,7 @@ def _run_claude(
     if not quiet:
         _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
+    start_wall = time.time()
     start = time.monotonic()
     deadline = start + profile.timeout_seconds
     timed_out = False
@@ -421,12 +492,18 @@ def _run_claude(
         timed_out = True
 
     if timed_out:
+        partial_output = "".join(lines)
         return AgentResult(
             success=False,
             output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
-            session_id=None,
+            session_id=_get_claude_session_id(
+                partial_output,
+                working_dir,
+                fallback_to_file=fallback_to_file,
+                min_mtime=start_wall,
+            ),
             cost_usd=0.0,
-            exit_code=-1,
+            exit_code=-9,
             raw={},
             profile_name=profile.name,
         )
@@ -460,7 +537,12 @@ def _run_claude(
         return AgentResult(
             success=proc.returncode == 0,
             output=raw_output or stderr_text or "(no output)",
-            session_id=None,
+            session_id=_get_claude_session_id(
+                raw_output or stderr_text,
+                working_dir,
+                fallback_to_file=fallback_to_file,
+                min_mtime=start_wall,
+            ),
             cost_usd=0.0,
             exit_code=proc.returncode,
             raw={},

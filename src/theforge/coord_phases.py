@@ -746,7 +746,14 @@ def _run_dev_phase(
         if task.gate_override is not None and not _is_gate_skip(task.gate_override)
         else config.validation.gate_command
     )
-    if state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
+    if state.retry_reason == "timeout_resume":
+        prompt = (
+            state.human_feedback
+            or "You were cut off by a timeout. Continue from where you left off."
+        )
+        state.retry_reason = None
+        state.human_feedback = None
+    elif state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
         prompt = mod.build_fix_prompt(
             task,
             workspace_path=workspace_path,
@@ -782,7 +789,10 @@ def _run_dev_phase(
     _dev_elapsed = time.monotonic() - _dev_start
     state.dev_results.append(dev_result)
     state.dev_durations.append(_dev_elapsed)
-    state.dev_session_id = dev_result.session_id
+    if dev_result.exit_code == -9:
+        state.dev_session_id = dev_result.session_id or state.dev_session_id
+    else:
+        state.dev_session_id = dev_result.session_id
     log_agent_result(dev_result, "DEV")
     _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_duration(_dev_elapsed)}")
     if logger:
