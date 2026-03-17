@@ -4,6 +4,8 @@ Extracted from test_coordinator.py:
 - TestCoordinatorHumanReview — interactive HUMAN_REVIEW phase (R7)
 - TestRemoteHumanReview — remote async HITL via ntfy action buttons
 - TestNtfyPollReply — unit tests for _ntfy_poll_reply()
+- TestNtfyPollPlanReply — unit tests for _ntfy_poll_plan_reply()
+- TestPlanReviewRemote — unit tests for _plan_review_remote()
 - TestNtfyTerminalNotifications — ntfy publish at DONE / ESCALATE
 """
 
@@ -33,10 +35,19 @@ from theforge.config import (
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
     ForgeConfig,
+    LogConfig,
     NotificationConfig,
+    NtfyConfig,
+    PlanConfig,
+    PlanReviewConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coord_notify import (
+    _ntfy_poll_plan_reply,
+    _plan_review_remote,
+)
+from theforge.coord_state import CoordinatorState
 from theforge.coordinator import (
     Phase,
     _is_remote_mode,
@@ -593,6 +604,308 @@ class TestNtfyPollReply:
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("approve", None)
+
+
+class TestNtfyPollPlanReply:
+    """Unit tests for _ntfy_poll_plan_reply() — plan review decision polling."""
+
+    def _make_resp(self, lines: list[str]):
+        content = "\n".join(lines).encode("utf-8")
+        resp = MagicMock()
+        resp.read.return_value = content
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_poll_returns_approve(self):
+        """'approve' message → returns 'approve'."""
+        resp = self._make_resp(['{"event":"message","message":"approve"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coord_notify.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coord_notify.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coord_notify.time.sleep"),
+        ):
+            result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == "approve"
+
+    def test_poll_returns_regenerate(self):
+        """'regenerate' message → returns 'regenerate'."""
+        resp = self._make_resp(['{"event":"message","message":"regenerate"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coord_notify.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coord_notify.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coord_notify.time.sleep"),
+        ):
+            result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == "regenerate"
+
+    def test_poll_returns_abandon(self):
+        """'abandon' message → returns 'abandon'."""
+        resp = self._make_resp(['{"event":"message","message":"abandon"}'])
+        monotonic_vals = iter([0.0, 0.0, 0.0])
+        with (
+            patch("theforge.coord_notify.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coord_notify.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coord_notify.time.sleep"),
+        ):
+            result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == "abandon"
+
+    def test_poll_timeout(self):
+        """Deadline exceeded → returns 'timeout'."""
+        monotonic_vals = iter([0.0, 0.0, 10.0, 61.0])
+        with (
+            patch(
+                "theforge.coord_notify.urllib.request.urlopen",
+                side_effect=Exception("no data"),
+            ),
+            patch("theforge.coord_notify.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coord_notify.time.sleep"),
+        ):
+            result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == "timeout"
+
+    def test_poll_ignores_unknown_messages(self):
+        """Unknown message on first response, valid 'abandon' on second → returns 'abandon'."""
+        resp1 = self._make_resp(['{"event":"message","message":"unknown"}'])
+        resp2 = self._make_resp(['{"event":"message","message":"abandon"}'])
+        call_count = 0
+
+        def fake_urlopen(req, timeout=None):
+            nonlocal call_count
+            call_count += 1
+            return resp1 if call_count == 1 else resp2
+
+        monotonic_vals = iter([0.0, 0.0, 1.0, 1.0, 1.0])
+        with (
+            patch("theforge.coord_notify.urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("theforge.coord_notify.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coord_notify.time.sleep"),
+        ):
+            result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
+        assert result == "abandon"
+        assert call_count == 2
+
+
+def _make_ntfy_plan_review_cfg(
+    tmp_path,
+    *,
+    mode: str = "blocking",
+    timeout_seconds: int = 10,
+) -> ForgeConfig:
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        notifications=NotificationConfig(
+            backend="ntfy",
+            ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),
+        ),
+        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+        plan_review=PlanReviewConfig(enabled=True, mode=mode, timeout_seconds=timeout_seconds),
+        log=LogConfig(enabled=False),
+    )
+
+
+class TestPlanReviewRemote:
+    """Unit tests for _plan_review_remote() — ntfy-backed plan review."""
+
+    def test_remote_approve(self, tmp_path):
+        """ntfy reply 'approve' → returns 'approve', sets mode to 'remote'."""
+        config = _make_ntfy_plan_review_cfg(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch(
+                "theforge.coord_notify._ntfy_poll_plan_reply",
+                return_value="approve",
+            ),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            result = _plan_review_remote(state, "# Plan\n\nDetails.", workspace, task, config)
+
+        assert result == "approve"
+        assert state.plan_review_mode == "remote"
+
+    def test_remote_regenerate(self, tmp_path):
+        """ntfy reply 'regenerate' → returns 'regenerate'."""
+        config = _make_ntfy_plan_review_cfg(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch(
+                "theforge.coord_notify._ntfy_poll_plan_reply",
+                return_value="regenerate",
+            ),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "regenerate"
+
+    def test_remote_blocking_retries_on_timeout_until_decision(self, tmp_path):
+        """Blocking mode + timeout → keeps polling; returns first explicit decision."""
+        config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        poll_calls: list[int] = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            poll_calls.append(1)
+            # First two polls timeout; third returns abandon
+            if len(poll_calls) < 3:
+                return "timeout"
+            return "abandon"
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", side_effect=poll_side_effect),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "abandon"
+        assert state.plan_review_mode == "remote"
+        assert len(poll_calls) == 3  # polled 3 times before getting a decision
+
+    def test_remote_blocking_cursor_preserved_across_chunks(self, tmp_path):
+        """Blocking mode preserves the initial since_ts across all poll iterations.
+
+        If the cursor were reset to time.time() after each chunk, a reply arriving
+        just before the reset would be skipped permanently. Verify all poll calls
+        receive the same original since_ts value.
+        """
+        config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        initial_ts = 1700000000
+        seen_cursors: list[int] = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            seen_cursors.append(since_ts)
+            return "timeout" if len(seen_cursors) < 3 else "approve"
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", side_effect=poll_side_effect),
+            patch("theforge.coord_notify.time.time", return_value=initial_ts),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "approve"
+        assert len(seen_cursors) == 3
+        # All iterations must use the same original cursor, not a reset one
+        assert all(c == initial_ts for c in seen_cursors), (
+            f"Cursor was reset between chunks: {seen_cursors}"
+        )
+
+    def test_remote_blocking_does_not_auto_abandon_on_single_timeout(self, tmp_path):
+        """Blocking mode never auto-abandons: a single timeout chunk re-polls."""
+        config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        poll_calls: list[int] = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            poll_calls.append(1)
+            return "timeout" if len(poll_calls) == 1 else "approve"
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", side_effect=poll_side_effect),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "approve"
+        assert len(poll_calls) == 2
+
+    def test_remote_advisory_timeout_approves(self, tmp_path):
+        """Advisory mode + timeout → auto-approves, sets mode to 'advisory-timeout'."""
+        config = _make_ntfy_plan_review_cfg(tmp_path, mode="advisory")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch(
+                "theforge.coord_notify._ntfy_poll_plan_reply",
+                return_value="timeout",
+            ),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "approve"
+        assert state.plan_review_mode == "advisory-timeout"
+
+    def test_remote_ntfy_payload_format(self, tmp_path):
+        """ntfy publish uses 'TheForge: plan ready — <slug>' title + first 3 lines."""
+        config = _make_ntfy_plan_review_cfg(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        plan_text = "# Plan\n\nLine 2.\nLine 3.\nLine 4 (should be excluded)."
+        publish_calls: list[dict] = []
+
+        def capture_publish(url, title, body, **kwargs):
+            publish_calls.append({"url": url, "title": title, "body": body, **kwargs})
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish", side_effect=capture_publish),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", return_value="approve"),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            _plan_review_remote(state, plan_text, workspace, task, config)
+
+        # First publish call is the plan review notification
+        assert len(publish_calls) >= 1
+        notif = publish_calls[0]
+        assert notif["title"] == f"TheForge: plan ready \u2014 {task.slug}"
+        # Body includes first 3 lines
+        assert "# Plan" in notif["body"]
+        assert "Line 4" not in notif["body"]
+        # Body includes worktree path
+        assert f"Worktree: .forge/worktrees/{task.slug}" in notif["body"]
+        # No 'edit' action exposed remotely
+        assert "edit" not in notif.get("actions", "").lower()
+        # Actions contain approve, regenerate, abandon
+        assert "approve" in notif.get("actions", "").lower()
+        assert "regenerate" in notif.get("actions", "").lower()
+        assert "abandon" in notif.get("actions", "").lower()
 
 
 class TestNtfyTerminalNotifications:

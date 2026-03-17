@@ -84,6 +84,9 @@ plan:
   budget_usd: 1.00
   timeout: 600
 
+plan_review:
+  enabled: true
+
 notifications:
   backend: ntfy
   ntfy:

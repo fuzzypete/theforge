@@ -1177,9 +1177,9 @@ class TestPlanPhase:
         assert "PLAN phase failed" in result.message
         # plan_output is None (plan failed, no output stored)
         assert result.state.plan_output is None
-        # plan_result is stored
-        assert result.state.plan_result is not None
-        assert result.state.plan_result.success is False
+        # plan result is stored
+        assert result.state.plan_results
+        assert result.state.plan_results[-1].success is False
         # DEV should NOT have run (only preflight + plan = 2 agent calls)
         assert mock_agent.call_count == 2
         # Review pool should NOT have run
@@ -1313,7 +1313,7 @@ class TestPlanPhase:
         # PREFLIGHT + DEV only — no plan agent (2 calls)
         assert mock_agent.call_count == 2
         assert result.state.plan_output == plan_content
-        assert result.state.plan_result is None
+        assert result.state.plan_results == []
         assert (workspace / "forge_plan.md").read_text(encoding="utf-8") == plan_content
 
     @patch("theforge.coordinator.run_agent_pool")

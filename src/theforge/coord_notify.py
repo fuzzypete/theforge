@@ -206,6 +206,126 @@ def _ntfy_poll_reply(
     return "timeout", None
 
 
+def _ntfy_poll_plan_reply(
+    reply_url: str,
+    since_ts: int,
+    timeout_seconds: int,
+) -> str:
+    """Poll ntfy reply topic for a plan review decision.
+
+    Returns 'approve', 'regenerate', 'abandon', or 'timeout'.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    poll_url = f"{reply_url}/json?poll=1&since={since_ts}"
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(poll_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("event") not in ("message", None):
+                    continue
+                msg = (obj.get("message") or "").strip().lower()
+                if msg == "approve":
+                    return "approve"
+                if msg == "regenerate":
+                    return "regenerate"
+                if msg == "abandon":
+                    return "abandon"
+        except Exception:
+            pass
+
+        sleep_secs = min(10.0, max(0.0, deadline - time.monotonic()))
+        if sleep_secs > 0:
+            time.sleep(sleep_secs)
+
+    return "timeout"
+
+
+_BLOCKING_POLL_CHUNK = 300  # seconds per poll iteration in blocking mode
+
+
+def _plan_review_remote(
+    state: "_cs.CoordinatorState",
+    plan_text: str,
+    workspace_path: "Path",
+    task: "TaskSpec",
+    config: "ForgeConfig",
+) -> str:
+    """Ntfy-backed remote plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
+    ntfy = config.notifications.ntfy
+    assert ntfy is not None
+
+    reply_url = _ntfy_reply_url(ntfy.url)
+    timeout_seconds = config.plan_review.timeout_seconds
+
+    # Build notification body: first 3 lines of the plan, truncated to 200 chars
+    first_3_lines = "\n".join(plan_text.splitlines()[:3])
+    plan_summary = first_3_lines[:200]
+    if len(first_3_lines) > 200:
+        plan_summary += "\u2026"
+    body = f"{plan_summary}\nWorktree: .forge/worktrees/{task.slug}"
+
+    actions = (
+        f"http, Approve, {reply_url}, method=POST, body=approve; "
+        f"http, Regenerate, {reply_url}, method=POST, body=regenerate; "
+        f"http, Abandon, {reply_url}, method=POST, body=abandon"
+    )
+
+    _cu._log("─── Remote Plan Review (ntfy) ───")
+    _cu._log(f"  Topic:   {ntfy.url}")
+    _cu._log(f"  Reply:   {reply_url}")
+    mode = config.plan_review.mode
+    if mode == "advisory":
+        _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)} (advisory)")
+    else:
+        _cu._log("  Timeout: none (blocking — polls until explicit decision)")
+
+    since_ts = int(time.time())
+    title = f"TheForge: plan ready \u2014 {task.slug}"
+    _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
+
+    _pr_start = time.monotonic()
+    state.plan_review_mode = "remote"
+
+    if mode == "advisory":
+        decision = _ntfy_poll_plan_reply(reply_url, since_ts, timeout_seconds)
+        state.plan_review_waited_seconds = time.monotonic() - _pr_start
+        if decision == "timeout":
+            waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
+            _cu._log(f"  ⚠ PLAN_REVIEW   advisory timeout — auto-approving after {waited_str}")
+            _ntfy_publish(
+                ntfy.url,
+                f"TheForge: plan auto-approved \u2014 {task.slug}",
+                "Advisory timeout reached — proceeding to DEV.",
+                priority=ntfy.priority,
+            )
+            state.plan_review_mode = "advisory-timeout"
+            return "approve"
+    else:
+        # Blocking: poll indefinitely until an explicit human decision arrives
+        while True:
+            decision = _ntfy_poll_plan_reply(reply_url, since_ts, _BLOCKING_POLL_CHUNK)
+            if decision != "timeout":
+                break
+            # Still waiting — log progress and resume polling from original cursor
+            elapsed = _cu._fmt_duration(time.monotonic() - _pr_start)
+            _cu._log(f"  PLAN_REVIEW   still waiting for decision (elapsed {elapsed})")
+        state.plan_review_waited_seconds = time.monotonic() - _pr_start
+
+    waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
+    _cu._log(f"  Remote plan review decision: {decision!r} (waited {waited_str})")
+    return decision
+
+
 def _is_remote_mode(notify: bool, config: "ForgeConfig") -> bool:
     """Return True when all conditions for ntfy-based remote HUMAN_REVIEW are met."""
     return (
@@ -329,3 +449,54 @@ def _human_review(
                 lines.append(stripped)
             return "reject", "\n".join(lines)
         _cu._log("Invalid choice. Enter 'a', 'r', or 'e'.")
+
+
+def _plan_review_interactive(
+    state: "_cs.CoordinatorState",
+    plan_text: str,
+    workspace_path: "Path",
+    task: "TaskSpec",
+) -> str:
+    """Interactive plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
+
+    del state, task
+
+    print(plan_text, end="" if plan_text.endswith("\n") else "\n", file=sys.stdout, flush=True)
+    print(f"Plan at: {workspace_path / 'forge_plan.md'}", file=sys.stderr, flush=True)
+
+    while True:
+        print("Plan ready. Review forge_plan.md and choose:", file=sys.stderr, flush=True)
+        print("  [a] Approve   — proceed to DEV", file=sys.stderr, flush=True)
+        print(
+            "  [e] Edit      — edit forge_plan.md externally, then re-enter 'a'",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "  [r] Regenerate — discard and re-run PLAN agent (once)",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "  [x] Abandon   — cancel run, leave worktree intact",
+            file=sys.stderr,
+            flush=True,
+        )
+        print("Choice [a/e/r/x]: ", end="", file=sys.stderr, flush=True)
+
+        raw = sys.stdin.readline()
+        if not raw:
+            return "abandon"
+
+        choice = raw.strip().lower()
+        if choice in ("a", "approve"):
+            return "approve"
+        if choice in ("e", "edit"):
+            print("Edit the plan, then enter 'a' to approve:", file=sys.stderr, flush=True)
+            continue
+        if choice in ("r", "regenerate"):
+            return "regenerate"
+        if choice in ("x", "abandon"):
+            return "abandon"
+
+        print("Invalid choice. Enter 'a', 'e', 'r', or 'x'.", file=sys.stderr, flush=True)
