@@ -424,6 +424,9 @@ def _run_review_pool(
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
     _pool_start = time.monotonic()
     pool_session_ids = [state.reviewer_session_ids.get(p.name) for p in config.review_pool]
+    for _p, _sid in zip(config.review_pool, pool_session_ids):
+        _tag = f"resuming {_sid[:8]}" if _sid else "new session"
+        _log_verbose(f"  reviewer {_p.name}: {_tag}")
     pool_results = run_agent_pool(
         prompt=review_prompts,
         profiles=config.review_pool,
