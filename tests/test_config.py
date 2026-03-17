@@ -112,7 +112,7 @@ class TestLoadConfig:
         config_path = _write_config({"plan_review": {"enabled": True}}, tmp_path)
         config = load_config(config_path)
         assert config.plan_review.mode == "blocking"
-        assert config.plan_review.timeout_seconds == 300
+        assert config.plan_review.timeout_seconds == 14400
 
 
 class TestAllowedToolsConfig:

@@ -250,6 +250,9 @@ def _ntfy_poll_plan_reply(
     return "timeout"
 
 
+_BLOCKING_POLL_CHUNK = 300  # seconds per poll iteration in blocking mode
+
+
 def _plan_review_remote(
     state: "_cs.CoordinatorState",
     plan_text: str,
@@ -264,9 +267,13 @@ def _plan_review_remote(
     reply_url = _ntfy_reply_url(ntfy.url)
     timeout_seconds = config.plan_review.timeout_seconds
 
-    plan_summary = plan_text[:500].strip()
-    if len(plan_text) > 500:
-        plan_summary += "..."
+    # Build notification body: first 3 lines of the plan, truncated to 200 chars
+    first_3_lines = "\n".join(plan_text.splitlines()[:3])
+    plan_summary = first_3_lines[:200]
+    if len(first_3_lines) > 200:
+        plan_summary += "\u2026"
+    body = f"{plan_summary}\nWorktree: .forge/worktrees/{task.slug}"
+
     actions = (
         f"http, Approve, {reply_url}, method=POST, body=approve; "
         f"http, Regenerate, {reply_url}, method=POST, body=regenerate; "
@@ -276,20 +283,24 @@ def _plan_review_remote(
     _cu._log("─── Remote Plan Review (ntfy) ───")
     _cu._log(f"  Topic:   {ntfy.url}")
     _cu._log(f"  Reply:   {reply_url}")
-    _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
+    mode = config.plan_review.mode
+    if mode == "advisory":
+        _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)} (advisory)")
+    else:
+        _cu._log("  Timeout: none (blocking — polls until explicit decision)")
 
     since_ts = int(time.time())
-    title = f"TheForge: plan review needed \u2014 {task.slug}"
-    _ntfy_publish(ntfy.url, title, plan_summary, priority=ntfy.priority, actions=actions)
+    title = f"plan ready \u2014 {task.slug}"
+    _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
 
     _pr_start = time.monotonic()
-    decision = _ntfy_poll_plan_reply(reply_url, since_ts, timeout_seconds)
-    state.plan_review_waited_seconds = time.monotonic() - _pr_start
     state.plan_review_mode = "remote"
 
-    if decision == "timeout":
-        waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
-        if config.plan_review.mode == "advisory":
+    if mode == "advisory":
+        decision = _ntfy_poll_plan_reply(reply_url, since_ts, timeout_seconds)
+        state.plan_review_waited_seconds = time.monotonic() - _pr_start
+        if decision == "timeout":
+            waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
             _cu._log(f"  ⚠ PLAN_REVIEW   advisory timeout — auto-approving after {waited_str}")
             _ntfy_publish(
                 ntfy.url,
@@ -299,15 +310,17 @@ def _plan_review_remote(
             )
             state.plan_review_mode = "advisory-timeout"
             return "approve"
-        else:
-            _cu._log(f"  ✗ PLAN_REVIEW   blocking timeout — abandoning after {waited_str}")
-            _ntfy_publish(
-                ntfy.url,
-                f"TheForge: plan review timed out \u2014 {task.slug}",
-                "Blocking timeout reached — abandoning.",
-                priority=ntfy.priority,
-            )
-            return "abandon"
+    else:
+        # Blocking: poll indefinitely until an explicit human decision arrives
+        while True:
+            decision = _ntfy_poll_plan_reply(reply_url, since_ts, _BLOCKING_POLL_CHUNK)
+            if decision != "timeout":
+                break
+            # Still waiting — log progress and resume polling from now
+            elapsed = _cu._fmt_duration(time.monotonic() - _pr_start)
+            _cu._log(f"  PLAN_REVIEW   still waiting for decision (elapsed {elapsed})")
+            since_ts = int(time.time())
+        state.plan_review_waited_seconds = time.monotonic() - _pr_start
 
     waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
     _cu._log(f"  Remote plan review decision: {decision!r} (waited {waited_str})")

@@ -763,26 +763,57 @@ class TestPlanReviewRemote:
 
         assert result == "regenerate"
 
-    def test_remote_blocking_timeout_abandons(self, tmp_path):
-        """Blocking mode + timeout → returns 'abandon'."""
+    def test_remote_blocking_retries_on_timeout_until_decision(self, tmp_path):
+        """Blocking mode + timeout → keeps polling; returns first explicit decision."""
         config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
         state = CoordinatorState()
 
+        poll_calls: list[int] = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            poll_calls.append(1)
+            # First two polls timeout; third returns abandon
+            if len(poll_calls) < 3:
+                return "timeout"
+            return "abandon"
+
         with (
             patch("theforge.coord_notify._ntfy_publish"),
-            patch(
-                "theforge.coord_notify._ntfy_poll_plan_reply",
-                return_value="timeout",
-            ),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", side_effect=poll_side_effect),
             patch("theforge.coord_notify.time.time", return_value=1700000000),
         ):
             result = _plan_review_remote(state, "# Plan", workspace, task, config)
 
         assert result == "abandon"
         assert state.plan_review_mode == "remote"
+        assert len(poll_calls) == 3  # polled 3 times before getting a decision
+
+    def test_remote_blocking_does_not_auto_abandon_on_single_timeout(self, tmp_path):
+        """Blocking mode never auto-abandons: a single timeout chunk re-polls."""
+        config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        poll_calls: list[int] = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            poll_calls.append(1)
+            return "timeout" if len(poll_calls) == 1 else "approve"
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", side_effect=poll_side_effect),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "approve"
+        assert len(poll_calls) == 2
 
     def test_remote_advisory_timeout_approves(self, tmp_path):
         """Advisory mode + timeout → auto-approves, sets mode to 'advisory-timeout'."""
@@ -804,6 +835,43 @@ class TestPlanReviewRemote:
 
         assert result == "approve"
         assert state.plan_review_mode == "advisory-timeout"
+
+    def test_remote_ntfy_payload_format(self, tmp_path):
+        """ntfy publish uses 'plan ready — <slug>' title + first 3 lines + worktree path."""
+        config = _make_ntfy_plan_review_cfg(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        plan_text = "# Plan\n\nLine 2.\nLine 3.\nLine 4 (should be excluded)."
+        publish_calls: list[dict] = []
+
+        def capture_publish(url, title, body, **kwargs):
+            publish_calls.append({"url": url, "title": title, "body": body, **kwargs})
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish", side_effect=capture_publish),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", return_value="approve"),
+            patch("theforge.coord_notify.time.time", return_value=1700000000),
+        ):
+            _plan_review_remote(state, plan_text, workspace, task, config)
+
+        # First publish call is the plan review notification
+        assert len(publish_calls) >= 1
+        notif = publish_calls[0]
+        assert notif["title"] == f"plan ready \u2014 {task.slug}"
+        # Body includes first 3 lines
+        assert "# Plan" in notif["body"]
+        assert "Line 4" not in notif["body"]
+        # Body includes worktree path
+        assert f"Worktree: .forge/worktrees/{task.slug}" in notif["body"]
+        # No 'edit' action exposed remotely
+        assert "edit" not in notif.get("actions", "").lower()
+        # Actions contain approve, regenerate, abandon
+        assert "approve" in notif.get("actions", "").lower()
+        assert "regenerate" in notif.get("actions", "").lower()
+        assert "abandon" in notif.get("actions", "").lower()
 
 
 class TestNtfyTerminalNotifications:
