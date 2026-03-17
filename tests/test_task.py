@@ -40,7 +40,7 @@ class TestBuildDevPrompt:
             spec_content="# Spec\n\nDo the thing.",
             gate_command="make gate",
         )
-        assert "Focus your changes" in prompt
+        assert "Touch other files if needed" in prompt
 
     def test_non_empty_scope_does_not_contain_scope_blocked(self, tmp_path):
         task = _make_task(tmp_path)
@@ -444,7 +444,7 @@ class TestBuildPlanPrompt:
             spec_content="# Spec",
             file_contents={},
         )
-        assert "Do NOT write any code" in prompt
+        assert "Do NOT write code" in prompt
 
     def test_output_starts_with_implementation_plan(self, tmp_path):
         task = _make_task(tmp_path)
@@ -562,7 +562,7 @@ class TestBuildReviewPrompt:
         """review_role=None produces the generic prompt."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "You are a code reviewer." in prompt
-        assert "The implementation matches the spec" in prompt
+        assert "safe to merge" in prompt
 
     def test_correctness_role(self, review_task: TaskSpec) -> None:
         """review_role='correctness' produces correctness-focused lens."""
@@ -571,14 +571,14 @@ class TestBuildReviewPrompt:
         )
         assert "correctness" in prompt
         assert "Data integrity risks" in prompt
-        assert "Security issues" in prompt
-        assert "API usage patterns" not in prompt
+        assert "logic bugs" in prompt
+        assert "API boundaries" not in prompt
 
     def test_patterns_role(self, review_task: TaskSpec) -> None:
         """review_role='patterns' produces patterns-focused lens."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role="patterns")
         assert "patterns" in prompt
-        assert "API usage patterns" in prompt
+        assert "API boundaries" in prompt
         assert "Error handling completeness" in prompt
         assert "Data integrity risks" not in prompt
 
@@ -588,9 +588,9 @@ class TestBuildReviewPrompt:
             review_task, **_REVIEW_COMMON_KWARGS, review_role="edge-cases"
         )
         assert "edge cases" in prompt
-        assert "Race conditions" in prompt
         assert "Boundary conditions" in prompt
-        assert "API usage patterns" not in prompt
+        assert "Failure under unexpected input" in prompt
+        assert "API boundaries" not in prompt
 
     def test_unknown_role_falls_back(self, review_task: TaskSpec) -> None:
         """Unknown review_role falls back to the generic prompt."""
@@ -837,7 +837,7 @@ class TestBuildDevPromptDevNotesInstruction:
         assert "dev_notes" in prompt
         assert "handoff.yaml" in prompt
 
-    def test_gate_skipped_excludes_dev_notes(self, tmp_path: Path) -> None:
+    def test_gate_skipped_excludes_gate_command(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
         task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
@@ -849,7 +849,8 @@ class TestBuildDevPromptDevNotesInstruction:
             gate_command="make gate",
             gate_skipped=True,
         )
-        assert "dev_notes" not in prompt
+        assert "Gate is disabled" in prompt
+        assert "make gate" not in prompt
 
 
 # ── build_plan_review_prompt ──────────────────────────────────────────
@@ -877,7 +878,7 @@ class TestBuildPlanReviewPrompt:
         )
         assert "APPROVE" in prompt
         assert "REJECT" in prompt
-        assert "acceptance criteria" in prompt
+        assert "Acceptance criteria coverage" in prompt
 
     def test_includes_file_contents(self, tmp_path: Path) -> None:
         task = _make_task(tmp_path)
@@ -992,8 +993,5 @@ class TestBuildDevPromptStructuredHandoff:
         assert "commits" in prompt
         assert "acceptance_criteria" in prompt
         assert "gate_result" in prompt
-        # Validates structure
-        assert (
-            "validates this structure" in prompt.lower()
-            or "coordinator validates" in prompt.lower()
-        )
+        # Explains why structured handoff matters
+        assert "your voice in the review" in prompt.lower()

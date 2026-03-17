@@ -805,6 +805,7 @@ def _run_dev_phase(
             iteration=state.dev_iteration,
             cycle_history=state.cycle_history or None,
             escalation_note=state.escalation_note,
+            handoff_file=config.validation.handoff_file,
         )
         state.escalation_note = None  # consumed
     else:
@@ -822,6 +823,7 @@ def _run_dev_phase(
             iteration=state.dev_iteration,
             escalation_note=state.escalation_note,
             cycle_history=state.cycle_history or None,
+            handoff_file=config.validation.handoff_file,
         )
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed

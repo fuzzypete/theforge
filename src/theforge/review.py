@@ -192,14 +192,14 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
         raw_findings = []
 
     findings: list[PlanReviewFinding] = []
-    p1_count = 0
+    blocking_count = 0
     for i, f in enumerate(raw_findings or []):
         if not isinstance(f, dict):
             errors.append(f"findings[{i}] must be a mapping")
             continue
         severity = f.get("severity", "P1")
-        if severity == "P1":
-            p1_count += 1
+        if severity in ("P0", "P1"):
+            blocking_count += 1
         desc = f.get("description", "")
         if not desc:
             errors.append(f"findings[{i}].description must be non-empty")
@@ -214,9 +214,9 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
     # Cross-validation: same principle as code review schema
     if verdict == "REJECT" and not findings:
         errors.append("REJECT verdict without findings — cannot justify rejection")
-    if verdict == "APPROVE" and p1_count > 0:
+    if verdict == "APPROVE" and blocking_count > 0:
         errors.append(
-            f"verdict is APPROVE but {p1_count} P1 finding(s) exist — "
+            f"verdict is APPROVE but {blocking_count} P0/P1 finding(s) exist — "
             "cannot approve with blocking findings"
         )
 

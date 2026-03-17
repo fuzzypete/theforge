@@ -124,9 +124,9 @@ def build_preflight_prompt(
 
         ## Your Role
 
-        Before committing expensive dev+review cycles, determine whether this
-        spec should proceed to implementation. You are NOT implementing anything.
-        You are classifying the spec's current status.
+        You are a cheap gate that stops doomed work before expensive dev+review
+        cycles begin. You are NOT implementing anything. You are classifying the
+        spec and catching problems that would waste downstream budget.
 
         ## Spec
 
@@ -144,21 +144,37 @@ def build_preflight_prompt(
 
         Evaluate the spec against the current code and output ONE of these verdicts:
 
-        - **PROCEED** — The spec describes work that has NOT been done yet.
-          The files exist (or should be created), and the acceptance criteria
-          are NOT already satisfied. Implementation should begin.
+        - **PROCEED** — The spec describes unfinished work. The acceptance criteria
+          are clear, non-contradictory, and testable. Implementation should begin.
 
-        - **ALREADY_DONE** — Every acceptance criterion in the spec is ALREADY
-          satisfied by the current code. There is nothing to implement.
-          You MUST verify each criterion individually — do not assume "related
-          code exists" means "spec is satisfied."
+        - **ALREADY_DONE** — Every acceptance criterion is ALREADY satisfied by
+          the current code. You MUST verify each criterion individually.
 
-        - **BLOCKED** — The spec cannot be implemented as written because:
-          - It references files, functions, or APIs that do not exist
-          - It conflicts with the current architecture
-          - It has unresolvable ambiguities
+        - **BLOCKED** — The spec cannot be implemented as written. This includes:
+          - References to files, functions, or APIs that do not exist
+          - Conflicts with the current architecture
+          - **Internal contradictions** (e.g., requirements that conflict with
+            acceptance criteria, or acceptance criteria that contradict each other)
+          - **Ambiguous acceptance criteria** that a dev agent cannot objectively
+            verify (e.g., "should be fast" without a measurable threshold)
           - A dependency is missing
           Provide a clear reason so a human can fix the spec.
+
+        ## Spec Quality Check
+
+        Before classifying, scan the spec for these problems:
+
+        1. **Contradictions**: Do any requirements conflict with acceptance criteria?
+           Do any acceptance criteria conflict with each other?
+        2. **Ambiguity**: Can every acceptance criterion be objectively verified by
+           reading code or running tests? If not, it's ambiguous.
+        3. **Impossible constraints**: Does the spec require mutually exclusive
+           behaviors (e.g., "never overwrite files" + a fixed filename that runs
+           multiple times)?
+
+        If you find any of these, verdict is BLOCKED with a clear explanation of
+        the contradiction or ambiguity. It is far cheaper to fix a spec than to
+        burn plan+dev+review cycles on a doomed implementation.
 
         ## Complexity Assessment
 
@@ -179,19 +195,25 @@ def build_preflight_prompt(
         verdict: PROCEED | ALREADY_DONE | BLOCKED
         complexity: small | medium | large
         reason: "<1-2 sentence explanation of your classification>"
+        spec_issues:
+          - type: contradiction | ambiguity | impossible_constraint
+            description: "<what conflicts or is unclear>"
         criteria_checked:
           - criterion: "<acceptance criterion text>"
             satisfied: true | false
             evidence: "<where in the code this is satisfied, or what is missing>"
         ```
 
+        Use `spec_issues: []` if the spec is clean.
+
         ## Rules
 
         - Check EVERY acceptance criterion individually. Do not shortcut.
         - "Related code exists" is NOT the same as "criterion is satisfied."
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
-        - If the spec references things that don't exist, verdict is BLOCKED.
-        - When in doubt, verdict is PROCEED — it's cheaper to try than to skip.
+        - If the spec has internal contradictions or untestable criteria, verdict is BLOCKED.
+        - BLOCKED is not a failure — it's a save. Fixing a spec costs minutes; a
+          doomed plan+dev+review loop costs hours and dollars.
     """)
 
 
@@ -246,10 +268,11 @@ def build_plan_review_prompt(
 
         ## Your Role
 
-        You are evaluating whether an implementation plan is sound BEFORE any dev
-        budget is spent. You are NOT implementing anything. You produce a structured
-        verdict: APPROVE (plan looks sound) or REJECT (plan has problems that will
-        cause dev to fail).
+        You are the last gate before dev budget is spent. Your job is to block
+        only plans that would **predictably fail** — wrong APIs, missing callers,
+        impossible constraints. Default to APPROVE unless you find a concrete
+        blocker. A plan that is "not how I'd do it" but would still produce
+        working code is an APPROVE.
 
         ## Story / Spec
 
@@ -263,12 +286,18 @@ def build_plan_review_prompt(
 
         {files_block}
         {preflight_section}{rejection_section}
-        ## Evaluation Criteria
+        ## Evaluation Process
 
-        1. Does the plan address ALL acceptance criteria in the story?
-        2. Are there technical errors (wrong APIs, hallucinated functions, blast radius gaps)?
-        3. Is the implementation order sound (dependencies respected)?
-        4. Do the proposed function signatures and module references match the actual codebase?
+        1. **Acceptance criteria coverage** — walk through each AC in the spec
+           and verify the plan addresses it. Report the result in `criteria_coverage`.
+        2. **Blast radius check** — does the plan modify or change return types of
+           functions that have callers outside the listed files? If so, are those
+           callers accounted for?
+        3. **Feasibility** — are the proposed APIs, function signatures, and module
+           paths real? Use your tools to verify against the actual codebase.
+
+        Do NOT evaluate: code style, plan verbosity, alternative approaches,
+        or hypothetical edge cases that the dev agent can handle at implementation time.
 
         ## Output Format
 
@@ -277,20 +306,37 @@ def build_plan_review_prompt(
 
         ```yaml
         verdict: APPROVE | REJECT
+        criteria_coverage:
+          - criterion: "<acceptance criterion text from the spec>"
+            covered: true | false
+            plan_section: "<which part of the plan addresses this, or 'missing'>"
         findings:
-          - severity: P1
+          - severity: P0 | P1 | P2
             description: "<what is wrong with the plan>"
             suggestion: "<how to fix it>"
         ```
 
+        ## Severity Definitions
+
+        - **P0** (blocker): Plan is impossible to implement as written. Wrong API,
+          hallucinated function, missing caller that would break at runtime.
+          REJECT required.
+        - **P1** (likely failure): Plan has a gap that will probably cause dev to
+          fail or produce broken code. REJECT required.
+        - **P2** (suggestion): Plan could be improved but dev can figure it out.
+          Does NOT trigger REJECT.
+
         ## Rules
 
-        - verdict MUST be APPROVE if no blocking issues found
-        - verdict MUST be REJECT if any finding would cause dev to fail
-        - REJECT MUST include at least one finding
-        - APPROVE with no findings is valid (plan is sound)
-        - Be specific: cite the plan section and what is wrong
-        - Do NOT flag style preferences — only flag issues that will cause dev failure
+        - verdict MUST be APPROVE if there are zero P0 or P1 findings
+        - verdict MUST be REJECT if any P0 or P1 finding exists
+        - REJECT MUST include at least one P0 or P1 finding
+        - **List ALL issues in a single pass.** Multiple findings in one REJECT
+          is far better than discovering new issues across multiple cycles.
+        - APPROVE with P2 suggestions is valid and encouraged
+        - Be specific: cite the plan section, the actual codebase function/file,
+          and why it would fail
+        - A plan does not need to be perfect — it needs to not be wrong
     """)
 
 
@@ -334,9 +380,9 @@ def build_plan_prompt(
 
         ## Your Role
 
-        You are NOT implementing anything. You are producing a detailed implementation
-        plan that a dev agent will follow. Your output is a structured markdown document
-        that covers exactly what needs to be done, in what order, with what edge cases.
+        You are NOT implementing anything. You are deciding the smallest viable
+        path to satisfy every acceptance criterion in the spec. Your plan will
+        be reviewed and then handed to a dev agent. Keep it short and decisive.
 
         ## Spec
 
@@ -353,51 +399,42 @@ def build_plan_prompt(
         You MUST output ONLY the plan document. No prose before or after.
         Start your response with `# Implementation Plan` and produce valid markdown.
 
-        The plan MUST cover all of these sections:
+        The plan MUST cover:
 
         ```
         # Implementation Plan: {task.name}
 
         ## Summary
-        One paragraph: what we're implementing and why.
+        One paragraph: what we're doing and the key decision(s).
 
-        ## Implementation Order
-        1. Step one — why first
-        2. Step two — depends on step one
-        ...
+        ## Approach
+        The implementation strategy in 3-5 sentences. What is the core idea?
+        What is the main trade-off or design choice?
 
-        ## Functions to Modify
+        ## Changes
+        For each file to modify:
+        - **File**: path
+        - **What**: what changes and why (1-2 sentences)
+        - **Callers**: list any other files that call the functions being changed
 
-        ### `module.function_name(args) -> return_type`
-        - **File**: `src/theforge/module.py`
-        - **Change**: Add parameter X, handle edge case Y
-        - **Signature**: `def function_name(a: str, b: int = 0) -> bool:`
+        ## Acceptance Criteria Map
+        For each AC in the spec, state which change satisfies it.
 
-        ## Edge Cases
-
-        | Condition | Expected Behavior | Notes |
-        |-----------|-------------------|-------|
-        | Empty list passed | Return [] immediately | No error |
-
-        ## Test Scenarios
-
-        ### `test_scenario_name`
-        - **Setup**: mock X returns Y
-        - **Call**: `function_name("input")`
-        - **Assert**: returns True, log contains "message"
-
-        ## Risks and Ambiguities
-
-        - **Risk**: The spec says X but the code does Y — resolve by doing Z
+        ## Risks
+        Anything ambiguous in the spec or risky in the approach. If the spec
+        has internal contradictions, call them out here — do not silently
+        pick one interpretation.
         ```
 
         ## Rules
 
-        - Do NOT write any code.
-        - Do NOT modify any files.
-        - Output ONLY the plan document starting with `# Implementation Plan`.
-        - Be specific: cite exact function names, file paths, and line numbers where known.
+        - Do NOT write code. Do NOT modify files.
+        - Do NOT invent function signatures — cite what exists in the codebase.
+        - Do NOT pad the plan with edge case tables or test scenario details
+          that the dev agent will derive from the code. Keep it lean.
         - Cover ALL acceptance criteria from the spec.
+        - If something in the spec is ambiguous or contradictory, say so
+          explicitly in Risks rather than guessing.
     """)
 
 
@@ -419,6 +456,7 @@ def build_dev_prompt(
     iteration: int = 1,
     escalation_note: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
+    handoff_file: str = "handoff.yaml",
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -512,103 +550,80 @@ def build_dev_prompt(
         """)
 
     if gate_skipped:
-        gate_steps = dedent("""\
-            8. Gate: none (spec override) — the coordinator will skip the gate for
-               this spec. Do NOT run a gate command. Commit all changes and confirm
-               your work is done.
+        gate_section = dedent("""\
+            Gate is disabled for this spec. Skip the gate command.
         """)
     else:
-        gate_steps = dedent(f"""\
-            8. Run the gate to generate the handoff artifact:
-               ```bash
-               {gate_command}
-               ```
-            9. If the gate generated `handoff.yaml`, fill in these fields:
-               - `scope_completed`: list what you implemented
-               - `deferred_followups`: list anything you couldn't finish
-               - `next_recommended_step`: single next action
-            10. Add a `dev_notes` section to handoff.yaml using this exact YAML structure:
-
-                  dev_notes: |
-                    summary: "One paragraph: what you implemented and how."
-                    commits:
-                      - sha: "abc1234"
-                        message: "feat(scope): what this commit does"
-                    acceptance_criteria:
-                      - criterion: "AC text from the spec"
-                        status: MET | PARTIAL | NOT_MET
-                        notes: "how it was met, or why not"
-                    spec_deviations:
-                      - description: "What deviated from spec"
-                        justification: "Why you deviated — cite the spec section and your reason"
-                    deferred_items:
-                      - description: "What was deferred"
-                        reason: "Why it was deferred"
-                    gate_result: PASS
-
-                Use `spec_deviations: none` if you followed the spec exactly.
-                Use `deferred_items: none` if nothing was deferred.
-                List ALL commits you made (use `git log --oneline` to get shas).
-                List EVERY acceptance criterion from the spec with its status.
-
-                The coordinator validates this structure. If it's malformed you'll
-                be asked to rewrite it, so get the format right the first time.
-                This is your voice in the review — the reviewer reads it before
-                the diff.
+        gate_section = dedent(f"""\
+            Run the gate command to validate your work:
+            ```bash
+            {gate_command}
+            ```
+            Fix any failures. Do NOT declare success until the gate passes.
         """)
 
     return dedent(f"""\
-        You are implementing **{task.name}** for this project.
+        You are implementing **{task.name}**.
 
         ## Working Directory
 
-        You are already in the correct workspace: `{workspace_path}`
-        Branch: `{branch_name}`
+        `{workspace_path}` — branch `{branch_name}`
 
-        Do NOT create a new worktree. Do NOT switch branches. You are already set up.
+        You are already in the correct workspace. Do NOT create a new worktree
+        or switch branches.
 
         ## File Scope
 
-        Focus your changes on these files:
         {file_scope_str}
 
-        If you need to touch a file not listed here, do so — but keep changes
-        minimal and directly related to the spec. The reviewer will flag any
-        unexpected out-of-scope changes.
-
+        Touch other files if needed — keep out-of-scope changes minimal.
         {plan_section}
         ## Spec
         {spec_content}
         {feedback_section}{preflight_section}
-        ## Implementation Steps
+        ## Workflow
 
-        1. Read the spec above carefully before writing any code.
-        2. Implement the spec. Write tests for new functionality.
-        3. After implementation, run these commands in order:
-           ```bash
-           make fmt    # auto-fix formatting
-           make lint   # verify style/types
-           ```
-        4. Fix any lint failures before proceeding.
-        5. Run the full gate (not just your test file — the gate runs everything):
-           ```bash
-           {gate_command}
-           ```
-        6. Fix any failures. Do NOT declare success until the full gate passes.
-        7. Commit your changes with a conventional commit message:
+        1. Implement the spec. Write tests for new functionality.
+        2. Run `make fmt` then `make lint`. Fix any failures.
+        3. {gate_section}
+        4. Commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
            ```
-        {gate_steps}
+        {
+        "5. Write a `dev_notes` section in `"
+        + handoff_file
+        + "` with this structure:"
+        + '''
+
+           ```yaml
+           dev_notes: |
+             summary: "One paragraph: what you implemented and how."
+             commits:
+               - sha: "abc1234"
+                 message: "feat(scope): what this commit does"
+             acceptance_criteria:
+               - criterion: "AC text from the spec"
+                 status: MET | PARTIAL | NOT_MET
+                 notes: "how it was met, or why not"
+             spec_deviations: none  # or list deviations with justification
+             deferred_items: none   # or list with reason
+             gate_result: PASS
+           ```
+
+           List ALL commits (`git log --oneline`). List EVERY acceptance criterion.
+           This is your voice in the review — the reviewer reads it before the diff.'''
+        if handoff_file
+        else ""
+    }
+
         ## Rules
 
         - Do NOT merge to main.
-        - Do NOT modify docs/project_plan.md.
         - Do NOT leave uncommitted changes.
-        - Do NOT skip `make fmt` or `make lint`.
-        - If you cannot complete the task for any reason, commit what you
-          have and note blockers in `deferred_followups`.
+        - If you cannot finish, commit what you have and list blockers in
+          `deferred_items`.
     """)
 
 
@@ -703,6 +718,7 @@ def build_fix_prompt(
     iteration: int = 2,
     cycle_history: list[CycleHistory] | None = None,
     escalation_note: str | None = None,
+    handoff_file: str = "handoff.yaml",
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -755,30 +771,35 @@ def build_fix_prompt(
         You are already in the correct workspace. Do NOT create a new worktree.
         Do NOT switch branches.
         {context_sections}
-        ## P1 Findings to Fix
-
-        The code reviewer identified the following issues that MUST be fixed:
+        ## Review Findings
 
         {review_findings}
 
         ## Your Task
 
-        1. Read the findings above carefully.
-        2. Fix each P1 finding. Address P2 findings if feasible.
-        3. Run `make fmt` to auto-fix formatting.
-        4. Commit your changes:
+        1. Fix each P1 finding. Address P2 findings if feasible.
+        2. Run `make fmt` to auto-fix formatting.
+        3. Commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "fix(<scope>): address review findings (iter {iteration})"
            ```
+        {
+        "4. **Update `dev_notes` in `"
+        + handoff_file
+        + "`** to reflect what you changed"
+        + '''
+           in this iteration. The reviewer reads `dev_notes` before the diff —
+           stale notes from a previous iteration will confuse the next review.
+           Update the `summary`, `commits`, and `acceptance_criteria` fields.'''
+        if handoff_file
+        else ""
+    }
 
         ## Important
 
-        {gate_bullet}- Do NOT re-read the full spec — you already have the context from
-          your previous session.
+        {gate_bullet}- Focus on fixing the identified findings. Do not refactor unrelated code.
         - Do NOT leave uncommitted changes.
-        - Focus ONLY on fixing the identified findings. Do not refactor
-          unrelated code.
     """)
 
 
@@ -882,42 +903,31 @@ def build_synthesis_prompt(
 
 _REVIEW_ROLE_SECTIONS: dict[str, str] = {
     "correctness": dedent("""\
-        You are a code reviewer focused on **correctness**.
-        Your job is to verify:
-        1. The implementation matches the spec
-        2. Logic and correctness bugs (wrong conditions, off-by-one, bad state)
-        3. Data integrity risks (corruption, lost writes, inconsistent state)
-        4. Security issues (injection, auth bypass, unsafe defaults)
+        You are a code reviewer focused on **correctness**. Your lens:
+        - Does the implementation match the spec's acceptance criteria?
+        - Are there logic bugs that would fail at runtime (wrong conditions, bad state)?
+        - Data integrity risks (corruption, lost writes)?
 
-        You are NOT implementing anything. Do NOT write code. Do NOT make changes."""),
+        You are NOT implementing anything. Do NOT write code."""),
     "patterns": dedent("""\
-        You are a code reviewer focused on **patterns and design**.
-        Your job is to verify:
-        1. API usage patterns and idiom violations (wrong abstractions, leaky boundaries)
-        2. Error handling completeness (unhandled exceptions, silent failures)
-        3. Test coverage gaps and missing edge-case tests
-        4. Code organization and interface design (coupling, cohesion, naming)
+        You are a code reviewer focused on **patterns and design**. Your lens:
+        - Error handling completeness (unhandled exceptions, silent failures)
+        - Test coverage: are the important paths tested?
+        - API boundaries: does the change leak internals or break callers?
 
-        You are NOT implementing anything. Do NOT write code. Do NOT make changes."""),
+        You are NOT implementing anything. Do NOT write code."""),
     "edge-cases": dedent("""\
-        You are a code reviewer focused on **edge cases and failure modes**.
-        Your job is to verify:
-        1. Boundary conditions and off-by-one errors (empty inputs, max values, zero)
-        2. Race conditions and concurrency hazards (shared state, ordering assumptions)
-        3. State that survives when it shouldn't (cleanup paths, reset logic, teardown)
-        4. Failure modes under unexpected input or timing (partial writes, timeouts, retries)
+        You are a code reviewer focused on **edge cases and failure modes**. Your lens:
+        - Boundary conditions (empty inputs, max values, zero, None)
+        - State that survives when it shouldn't (cleanup, reset, teardown)
+        - Failure under unexpected input or timing (partial writes, timeouts)
 
-        You are NOT implementing anything. Do NOT write code. Do NOT make changes."""),
+        You are NOT implementing anything. Do NOT write code."""),
 }
 
 _REVIEW_ROLE_GENERIC = dedent("""\
-    You are a code reviewer. Your job is to verify:
-    1. The implementation matches the spec
-    2. The code is correct and safe
-    3. Tests adequately cover the changes
-    4. No regressions are introduced
-
-    You are NOT implementing anything. Do NOT write code. Do NOT make changes.""")
+    You are a code reviewer. Your job is to determine whether this change is
+    safe to merge. You are NOT implementing anything. Do NOT write code.""")
 
 
 def build_review_prompt(
@@ -977,9 +987,8 @@ def build_review_prompt(
         ## Commits
 
         The following commits implement the spec on branch `{branch}`.
-        Review them as you would a pull request — read the commit messages to
-        understand what was done, then use `git show <sha>` or your Read/Bash/Glob/Grep
-        tools to inspect the actual source in the worktree at: {workspace_path}
+        Use `git show <sha>` or Read/Bash/Glob/Grep tools to inspect the source
+        in the worktree at: {workspace_path}
 
         ```
         {commit_log}
@@ -1017,18 +1026,26 @@ def build_review_prompt(
 
         ## Severity Definitions
 
-        - **P1** (blocking): Correctness bug, data integrity risk, spec violation,
-          security issue, missing critical test. MUST be fixed before merge.
-        - **P2** (non-blocking): Style issue, minor improvement, non-critical missing
-          test, documentation gap. SHOULD be fixed but does not block merge.
+        - **P1** (blocking): A concrete, demonstrable problem that would break
+          the code at runtime, violate a specific acceptance criterion, corrupt
+          data, or leave a critical path untested. You MUST be able to point to
+          the exact file, line, and what would go wrong. Spec violations are P1
+          only if the code actually fails to satisfy the criterion — not if the
+          approach differs from what you'd prefer.
+        - **P2** (non-blocking): Style, minor improvement, non-critical missing
+          test, suggestion for future work. Does NOT block merge.
 
         ## Rules
 
+        - **Default to APPROVE.** If the code satisfies every acceptance criterion
+          and the gate passes, it should be approved even if you'd do it differently.
         - verdict MUST be `APPROVE` if there are zero P1 findings
         - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists
-        - Be concrete: cite file + line + what is wrong + how to fix
-        - Verify against the spec. Do NOT approve just because it looks reasonable.
-        - Do NOT invent issues. Only report real problems you can find in the source.
-        - If no files were changed or the change is trivial, still verify against the spec.
-        - Check that the handoff validation results are consistent (all PASS for PASS gate).
+        - A P1 must cite a concrete failure: file + line + what breaks. "Could be
+          improved" or "might cause issues" is P2, not P1.
+        - Do NOT invent issues. Only report problems you can find in the source.
+        - Do NOT flag the same issue that was already flagged and fixed in a
+          previous review cycle.
+        - This review may be merged with other reviewers' outputs. One speculative
+          P1 from you blocks the entire pipeline. Be precise.
     """)
