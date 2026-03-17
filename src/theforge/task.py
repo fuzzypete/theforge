@@ -497,17 +497,34 @@ def build_dev_prompt(
                - `scope_completed`: list what you implemented
                - `deferred_followups`: list anything you couldn't finish
                - `next_recommended_step`: single next action
-            10. Add a `dev_notes` section to handoff.yaml:
+            10. Add a `dev_notes` section to handoff.yaml using this exact YAML structure:
 
                   dev_notes: |
-                    What was implemented and any spec deviations with justification.
-                    If you deviated from the spec, explain why — the reviewer will
-                    read this before looking at the diff. Be specific: cite the spec
-                    section and your reason. Example: "Spec called for X in coordinator.py
-                    but I extracted to coord_util.py because 4 modules needed the same
-                    helper — duplication would be worse than an undocumented module."
+                    summary: "One paragraph: what you implemented and how."
+                    commits:
+                      - sha: "abc1234"
+                        message: "feat(scope): what this commit does"
+                    acceptance_criteria:
+                      - criterion: "AC text from the spec"
+                        status: MET | PARTIAL | NOT_MET
+                        notes: "how it was met, or why not"
+                    spec_deviations:
+                      - description: "What deviated from spec"
+                        justification: "Why you deviated — cite the spec section and your reason"
+                    deferred_items:
+                      - description: "What was deferred"
+                        reason: "Why it was deferred"
+                    gate_result: PASS
 
-                This is your voice in the review. Use it.
+                Use `spec_deviations: none` if you followed the spec exactly.
+                Use `deferred_items: none` if nothing was deferred.
+                List ALL commits you made (use `git log --oneline` to get shas).
+                List EVERY acceptance criterion from the spec with its status.
+
+                The coordinator validates this structure. If it's malformed you'll
+                be asked to rewrite it, so get the format right the first time.
+                This is your voice in the review — the reviewer reads it before
+                the diff.
         """)
 
     return dedent(f"""\
@@ -562,6 +579,83 @@ def build_dev_prompt(
         - Do NOT skip `make fmt` or `make lint`.
         - If you cannot complete the task for any reason, commit what you
           have and note blockers in `deferred_followups`.
+    """)
+
+
+# ── Handoff fix prompt ────────────────────────────────────────────────
+
+
+def build_handoff_fix_prompt(
+    task: TaskSpec,
+    *,
+    workspace_path: Path,
+    branch_name: str,
+    validation_errors: list[str],
+) -> str:
+    """Build a focused prompt to fix dev handoff formatting.
+
+    Used when the gate passed but the dev_notes field in handoff.yaml
+    doesn't conform to the required YAML schema. The agent only needs
+    to rewrite dev_notes — not re-implement anything.
+    """
+    error_list = "\n".join(f"- {e}" for e in validation_errors)
+
+    return dedent(f"""\
+        You are fixing the dev handoff for **{task.name}**.
+
+        ## Working Directory
+
+        `{workspace_path}`  (branch: `{branch_name}`)
+
+        You are already in the correct workspace. Do NOT create a new worktree.
+
+        ## Problem
+
+        Your implementation passed the gate, but the `dev_notes` field in
+        `handoff.yaml` does not conform to the required structure.
+
+        **Validation errors:**
+
+        {error_list}
+
+        ## Required Format
+
+        The `dev_notes` field in `handoff.yaml` must contain valid YAML with
+        this exact structure:
+
+        ```yaml
+        dev_notes: |
+          summary: "One paragraph: what you implemented and how."
+          commits:
+            - sha: "abc1234"
+              message: "feat(scope): what this commit does"
+          acceptance_criteria:
+            - criterion: "AC text from the spec"
+              status: MET | PARTIAL | NOT_MET
+              notes: "how it was met, or why not"
+          spec_deviations:
+            - description: "What deviated from spec"
+              justification: "Why you deviated"
+          deferred_items:
+            - description: "What was deferred"
+              reason: "Why it was deferred"
+          gate_result: PASS
+        ```
+
+        Use `spec_deviations: none` if you followed the spec exactly.
+        Use `deferred_items: none` if nothing was deferred.
+        List ALL commits (use `git log --oneline` for shas).
+        List EVERY acceptance criterion from the spec with its status.
+
+        ## Your Task
+
+        1. Open `handoff.yaml` and fix ONLY the `dev_notes` field.
+        2. Do NOT change any code. Do NOT re-run the gate.
+        3. Commit the fix:
+           ```bash
+           git add handoff.yaml
+           git commit -m "fix({task.slug}): rewrite dev handoff to match schema"
+           ```
     """)
 
 

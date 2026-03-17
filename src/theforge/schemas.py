@@ -94,3 +94,118 @@ def validate_review_yaml(data: Any) -> list[str]:
         errors.append("test_coverage.adequate is required (true/false)")
 
     return errors
+
+
+VALID_AC_STATUSES = ("MET", "PARTIAL", "NOT_MET")
+VALID_GATE_RESULTS = ("PASS", "FAIL")
+
+
+def validate_dev_handoff(data: Any) -> list[str]:
+    """Validate dev handoff structure. Returns list of errors (empty = valid).
+
+    Required fields:
+    - summary: non-empty string describing what was implemented
+    - commits: non-empty list of {sha, message}
+    - acceptance_criteria: non-empty list of {criterion, status, notes}
+    - spec_deviations: list of {description, justification} or the string "none"
+    - deferred_items: list of {description, reason} or the string "none"
+    - gate_result: "PASS" or "FAIL"
+    """
+    errors: list[str] = []
+
+    if not isinstance(data, dict):
+        return ["dev handoff must be a YAML mapping"]
+
+    # ── summary ────────────────────────────────────────────────────
+    summary = data.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        errors.append("summary must be a non-empty string")
+
+    # ── commits ────────────────────────────────────────────────────
+    commits = data.get("commits")
+    if commits is None:
+        errors.append("commits is required (non-empty list of {sha, message})")
+    elif not isinstance(commits, list):
+        errors.append("commits must be a list")
+    elif len(commits) == 0:
+        errors.append("commits must be non-empty")
+    else:
+        for i, c in enumerate(commits):
+            if not isinstance(c, dict):
+                errors.append(f"commits[{i}] must be a mapping")
+                continue
+            if not c.get("sha"):
+                errors.append(f"commits[{i}].sha must be non-empty")
+            if not c.get("message"):
+                errors.append(f"commits[{i}].message must be non-empty")
+
+    # ── acceptance_criteria ─────────────────────────────────────────
+    criteria = data.get("acceptance_criteria")
+    if criteria is None:
+        errors.append(
+            "acceptance_criteria is required (non-empty list of {criterion, status, notes})"
+        )
+    elif not isinstance(criteria, list):
+        errors.append("acceptance_criteria must be a list")
+    elif len(criteria) == 0:
+        errors.append("acceptance_criteria must be non-empty")
+    else:
+        for i, ac in enumerate(criteria):
+            if not isinstance(ac, dict):
+                errors.append(f"acceptance_criteria[{i}] must be a mapping")
+                continue
+            if not ac.get("criterion"):
+                errors.append(f"acceptance_criteria[{i}].criterion must be non-empty")
+            status = ac.get("status")
+            if status not in VALID_AC_STATUSES:
+                errors.append(
+                    f"acceptance_criteria[{i}].status must be one of "
+                    f"{VALID_AC_STATUSES}, got: {status!r}"
+                )
+            if not ac.get("notes"):
+                errors.append(f"acceptance_criteria[{i}].notes must be non-empty")
+
+    # ── spec_deviations ────────────────────────────────────────────
+    deviations = data.get("spec_deviations")
+    if deviations is None:
+        errors.append("spec_deviations is required (list of deviations or 'none')")
+    elif isinstance(deviations, str):
+        if deviations.strip().lower() != "none":
+            errors.append("spec_deviations must be a list or the string 'none'")
+    elif isinstance(deviations, list):
+        for i, d in enumerate(deviations):
+            if not isinstance(d, dict):
+                errors.append(f"spec_deviations[{i}] must be a mapping")
+                continue
+            if not d.get("description"):
+                errors.append(f"spec_deviations[{i}].description must be non-empty")
+            if not d.get("justification"):
+                errors.append(f"spec_deviations[{i}].justification must be non-empty")
+    else:
+        errors.append("spec_deviations must be a list or the string 'none'")
+
+    # ── deferred_items ─────────────────────────────────────────────
+    deferred = data.get("deferred_items")
+    if deferred is None:
+        errors.append("deferred_items is required (list of items or 'none')")
+    elif isinstance(deferred, str):
+        if deferred.strip().lower() != "none":
+            errors.append("deferred_items must be a list or the string 'none'")
+    elif isinstance(deferred, list):
+        for i, d in enumerate(deferred):
+            if not isinstance(d, dict):
+                errors.append(f"deferred_items[{i}] must be a mapping")
+                continue
+            if not d.get("description"):
+                errors.append(f"deferred_items[{i}].description must be non-empty")
+            if not d.get("reason"):
+                errors.append(f"deferred_items[{i}].reason must be non-empty")
+    else:
+        errors.append("deferred_items must be a list or the string 'none'")
+
+    # ── gate_result ────────────────────────────────────────────────
+    gate_result = data.get("gate_result")
+    if gate_result not in VALID_GATE_RESULTS:
+        errors.append(f"gate_result must be one of {VALID_GATE_RESULTS}, got: {gate_result!r}")
+
+    return errors

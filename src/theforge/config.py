@@ -134,6 +134,7 @@ class RetryPolicy:
     max_dev_iterations: int = 3  # retries within a single review cycle
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
+    max_handoff_retries: int = 2  # dev handoff rewrite retries after gate passes
 
 
 @dataclass(frozen=True)
@@ -574,6 +575,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
+        max_handoff_retries=int(retry_data.get("max_handoff_retries", 2)),
     )
 
     # Notifications

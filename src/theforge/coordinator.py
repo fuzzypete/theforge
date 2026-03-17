@@ -99,6 +99,7 @@ from .coord_workspace import (  # noqa: F401
     _remove_worktree,
     _resolve_merge_conflicts,
 )
+from .devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
 from .review import (  # noqa: F401
     ReviewResult,
     parse_plan_review_output,
@@ -111,6 +112,7 @@ from .task import (  # noqa: F401
     TaskSpec,
     build_dev_prompt,
     build_fix_prompt,
+    build_handoff_fix_prompt,
     build_plan_prompt,
     build_plan_review_prompt,
     build_preflight_prompt,
@@ -202,8 +204,8 @@ def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
     return "(handoff.yaml not found)"
 
 
-def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
-    """Extract dev_notes from handoff.yaml, or None if absent/unparseable."""
+def _get_raw_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
+    """Extract raw dev_notes string from handoff.yaml, or None if absent."""
     if not config.validation.handoff_file:
         return None
     handoff_path = workspace_path / config.validation.handoff_file
@@ -221,6 +223,35 @@ def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
     if isinstance(val, str) and val.strip():
         return val
     return None
+
+
+def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff | None:
+    """Parse and validate the dev handoff from handoff.yaml.
+
+    Returns None if there's no handoff file or dev_notes field.
+    Returns DevHandoff with parse_errors if validation fails.
+    """
+    raw = _get_raw_dev_notes(config, workspace_path)
+    if raw is None:
+        return None
+    return parse_dev_handoff(raw)
+
+
+def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
+    """Extract dev_notes from handoff.yaml as structured reviewer text.
+
+    If the dev handoff is valid structured YAML, formats it as structured
+    markdown sections. Falls back to raw text if parsing fails.
+    """
+    raw = _get_raw_dev_notes(config, workspace_path)
+    if raw is None:
+        return None
+    handoff = parse_dev_handoff(raw)
+    if handoff.parse_errors:
+        # Fall back to raw text when structured parsing fails
+        return raw
+    formatted = dev_handoff_to_reviewer_text(handoff)
+    return formatted if formatted else raw
 
 
 # ── Phase handlers (extracted to coord_phases.py) ────────────────────
@@ -634,6 +665,41 @@ def _coordinator_loop(
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
         _skip_dev = False  # all subsequent iterations start at DEV
+
+        # ── DEV HANDOFF VALIDATION ────────────────────────────
+        # Validate structured dev handoff after gate passes.
+        # Retry up to max_handoff_retries; if still invalid, proceed anyway.
+        _handoff = _parse_dev_handoff(config, workspace_path)
+        if _handoff is not None and _handoff.parse_errors:
+            _max_hf_retries = config.retry.max_handoff_retries
+            for _hf_attempt in range(_max_hf_retries):
+                _log_verbose(
+                    f"Dev handoff validation failed "
+                    f"(attempt {_hf_attempt + 1}/{_max_hf_retries}): "
+                    f"{_handoff.parse_errors}"
+                )
+                _log(f"  ⚠ HANDOFF   invalid → retry {_hf_attempt + 1}/{_max_hf_retries}")
+                _hf_prompt = build_handoff_fix_prompt(
+                    task,
+                    workspace_path=workspace_path,
+                    branch_name=branch_name,
+                    validation_errors=_handoff.parse_errors,
+                )
+                _hf_result = run_agent(
+                    prompt=_hf_prompt,
+                    profile=config.dev_profile,
+                    working_dir=workspace_path,
+                    session_id=state.dev_session_id,
+                )
+                state.dev_results.append(_hf_result)
+                state.dev_session_id = _hf_result.session_id or state.dev_session_id
+                log_agent_result(_hf_result, "DEV/handoff-fix")
+                _handoff = _parse_dev_handoff(config, workspace_path)
+                if _handoff is None or not _handoff.parse_errors:
+                    _log("  ✓ HANDOFF   valid")
+                    break
+            else:
+                _log("  ⚠ HANDOFF   still invalid after retries — proceeding anyway")
 
         # ── REVIEW ────────────────────────────────────────────
         _rev_outcome, _rev_result, config = _run_review_phase(

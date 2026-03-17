@@ -9,6 +9,7 @@ from theforge.task import (
     TaskSpec,
     build_dev_prompt,
     build_fix_prompt,
+    build_handoff_fix_prompt,
     build_plan_prompt,
     build_plan_review_prompt,
     build_review_prompt,
@@ -717,3 +718,88 @@ class TestBuildPlanReviewPrompt:
             rejection_findings=None,
         )
         assert "Previous Rejection Findings" not in prompt
+
+
+# ── build_handoff_fix_prompt ──────────────────────────────────────────
+
+
+class TestBuildHandoffFixPrompt:
+    def test_contains_validation_errors(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        errors = ["summary must be a non-empty string", "spec_deviations is required"]
+        prompt = build_handoff_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            validation_errors=errors,
+        )
+        assert "summary must be a non-empty string" in prompt
+        assert "spec_deviations is required" in prompt
+
+    def test_contains_workspace_info(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        ws = tmp_path / "ws"
+        prompt = build_handoff_fix_prompt(
+            task,
+            workspace_path=ws,
+            branch_name="feat/test",
+            validation_errors=["error"],
+        )
+        assert str(ws) in prompt
+        assert "feat/test" in prompt
+
+    def test_contains_required_format(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_handoff_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            validation_errors=["error"],
+        )
+        assert "spec_deviations" in prompt
+        assert "deferred_items" in prompt
+        assert "summary" in prompt
+        assert "commits" in prompt
+        assert "acceptance_criteria" in prompt
+        assert "gate_result" in prompt
+
+    def test_instructs_no_code_changes(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_handoff_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            validation_errors=["error"],
+        )
+        assert "Do NOT change any code" in prompt
+        assert "Do NOT re-run the gate" in prompt
+
+
+# ── build_dev_prompt structured dev_notes ─────────────────────────────
+
+
+class TestBuildDevPromptStructuredHandoff:
+    def test_gate_not_skipped_includes_structured_format(self, tmp_path: Path) -> None:
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Spec", encoding="utf-8")
+        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            gate_skipped=False,
+        )
+        # Must instruct all structured YAML fields
+        assert "spec_deviations" in prompt
+        assert "deferred_items" in prompt
+        assert "summary" in prompt
+        assert "commits" in prompt
+        assert "acceptance_criteria" in prompt
+        assert "gate_result" in prompt
+        # Validates structure
+        assert (
+            "validates this structure" in prompt.lower()
+            or "coordinator validates" in prompt.lower()
+        )
