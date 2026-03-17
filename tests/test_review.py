@@ -177,4 +177,42 @@ findings: []
         result = parse_plan_review_output(yaml_text)
         assert result.verdict == "REJECT"
         assert len(result.parse_errors) == 1
-        assert "cannot justify" in result.parse_errors[0].lower()
+
+    def test_approve_with_p1_findings_demoted_to_reject(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P1
+    description: "Hallucinated API"
+    suggestion: "Fix it"
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert len(result.parse_errors) >= 1
+        assert any("cannot approve" in e.lower() for e in result.parse_errors)
+
+    def test_approve_with_malformed_findings_demoted_to_reject(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P1
+    description: ""
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert any("non-empty" in e for e in result.parse_errors)
+
+    def test_approve_with_non_list_findings_demoted_to_reject(self):
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings: "not a list"
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "REJECT"
+        assert any("must be a list" in e for e in result.parse_errors)

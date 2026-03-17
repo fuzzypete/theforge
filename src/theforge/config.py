@@ -614,9 +614,16 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Plan agent review
     par_data = raw.get("plan_agent_review", {})
+    par_cli = str(par_data.get("cli", "claude"))
+    par_enabled = bool(par_data.get("enabled", False))
+    if par_enabled and par_cli not in SUPPORTED_CLIS:
+        raise ValueError(
+            f"Unsupported CLI {par_cli!r} in plan_agent_review. "
+            f"Supported: {sorted(SUPPORTED_CLIS)}"
+        )
     plan_agent_review_cfg = PlanAgentReviewConfig(
-        enabled=bool(par_data.get("enabled", False)),
-        cli=str(par_data.get("cli", "claude")),
+        enabled=par_enabled,
+        cli=par_cli,
         model=str(par_data.get("model", "sonnet")),
         budget_usd=float(par_data.get("budget_usd", 0.50)),
         timeout=int(par_data.get("timeout", 300)),

@@ -183,20 +183,46 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
             parse_errors=[f"verdict must be APPROVE or REJECT, got: {verdict!r}"],
         )
 
-    findings: list[PlanReviewFinding] = []
-    for f in data.get("findings", []):
-        if isinstance(f, dict):
-            findings.append(
-                PlanReviewFinding(
-                    severity=f.get("severity", "P1"),
-                    description=f.get("description", ""),
-                    suggestion=f.get("suggestion"),
-                )
-            )
-
     errors: list[str] = []
+
+    # Validate findings structure
+    raw_findings = data.get("findings")
+    if raw_findings is not None and not isinstance(raw_findings, list):
+        errors.append(f"findings must be a list, got: {type(raw_findings).__name__}")
+        raw_findings = []
+
+    findings: list[PlanReviewFinding] = []
+    p1_count = 0
+    for i, f in enumerate(raw_findings or []):
+        if not isinstance(f, dict):
+            errors.append(f"findings[{i}] must be a mapping")
+            continue
+        severity = f.get("severity", "P1")
+        if severity == "P1":
+            p1_count += 1
+        desc = f.get("description", "")
+        if not desc:
+            errors.append(f"findings[{i}].description must be non-empty")
+        findings.append(
+            PlanReviewFinding(
+                severity=severity,
+                description=desc,
+                suggestion=f.get("suggestion"),
+            )
+        )
+
+    # Cross-validation: same principle as code review schema
     if verdict == "REJECT" and not findings:
         errors.append("REJECT verdict without findings — cannot justify rejection")
+    if verdict == "APPROVE" and p1_count > 0:
+        errors.append(
+            f"verdict is APPROVE but {p1_count} P1 finding(s) exist — "
+            "cannot approve with blocking findings"
+        )
+
+    # Any parse error on APPROVE → demote to REJECT
+    if verdict == "APPROVE" and errors:
+        verdict = "REJECT"
 
     return PlanReviewResult(
         verdict=verdict,
