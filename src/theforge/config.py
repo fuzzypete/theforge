@@ -151,6 +151,13 @@ class PlanConfig:
 
 
 @dataclass(frozen=True)
+class PlanReviewConfig:
+    """Configuration for the PLAN_REVIEW gate."""
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class LogConfig:
     """Configuration for persistent structured logging."""
 
@@ -174,6 +181,7 @@ class ForgeConfig:
     notifications: NotificationConfig = NotificationConfig()
     smart_config_models: list[str] | None = None  # None = classic config; list = smart config
     plan: PlanConfig = field(default_factory=PlanConfig)
+    plan_review: PlanReviewConfig = field(default_factory=PlanReviewConfig)
     log: LogConfig = field(default_factory=LogConfig)
 
     @property
@@ -578,6 +586,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout=int(plan_data.get("timeout", 300)),
     )
 
+    # Plan review
+    plan_review_data = raw.get("plan_review", {})
+    plan_review_cfg = PlanReviewConfig(
+        enabled=bool(plan_review_data.get("enabled", False)),
+    )
+
     # Logging
     log_data = raw.get("logging", {})
     log_cfg = LogConfig(
@@ -598,6 +612,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         notifications=notifications,
         smart_config_models=smart_config_models,
         plan=plan_cfg,
+        plan_review=plan_review_cfg,
         log=log_cfg,
     )
 

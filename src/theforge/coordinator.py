@@ -5,14 +5,20 @@ program that mechanically orchestrates agent invocations. Every decision is
 deterministic. Every boundary is a validation checkpoint.
 
 State machine:
-    INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → (loop or DONE/ESCALATE)
+    INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW
+        → (loop or DONE/ESCALATE)
 
 Transitions:
     INIT → WORKSPACE:       Always (create workspace)
     WORKSPACE → PREFLIGHT:  Workspace created successfully
-    PREFLIGHT → DEV:        Verdict is PROCEED (or agent failed — fail-open)
+    PREFLIGHT → PLAN/DEV:   Verdict is PROCEED (or agent failed — fail-open)
     PREFLIGHT → DONE:       Verdict is ALREADY_DONE (spec satisfied on main)
     PREFLIGHT → ESCALATE:   Verdict is BLOCKED (spec is stale/invalid)
+    PLAN → PLAN_REVIEW:     Plan agent succeeded and plan review is enabled
+    PLAN → DEV:             Plan succeeded and review is skipped/disabled
+    PLAN_REVIEW → PLAN:     Human requests one regeneration
+    PLAN_REVIEW → DEV:      Human approves the plan
+    PLAN_REVIEW → stop:     Human abandons the run
     DEV → VALIDATE:         Dev agent finished (success or failure)
     VALIDATE → REVIEW:      Gate produced handoff.yaml with PASS
     VALIDATE → DEV:         Gate failed, retries remaining
@@ -54,6 +60,7 @@ from .coord_notify import (  # noqa: F401
     _ntfy_publish,
     _ntfy_reply_url,
     _osa_quote,
+    _plan_review_interactive,
     _remote_human_review,
 )
 from .coord_preflight import (  # noqa: F401
@@ -751,6 +758,8 @@ def run_task(
         (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
         state.plan_output = plan_text
         _log(f"  ✓ PLAN   (injected from {plan_path.name})")
+        if config.plan_review.enabled:
+            _log("  ℹ PLAN_REVIEW   skipped (plan injected)")
 
     # ── PREFLIGHT ──────────────────────────────────────────────────
     state.phase = Phase.PREFLIGHT
@@ -876,13 +885,104 @@ def run_task(
             working_dir=workspace_path,
         )
         _plan_elapsed = time.monotonic() - _plan_start
-        state.plan_result = plan_result
+        state.plan_results.append(plan_result)
 
         if plan_result.success:
             plan_text = plan_result.output
             (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
+
+            if config.plan_review.enabled and interactive:
+                for _ in range(2):
+                    state.phase = Phase.PLAN_REVIEW
+                    _log_phase(state.phase, "waiting for human decision...")
+                    _log(f"  Plan written to: {workspace_path / 'forge_plan.md'}")
+
+                    _pr_start = time.monotonic()
+                    plan_review_decision = _plan_review_interactive(
+                        state, plan_text, workspace_path, task
+                    )
+                    state.plan_review_waited_seconds = time.monotonic() - _pr_start
+                    state.plan_review_decision = plan_review_decision
+
+                    if plan_review_decision == "approve":
+                        try:
+                            updated = (workspace_path / "forge_plan.md").read_text(
+                                encoding="utf-8"
+                            )
+                        except (OSError, UnicodeDecodeError) as exc:
+                            _log(f"  ✗ PLAN_REVIEW   forge_plan.md unreadable after edit: {exc}")
+                            state.phase = Phase.PLAN_REVIEW
+                            return CoordinatorResult(
+                                success=False,
+                                phase=Phase.PLAN_REVIEW,
+                                state=state,
+                                message=f"forge_plan.md unreadable after edit: {exc}",
+                            )
+                        state.plan_output = updated
+                        plan_text = updated
+                        _log(
+                            "  ✓ PLAN_REVIEW   approve  "
+                            f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
+                        )
+                        break
+
+                    if plan_review_decision == "regenerate":
+                        if state.plan_regenerated:
+                            state.plan_review_decision = "abandon"
+                            _log("  ✗ PLAN_REVIEW   already regenerated once — abandoning")
+                            return CoordinatorResult(
+                                success=False,
+                                phase=Phase.PLAN_REVIEW,
+                                state=state,
+                                message="Plan regenerated once already — abandoning.",
+                            )
+
+                        state.plan_regenerated = True
+                        _log("  ↺ PLAN_REVIEW   regenerate — re-running PLAN agent")
+
+                        (workspace_path / "forge_plan.md").unlink(missing_ok=True)
+                        _plan_start = time.monotonic()
+                        plan_result = run_agent(
+                            prompt=plan_prompt,
+                            profile=plan_profile,
+                            working_dir=workspace_path,
+                        )
+                        _plan_elapsed = time.monotonic() - _plan_start
+                        state.plan_results.append(plan_result)
+
+                        if not plan_result.success:
+                            state.phase = Phase.ESCALATE
+                            state.error = "PLAN regeneration failed"
+                            _log("  ✗ PLAN regen failed — escalating")
+                            _escalate_notify(task, state, notify, config)
+                            return CoordinatorResult(
+                                success=False,
+                                phase=state.phase,
+                                state=state,
+                                message=state.error,
+                            )
+
+                        plan_text = plan_result.output
+                        (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+                        state.plan_output = plan_text
+                        _log(
+                            "  ✓ PLAN (regenerated)  "
+                            f"${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}"
+                        )
+                        continue
+
+                    _log(f"  ✗ PLAN_REVIEW   abandoned — worktree preserved at {workspace_path}")
+                    state.phase = Phase.PLAN_REVIEW
+                    return CoordinatorResult(
+                        success=False,
+                        phase=Phase.PLAN_REVIEW,
+                        state=state,
+                        message="Plan review abandoned by human.",
+                    )
+            elif config.plan_review.enabled and not interactive:
+                _log("  ⚠ PLAN_REVIEW   skipped (non-interactive mode)")
         else:
             state.phase = Phase.ESCALATE
             state.error = (

@@ -25,6 +25,7 @@ class Phase(Enum):
     WORKSPACE = auto()
     PREFLIGHT = auto()
     PLAN = auto()
+    PLAN_REVIEW = auto()
     DEV = auto()
     VALIDATE = auto()
     REVIEW = auto()
@@ -82,8 +83,11 @@ class CoordinatorState:
     preflight_reason: str | None = None
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
     preflight_result: AgentResult | None = None
-    plan_result: AgentResult | None = None
+    plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = None  # contents of forge_plan.md, passed to dev
+    plan_review_decision: str | None = None  # "approve" | "regenerate" | "abandon"
+    plan_regenerated: bool = False  # guard against infinite regen loop
+    plan_review_waited_seconds: float | None = None
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
     retry_reason: str | None = (
@@ -106,7 +110,7 @@ class CoordinatorState:
 
     @property
     def total_plan_cost(self) -> float:
-        return self.plan_result.cost_usd if self.plan_result else 0.0
+        return sum(r.cost_usd for r in self.plan_results)
 
     @property
     def total_cost(self) -> float:

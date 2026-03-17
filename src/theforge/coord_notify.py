@@ -329,3 +329,54 @@ def _human_review(
                 lines.append(stripped)
             return "reject", "\n".join(lines)
         _cu._log("Invalid choice. Enter 'a', 'r', or 'e'.")
+
+
+def _plan_review_interactive(
+    state: "_cs.CoordinatorState",
+    plan_text: str,
+    workspace_path: "Path",
+    task: "TaskSpec",
+) -> str:
+    """Interactive plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
+
+    del state, task
+
+    print(plan_text, end="" if plan_text.endswith("\n") else "\n", file=sys.stdout, flush=True)
+    print(f"Plan at: {workspace_path / 'forge_plan.md'}", file=sys.stderr, flush=True)
+
+    while True:
+        print("Plan ready. Review forge_plan.md and choose:", file=sys.stderr, flush=True)
+        print("  [a] Approve   — proceed to DEV", file=sys.stderr, flush=True)
+        print(
+            "  [e] Edit      — edit forge_plan.md externally, then re-enter 'a'",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "  [r] Regenerate — discard and re-run PLAN agent (once)",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            "  [x] Abandon   — cancel run, leave worktree intact",
+            file=sys.stderr,
+            flush=True,
+        )
+        print("Choice [a/e/r/x]: ", end="", file=sys.stderr, flush=True)
+
+        raw = sys.stdin.readline()
+        if not raw:
+            return "abandon"
+
+        choice = raw.strip().lower()
+        if choice in ("a", "approve"):
+            return "approve"
+        if choice in ("e", "edit"):
+            print("Edit the plan, then enter 'a' to approve:", file=sys.stderr, flush=True)
+            continue
+        if choice in ("r", "regenerate"):
+            return "regenerate"
+        if choice in ("x", "abandon"):
+            return "abandon"
+
+        print("Invalid choice. Enter 'a', 'e', 'r', or 'x'.", file=sys.stderr, flush=True)

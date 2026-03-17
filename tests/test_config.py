@@ -89,6 +89,16 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.project_root == sub
 
+    def test_plan_review_defaults_disabled(self, tmp_path):
+        config_path = _write_config({"project": "test-project"}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan_review.enabled is False
+
+    def test_plan_review_enabled_parsed(self, tmp_path):
+        config_path = _write_config({"plan_review": {"enabled": True}}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan_review.enabled is True
+
 
 class TestAllowedToolsConfig:
     def test_empty_allowed_tools_is_empty(self, tmp_path):

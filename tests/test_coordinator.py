@@ -4,6 +4,7 @@ Uses mocked runner to test all state transitions without real agent calls.
 """
 
 import datetime
+import io
 import time as _time
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,8 @@ from theforge.config import (
     ForgeConfig,
     LogConfig,
     ModelProfile,
+    PlanConfig,
+    PlanReviewConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -51,6 +54,28 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        log=LogConfig(enabled=False),
+    )
+
+
+def _make_plan_review_config(tmp_path: Path, *, enabled: bool = True) -> ForgeConfig:
+    """Create a test config with PLAN and PLAN_REVIEW enabled."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+        plan_review=PlanReviewConfig(enabled=enabled),
         log=LogConfig(enabled=False),
     )
 
@@ -229,6 +254,15 @@ criteria_checked:
 ```
 """
 
+PREFLIGHT_PROCEED_MEDIUM = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+reason: "Spec requirements are not yet implemented."
+criteria_checked: []
+```
+"""
+
 PREFLIGHT_ALREADY_DONE = """\
 ```yaml
 verdict: ALREADY_DONE
@@ -302,6 +336,379 @@ class TestCoordinatorHappyPath:
         assert result.state.dev_iteration == 1
         assert len(result.state.dev_results) == 1
         assert len(result.state.review_results) == 1
+
+
+class TestPlanReview:
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_approve(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.return_value = "approve"
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_review_decision == "approve"
+        assert result.state.plan_output == "# Plan\n\nOriginal plan."
+        audit = generate_audit_log(config, task, result)
+        assert audit["plan_review"]["decision"] == "approve"
+        assert audit["plan_review"]["regenerated"] is False
+        assert mock_human_review.called
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_edit_approve(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        edited_plan = "# Plan\n\nEdited by human."
+
+        def plan_review_side_effect(*args, **kwargs):
+            (workspace / "forge_plan.md").write_text(edited_plan, encoding="utf-8")
+            return "approve"
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.side_effect = plan_review_side_effect
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_review_decision == "approve"
+        assert result.state.plan_output == edited_plan
+        assert mock_human_review.called
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_regenerate(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        plan_v1 = "# Plan\n\nFirst plan."
+        plan_v2 = "# Plan\n\nRegenerated plan."
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output=plan_v1, cost_usd=0.10),
+            _make_agent_result(success=True, output=plan_v2, cost_usd=0.15),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.side_effect = ["regenerate", "approve"]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_regenerated is True
+        assert result.state.plan_review_decision == "approve"
+        assert len(result.state.plan_results) == 2
+        assert result.state.plan_output == plan_v2
+        assert mock_agent.call_count == 4
+        assert mock_human_review.called
+
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_abandon(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+        ]
+        mock_plan_review.return_value = "abandon"
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.PLAN_REVIEW
+        assert "abandoned" in result.message.lower()
+        assert workspace.exists()
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_regen_twice_abandons(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nSecond plan.", cost_usd=0.15),
+        ]
+        mock_plan_review.side_effect = ["regenerate", "regenerate"]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.PLAN_REVIEW
+        assert "already" in result.message.lower()
+        assert result.state.plan_review_decision == "abandon"
+        assert result.state.plan_regenerated is True
+        assert len(result.state.plan_results) == 2
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_skipped_on_injection(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        plan_file = tmp_path / "plan.md"
+        plan_file.write_text("# Injected plan\n\nUse this.", encoding="utf-8")
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True, plan_path=plan_file)
+
+        assert result.success is True
+        assert result.state.plan_review_decision is None
+        mock_plan_review.assert_not_called()
+        assert mock_human_review.called
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_skipped_when_disabled(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path, enabled=False)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_review_decision is None
+        mock_plan_review.assert_not_called()
+        assert mock_human_review.called
+
+    def test_plan_review_eof_abandons(self, tmp_path, capsys):
+        from theforge.coord_notify import _plan_review_interactive
+        from theforge.coordinator import CoordinatorState
+
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        plan_text = "# Plan\n\nRead me."
+        (workspace / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("")):
+            decision = _plan_review_interactive(CoordinatorState(), plan_text, workspace, task)
+
+        captured = capsys.readouterr()
+        assert decision == "abandon"
+        assert plan_text in captured.out
+        assert f"Plan at: {workspace / 'forge_plan.md'}" in captured.err
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_skipped_non_interactive(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
+        capsys,
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=False)
+
+        captured = capsys.readouterr()
+        assert result.success is True
+        assert result.state.plan_review_decision is None
+        assert "PLAN_REVIEW   skipped (non-interactive mode)" in captured.err
+        mock_plan_review.assert_not_called()
+        assert not mock_human_review.called
+
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_abandon_phase_not_escalate(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+        ]
+        mock_plan_review.return_value = "abandon"
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.PLAN_REVIEW
+        assert result.phase != Phase.ESCALATE
+
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_reread_error(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def plan_review_side_effect(*args, **kwargs):
+            (workspace / "forge_plan.md").unlink()
+            return "approve"
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+        ]
+        mock_plan_review.side_effect = plan_review_side_effect
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.PLAN_REVIEW
+        assert "unreadable after edit" in result.message
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_regen_tracks_both_costs(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+    ):
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nSecond plan.", cost_usd=0.15),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.side_effect = ["regenerate", "approve"]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.total_plan_cost == pytest.approx(0.25)
+        assert len(result.state.plan_results) == 2
+        assert mock_human_review.called
 
 
 class TestCoordinatorGateFailRetry:

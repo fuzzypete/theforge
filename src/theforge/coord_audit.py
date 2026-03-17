@@ -167,6 +167,15 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             if state.human_review_decision is not None
             else None
         ),
+        "plan_review": (
+            {
+                "decision": state.plan_review_decision,
+                "regenerated": state.plan_regenerated,
+                "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
+            }
+            if state.plan_review_decision is not None
+            else None
+        ),
         "merge": result.merge,
         "error": state.error,
     }
