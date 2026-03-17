@@ -1037,6 +1037,7 @@ def run_task(
                     state.plan_regenerated = True
                     state.plan_review_decision = "regenerate"
                     _log("  ↺ PLAN_REVIEW   reject → regenerating plan with findings")
+                    _log(f"  Findings:\n{findings_text}")
 
                     # Rebuild plan prompt with rejection findings appended
                     regen_prompt = build_plan_prompt(
