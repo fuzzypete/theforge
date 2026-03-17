@@ -33,13 +33,37 @@ from .coord_preflight import (
     _escalate_dev_model,
     _find_registry_key_for_profile,
     _has_persistent_p1,
+    _persistent_p1_descriptions,
 )
-from .coord_state import CoordinatorResult, CoordinatorState, Phase, ReviewCycleMetadata
+from .coord_state import (
+    CoordinatorResult,
+    CoordinatorState,
+    CycleHistory,
+    Phase,
+    ReviewCycleMetadata,
+)
 from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose
 from .coord_workspace import _merge_branch
 from .review import ReviewResult, review_to_dev_handoff
 from .runner import log_agent_result
 from .task import TaskSpec
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _append_cycle_history(state: CoordinatorState, parsed_review: ReviewResult) -> None:
+    """Append a CycleHistory entry for this completed review cycle (capped at 3)."""
+    state.cycle_history_total += 1
+    entry = CycleHistory(
+        cycle=state.cycle_history_total,
+        verdict=parsed_review.verdict,
+        summary=parsed_review.summary,
+        p1_findings=[f.description[:200] for f in parsed_review.findings if f.severity == "P1"],
+    )
+    state.cycle_history.append(entry)
+    if len(state.cycle_history) > 3:
+        state.cycle_history = state.cycle_history[-3:]
+
 
 # ── State machine ────────────────────────────────────────────────────
 
@@ -273,6 +297,7 @@ def _run_review_phase(
             state.human_review_decision = decision
             state.human_review_feedback = feedback
             if decision == "approve":
+                _append_cycle_history(state, parsed_review)
                 return (
                     _ReviewOutcome.DONE,
                     _finalize_approve(
@@ -316,6 +341,7 @@ def _run_review_phase(
                     config,
                 )
             if decision == "extend":
+                _append_cycle_history(state, parsed_review)
                 state.dev_iteration = 0
                 state.review_cycle = 0
                 state.human_review_extra_cycles += 1
@@ -330,6 +356,7 @@ def _run_review_phase(
                 )
                 return _ReviewOutcome.RETRY_DEV, None, config
             # decision == "reject"
+            _append_cycle_history(state, parsed_review)
             state.human_feedback = feedback
             state.last_review_findings = None
             state.retry_reason = "reject"
@@ -337,6 +364,7 @@ def _run_review_phase(
             _log("Human rejected — looping back to dev with feedback")
             return _ReviewOutcome.RETRY_DEV, None, config
         else:
+            _append_cycle_history(state, parsed_review)
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(
@@ -392,11 +420,22 @@ def _run_review_phase(
                     f"  Dev escalation: {config.dev_profile.model} → {_next_info.model}"
                     f" (persistent P1 in {_p1_file})"
                 )
+                _old_model = config.dev_profile.model
                 _new_dev = _dc_replace(
                     config.dev_profile, cli=_next_info.cli, model=_next_info.model
                 )
                 config = _dc_replace(config, dev_profile=_new_dev)
                 state.dev_escalated = True
+                _prev_result = state.review_results[-2]
+                _persistent_descs = _persistent_p1_descriptions(
+                    parsed_review.findings, _prev_result.findings
+                )
+                state.escalation_note = (
+                    f"MODEL ESCALATION: A P1 finding persisted across review cycles. "
+                    f"The previous model ({_old_model}) was unable to resolve it. "
+                    f"You are now running on an upgraded model ({_next_info.model}). "
+                    f"Persistent finding(s): {'; '.join(_persistent_descs)}"
+                )
 
     if state.review_cycle >= config.retry.max_review_cycles:
         if interactive:
@@ -413,6 +452,7 @@ def _run_review_phase(
             state.human_review_decision = decision
             state.human_review_feedback = feedback
             if decision == "approve":
+                _append_cycle_history(state, parsed_review)
                 return (
                     _ReviewOutcome.DONE,
                     _finalize_approve(
@@ -455,6 +495,7 @@ def _run_review_phase(
                     config,
                 )
             if decision == "extend":
+                _append_cycle_history(state, parsed_review)
                 state.dev_iteration = 0
                 state.review_cycle = 0
                 state.human_review_extra_cycles += 1
@@ -467,6 +508,7 @@ def _run_review_phase(
                 )
                 return _ReviewOutcome.RETRY_DEV, None, config
             # decision == "reject" — cycles exhausted: treat as extend + reject
+            _append_cycle_history(state, parsed_review)
             state.dev_iteration = 0
             state.review_cycle = 0
             state.human_review_extra_cycles += 1
@@ -509,6 +551,7 @@ def _run_review_phase(
             cost_usd=round(_review_cost, 6),
             duration_s=round(_review_elapsed, 2),
         )
+    _append_cycle_history(state, parsed_review)
     state.last_review_findings = review_to_dev_handoff(parsed_review)
     state.dev_iteration = 0
     state.human_feedback = None
@@ -760,7 +803,10 @@ def _run_dev_phase(
             gate_command=_gate_cmd,
             gate_skipped=_is_gate_skip(task.gate_override),
             iteration=state.dev_iteration,
+            cycle_history=state.cycle_history or None,
+            escalation_note=state.escalation_note,
         )
+        state.escalation_note = None  # consumed
     else:
         prompt = mod.build_dev_prompt(
             task,
@@ -774,7 +820,10 @@ def _run_dev_phase(
             preflight_output=(state.preflight_result.output if state.preflight_result else None),
             plan_output=state.plan_output,
             iteration=state.dev_iteration,
+            escalation_note=state.escalation_note,
+            cycle_history=state.cycle_history or None,
         )
+        state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed
 
     _dev_start = time.monotonic()

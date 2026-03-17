@@ -9,8 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import dedent
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from .coord_state import CycleHistory
 
 
 @dataclass(frozen=True)
@@ -413,6 +417,8 @@ def build_dev_prompt(
     preflight_output: str | None = None,
     plan_output: str | None = None,
     iteration: int = 1,
+    escalation_note: str | None = None,
+    cycle_history: list[CycleHistory] | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -432,6 +438,30 @@ def build_dev_prompt(
         file_scope_str = "- (no scope restriction — all project files)"
 
     feedback_section = ""
+    if escalation_note:
+        feedback_section += dedent(f"""\
+
+            ## ⚠ Model Escalation
+
+            {escalation_note}
+        """)
+
+    if cycle_history:
+        history_lines = []
+        for h in cycle_history:
+            history_lines.append(f"### Cycle {h.cycle}: {h.verdict}")
+            history_lines.append(h.summary)
+            if h.p1_findings:
+                history_lines.append("P1 findings:")
+                for desc in h.p1_findings:
+                    history_lines.append(f"- {desc}")
+            history_lines.append("")
+        feedback_section += dedent("""\
+
+            ## Previous Review Cycles
+
+        """) + "\n".join(history_lines)
+
     if review_findings:
         feedback_section += dedent(f"""\
 
@@ -671,6 +701,8 @@ def build_fix_prompt(
     gate_command: str,
     gate_skipped: bool = False,
     iteration: int = 2,
+    cycle_history: list[CycleHistory] | None = None,
+    escalation_note: str | None = None,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -688,6 +720,31 @@ def build_fix_prompt(
             "The coordinator runs it automatically after you complete.\n        "
         )
     )
+
+    context_sections = ""
+    if escalation_note:
+        context_sections += dedent(f"""\
+
+            ## ⚠ Model Escalation
+
+            {escalation_note}
+        """)
+    if cycle_history:
+        history_lines = []
+        for h in cycle_history:
+            history_lines.append(f"### Cycle {h.cycle}: {h.verdict}")
+            history_lines.append(h.summary)
+            if h.p1_findings:
+                history_lines.append("P1 findings:")
+                for desc in h.p1_findings:
+                    history_lines.append(f"- {desc}")
+            history_lines.append("")
+        context_sections += dedent("""\
+
+            ## Previous Review Cycles
+
+        """) + "\n".join(history_lines)
+
     return dedent(f"""\
         You are continuing work on **{task.name}** (iteration {iteration}).
 
@@ -697,7 +754,7 @@ def build_fix_prompt(
 
         You are already in the correct workspace. Do NOT create a new worktree.
         Do NOT switch branches.
-
+        {context_sections}
         ## P1 Findings to Fix
 
         The code reviewer identified the following issues that MUST be fixed:

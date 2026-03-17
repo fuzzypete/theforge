@@ -38,6 +38,7 @@ from theforge.coordinator import (
     _escalate_dev_model,
     _has_persistent_p1,
     _parse_preflight_complexity,
+    _persistent_p1_descriptions,
     generate_audit_log,
     run_task,
 )
@@ -1330,3 +1331,326 @@ class TestPlanPhase:
         assert "not readable" in result.message
         assert mock_agent.call_count == 0
         assert mock_shell.call_count == 0
+
+
+class TestPersistentP1Descriptions:
+    """Tests for _persistent_p1_descriptions() helper."""
+
+    def test_returns_matched_descriptions(self):
+        """Returns current P1 description strings that match previous P1s."""
+        curr = [_make_review_finding(description="null check missing in foo.py")]
+        prev = [_make_review_finding(description="null check missing in foo.py")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == ["null check missing in foo.py"]
+
+    def test_returns_empty_when_no_match(self):
+        """Returns empty list when no current P1 matches any previous P1."""
+        curr = [_make_review_finding(description="Off by one error")]
+        prev = [_make_review_finding(description="Missing validation")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == []
+
+    def test_returns_empty_when_no_current_p1s(self):
+        """Returns empty list when there are no current P1 findings."""
+        curr = [_make_review_finding(severity="P2", description="style issue")]
+        prev = [_make_review_finding(description="null check missing")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == []
+
+    def test_returns_empty_when_no_previous_p1s(self):
+        """Returns empty list when there are no previous P1 findings."""
+        curr = [_make_review_finding(description="null check missing")]
+        prev = [_make_review_finding(severity="P2", description="null check missing")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == []
+
+    def test_substring_containment_matches(self):
+        """Substring containment triggers a match."""
+        curr = [_make_review_finding(description="gate_override never wired")]
+        prev = [_make_review_finding(description="gate_override never wired into TaskSpec")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert "gate_override never wired" in result
+
+    def test_token_overlap_matches(self):
+        """>=60% token overlap triggers a match."""
+        curr = [_make_review_finding(description="missing batch configuration")]
+        prev = [_make_review_finding(description="batch configuration is missing")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert len(result) == 1
+
+    def test_descriptions_truncated_at_200_chars(self):
+        """Returns descriptions truncated to 200 characters."""
+        long_desc = "x" * 300
+        curr = [_make_review_finding(description=long_desc)]
+        prev = [_make_review_finding(description=long_desc)]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert len(result) == 1
+        assert len(result[0]) <= 200
+
+    def test_multiple_matches_returns_all(self):
+        """Multiple matching P1s are all returned."""
+        curr = [
+            _make_review_finding(description="alpha issue"),
+            _make_review_finding(description="beta issue"),
+        ]
+        prev = [
+            _make_review_finding(description="alpha issue"),
+            _make_review_finding(description="beta issue"),
+        ]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert len(result) == 2
+
+
+class TestCycleHistoryAccumulation:
+    """Tests for CycleHistory accumulation in _append_cycle_history."""
+
+    def test_append_cycle_history_adds_entry(self):
+        """_append_cycle_history appends a CycleHistory entry to state."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewFinding, ReviewResult
+
+        state = CoordinatorState()
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="Found issues",
+            findings=[
+                ReviewFinding(
+                    severity="P1",
+                    file="src/foo.py",
+                    line=None,
+                    description="Null check missing",
+                    suggestion=None,
+                )
+            ],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+
+        assert len(state.cycle_history) == 1
+        entry = state.cycle_history[0]
+        assert entry.cycle == 1
+        assert entry.verdict == "REQUEST_CHANGES"
+        assert entry.summary == "Found issues"
+        assert entry.p1_findings == ["Null check missing"]
+
+    def test_cycle_history_capped_at_3(self):
+        """History is capped at 3 entries; oldest is dropped."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState, CycleHistory
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        # Pre-populate with 3 entries (also set total counter to match)
+        state.cycle_history = [
+            CycleHistory(cycle=1, verdict="REQUEST_CHANGES", summary="s1", p1_findings=["a"]),
+            CycleHistory(cycle=2, verdict="REQUEST_CHANGES", summary="s2", p1_findings=["b"]),
+            CycleHistory(cycle=3, verdict="REQUEST_CHANGES", summary="s3", p1_findings=["c"]),
+        ]
+        state.cycle_history_total = 3
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="fourth",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+
+        assert len(state.cycle_history) == 3
+        assert state.cycle_history[0].summary == "s2"  # oldest (s1) dropped
+        assert state.cycle_history[-1].summary == "fourth"
+        assert state.cycle_history[-1].cycle == 4  # monotonically increasing
+
+    def test_cycle_numbers_monotonic_after_cap(self):
+        """Cycle numbers remain monotonically increasing even after trimming."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="s",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        # Append 5 cycles — cap fires after 3, but numbers must never repeat
+        for _ in range(5):
+            _append_cycle_history(state, parsed_review)
+
+        assert len(state.cycle_history) == 3
+        cycles = [h.cycle for h in state.cycle_history]
+        assert cycles == [3, 4, 5]  # oldest trimmed, no duplicates
+
+    def test_cycle_numbers_monotonically_increase(self):
+        """Cycle numbers use a counter independent of list length."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="s",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+        _append_cycle_history(state, parsed_review)
+        assert state.cycle_history[0].cycle == 1
+        assert state.cycle_history[1].cycle == 2
+
+    def test_p1_descriptions_truncated(self):
+        """P1 finding descriptions in history are truncated to 200 chars."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewFinding, ReviewResult
+
+        state = CoordinatorState()
+        long_desc = "z" * 300
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="s",
+            findings=[
+                ReviewFinding(
+                    severity="P1",
+                    file="src/foo.py",
+                    line=None,
+                    description=long_desc,
+                    suggestion=None,
+                )
+            ],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+        assert len(state.cycle_history[0].p1_findings[0]) <= 200
+
+
+class TestApprovePathCycleHistory:
+    """Integration tests verifying APPROVE path records cycle history."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_approve_records_cycle_in_history(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Non-interactive APPROVE run records the approved cycle in state.cycle_history."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert len(result.state.cycle_history) == 1
+        assert result.state.cycle_history[0].verdict == "APPROVE"
+        assert result.state.cycle_history[0].cycle == 1
+
+
+class TestEscalationNoteOnRejectPath:
+    """Integration test: escalation note is delivered on reject-after-escalation path."""
+
+    @patch("theforge.coordinator._human_review")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_escalation_note_in_prompt_after_reject(
+        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+    ):
+        """Persistent P1 + exhausted cycles + human reject: next dev prompt has escalation note."""
+        config = _make_smart_config(tmp_path, max_review_cycles=2)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        # Capture prompts passed to dev agent (skip preflight call index 0)
+        captured_prompts: list[str] = []
+        agent_call_count = {"n": 0}
+
+        def agent_side_effect(**kwargs):
+            agent_call_count["n"] += 1
+            if agent_call_count["n"] > 1:  # skip preflight
+                captured_prompts.append(kwargs.get("prompt", ""))
+            return _make_agent_result(success=True, output="Done.")
+
+        mock_agent.side_effect = agent_side_effect
+
+        # Cycle 1 + Cycle 2: same P1 → persistent P1 fires on cycle 2, exhausted
+        pool_call = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_call["n"] += 1
+            if pool_call["n"] <= 2:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=_PERSISTENT_P1_REVIEW,
+                        profile_name="claude-opus",
+                    )
+                ]
+            # After reject: approve so the run completes
+            return [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        # Cycle 2 exhausted → human review: reject once, then approve
+        human_review_call = {"n": 0}
+
+        def human_review_side_effect(*args, **kwargs):
+            human_review_call["n"] += 1
+            if human_review_call["n"] == 1:
+                return ("reject", "Start fresh with the escalated model.")
+            return ("approve", None)
+
+        mock_human_review.side_effect = human_review_side_effect
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.dev_escalated is True
+
+        # Flow: prompts[0]=initial dev, prompts[1]=after cycle-1 (build_fix_prompt),
+        # prompts[2]=after reject (build_dev_prompt with escalation_note)
+        assert len(captured_prompts) >= 3, f"Expected >=3 dev prompts, got {len(captured_prompts)}"
+        post_reject_prompt = captured_prompts[2]  # dev call after exhausted+reject
+        assert "MODEL ESCALATION" in post_reject_prompt, (
+            "Escalation note missing from dev prompt after reject"
+        )
+        assert "Previous Review Cycles" in post_reject_prompt, (
+            "Cycle history missing from dev prompt after reject"
+        )

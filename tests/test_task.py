@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from theforge.coord_state import CycleHistory
 from theforge.review import ReviewFinding, ReviewResult, review_to_dev_handoff
 from theforge.task import (
     TaskSpec,
@@ -219,6 +220,199 @@ class TestBuildFixPrompt:
         assert "Do NOT re-run the gate" not in skipped
         assert "Gate:" not in skipped
         assert "make gate" not in skipped
+
+
+class TestBuildFixPromptCycleHistory:
+    """Tests for cycle history and escalation note in build_fix_prompt."""
+
+    def _make_history(self) -> list[CycleHistory]:
+        return [
+            CycleHistory(
+                cycle=1,
+                verdict="REQUEST_CHANGES",
+                summary="Null check missing",
+                p1_findings=["Missing null check in src/foo.py"],
+            ),
+            CycleHistory(
+                cycle=2,
+                verdict="REQUEST_CHANGES",
+                summary="Still not fixed",
+                p1_findings=["Missing null check in src/foo.py", "Type error in bar.py"],
+            ),
+        ]
+
+    def test_includes_cycle_history_section(self, tmp_path):
+        task = _make_task(tmp_path)
+        history = self._make_history()
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            cycle_history=history,
+        )
+        assert "Previous Review Cycles" in prompt
+        assert "Cycle 1: REQUEST_CHANGES" in prompt
+        assert "Cycle 2: REQUEST_CHANGES" in prompt
+        assert "Missing null check in src/foo.py" in prompt
+
+    def test_no_history_section_when_empty(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            cycle_history=[],
+        )
+        assert "Previous Review Cycles" not in prompt
+
+    def test_no_history_section_when_none(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            cycle_history=None,
+        )
+        assert "Previous Review Cycles" not in prompt
+
+    def test_includes_escalation_note(self, tmp_path):
+        task = _make_task(tmp_path)
+        note = "MODEL ESCALATION: A P1 finding persisted. Old: sonnet. New: opus."
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            escalation_note=note,
+        )
+        assert "Model Escalation" in prompt
+        assert "MODEL ESCALATION" in prompt
+
+    def test_no_escalation_section_when_none(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            escalation_note=None,
+        )
+        assert "Model Escalation" not in prompt
+
+    def test_p1_findings_shown_per_cycle(self, tmp_path):
+        task = _make_task(tmp_path)
+        history = [
+            CycleHistory(
+                cycle=1,
+                verdict="REQUEST_CHANGES",
+                summary="Summary one",
+                p1_findings=["Alpha finding", "Beta finding"],
+            ),
+        ]
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            cycle_history=history,
+        )
+        assert "Alpha finding" in prompt
+        assert "Beta finding" in prompt
+
+
+class TestBuildDevPromptEscalation:
+    """build_dev_prompt renders escalation note and cycle history when provided.
+
+    build_dev_prompt handles first-run, gate-fail, reject, and timeout-resume paths.
+    """
+
+    def test_no_history_section_when_no_cycle_history(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            review_findings="P1: bug",
+        )
+        assert "Previous Review Cycles" not in prompt
+
+    def test_cycle_history_rendered_when_provided(self, tmp_path):
+        """Cycle history is injected into build_dev_prompt on reject path (post-cycle 1+)."""
+        from theforge.coord_state import CycleHistory
+
+        task = _make_task(tmp_path)
+        history = [
+            CycleHistory(
+                cycle=1,
+                verdict="REQUEST_CHANGES",
+                summary="Missing tests.",
+                p1_findings=["No tests for foo"],
+            ),
+        ]
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            cycle_history=history,
+        )
+        assert "Previous Review Cycles" in prompt
+        assert "Cycle 1: REQUEST_CHANGES" in prompt
+        assert "Missing tests." in prompt
+        assert "No tests for foo" in prompt
+
+    def test_no_escalation_when_not_provided(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+        )
+        assert "Model Escalation" not in prompt
+
+    def test_escalation_note_rendered_when_provided(self, tmp_path):
+        """Escalation note is shown on reject-after-escalation path."""
+        task = _make_task(tmp_path)
+        note = "MODEL ESCALATION: Persistent P1. Old: sonnet. New: opus."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            escalation_note=note,
+        )
+        assert "Model Escalation" in prompt
+        assert "MODEL ESCALATION" in prompt
+
+    def test_escalation_note_rendered_without_review_findings(self, tmp_path):
+        """Escalation note appears even when review_findings is None (reject path)."""
+        task = _make_task(tmp_path)
+        note = "MODEL ESCALATION: Upgraded."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            review_findings=None,
+            escalation_note=note,
+        )
+        assert "Model Escalation" in prompt
 
 
 class TestBuildPlanPrompt:
