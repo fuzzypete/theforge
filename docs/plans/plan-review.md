@@ -75,6 +75,11 @@ check uses `state.plan_results[-1].success`. Audit code that reads
 `state.plan_result` updates to `state.plan_results[-1]` (or iterates for full
 cost). Grep for `plan_result` across the codebase to catch all references.
 
+**Known references outside coordinator.py:**
+- `tests/test_coord_preflight.py` lines ~1180 and ~1316 assert on
+  `state.plan_result` — must update to `state.plan_results[-1]`
+- `coord_audit.py` reads `state.plan_result` for audit output
+
 ### Step 3: Interactive decision handler (`src/theforge/coord_notify.py`)
 
 Add `_plan_review_interactive()` — new function, follows `_human_review` pattern
@@ -91,8 +96,8 @@ def _plan_review_interactive(
 ```
 
 Implementation:
-1. Print first 50 lines of `plan_text` (or full if shorter) to stderr
-2. Print path: `Plan at: {workspace_path}/forge_plan.md`
+1. Print full `plan_text` to **stdout** (matches spec: human needs the complete plan)
+2. Print path to stderr: `Plan at: {workspace_path}/forge_plan.md`
 3. Print decision prompt:
    ```
    Plan ready. Review forge_plan.md and choose:
@@ -289,6 +294,7 @@ New test class `TestPlanReview`:
 | `src/theforge/coord_audit.py` | `plan_review` audit section |
 | `forge.yaml` | `plan_review.enabled: true` |
 | `tests/test_coordinator.py` | 12 new tests |
+| `tests/test_coord_preflight.py` | Update `state.plan_result` → `state.plan_results` references |
 
 ## What's NOT in v1
 
@@ -317,6 +323,16 @@ audit/dashboards. → Abandon returns `phase=Phase.PLAN_REVIEW` not `ESCALATE`.
 
 **P2 — Reread error**: `forge_plan.md` deleted during edit raises exception.
 → Added try/except for `OSError`/`UnicodeDecodeError` with deterministic failure.
+
+### Round 2 (2026-03-16)
+Reviewed by Codex.
+
+**P2 — Plan output channel**: Plan proposed printing first 50 lines to stderr;
+spec says full contents to stdout. → Fixed: print full plan_text to stdout.
+
+**P2 — Migration scope understated**: `plan_result → plan_results` migration
+also affects `tests/test_coord_preflight.py` (lines ~1180, ~1316). → Added
+to files list and migration note.
 
 ## Verification
 
