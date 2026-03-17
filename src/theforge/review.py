@@ -127,6 +127,96 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     )
 
 
+@dataclass(frozen=True)
+class PlanReviewFinding:
+    """A single finding from plan review."""
+
+    severity: str  # "P1"
+    description: str
+    suggestion: str | None
+
+
+@dataclass(frozen=True)
+class PlanReviewResult:
+    """Parsed plan review verdict."""
+
+    verdict: str  # "APPROVE" or "REJECT"
+    findings: list[PlanReviewFinding]
+    parse_errors: list[str]
+
+
+def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
+    """Extract and parse plan review YAML from agent output.
+
+    Reuses the same YAML extraction strategy as code review parsing.
+    REJECT without findings is treated as a parse error.
+    Unparseable output is treated as REJECT.
+    """
+    yaml_match = re.search(
+        r"```ya?ml\s*\n(.*?)```",
+        agent_output,
+        flags=re.DOTALL,
+    )
+    yaml_text = yaml_match.group(1) if yaml_match else agent_output
+
+    try:
+        data = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as e:
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=[f"YAML parse error: {e}"],
+        )
+
+    if not isinstance(data, dict):
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=["Plan review output root is not a YAML mapping"],
+        )
+
+    verdict = data.get("verdict", "").upper()
+    if verdict not in ("APPROVE", "REJECT"):
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=[f"verdict must be APPROVE or REJECT, got: {verdict!r}"],
+        )
+
+    findings: list[PlanReviewFinding] = []
+    for f in data.get("findings", []):
+        if isinstance(f, dict):
+            findings.append(
+                PlanReviewFinding(
+                    severity=f.get("severity", "P1"),
+                    description=f.get("description", ""),
+                    suggestion=f.get("suggestion"),
+                )
+            )
+
+    errors: list[str] = []
+    if verdict == "REJECT" and not findings:
+        errors.append("REJECT verdict without findings — cannot justify rejection")
+
+    return PlanReviewResult(
+        verdict=verdict,
+        findings=findings,
+        parse_errors=errors,
+    )
+
+
+def plan_review_findings_to_text(result: PlanReviewResult) -> str:
+    """Convert plan review findings to text for feeding back into plan regeneration."""
+    if not result.findings:
+        return "No specific findings provided."
+    lines: list[str] = []
+    for f in result.findings:
+        lines.append(f"- [{f.severity}] {f.description}")
+        if f.suggestion:
+            lines.append(f"  Suggestion: {f.suggestion}")
+    return "\n".join(lines)
+
+
 def review_to_dev_handoff(result: ReviewResult) -> str:
     """Convert a ReviewResult to a rich action-oriented markdown block for the dev agent.
 

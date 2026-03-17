@@ -191,6 +191,105 @@ def build_preflight_prompt(
     """)
 
 
+# ── Plan review prompt ────────────────────────────────────────────────
+
+
+def build_plan_review_prompt(
+    task: TaskSpec,
+    *,
+    story_content: str,
+    plan_content: str,
+    file_contents: dict[str, str],
+    preflight_output: str | None = None,
+    rejection_findings: str | None = None,
+) -> str:
+    """Build the plan review agent prompt.
+
+    The plan review agent reads the story + generated plan (and optionally
+    the file_scope contents and preflight output) and produces a structured
+    APPROVE/REJECT verdict.
+    """
+    if file_contents:
+        files_block = "\n\n".join(
+            f"### `{path}`\n```\n{content}\n```" for path, content in file_contents.items()
+        )
+    else:
+        files_block = "(no file_scope defined — spec applies to entire project)"
+
+    preflight_section = ""
+    if preflight_output:
+        preflight_section = dedent(f"""\
+
+            ## Preflight Analysis
+
+            {preflight_output}
+        """)
+
+    rejection_section = ""
+    if rejection_findings:
+        rejection_section = dedent(f"""\
+
+            ## Previous Rejection Findings
+
+            This plan was previously REJECTED. The following issues were identified.
+            Verify whether the regenerated plan addresses them:
+
+            {rejection_findings}
+        """)
+
+    return dedent(f"""\
+        You are a plan reviewer for **{task.name}**.
+
+        ## Your Role
+
+        You are evaluating whether an implementation plan is sound BEFORE any dev
+        budget is spent. You are NOT implementing anything. You produce a structured
+        verdict: APPROVE (plan looks sound) or REJECT (plan has problems that will
+        cause dev to fail).
+
+        ## Story / Spec
+
+        {story_content}
+
+        ## Generated Plan
+
+        {plan_content}
+
+        ## Current Codebase (file_scope)
+
+        {files_block}
+        {preflight_section}{rejection_section}
+        ## Evaluation Criteria
+
+        1. Does the plan address ALL acceptance criteria in the story?
+        2. Are there technical errors (wrong APIs, hallucinated functions, blast radius gaps)?
+        3. Is the implementation order sound (dependencies respected)?
+        4. Do the proposed function signatures and module references match the actual codebase?
+
+        ## Output Format
+
+        You MUST output ONLY a YAML block. No prose before or after.
+        Start your response with ```yaml and end with ```.
+
+        ```yaml
+        verdict: APPROVE | REJECT
+        findings:
+          - severity: P1
+            description: "<what is wrong with the plan>"
+            suggestion: "<how to fix it>"
+        ```
+
+        ## Rules
+
+        - verdict MUST be APPROVE if no blocking issues found
+        - verdict MUST be REJECT if any finding would cause dev to fail
+        - REJECT MUST include at least one finding
+        - APPROVE with no findings is valid (plan is sound)
+        - Be specific: cite the plan section and what is wrong
+        - Do NOT flag style preferences — only flag issues that will cause dev failure
+    """)
+
+
 # ── Plan prompt ───────────────────────────────────────────────────────
 
 

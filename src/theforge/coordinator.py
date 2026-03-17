@@ -99,13 +99,20 @@ from .coord_workspace import (  # noqa: F401
     _remove_worktree,
     _resolve_merge_conflicts,
 )
-from .review import ReviewResult, parse_review_output, review_to_dev_handoff  # noqa: F401
+from .review import (  # noqa: F401
+    ReviewResult,
+    parse_plan_review_output,
+    parse_review_output,
+    plan_review_findings_to_text,
+    review_to_dev_handoff,
+)
 from .runner import log_agent_result, run_agent, run_agent_pool
 from .task import (  # noqa: F401
     TaskSpec,
     build_dev_prompt,
     build_fix_prompt,
     build_plan_prompt,
+    build_plan_review_prompt,
     build_preflight_prompt,
     build_review_prompt,
     build_synthesis_prompt,
@@ -894,7 +901,146 @@ def run_task(
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
 
-            if config.plan_review.enabled:
+            if config.plan_agent_review.enabled:
+                # ── Agent plan review ──────────────────────────────
+                state.phase = Phase.PLAN_REVIEW
+                state.plan_review_mode = "agent"
+                par_cfg = config.plan_agent_review
+                par_profile = ModelProfile(
+                    name="plan-review",
+                    cli=par_cfg.cli,
+                    model=par_cfg.model,
+                    budget_usd=par_cfg.budget_usd,
+                    timeout_seconds=par_cfg.timeout,
+                    allowed_tools=config.preflight_profile.allowed_tools,
+                )
+                if config.plan_review.enabled:
+                    _log(
+                        "  ⚠ Both plan_agent_review and plan_review enabled — "
+                        "agent review takes precedence"
+                    )
+
+                for _attempt in range(2):
+                    _log_phase(state.phase, f"agent review (model={par_profile.model})")
+
+                    pr_prompt = build_plan_review_prompt(
+                        task,
+                        story_content=spec_content,
+                        plan_content=plan_text,
+                        file_contents=file_contents,
+                        preflight_output=(
+                            preflight_result.output if preflight_result.success else None
+                        ),
+                        rejection_findings=state.plan_agent_review_findings,
+                    )
+
+                    _pr_start = time.monotonic()
+                    pr_result = run_agent(
+                        prompt=pr_prompt,
+                        profile=par_profile,
+                        working_dir=workspace_path,
+                    )
+                    _pr_elapsed = time.monotonic() - _pr_start
+                    state.plan_review_results.append(pr_result)
+
+                    if not pr_result.success:
+                        # Agent failure → treat as REJECT
+                        _log(
+                            f"  ✗ PLAN_REVIEW   agent failed (exit={pr_result.exit_code}) "
+                            f"— treating as REJECT"
+                        )
+                        parsed_pr = parse_plan_review_output("")  # force parse error → REJECT
+                    else:
+                        parsed_pr = parse_plan_review_output(pr_result.output)
+
+                    if parsed_pr.parse_errors:
+                        _log(
+                            f"  ⚠ PLAN_REVIEW   parse issues: {'; '.join(parsed_pr.parse_errors)}"
+                        )
+
+                    if parsed_pr.verdict == "APPROVE":
+                        state.plan_review_decision = "approve"
+                        _log(
+                            f"  ✓ PLAN_REVIEW   approve (agent)  "
+                            f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
+                        )
+                        break
+
+                    # REJECT path
+                    findings_text = plan_review_findings_to_text(parsed_pr)
+                    state.plan_agent_review_findings = findings_text
+                    _log(
+                        f"  ✗ PLAN_REVIEW   reject (agent)  "
+                        f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
+                    )
+
+                    if state.plan_regenerated:
+                        # Second REJECT → escalate
+                        state.plan_review_decision = "reject"
+                        state.phase = Phase.ESCALATE
+                        state.error = (
+                            f"Plan rejected twice by agent reviewer. Findings:\n{findings_text}"
+                        )
+                        _log("  ✗ PLAN_REVIEW   double reject — escalating")
+                        _escalate_notify(task, state, notify, config)
+                        return CoordinatorResult(
+                            success=False,
+                            phase=Phase.ESCALATE,
+                            state=state,
+                            message=state.error,
+                        )
+
+                    # First REJECT → regenerate plan with findings
+                    state.plan_regenerated = True
+                    state.plan_review_decision = "regenerate"
+                    _log("  ↺ PLAN_REVIEW   reject → regenerating plan with findings")
+
+                    # Rebuild plan prompt with rejection findings appended
+                    regen_prompt = build_plan_prompt(
+                        task,
+                        spec_content=spec_content,
+                        file_contents=file_contents,
+                        preflight_output=(
+                            preflight_result.output if preflight_result.success else None
+                        ),
+                    )
+                    regen_prompt += (
+                        "\n\n## Previous Plan Review Findings\n\n"
+                        "The previous plan was REJECTED. Address these issues:\n\n"
+                        f"{findings_text}\n"
+                    )
+
+                    (workspace_path / "forge_plan.md").unlink(missing_ok=True)
+                    _plan_start = time.monotonic()
+                    plan_result = run_agent(
+                        prompt=regen_prompt,
+                        profile=plan_profile,
+                        working_dir=workspace_path,
+                    )
+                    _plan_elapsed = time.monotonic() - _plan_start
+                    state.plan_results.append(plan_result)
+
+                    if not plan_result.success:
+                        state.phase = Phase.ESCALATE
+                        state.error = "PLAN regeneration failed after agent review REJECT"
+                        _log("  ✗ PLAN regen failed — escalating")
+                        _escalate_notify(task, state, notify, config)
+                        return CoordinatorResult(
+                            success=False,
+                            phase=state.phase,
+                            state=state,
+                            message=state.error,
+                        )
+
+                    plan_text = plan_result.output
+                    (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+                    state.plan_output = plan_text
+                    _log(
+                        "  ✓ PLAN (regenerated)  "
+                        f"${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}"
+                    )
+
+            elif config.plan_review.enabled:
                 for _ in range(2):
                     state.phase = Phase.PLAN_REVIEW
                     _log_phase(state.phase, "waiting for human decision...")
