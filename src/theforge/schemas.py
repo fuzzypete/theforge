@@ -134,10 +134,12 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(c, dict):
                 errors.append(f"commits[{i}] must be a mapping")
                 continue
-            if not c.get("sha"):
-                errors.append(f"commits[{i}].sha must be non-empty")
-            if not c.get("message"):
-                errors.append(f"commits[{i}].message must be non-empty")
+            sha = c.get("sha")
+            if not isinstance(sha, str) or not sha.strip():
+                errors.append(f"commits[{i}].sha must be a non-empty string")
+            msg = c.get("message")
+            if not isinstance(msg, str) or not msg.strip():
+                errors.append(f"commits[{i}].message must be a non-empty string")
 
     # ── acceptance_criteria ─────────────────────────────────────────
     criteria = data.get("acceptance_criteria")
@@ -154,16 +156,18 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(ac, dict):
                 errors.append(f"acceptance_criteria[{i}] must be a mapping")
                 continue
-            if not ac.get("criterion"):
-                errors.append(f"acceptance_criteria[{i}].criterion must be non-empty")
+            criterion = ac.get("criterion")
+            if not isinstance(criterion, str) or not criterion.strip():
+                errors.append(f"acceptance_criteria[{i}].criterion must be a non-empty string")
             status = ac.get("status")
-            if status not in VALID_AC_STATUSES:
+            if not isinstance(status, str) or status not in VALID_AC_STATUSES:
                 errors.append(
                     f"acceptance_criteria[{i}].status must be one of "
                     f"{VALID_AC_STATUSES}, got: {status!r}"
                 )
-            if not ac.get("notes"):
-                errors.append(f"acceptance_criteria[{i}].notes must be non-empty")
+            notes = ac.get("notes")
+            if not isinstance(notes, str) or not notes.strip():
+                errors.append(f"acceptance_criteria[{i}].notes must be a non-empty string")
 
     # ── spec_deviations ────────────────────────────────────────────
     deviations = data.get("spec_deviations")
@@ -177,10 +181,12 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(d, dict):
                 errors.append(f"spec_deviations[{i}] must be a mapping")
                 continue
-            if not d.get("description"):
-                errors.append(f"spec_deviations[{i}].description must be non-empty")
-            if not d.get("justification"):
-                errors.append(f"spec_deviations[{i}].justification must be non-empty")
+            desc = d.get("description")
+            if not isinstance(desc, str) or not desc.strip():
+                errors.append(f"spec_deviations[{i}].description must be a non-empty string")
+            just = d.get("justification")
+            if not isinstance(just, str) or not just.strip():
+                errors.append(f"spec_deviations[{i}].justification must be a non-empty string")
     else:
         errors.append("spec_deviations must be a list or the string 'none'")
 
@@ -196,10 +202,12 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(d, dict):
                 errors.append(f"deferred_items[{i}] must be a mapping")
                 continue
-            if not d.get("description"):
-                errors.append(f"deferred_items[{i}].description must be non-empty")
-            if not d.get("reason"):
-                errors.append(f"deferred_items[{i}].reason must be non-empty")
+            desc = d.get("description")
+            if not isinstance(desc, str) or not desc.strip():
+                errors.append(f"deferred_items[{i}].description must be a non-empty string")
+            reason = d.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                errors.append(f"deferred_items[{i}].reason must be a non-empty string")
     else:
         errors.append("deferred_items must be a list or the string 'none'")
 

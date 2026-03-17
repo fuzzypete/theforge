@@ -117,12 +117,28 @@ def _make_pool_result(
     ]
 
 
+_VALID_DEV_NOTES = (
+    'summary: "Implemented the feature."\n'
+    "commits:\n"
+    '  - sha: "abc1234"\n'
+    '    message: "feat: implement"\n'
+    "acceptance_criteria:\n"
+    '  - criterion: "It works"\n'
+    "    status: MET\n"
+    '    notes: "tested"\n'
+    "spec_deviations: none\n"
+    "deferred_items: none\n"
+    "gate_result: PASS\n"
+)
+
+
 def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
-    """Write a minimal handoff.yaml in the workspace."""
+    """Write a minimal handoff.yaml in the workspace with valid dev_notes."""
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
+        "dev_notes": _VALID_DEV_NOTES,
     }
     (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 

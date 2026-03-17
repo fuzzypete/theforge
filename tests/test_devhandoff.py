@@ -269,6 +269,56 @@ class TestValidateDevHandoff:
         errors = validate_dev_handoff(data)
         assert errors == []
 
+    # ── non-string leaf values rejected ────────────────────────────
+
+    def test_commit_sha_non_string_rejected(self):
+        data = _valid_handoff()
+        data["commits"] = [{"sha": 123, "message": "feat: thing"}]
+        errors = validate_dev_handoff(data)
+        assert any("sha" in e and "string" in e for e in errors)
+
+    def test_commit_message_non_string_rejected(self):
+        data = _valid_handoff()
+        data["commits"] = [{"sha": "abc", "message": True}]
+        errors = validate_dev_handoff(data)
+        assert any("message" in e and "string" in e for e in errors)
+
+    def test_ac_criterion_non_string_rejected(self):
+        data = _valid_handoff()
+        data["acceptance_criteria"] = [{"criterion": 99, "status": "MET", "notes": "ok"}]
+        errors = validate_dev_handoff(data)
+        assert any("criterion" in e and "string" in e for e in errors)
+
+    def test_ac_notes_non_string_rejected(self):
+        data = _valid_handoff()
+        data["acceptance_criteria"] = [{"criterion": "AC 1", "status": "MET", "notes": 42}]
+        errors = validate_dev_handoff(data)
+        assert any("notes" in e and "string" in e for e in errors)
+
+    def test_deviation_description_non_string_rejected(self):
+        data = _valid_handoff()
+        data["spec_deviations"] = [{"description": 123, "justification": "reason"}]
+        errors = validate_dev_handoff(data)
+        assert any("description" in e and "string" in e for e in errors)
+
+    def test_deviation_justification_non_string_rejected(self):
+        data = _valid_handoff()
+        data["spec_deviations"] = [{"description": "what", "justification": False}]
+        errors = validate_dev_handoff(data)
+        assert any("justification" in e and "string" in e for e in errors)
+
+    def test_deferred_description_non_string_rejected(self):
+        data = _valid_handoff()
+        data["deferred_items"] = [{"description": 0, "reason": "why"}]
+        errors = validate_dev_handoff(data)
+        assert any("description" in e and "string" in e for e in errors)
+
+    def test_deferred_reason_non_string_rejected(self):
+        data = _valid_handoff()
+        data["deferred_items"] = [{"description": "what", "reason": 99}]
+        errors = validate_dev_handoff(data)
+        assert any("reason" in e and "string" in e for e in errors)
+
 
 # ── Parsing ───────────────────────────────────────────────────────────
 

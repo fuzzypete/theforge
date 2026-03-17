@@ -193,12 +193,28 @@ def _make_pool_result(
     ]
 
 
+_VALID_DEV_NOTES = (
+    'summary: "Implemented the feature."\n'
+    "commits:\n"
+    '  - sha: "abc1234"\n'
+    '    message: "feat: implement"\n'
+    "acceptance_criteria:\n"
+    '  - criterion: "It works"\n'
+    "    status: MET\n"
+    '    notes: "tested"\n'
+    "spec_deviations: none\n"
+    "deferred_items: none\n"
+    "gate_result: PASS\n"
+)
+
+
 def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
-    """Write a minimal handoff.yaml in the workspace."""
+    """Write a minimal handoff.yaml in the workspace with valid dev_notes."""
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
+        "dev_notes": _VALID_DEV_NOTES,
     }
     (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 
@@ -3171,6 +3187,76 @@ class TestCoordinatorDevHandoffValidation:
         assert result.success is True
         # preflight + dev + max_handoff_retries (2 by default)
         assert call_idx["n"] == 4
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_missing_dev_notes_triggers_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """PASS gate with no dev_notes triggers the handoff retry path."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        good_notes = (
+            'summary: "Implemented the thing."\n'
+            "commits:\n"
+            '  - sha: "abc1234"\n'
+            '    message: "feat: implement"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "It works"\n'
+            "    status: MET\n"
+            '    notes: "yes"\n'
+            "spec_deviations: none\n"
+            "deferred_items: none\n"
+            "gate_result: PASS\n"
+        )
+
+        def _write_handoff_no_dev_notes(ws: Path) -> None:
+            handoff = {
+                "gate_decision": "PASS",
+                "validation": {"make_fmt": {"status": "PASS"}},
+                "scope_completed": ["test item"],
+            }
+            (ws / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                # Write handoff.yaml WITHOUT dev_notes
+                _write_handoff_no_dev_notes(Path(cwd))
+                return (True, "OK")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+
+        call_idx = {"n": 0}
+
+        def agent_side_effect(**kwargs):
+            call_idx["n"] += 1
+            if call_idx["n"] == 1:
+                return _PREFLIGHT_RESULT
+            if call_idx["n"] == 2:
+                # dev agent
+                return _make_agent_result(success=True, output="Implemented.")
+            # handoff fix agent — write valid handoff with dev_notes
+            self._make_structured_handoff(workspace, good_notes)
+            return _make_agent_result(success=True, output="Fixed handoff.")
+
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # preflight + dev + handoff fix = 3 agent calls
+        assert call_idx["n"] == 3
 
 
 # ── _has_persistent_p1 unit tests ────────────────────────────────────

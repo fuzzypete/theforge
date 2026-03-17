@@ -228,12 +228,27 @@ def _get_raw_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
 def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff | None:
     """Parse and validate the dev handoff from handoff.yaml.
 
-    Returns None if there's no handoff file or dev_notes field.
-    Returns DevHandoff with parse_errors if validation fails.
+    Returns None only when there's no handoff file at all (exit-code gate mode).
+    Returns DevHandoff with parse_errors when dev_notes is missing/blank or
+    fails schema validation — so the retry loop can request a rewrite.
     """
+    if not config.validation.handoff_file:
+        return None
+    handoff_path = workspace_path / config.validation.handoff_file
+    if not handoff_path.exists():
+        return None
     raw = _get_raw_dev_notes(config, workspace_path)
     if raw is None:
-        return None
+        return DevHandoff(
+            summary="",
+            commits=[],
+            acceptance_criteria=[],
+            spec_deviations=[],
+            deferred_items=[],
+            gate_result="",
+            parse_errors=["dev_notes field is missing or blank in handoff.yaml"],
+            raw={},
+        )
     return parse_dev_handoff(raw)
 
 
