@@ -1,36 +1,23 @@
 gate_decision: PASS
-scope_completed:
-  - CycleHistory frozen dataclass added to coord_state.py
-  - cycle_history and escalation_note fields added to CoordinatorState
-  - _persistent_p1_descriptions() helper added to coord_preflight.py
-  - _append_cycle_history() helper added to coord_phases.py
-  - History accumulation in all 4 RETRY_DEV paths in _run_review_phase
-  - Escalation note construction when persistent P1 triggers model escalation
-  - build_fix_prompt updated with cycle_history and escalation_note params
-  - build_dev_prompt updated with cycle_history and escalation_note params
-  - _run_dev_phase updated to thread history into both prompt call-sites
-  - escalation_note cleared after dev prompt consumes it
-  - History capped at 3 most recent entries
-  - 25 new tests covering all acceptance criteria
-deferred_followups: none
-next_recommended_step: reviewer evaluates diff against spec acceptance criteria
 dev_notes: |
-  summary: "Implemented cycle-aware dev feedback by adding a CycleHistory frozen
-    dataclass that captures per-cycle verdict, summary, and P1 findings (truncated
-    to 200 chars). CoordinatorState gains cycle_history (list, capped at 3) and
-    escalation_note (str|None, cleared after consumption). A new _append_cycle_history()
+  summary: "Implemented cycle-aware dev feedback by adding a CycleHistory frozen dataclass
+    (cycle, verdict, summary, p1_findings truncated to 200 chars) to coord_state.py, along
+    with two new fields on CoordinatorState: cycle_history (list[CycleHistory], capped at 3)
+    and escalation_note (str|None, cleared after consumption). A new _append_cycle_history()
     helper in coord_phases.py is called in all four RETRY_DEV return paths of
-    _run_review_phase, and a _persistent_p1_descriptions() helper in coord_preflight.py
-    returns matched P1 description strings using the same logic as _has_persistent_p1.
-    Both build_fix_prompt and build_dev_prompt accept optional cycle_history and
-    escalation_note params, rendering 'Previous Review Cycles' and 'Model Escalation'
-    sections before the review findings block. The escalation note is built at the same
-    location where the model swap occurs, then cleared in _run_dev_phase after the
-    prompt is built. Cycle numbers in history are monotonically increasing (len+1),
-    not tied to the resettable review_cycle counter."
+    _run_review_phase. A _persistent_p1_descriptions() helper in coord_preflight.py returns
+    matched P1 description strings using the same token-overlap logic as _has_persistent_p1.
+    When persistent P1 triggers model escalation, an escalation_note is built with old/new
+    model names and matched finding descriptions. Both build_fix_prompt and build_dev_prompt
+    accept optional cycle_history and escalation_note params, rendering Previous Review Cycles
+    and Model Escalation sections before the review findings block. Escalation note is cleared
+    in _run_dev_phase after the prompt is built. Cycle numbers are monotonically increasing
+    (len+1), not tied to the resettable review_cycle counter. 25 new tests added."
   commits:
     - sha: "03d4ed2"
       message: "feat(cycle-aware-feedback): accumulate cycle history and inject into dev prompts"
+    - sha: "be14097"
+      message: "chore(cycle-aware-feedback): write dev handoff artifact"
   acceptance_criteria:
     - criterion: "CoordinatorState accumulates review cycle summaries (not just raw ReviewResult objects — a lightweight history)"
       status: MET
