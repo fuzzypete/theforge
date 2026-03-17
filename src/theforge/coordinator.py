@@ -30,11 +30,14 @@ Transitions:
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import subprocess
 import sys as _sys
 import time
 from pathlib import Path
+
+import yaml
 
 from . import coord_util as _cu
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
@@ -121,6 +124,7 @@ from .task import (  # noqa: F401
     build_review_prompt,
     load_spec,
 )
+from .traces import write_trace
 
 # ── Shell helper ─────────────────────────────────────────────────────
 
@@ -370,6 +374,7 @@ def _run_review_pool(
     notify: bool,
     review_prompts: str | list[str] | None = None,
     enforce_budgets: bool = True,
+    pool_attempt: int = 0,
 ) -> tuple[list, list, ReviewResult | None]:
     """Run the review pool and merge results.  Returns (successful, failed, merged_result).
 
@@ -438,10 +443,17 @@ def _run_review_pool(
         if result.session_id:
             state.reviewer_session_ids[profile.name] = result.session_id
     _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
+    _cycle_num = state.review_cycle + 1
     for r in pool_results:
         state.review_agent_results.append(r)
         state.review_durations.append(_per_agent_dur)
         log_agent_result(r, f"REVIEW/{r.profile_name}")
+        write_trace(
+            workspace_path
+            / ".forge/traces"
+            / f"{_cycle_num}-{pool_attempt}-review-{r.profile_name}.txt",
+            r.output,
+        )
 
     # Per-profile budget enforcement BEFORE synthesis (original ordering)
     if enforce_budgets:
@@ -481,7 +493,11 @@ def _run_review_pool(
     # Merge all successful reviewer outputs — no synthesis LLM call.
     # If only one succeeded, parse directly. If multiple, merge (strictest verdict,
     # union of findings) so the dev agent sees every finding from every reviewer.
+    _synthesis_path = (
+        workspace_path / ".forge/traces" / f"{_cycle_num}-{pool_attempt}-synthesis.txt"
+    )
     if len(successful) == 1:
+        write_trace(_synthesis_path, successful[0].output)
         return successful, failed_results, parse_review_output(successful[0].output)
 
     _log_verbose(
@@ -490,6 +506,10 @@ def _run_review_pool(
     parsed_results = [parse_review_output(r.output) for r in successful]
     names = [r.profile_name for r in successful]
     merged = merge_review_results(parsed_results, names)
+    write_trace(
+        _synthesis_path,
+        yaml.dump(dataclasses.asdict(merged), default_flow_style=False, allow_unicode=True),
+    )
     return successful, failed_results, merged
 
 
@@ -945,6 +965,7 @@ def run_task(
         if plan_result.success:
             plan_text = plan_result.output
             (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+            write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_text)
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
 
@@ -1120,6 +1141,7 @@ def run_task(
 
                     plan_text = plan_result.output
                     (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+                    write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_text)
                     state.plan_output = plan_text
                     _log(
                         "  ✓ PLAN (regenerated)  "
@@ -1163,6 +1185,7 @@ def run_task(
                             )
                         state.plan_output = updated
                         plan_text = updated
+                        write_trace(workspace_path / ".forge/traces" / "plan.txt", updated)
                         _log(
                             "  ✓ PLAN_REVIEW   approve  "
                             f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
@@ -1235,6 +1258,7 @@ def run_task(
 
                         plan_text = plan_result.output
                         (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+                        write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_text)
                         state.plan_output = plan_text
                         _log(
                             "  ✓ PLAN (regenerated)  "

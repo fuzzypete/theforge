@@ -10,6 +10,7 @@ import yaml
 from . import coord_util as _cu
 from .config import ForgeConfig
 from .task import TaskSpec
+from .traces import write_trace
 
 
 def _parse_dirty_files(raw_output: str) -> list[str]:
@@ -109,7 +110,10 @@ def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: st
 
 
 def _run_gate_full(
-    config: ForgeConfig, workspace_path: Path, task: TaskSpec | None = None
+    config: ForgeConfig,
+    workspace_path: Path,
+    task: TaskSpec | None = None,
+    iter_num: int | None = None,
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command and read the decision. Returns (decision, error, output_tail)."""
     has_override = (
@@ -131,6 +135,12 @@ def _run_gate_full(
         workspace_path,
         timeout=gate_timeout,
     )
+
+    if iter_num is not None:
+        write_trace(
+            workspace_path / ".forge/traces" / f"{iter_num}-gate.txt",
+            output,
+        )
 
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]
