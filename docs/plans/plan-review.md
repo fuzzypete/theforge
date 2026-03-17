@@ -14,6 +14,10 @@ gate between PLAN and DEV.
 **v1 scope: blocking interactive only.** Remote/advisory mode deferred — it
 requires extending `_ntfy_poll_reply` vocabulary, which should be a follow-up.
 
+**Critical constraint:** PLAN_REVIEW only fires when `interactive=True`. In
+non-interactive mode (the default), it is skipped with a log warning. This
+prevents unattended `forge run` or sprint calls from blocking on stdin.
+
 ## Implementation Order
 
 ### Step 1: Config (`src/theforge/config.py`)
@@ -42,13 +46,34 @@ No `mode` or `timeout_seconds` fields in v1. Those come with remote mode.
 
 Add `Phase.PLAN_REVIEW` to the enum (after `PLAN`, before `DEV`).
 
-Add fields to `CoordinatorState`:
+Change `plan_result` from single to list (for regen cost tracking):
+```python
+# Change from:
+plan_result: AgentResult | None = None
+# To:
+plan_results: list[AgentResult] = field(default_factory=list)
+```
 
+Update `total_plan_cost` property:
+```python
+@property
+def total_plan_cost(self) -> float:
+    return sum(r.cost_usd for r in self.plan_results)
+```
+
+Add fields:
 ```python
 plan_review_decision: str | None = None   # "approve" | "regenerate" | "abandon"
 plan_regenerated: bool = False             # guard: regen allowed once only
 plan_review_waited_seconds: float | None = None
 ```
+
+**Migration note:** All existing references to `state.plan_result` must change
+to `state.plan_results`. In coordinator.py, `state.plan_result = plan_result`
+becomes `state.plan_results.append(plan_result)`. The `plan_result.success`
+check uses `state.plan_results[-1].success`. Audit code that reads
+`state.plan_result` updates to `state.plan_results[-1]` (or iterates for full
+cost). Grep for `plan_result` across the codebase to catch all references.
 
 ### Step 3: Interactive decision handler (`src/theforge/coord_notify.py`)
 
@@ -89,7 +114,7 @@ After `state.plan_output = plan_text` and the success log:
 
 ```python
 # ── PLAN_REVIEW ─────────────────────────────────────────────
-if config.plan_review.enabled:
+if config.plan_review.enabled and interactive:
     state.phase = Phase.PLAN_REVIEW
     _log_phase(state.phase, "waiting for human decision...")
     _log(f"  Plan written to: {workspace_path / 'forge_plan.md'}")
@@ -103,7 +128,15 @@ if config.plan_review.enabled:
 
     if plan_review_decision == "approve":
         # On edit, re-read the file (human may have modified it)
-        updated = (workspace_path / "forge_plan.md").read_text(encoding="utf-8")
+        try:
+            updated = (workspace_path / "forge_plan.md").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            _log(f"  ✗ PLAN_REVIEW   forge_plan.md unreadable after edit: {exc}")
+            state.phase = Phase.PLAN_REVIEW
+            return CoordinatorResult(
+                success=False, phase=Phase.PLAN_REVIEW, state=state,
+                message=f"forge_plan.md unreadable after edit: {exc}",
+            )
         state.plan_output = updated
         _log(f"  ✓ PLAN_REVIEW   approve  ({_fmt_duration(state.plan_review_waited_seconds)})")
 
@@ -111,7 +144,7 @@ if config.plan_review.enabled:
         if state.plan_regenerated:
             _log("  ✗ PLAN_REVIEW   already regenerated once — abandoning")
             return CoordinatorResult(
-                success=False, phase=Phase.ESCALATE, state=state,
+                success=False, phase=Phase.PLAN_REVIEW, state=state,
                 message="Plan regenerated once already — abandoning.",
             )
         state.plan_regenerated = True
@@ -122,7 +155,7 @@ if config.plan_review.enabled:
         plan_result = run_agent(
             prompt=plan_prompt, profile=plan_profile, working_dir=workspace_path,
         )
-        state.plan_result = plan_result
+        state.plan_results.append(plan_result)  # append, not overwrite
         if not plan_result.success:
             state.phase = Phase.ESCALATE
             state.error = "PLAN regeneration failed"
@@ -142,10 +175,17 @@ if config.plan_review.enabled:
 
     elif plan_review_decision == "abandon":
         _log(f"  ✗ PLAN_REVIEW   abandoned — worktree preserved at {workspace_path}")
+        state.phase = Phase.PLAN_REVIEW  # stay at PLAN_REVIEW, not ESCALATE
         return CoordinatorResult(
-            success=False, phase=Phase.ESCALATE, state=state,
+            success=False, phase=Phase.PLAN_REVIEW, state=state,
             message="Plan review abandoned by human.",
         )
+```
+
+**Non-interactive skip:** After the `if config.plan_review.enabled and interactive:` block:
+```python
+elif config.plan_review.enabled and not interactive:
+    _log("  ⚠ PLAN_REVIEW   skipped (non-interactive mode)")
 ```
 
 **Regenerate loop structure:** Wrap the PLAN_REVIEW block in a `for _ in range(2):`
@@ -226,6 +266,18 @@ New test class `TestPlanReview`:
 
 8. **test_plan_review_eof_abandons** — Mock stdin EOF. Verify abandon.
 
+9. **test_plan_review_skipped_non_interactive** — `plan_review.enabled = True`
+   but `interactive=False`. Verify PLAN_REVIEW never entered, log warning emitted.
+
+10. **test_plan_review_abandon_phase_not_escalate** — Verify abandon returns
+    `phase=Phase.PLAN_REVIEW`, not `Phase.ESCALATE`.
+
+11. **test_plan_review_reread_error** — Delete `forge_plan.md` during edit.
+    Verify deterministic failure, not exception.
+
+12. **test_plan_regen_tracks_both_costs** — Verify `total_plan_cost` sums
+    both plan invocations after a regen.
+
 ## Files to Modify
 
 | File | Change |
@@ -236,7 +288,7 @@ New test class `TestPlanReview`:
 | `src/theforge/coordinator.py` | PLAN_REVIEW gate between PLAN and DEV loop |
 | `src/theforge/coord_audit.py` | `plan_review` audit section |
 | `forge.yaml` | `plan_review.enabled: true` |
-| `tests/test_coordinator.py` | 8 new tests |
+| `tests/test_coordinator.py` | 12 new tests |
 
 ## What's NOT in v1
 
@@ -247,9 +299,28 @@ New test class `TestPlanReview`:
 
 These all come in v2 after v1 is stable and dogfooded.
 
+## Review History
+
+### Round 1 (2026-03-16)
+Reviewed by Codex.
+
+**P1 — Non-interactive blocking**: `plan_review.enabled` without `interactive`
+guard would block unattended runs on stdin. → Added `and interactive` guard,
+skip with warning in non-interactive mode.
+
+**P2 — Regen cost loss**: Overwriting `plan_result` loses first PLAN cost.
+→ Changed to `plan_results: list[AgentResult]` with append, summed in
+`total_plan_cost`.
+
+**P2 — Abandon as ESCALATE**: User cancellation recorded as escalation pollutes
+audit/dashboards. → Abandon returns `phase=Phase.PLAN_REVIEW` not `ESCALATE`.
+
+**P2 — Reread error**: `forge_plan.md` deleted during edit raises exception.
+→ Added try/except for `OSError`/`UnicodeDecodeError` with deterministic failure.
+
 ## Verification
 
-1. `make test` — all existing + 8 new tests pass
+1. `make test` — all existing + 12 new tests pass
 2. `make lint` — clean
 3. Manual test: `forge run specs/<small-spec>.md --interactive` with
    `plan_review.enabled: true` — verify prompt appears, each decision works
