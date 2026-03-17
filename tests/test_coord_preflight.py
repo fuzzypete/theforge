@@ -1703,3 +1703,6 @@ class TestEscalationNoteOnRejectPath:
         assert "MODEL ESCALATION" in post_reject_prompt, (
             "Escalation note missing from dev prompt after reject"
         )
+        assert "Previous Review Cycles" in post_reject_prompt, (
+            "Cycle history missing from dev prompt after reject"
+        )

@@ -330,13 +330,12 @@ class TestBuildFixPromptCycleHistory:
 
 
 class TestBuildDevPromptEscalation:
-    """build_dev_prompt renders escalation note when provided (reject-after-escalation path).
+    """build_dev_prompt renders escalation note and cycle history when provided.
 
-    Cycle history is not rendered (review-driven retries use build_fix_prompt for that).
     build_dev_prompt handles first-run, gate-fail, reject, and timeout-resume paths.
     """
 
-    def test_no_history_section_ever(self, tmp_path):
+    def test_no_history_section_when_no_cycle_history(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_dev_prompt(
             task,
@@ -347,6 +346,32 @@ class TestBuildDevPromptEscalation:
             review_findings="P1: bug",
         )
         assert "Previous Review Cycles" not in prompt
+
+    def test_cycle_history_rendered_when_provided(self, tmp_path):
+        """Cycle history is injected into build_dev_prompt on reject path (post-cycle 1+)."""
+        from theforge.coord_state import CycleHistory
+
+        task = _make_task(tmp_path)
+        history = [
+            CycleHistory(
+                cycle=1,
+                verdict="REQUEST_CHANGES",
+                summary="Missing tests.",
+                p1_findings=["No tests for foo"],
+            ),
+        ]
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            cycle_history=history,
+        )
+        assert "Previous Review Cycles" in prompt
+        assert "Cycle 1: REQUEST_CHANGES" in prompt
+        assert "Missing tests." in prompt
+        assert "No tests for foo" in prompt
 
     def test_no_escalation_when_not_provided(self, tmp_path):
         task = _make_task(tmp_path)

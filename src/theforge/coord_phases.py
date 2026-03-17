@@ -823,6 +823,7 @@ def _run_dev_phase(
             plan_output=state.plan_output,
             iteration=state.dev_iteration,
             escalation_note=state.escalation_note,
+            cycle_history=state.cycle_history or None,
         )
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed

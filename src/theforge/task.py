@@ -418,6 +418,7 @@ def build_dev_prompt(
     plan_output: str | None = None,
     iteration: int = 1,
     escalation_note: str | None = None,
+    cycle_history: list[CycleHistory] | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -444,6 +445,22 @@ def build_dev_prompt(
 
             {escalation_note}
         """)
+
+    if cycle_history:
+        history_lines = []
+        for h in cycle_history:
+            history_lines.append(f"### Cycle {h.cycle}: {h.verdict}")
+            history_lines.append(h.summary)
+            if h.p1_findings:
+                history_lines.append("P1 findings:")
+                for desc in h.p1_findings:
+                    history_lines.append(f"- {desc}")
+            history_lines.append("")
+        feedback_section += dedent("""\
+
+            ## Previous Review Cycles
+
+        """) + "\n".join(history_lines)
 
     if review_findings:
         feedback_section += dedent(f"""\
