@@ -364,8 +364,8 @@ class TestReviewPool:
         config = load_config(config_path)
         assert config.review_pool[0].cli == "gemini"
 
-    def test_pool_gt1_missing_synthesis_raises(self, tmp_path):
-        """Pool with >1 entries but no synthesis profile → ValueError."""
+    def test_pool_gt1_without_synthesis_loads_ok(self, tmp_path):
+        """Pool with >1 entries and no synthesis profile is now valid — merge is deterministic."""
         config_path = _write_config(
             {
                 "profiles": {
@@ -373,13 +373,14 @@ class TestReviewPool:
                         {"name": "a", "cli": "claude", "model": "opus"},
                         {"name": "b", "cli": "claude", "model": "sonnet"},
                     ],
-                    # no synthesis
+                    # no synthesis — fine
                 }
             },
             tmp_path,
         )
-        with pytest.raises(ValueError, match="synthesis"):
-            load_config(config_path)
+        config = load_config(config_path)
+        assert len(config.review_pool) == 2
+        assert config.synthesis_profile is None
 
     def test_pool_entry_uses_review_defaults_not_dev(self, tmp_path):
         """Pool entry named 'dev' must NOT get dev-level defaults (P1 fix)."""

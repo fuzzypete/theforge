@@ -528,11 +528,8 @@ def load_config(config_path: Path) -> ForgeConfig:
                         f"Supported: {sorted(SUPPORTED_CLIS)}"
                     )
             review_pool = [_parse_profile(e["name"], e, role="review") for e in pool_data]
-            if len(review_pool) > 1:
-                if "synthesis" not in profiles:
-                    raise ValueError(
-                        "profiles.synthesis is required when review_pool has more than 1 entry"
-                    )
+            # synthesis is optional — multiple reviewers are merged deterministically
+            if "synthesis" in profiles:
                 synth_data = profiles["synthesis"]
                 synth_cli = synth_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
                 if synth_cli not in SUPPORTED_CLIS:
