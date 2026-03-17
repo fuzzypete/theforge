@@ -4,6 +4,13 @@ slug: agent-trace-artifacts
 file_scope:
   - src/theforge/coordinator.py
   - src/theforge/runner.py
+  - src/theforge/trace.py
+  - src/theforge/cli.py
+  - src/theforge/coord_gate.py
+  - src/theforge/coord_phases.py
+  - src/theforge/coord_workspace.py
+  - src/theforge/coord_util.py
+  - src/theforge/sprint.py
   - tests/test_coordinator.py
   - tests/test_runner.py
 pytest_target: tests/
