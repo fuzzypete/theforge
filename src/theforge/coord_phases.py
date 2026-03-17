@@ -53,8 +53,9 @@ from .task import TaskSpec
 
 def _append_cycle_history(state: CoordinatorState, parsed_review: ReviewResult) -> None:
     """Append a CycleHistory entry for this completed review cycle (capped at 3)."""
+    state.cycle_history_total += 1
     entry = CycleHistory(
-        cycle=len(state.cycle_history) + 1,
+        cycle=state.cycle_history_total,
         verdict=parsed_review.verdict,
         summary=parsed_review.summary,
         p1_findings=[f.description[:200] for f in parsed_review.findings if f.severity == "P1"],
@@ -298,6 +299,7 @@ def _run_review_phase(
             state.human_review_decision = decision
             state.human_review_feedback = feedback
             if decision == "approve":
+                _append_cycle_history(state, parsed_review)
                 return (
                     _ReviewOutcome.DONE,
                     _finalize_approve(
@@ -364,6 +366,7 @@ def _run_review_phase(
             _log("Human rejected — looping back to dev with feedback")
             return _ReviewOutcome.RETRY_DEV, None, config
         else:
+            _append_cycle_history(state, parsed_review)
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(
@@ -451,6 +454,7 @@ def _run_review_phase(
             state.human_review_decision = decision
             state.human_review_feedback = feedback
             if decision == "approve":
+                _append_cycle_history(state, parsed_review)
                 return (
                     _ReviewOutcome.DONE,
                     _finalize_approve(
@@ -818,8 +822,6 @@ def _run_dev_phase(
             preflight_output=(state.preflight_result.output if state.preflight_result else None),
             plan_output=state.plan_output,
             iteration=state.dev_iteration,
-            cycle_history=state.cycle_history or None,
-            escalation_note=state.escalation_note,
         )
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed

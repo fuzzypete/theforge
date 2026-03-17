@@ -1498,12 +1498,13 @@ class TestCycleHistoryAccumulation:
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
-        # Pre-populate with 3 entries
+        # Pre-populate with 3 entries (also set total counter to match)
         state.cycle_history = [
             CycleHistory(cycle=1, verdict="REQUEST_CHANGES", summary="s1", p1_findings=["a"]),
             CycleHistory(cycle=2, verdict="REQUEST_CHANGES", summary="s2", p1_findings=["b"]),
             CycleHistory(cycle=3, verdict="REQUEST_CHANGES", summary="s3", p1_findings=["c"]),
         ]
+        state.cycle_history_total = 3
         parsed_review = ReviewResult(
             verdict="REQUEST_CHANGES",
             summary="fourth",
@@ -1520,9 +1521,36 @@ class TestCycleHistoryAccumulation:
         assert len(state.cycle_history) == 3
         assert state.cycle_history[0].summary == "s2"  # oldest (s1) dropped
         assert state.cycle_history[-1].summary == "fourth"
+        assert state.cycle_history[-1].cycle == 4  # monotonically increasing
+
+    def test_cycle_numbers_monotonic_after_cap(self):
+        """Cycle numbers remain monotonically increasing even after trimming."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="s",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        # Append 5 cycles — cap fires after 3, but numbers must never repeat
+        for _ in range(5):
+            _append_cycle_history(state, parsed_review)
+
+        assert len(state.cycle_history) == 3
+        cycles = [h.cycle for h in state.cycle_history]
+        assert cycles == [3, 4, 5]  # oldest trimmed, no duplicates
 
     def test_cycle_numbers_monotonically_increase(self):
-        """Cycle numbers are based on history length, not review_cycle counter."""
+        """Cycle numbers use a counter independent of list length."""
         from theforge.coord_phases import _append_cycle_history
         from theforge.coordinator import CoordinatorState
         from theforge.review import ReviewResult
@@ -1573,3 +1601,30 @@ class TestCycleHistoryAccumulation:
         )
         _append_cycle_history(state, parsed_review)
         assert len(state.cycle_history[0].p1_findings[0]) <= 200
+
+
+class TestApprovePathCycleHistory:
+    """Integration tests verifying APPROVE path records cycle history."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_approve_records_cycle_in_history(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Non-interactive APPROVE run records the approved cycle in state.cycle_history."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert len(result.state.cycle_history) == 1
+        assert result.state.cycle_history[0].verdict == "APPROVE"
+        assert result.state.cycle_history[0].cycle == 1

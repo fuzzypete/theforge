@@ -329,22 +329,15 @@ class TestBuildFixPromptCycleHistory:
         assert "Beta finding" in prompt
 
 
-class TestBuildDevPromptCycleHistory:
-    """Tests for cycle history and escalation note in build_dev_prompt."""
+class TestBuildDevPromptNoCycleHistory:
+    """build_dev_prompt never renders cycle history or escalation sections.
 
-    def _make_history(self) -> list[CycleHistory]:
-        return [
-            CycleHistory(
-                cycle=1,
-                verdict="REQUEST_CHANGES",
-                summary="Found P1 error",
-                p1_findings=["Unchecked return value in foo.py"],
-            ),
-        ]
+    Review-driven retries use build_fix_prompt (which has history rendering).
+    build_dev_prompt is only for first-run, gate-fail, reject, and timeout-resume paths.
+    """
 
-    def test_includes_cycle_history_when_review_findings_present(self, tmp_path):
+    def test_no_history_section_ever(self, tmp_path):
         task = _make_task(tmp_path)
-        history = self._make_history()
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
@@ -352,52 +345,17 @@ class TestBuildDevPromptCycleHistory:
             spec_content="# Spec",
             gate_command="make gate",
             review_findings="P1: bug",
-            cycle_history=history,
-        )
-        assert "Previous Review Cycles" in prompt
-        assert "Cycle 1: REQUEST_CHANGES" in prompt
-        assert "Unchecked return value in foo.py" in prompt
-
-    def test_no_history_section_without_review_findings(self, tmp_path):
-        task = _make_task(tmp_path)
-        history = self._make_history()
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            spec_content="# Spec",
-            gate_command="make gate",
-            review_findings=None,
-            cycle_history=history,
         )
         assert "Previous Review Cycles" not in prompt
 
-    def test_includes_escalation_note_when_review_findings_present(self, tmp_path):
+    def test_no_escalation_section_ever(self, tmp_path):
         task = _make_task(tmp_path)
-        note = "MODEL ESCALATION: Upgraded from sonnet to opus."
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
             spec_content="# Spec",
             gate_command="make gate",
-            review_findings="P1: bug",
-            escalation_note=note,
-        )
-        assert "Model Escalation" in prompt
-        assert "MODEL ESCALATION" in prompt
-
-    def test_no_escalation_when_no_review_findings(self, tmp_path):
-        task = _make_task(tmp_path)
-        note = "MODEL ESCALATION: Upgraded."
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            spec_content="# Spec",
-            gate_command="make gate",
-            review_findings=None,
-            escalation_note=note,
         )
         assert "Model Escalation" not in prompt
 

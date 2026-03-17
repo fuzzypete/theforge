@@ -82,6 +82,7 @@ class CoordinatorState:
     gate_decisions: list[str] = field(default_factory=list)
     last_review_findings: str | None = None
     cycle_history: list[CycleHistory] = field(default_factory=list)
+    cycle_history_total: int = 0  # monotonically increasing count of all appended entries
     escalation_note: str | None = None
     human_feedback: str | None = None
     human_review_decision: str | None = (
