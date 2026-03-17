@@ -109,7 +109,7 @@ from .review import (  # noqa: F401
     plan_review_findings_to_text,
     review_to_dev_handoff,
 )
-from .runner import log_agent_result, run_agent, run_agent_pool
+from .runner import LogLevel, log_agent_result, run_agent, run_agent_pool
 from .task import (  # noqa: F401
     TaskSpec,
     build_dev_prompt,
@@ -1077,6 +1077,15 @@ def run_task(
                         "The previous plan was REJECTED. Address these issues:\n\n"
                         f"{findings_text}\n"
                     )
+
+                    if _LOG_LEVEL >= LogLevel.VERBOSE:
+                        regen_prompt += (
+                            "\n\n## Session Continuity Check\n\n"
+                            "Begin your response with exactly one line in this format:\n"
+                            "PRIOR CONTEXT: [one sentence describing the key naming/filing "
+                            "approach from your previous plan attempt]\n\n"
+                            "This confirms you have access to your prior session context."
+                        )
 
                     _plan_start = time.monotonic()
                     _resuming = state.plan_session_id is not None
