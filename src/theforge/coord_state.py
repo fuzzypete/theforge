@@ -49,6 +49,16 @@ class ReviewCycleMetadata:
     failed_detail: dict[str, str] = field(default_factory=dict)  # profile → "exit=N"
 
 
+@dataclass(frozen=True)
+class CycleHistory:
+    """Lightweight per-cycle summary for dev agent context (anti-churn)."""
+
+    cycle: int
+    verdict: str  # "APPROVE" or "REQUEST_CHANGES"
+    summary: str
+    p1_findings: list[str]  # description strings of P1-severity findings (truncated to 200 chars)
+
+
 @dataclass
 class CoordinatorState:
     """Mutable state tracking for a single task execution."""
@@ -71,6 +81,8 @@ class CoordinatorState:
     review_cycle_metadata: list[ReviewCycleMetadata] = field(default_factory=list)
     gate_decisions: list[str] = field(default_factory=list)
     last_review_findings: str | None = None
+    cycle_history: list[CycleHistory] = field(default_factory=list)
+    escalation_note: str | None = None
     human_feedback: str | None = None
     human_review_decision: str | None = (
         None  # "approve" | "reject" | "escalate" | "extend" | "timeout"

@@ -143,6 +143,38 @@ def _has_persistent_p1(
     return False
 
 
+def _persistent_p1_descriptions(
+    current_findings: list[ReviewFinding],
+    previous_findings: list[ReviewFinding],
+) -> list[str]:
+    """Return description strings of current P1 findings that match previous P1 findings.
+
+    Uses the same matching logic as _has_persistent_p1 (substring containment or
+    >=60% token overlap). Returns matched current descriptions, truncated to 200 chars.
+    """
+    current_p1s = [f for f in current_findings if f.severity == "P1"]
+    previous_p1s = [f for f in previous_findings if f.severity == "P1"]
+
+    if not current_p1s or not previous_p1s:
+        return []
+
+    matched: list[str] = []
+    for curr in current_p1s:
+        for prev in previous_p1s:
+            if curr.description in prev.description or prev.description in curr.description:
+                matched.append(curr.description[:200])
+                break
+            curr_tokens = set(curr.description.lower().split())
+            prev_tokens = set(prev.description.lower().split())
+            if curr_tokens and prev_tokens:
+                overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
+                if overlap >= 0.6:
+                    matched.append(curr.description[:200])
+                    break
+
+    return matched
+
+
 def _escalate_dev_model(
     current_model: str,
     available_models: list[str],

@@ -38,6 +38,7 @@ from theforge.coordinator import (
     _escalate_dev_model,
     _has_persistent_p1,
     _parse_preflight_complexity,
+    _persistent_p1_descriptions,
     generate_audit_log,
     run_task,
 )
@@ -1382,3 +1383,193 @@ class TestPlanPhase:
         assert "not readable" in result.message
         assert mock_agent.call_count == 0
         assert mock_shell.call_count == 0
+
+
+class TestPersistentP1Descriptions:
+    """Tests for _persistent_p1_descriptions() helper."""
+
+    def test_returns_matched_descriptions(self):
+        """Returns current P1 description strings that match previous P1s."""
+        curr = [_make_review_finding(description="null check missing in foo.py")]
+        prev = [_make_review_finding(description="null check missing in foo.py")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == ["null check missing in foo.py"]
+
+    def test_returns_empty_when_no_match(self):
+        """Returns empty list when no current P1 matches any previous P1."""
+        curr = [_make_review_finding(description="Off by one error")]
+        prev = [_make_review_finding(description="Missing validation")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == []
+
+    def test_returns_empty_when_no_current_p1s(self):
+        """Returns empty list when there are no current P1 findings."""
+        curr = [_make_review_finding(severity="P2", description="style issue")]
+        prev = [_make_review_finding(description="null check missing")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == []
+
+    def test_returns_empty_when_no_previous_p1s(self):
+        """Returns empty list when there are no previous P1 findings."""
+        curr = [_make_review_finding(description="null check missing")]
+        prev = [_make_review_finding(severity="P2", description="null check missing")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == []
+
+    def test_substring_containment_matches(self):
+        """Substring containment triggers a match."""
+        curr = [_make_review_finding(description="gate_override never wired")]
+        prev = [_make_review_finding(description="gate_override never wired into TaskSpec")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert "gate_override never wired" in result
+
+    def test_token_overlap_matches(self):
+        """>=60% token overlap triggers a match."""
+        curr = [_make_review_finding(description="missing batch configuration")]
+        prev = [_make_review_finding(description="batch configuration is missing")]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert len(result) == 1
+
+    def test_descriptions_truncated_at_200_chars(self):
+        """Returns descriptions truncated to 200 characters."""
+        long_desc = "x" * 300
+        curr = [_make_review_finding(description=long_desc)]
+        prev = [_make_review_finding(description=long_desc)]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert len(result) == 1
+        assert len(result[0]) <= 200
+
+    def test_multiple_matches_returns_all(self):
+        """Multiple matching P1s are all returned."""
+        curr = [
+            _make_review_finding(description="alpha issue"),
+            _make_review_finding(description="beta issue"),
+        ]
+        prev = [
+            _make_review_finding(description="alpha issue"),
+            _make_review_finding(description="beta issue"),
+        ]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert len(result) == 2
+
+
+class TestCycleHistoryAccumulation:
+    """Tests for CycleHistory accumulation in _append_cycle_history."""
+
+    def test_append_cycle_history_adds_entry(self):
+        """_append_cycle_history appends a CycleHistory entry to state."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewFinding, ReviewResult
+
+        state = CoordinatorState()
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="Found issues",
+            findings=[
+                ReviewFinding(
+                    severity="P1",
+                    file="src/foo.py",
+                    line=None,
+                    description="Null check missing",
+                    suggestion=None,
+                )
+            ],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+
+        assert len(state.cycle_history) == 1
+        entry = state.cycle_history[0]
+        assert entry.cycle == 1
+        assert entry.verdict == "REQUEST_CHANGES"
+        assert entry.summary == "Found issues"
+        assert entry.p1_findings == ["Null check missing"]
+
+    def test_cycle_history_capped_at_3(self):
+        """History is capped at 3 entries; oldest is dropped."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState, CycleHistory
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        # Pre-populate with 3 entries
+        state.cycle_history = [
+            CycleHistory(cycle=1, verdict="REQUEST_CHANGES", summary="s1", p1_findings=["a"]),
+            CycleHistory(cycle=2, verdict="REQUEST_CHANGES", summary="s2", p1_findings=["b"]),
+            CycleHistory(cycle=3, verdict="REQUEST_CHANGES", summary="s3", p1_findings=["c"]),
+        ]
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="fourth",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+
+        assert len(state.cycle_history) == 3
+        assert state.cycle_history[0].summary == "s2"  # oldest (s1) dropped
+        assert state.cycle_history[-1].summary == "fourth"
+
+    def test_cycle_numbers_monotonically_increase(self):
+        """Cycle numbers are based on history length, not review_cycle counter."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewResult
+
+        state = CoordinatorState()
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="s",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+        _append_cycle_history(state, parsed_review)
+        assert state.cycle_history[0].cycle == 1
+        assert state.cycle_history[1].cycle == 2
+
+    def test_p1_descriptions_truncated(self):
+        """P1 finding descriptions in history are truncated to 200 chars."""
+        from theforge.coord_phases import _append_cycle_history
+        from theforge.coordinator import CoordinatorState
+        from theforge.review import ReviewFinding, ReviewResult
+
+        state = CoordinatorState()
+        long_desc = "z" * 300
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="s",
+            findings=[
+                ReviewFinding(
+                    severity="P1",
+                    file="src/foo.py",
+                    line=None,
+                    description=long_desc,
+                    suggestion=None,
+                )
+            ],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+        _append_cycle_history(state, parsed_review)
+        assert len(state.cycle_history[0].p1_findings[0]) <= 200

@@ -73,12 +73,14 @@ from .coord_preflight import (  # noqa: F401
     _load_file_scope_contents,
     _parse_preflight_complexity,
     _parse_preflight_verdict,
+    _persistent_p1_descriptions,
 )
 
 # ── Re-exports for backward compatibility ────────────────────────────
 from .coord_state import (  # noqa: F401
     CoordinatorResult,
     CoordinatorState,
+    CycleHistory,
     Phase,
     ReviewCycleMetadata,
 )
