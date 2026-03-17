@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -141,8 +142,19 @@ def _ntfy_publish(
     actions: str | None = None,
 ) -> None:
     """POST a message to an ntfy topic. Fails silently."""
+    # HTTP header values must be ASCII-safe for urllib/http.client.
+    safe_title = (
+        title.replace("✓", "OK")
+        .replace("✗", "X")
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("…", "...")
+    )
+    safe_title = (
+        unicodedata.normalize("NFKD", safe_title).encode("ascii", "ignore").decode("ascii")
+    )
     headers: dict[str, str] = {
-        "Title": title,
+        "Title": safe_title,
         "Priority": priority,
         "Content-Type": "text/plain; charset=utf-8",
     }

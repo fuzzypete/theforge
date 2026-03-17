@@ -45,6 +45,7 @@ from theforge.config import (
 )
 from theforge.coord_notify import (
     _ntfy_poll_plan_reply,
+    _ntfy_publish,
     _plan_review_remote,
 )
 from theforge.coord_state import CoordinatorState
@@ -218,6 +219,45 @@ class TestRemoteHumanReview:
         """notify=False → remote mode is off even with ntfy configured."""
         config = _make_ntfy_config(tmp_path)
         assert not _is_remote_mode(False, config)
+
+
+class TestNtfyPublish:
+    def test_ntfy_publish_sanitizes_unicode_title_header(self):
+        """Forge-style Unicode titles are normalized before hitting urllib headers."""
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_urlopen(req, timeout=10):
+            captured["url"] = req.full_url
+            captured["timeout"] = timeout
+            captured["title"] = req.headers["Title"]
+            captured["priority"] = req.headers["Priority"]
+            captured["content_type"] = req.headers.get("Content-Type") or req.headers.get(
+                "Content-type"
+            )
+            captured["body"] = req.data.decode("utf-8")
+            return _Resp()
+
+        with patch("theforge.coord_notify.urllib.request.urlopen", side_effect=fake_urlopen):
+            _ntfy_publish(
+                "https://ntfy.sh/example-topic",
+                "TheForge: ✓ done — demo",
+                "body",
+                priority="high",
+            )
+
+        assert captured["url"] == "https://ntfy.sh/example-topic"
+        assert captured["timeout"] == 10
+        assert captured["title"] == "TheForge: OK done - demo"
+        assert captured["priority"] == "high"
+        assert captured["content_type"] == "text/plain; charset=utf-8"
+        assert captured["body"] == "body"
 
     def test_remote_mode_not_activated_without_ntfy(self, tmp_path):
         """Non-ntfy backend → remote mode is off."""
