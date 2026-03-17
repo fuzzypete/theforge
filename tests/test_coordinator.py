@@ -20,6 +20,8 @@ from theforge.config import (
     ForgeConfig,
     LogConfig,
     ModelProfile,
+    NotificationConfig,
+    NtfyConfig,
     PlanConfig,
     PlanReviewConfig,
     RetryPolicy,
@@ -58,7 +60,13 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _make_plan_review_config(tmp_path: Path, *, enabled: bool = True) -> ForgeConfig:
+def _make_plan_review_config(
+    tmp_path: Path,
+    *,
+    enabled: bool = True,
+    mode: str = "blocking",
+    timeout_seconds: int = 300,
+) -> ForgeConfig:
     """Create a test config with PLAN and PLAN_REVIEW enabled."""
     return ForgeConfig(
         project="test",
@@ -75,7 +83,38 @@ def _make_plan_review_config(tmp_path: Path, *, enabled: bool = True) -> ForgeCo
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
         plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
-        plan_review=PlanReviewConfig(enabled=enabled),
+        plan_review=PlanReviewConfig(enabled=enabled, mode=mode, timeout_seconds=timeout_seconds),
+        log=LogConfig(enabled=False),
+    )
+
+
+def _make_ntfy_plan_review_config(
+    tmp_path: Path,
+    *,
+    mode: str = "blocking",
+    timeout_seconds: int = 10,
+) -> ForgeConfig:
+    """Create a test config with PLAN, PLAN_REVIEW, and ntfy notifications enabled."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        notifications=NotificationConfig(
+            backend="ntfy",
+            ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),
+        ),
+        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+        plan_review=PlanReviewConfig(enabled=True, mode=mode, timeout_seconds=timeout_seconds),
         log=LogConfig(enabled=False),
     )
 
@@ -371,6 +410,7 @@ class TestPlanReview:
         audit = generate_audit_log(config, task, result)
         assert audit["plan_review"]["decision"] == "approve"
         assert audit["plan_review"]["regenerated"] is False
+        assert audit["plan_review"]["mode"] == "interactive"
         assert mock_human_review.called
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
@@ -619,9 +659,99 @@ class TestPlanReview:
         captured = capsys.readouterr()
         assert result.success is True
         assert result.state.plan_review_decision is None
-        assert "PLAN_REVIEW   skipped (non-interactive mode)" in captured.err
+        assert "PLAN_REVIEW   skipped (non-interactive mode, no ntfy)" in captured.err
         mock_plan_review.assert_not_called()
         assert not mock_human_review.called
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_remote")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_remote_ntfy_approve(
+        self, mock_shell, mock_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
+    ):
+        """Non-interactive + ntfy configured → _plan_review_remote is called."""
+        config = _make_ntfy_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nNtfy plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_remote_review.return_value = "approve"
+
+        result = run_task(config, task, interactive=False, notify=True)
+
+        assert result.success is True
+        assert result.state.plan_review_decision == "approve"
+        mock_remote_review.assert_called_once()
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_remote")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_remote_ntfy_abandon(
+        self, mock_shell, mock_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
+    ):
+        """Non-interactive + ntfy + remote returns abandon → run fails at PLAN_REVIEW."""
+        config = _make_ntfy_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nNtfy plan.", cost_usd=0.10),
+        ]
+        mock_remote_review.return_value = "abandon"
+
+        result = run_task(config, task, interactive=False, notify=True)
+
+        assert result.success is False
+        assert result.phase == Phase.PLAN_REVIEW
+        mock_remote_review.assert_called_once()
+
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_review_advisory_auto_approve(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path, capsys
+    ):
+        """Advisory mode without ntfy → auto-approves and proceeds to DEV."""
+        config = _make_plan_review_config(tmp_path, mode="advisory")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nAdvisory plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=False)
+
+        captured = capsys.readouterr()
+        assert result.success is True
+        assert result.state.plan_review_decision == "approve"
+        assert result.state.plan_review_mode == "advisory-timeout"
+        assert "advisory auto-approve" in captured.err
+        mock_plan_review.assert_not_called()
 
     @patch("theforge.coordinator._plan_review_interactive")
     @patch("theforge.coordinator.run_agent_pool")

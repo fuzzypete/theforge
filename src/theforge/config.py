@@ -155,6 +155,8 @@ class PlanReviewConfig:
     """Configuration for the PLAN_REVIEW gate."""
 
     enabled: bool = False
+    mode: str = "blocking"  # "blocking" | "advisory"
+    timeout_seconds: int = 300  # advisory: auto-approve after this many seconds
 
 
 @dataclass(frozen=True)
@@ -590,6 +592,8 @@ def load_config(config_path: Path) -> ForgeConfig:
     plan_review_data = raw.get("plan_review", {})
     plan_review_cfg = PlanReviewConfig(
         enabled=bool(plan_review_data.get("enabled", False)),
+        mode=str(plan_review_data.get("mode", "blocking")),
+        timeout_seconds=int(plan_review_data.get("timeout_seconds", 300)),
     )
 
     # Logging

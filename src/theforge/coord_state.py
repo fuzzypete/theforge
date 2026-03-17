@@ -88,6 +88,7 @@ class CoordinatorState:
     plan_review_decision: str | None = None  # "approve" | "regenerate" | "abandon"
     plan_regenerated: bool = False  # guard against infinite regen loop
     plan_review_waited_seconds: float | None = None
+    plan_review_mode: str | None = None  # "interactive" | "remote" | "advisory-timeout"
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
     retry_reason: str | None = (

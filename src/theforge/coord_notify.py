@@ -206,6 +206,114 @@ def _ntfy_poll_reply(
     return "timeout", None
 
 
+def _ntfy_poll_plan_reply(
+    reply_url: str,
+    since_ts: int,
+    timeout_seconds: int,
+) -> str:
+    """Poll ntfy reply topic for a plan review decision.
+
+    Returns 'approve', 'regenerate', 'abandon', or 'timeout'.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    poll_url = f"{reply_url}/json?poll=1&since={since_ts}"
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(poll_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("event") not in ("message", None):
+                    continue
+                msg = (obj.get("message") or "").strip().lower()
+                if msg == "approve":
+                    return "approve"
+                if msg == "regenerate":
+                    return "regenerate"
+                if msg == "abandon":
+                    return "abandon"
+        except Exception:
+            pass
+
+        sleep_secs = min(10.0, max(0.0, deadline - time.monotonic()))
+        if sleep_secs > 0:
+            time.sleep(sleep_secs)
+
+    return "timeout"
+
+
+def _plan_review_remote(
+    state: "_cs.CoordinatorState",
+    plan_text: str,
+    workspace_path: "Path",
+    task: "TaskSpec",
+    config: "ForgeConfig",
+) -> str:
+    """Ntfy-backed remote plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
+    ntfy = config.notifications.ntfy
+    assert ntfy is not None
+
+    reply_url = _ntfy_reply_url(ntfy.url)
+    timeout_seconds = config.plan_review.timeout_seconds
+
+    plan_summary = plan_text[:500].strip()
+    if len(plan_text) > 500:
+        plan_summary += "..."
+    actions = (
+        f"http, Approve, {reply_url}, method=POST, body=approve; "
+        f"http, Regenerate, {reply_url}, method=POST, body=regenerate; "
+        f"http, Abandon, {reply_url}, method=POST, body=abandon"
+    )
+
+    _cu._log("─── Remote Plan Review (ntfy) ───")
+    _cu._log(f"  Topic:   {ntfy.url}")
+    _cu._log(f"  Reply:   {reply_url}")
+    _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
+
+    since_ts = int(time.time())
+    title = f"TheForge: plan review needed \u2014 {task.slug}"
+    _ntfy_publish(ntfy.url, title, plan_summary, priority=ntfy.priority, actions=actions)
+
+    _pr_start = time.monotonic()
+    decision = _ntfy_poll_plan_reply(reply_url, since_ts, timeout_seconds)
+    state.plan_review_waited_seconds = time.monotonic() - _pr_start
+    state.plan_review_mode = "remote"
+
+    if decision == "timeout":
+        waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
+        if config.plan_review.mode == "advisory":
+            _cu._log(f"  ⚠ PLAN_REVIEW   advisory timeout — auto-approving after {waited_str}")
+            _ntfy_publish(
+                ntfy.url,
+                f"TheForge: plan auto-approved \u2014 {task.slug}",
+                "Advisory timeout reached — proceeding to DEV.",
+                priority=ntfy.priority,
+            )
+            state.plan_review_mode = "advisory-timeout"
+            return "approve"
+        else:
+            _cu._log(f"  ✗ PLAN_REVIEW   blocking timeout — abandoning after {waited_str}")
+            _ntfy_publish(
+                ntfy.url,
+                f"TheForge: plan review timed out \u2014 {task.slug}",
+                "Blocking timeout reached — abandoning.",
+                priority=ntfy.priority,
+            )
+            return "abandon"
+
+    waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)
+    _cu._log(f"  Remote plan review decision: {decision!r} (waited {waited_str})")
+    return decision
+
+
 def _is_remote_mode(notify: bool, config: "ForgeConfig") -> bool:
     """Return True when all conditions for ntfy-based remote HUMAN_REVIEW are met."""
     return (
