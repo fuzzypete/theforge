@@ -1017,14 +1017,16 @@ def run_task(
                         f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
                     )
 
-                    if state.plan_regenerated:
-                        # Second REJECT → escalate
+                    state.plan_regen_count += 1
+                    if state.plan_regen_count > config.retry.max_plan_regen_attempts:
                         state.plan_review_decision = "reject"
                         state.phase = Phase.ESCALATE
                         state.error = (
-                            f"Plan rejected twice by agent reviewer. Findings:\n{findings_text}"
+                            f"Plan rejected {state.plan_regen_count} time(s) by agent reviewer "
+                            f"(max_plan_regen_attempts={config.retry.max_plan_regen_attempts}). "
+                            f"Findings:\n{findings_text}"
                         )
-                        _log("  ✗ PLAN_REVIEW   double reject — escalating")
+                        _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — escalating")
                         _escalate_notify(task, state, notify, config)
                         return CoordinatorResult(
                             success=False,
@@ -1033,10 +1035,13 @@ def run_task(
                             message=state.error,
                         )
 
-                    # First REJECT → regenerate plan with findings
-                    state.plan_regenerated = True
+                    # REJECT → regenerate plan with findings
                     state.plan_review_decision = "regenerate"
-                    _log("  ↺ PLAN_REVIEW   reject → regenerating plan with findings")
+                    _max = config.retry.max_plan_regen_attempts
+                    _log(
+                        f"  ↺ PLAN_REVIEW   reject → regenerating plan "
+                        f"(attempt {state.plan_regen_count}/{_max})"
+                    )
                     _log(f"  Findings:\n{findings_text}")
 
                     # Rebuild plan prompt with rejection findings appended
@@ -1128,18 +1133,27 @@ def run_task(
                         break
 
                     if plan_review_decision == "regenerate":
-                        if state.plan_regenerated:
+                        state.plan_regen_count += 1
+                        if state.plan_regen_count > config.retry.max_plan_regen_attempts:
                             state.plan_review_decision = "abandon"
-                            _log("  ✗ PLAN_REVIEW   already regenerated once — abandoning")
+                            _log(
+                                f"  ✗ PLAN_REVIEW   rejected "
+                                f"{state.plan_regen_count}x — abandoning"
+                            )
                             return CoordinatorResult(
                                 success=False,
                                 phase=Phase.PLAN_REVIEW,
                                 state=state,
-                                message="Plan regenerated once already — abandoning.",
+                                message=(
+                                    f"Plan rejected {state.plan_regen_count} time(s) — abandoning."
+                                ),
                             )
 
-                        state.plan_regenerated = True
-                        _log("  ↺ PLAN_REVIEW   regenerate — re-running PLAN agent")
+                        _max2 = config.retry.max_plan_regen_attempts
+                        _log(
+                            f"  ↺ PLAN_REVIEW   regenerate — re-running PLAN agent "
+                            f"(attempt {state.plan_regen_count}/{_max2})"
+                        )
 
                         (workspace_path / "forge_plan.md").unlink(missing_ok=True)
                         _plan_start = time.monotonic()

@@ -3,6 +3,7 @@
 Uses mocked runner to test all state transitions without real agent calls.
 """
 
+import dataclasses
 import datetime
 import io
 import time as _time
@@ -502,7 +503,7 @@ class TestPlanReview:
         result = run_task(config, task, interactive=True)
 
         assert result.success is True
-        assert result.state.plan_regenerated is True
+        assert result.state.plan_regen_count > 0
         assert result.state.plan_review_decision == "approve"
         assert len(result.state.plan_results) == 2
         assert result.state.plan_output == plan_v2
@@ -543,7 +544,12 @@ class TestPlanReview:
     def test_plan_review_regen_twice_abandons(
         self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
     ):
-        config = _make_plan_review_config(tmp_path)
+        config = dataclasses.replace(
+            _make_plan_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=1
+            ),
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -560,9 +566,9 @@ class TestPlanReview:
 
         assert result.success is False
         assert result.phase == Phase.PLAN_REVIEW
-        assert "already" in result.message.lower()
+        assert "rejected" in result.message.lower()
         assert result.state.plan_review_decision == "abandon"
-        assert result.state.plan_regenerated is True
+        assert result.state.plan_regen_count > 0
         assert len(result.state.plan_results) == 2
         mock_pool.assert_not_called()
 
@@ -3302,7 +3308,7 @@ class TestPlanAgentReview:
         result = run_task(config, task, interactive=True)
 
         assert result.success is True
-        assert result.state.plan_regenerated is True
+        assert result.state.plan_regen_count > 0
         assert result.state.plan_review_decision == "approve"
         assert result.state.plan_output == "# Plan\n\nFixed plan."
         assert len(result.state.plan_results) == 2
@@ -3315,7 +3321,12 @@ class TestPlanAgentReview:
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
         """Two REJECTs, run escalates with findings."""
-        config = _make_plan_agent_review_config(tmp_path)
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=1
+            ),
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -3337,8 +3348,8 @@ class TestPlanAgentReview:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "rejected twice" in result.message.lower()
-        assert result.state.plan_regenerated is True
+        assert "rejected" in result.message.lower()
+        assert result.state.plan_regen_count > 0
         mock_pool.assert_not_called()
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
@@ -3402,7 +3413,12 @@ class TestPlanAgentReview:
     @patch("theforge.coord_util._run_shell")
     def test_plan_agent_review_parse_failure(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Agent produces garbage — treated as REJECT."""
-        config = _make_plan_agent_review_config(tmp_path)
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=1
+            ),
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()

@@ -176,7 +176,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
                     else config.plan_review.mode
                 ),
                 "decision": state.plan_review_decision,
-                "regenerated": state.plan_regenerated,
+                "regenerated": state.plan_regen_count > 0,
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
                 "findings": state.plan_agent_review_findings,
                 "cost_usd": state.total_plan_review_cost,

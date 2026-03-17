@@ -99,7 +99,7 @@ class CoordinatorState:
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = None  # contents of forge_plan.md, passed to dev
     plan_review_decision: str | None = None  # "approve" | "regenerate" | "abandon"
-    plan_regenerated: bool = False  # guard against infinite regen loop
+    plan_regen_count: int = 0  # number of plan regen attempts so far
     plan_review_waited_seconds: float | None = None
     plan_review_mode: str | None = None  # "interactive" | "remote" | "advisory-timeout"
     plan_agent_review_findings: str | None = None  # rejection findings for regen feedback
