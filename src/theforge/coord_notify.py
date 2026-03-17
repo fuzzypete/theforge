@@ -316,10 +316,9 @@ def _plan_review_remote(
             decision = _ntfy_poll_plan_reply(reply_url, since_ts, _BLOCKING_POLL_CHUNK)
             if decision != "timeout":
                 break
-            # Still waiting — log progress and resume polling from now
+            # Still waiting — log progress and resume polling from original cursor
             elapsed = _cu._fmt_duration(time.monotonic() - _pr_start)
             _cu._log(f"  PLAN_REVIEW   still waiting for decision (elapsed {elapsed})")
-            since_ts = int(time.time())
         state.plan_review_waited_seconds = time.monotonic() - _pr_start
 
     waited_str = _cu._fmt_duration(state.plan_review_waited_seconds or 0)

@@ -791,6 +791,40 @@ class TestPlanReviewRemote:
         assert state.plan_review_mode == "remote"
         assert len(poll_calls) == 3  # polled 3 times before getting a decision
 
+    def test_remote_blocking_cursor_preserved_across_chunks(self, tmp_path):
+        """Blocking mode preserves the initial since_ts across all poll iterations.
+
+        If the cursor were reset to time.time() after each chunk, a reply arriving
+        just before the reset would be skipped permanently. Verify all poll calls
+        receive the same original since_ts value.
+        """
+        config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+
+        initial_ts = 1700000000
+        seen_cursors: list[int] = []
+
+        def poll_side_effect(reply_url, since_ts, timeout_seconds):
+            seen_cursors.append(since_ts)
+            return "timeout" if len(seen_cursors) < 3 else "approve"
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch("theforge.coord_notify._ntfy_poll_plan_reply", side_effect=poll_side_effect),
+            patch("theforge.coord_notify.time.time", return_value=initial_ts),
+        ):
+            result = _plan_review_remote(state, "# Plan", workspace, task, config)
+
+        assert result == "approve"
+        assert len(seen_cursors) == 3
+        # All iterations must use the same original cursor, not a reset one
+        assert all(c == initial_ts for c in seen_cursors), (
+            f"Cursor was reset between chunks: {seen_cursors}"
+        )
+
     def test_remote_blocking_does_not_auto_abandon_on_single_timeout(self, tmp_path):
         """Blocking mode never auto-abandons: a single timeout chunk re-polls."""
         config = _make_ntfy_plan_review_cfg(tmp_path, mode="blocking")

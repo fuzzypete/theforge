@@ -894,22 +894,22 @@ def run_task(
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
 
-            if config.plan_review.enabled and (interactive or _is_remote_mode(notify, config)):
+            if config.plan_review.enabled:
                 for _ in range(2):
                     state.phase = Phase.PLAN_REVIEW
                     _log_phase(state.phase, "waiting for human decision...")
                     _log(f"  Plan written to: {workspace_path / 'forge_plan.md'}")
 
                     _pr_start = time.monotonic()
-                    if interactive:
+                    if _is_remote_mode(notify, config):
+                        plan_review_decision = _plan_review_remote(
+                            state, plan_text, workspace_path, task, config
+                        )
+                    else:
                         plan_review_decision = _plan_review_interactive(
                             state, plan_text, workspace_path, task
                         )
                         state.plan_review_mode = "interactive"
-                    else:
-                        plan_review_decision = _plan_review_remote(
-                            state, plan_text, workspace_path, task, config
-                        )
                     if state.plan_review_waited_seconds is None:
                         state.plan_review_waited_seconds = time.monotonic() - _pr_start
                     state.plan_review_decision = plan_review_decision
@@ -989,14 +989,6 @@ def run_task(
                         state=state,
                         message="Plan review abandoned by human.",
                     )
-            elif config.plan_review.enabled and not interactive:
-                # ntfy path handled above; this branch is non-interactive without ntfy
-                if config.plan_review.mode == "advisory":
-                    _log("  ⚠ PLAN_REVIEW   advisory auto-approve (non-interactive, no ntfy)")
-                    state.plan_review_decision = "approve"
-                    state.plan_review_mode = "advisory-timeout"
-                else:
-                    _log("  ⚠ PLAN_REVIEW   skipped (non-interactive mode, no ntfy)")
         else:
             state.phase = Phase.ESCALATE
             state.error = (

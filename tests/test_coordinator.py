@@ -624,21 +624,19 @@ class TestPlanReview:
         assert plan_text in captured.out
         assert f"Plan at: {workspace / 'forge_plan.md'}" in captured.err
 
-    @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator._plan_review_interactive")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_plan_review_skipped_non_interactive(
+    def test_plan_review_terminal_used_without_interactive_flag(
         self,
         mock_shell,
         mock_agent,
         mock_pool,
         mock_plan_review,
-        mock_human_review,
         tmp_path,
-        capsys,
     ):
+        """plan_review.enabled=True + interactive=False + no ntfy → terminal prompt is used."""
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -653,15 +651,13 @@ class TestPlanReview:
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
+        mock_plan_review.return_value = "approve"
 
         result = run_task(config, task, interactive=False)
 
-        captured = capsys.readouterr()
         assert result.success is True
-        assert result.state.plan_review_decision is None
-        assert "PLAN_REVIEW   skipped (non-interactive mode, no ntfy)" in captured.err
-        mock_plan_review.assert_not_called()
-        assert not mock_human_review.called
+        assert result.state.plan_review_decision == "approve"
+        mock_plan_review.assert_called_once()
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator._plan_review_remote")
@@ -725,10 +721,10 @@ class TestPlanReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_plan_review_advisory_auto_approve(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path, capsys
+    def test_plan_review_advisory_without_ntfy_uses_terminal(
+        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
     ):
-        """Advisory mode without ntfy → auto-approves and proceeds to DEV."""
+        """Advisory mode without ntfy → terminal prompt is used (not auto-approve)."""
         config = _make_plan_review_config(tmp_path, mode="advisory")
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -743,15 +739,13 @@ class TestPlanReview:
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
+        mock_plan_review.return_value = "approve"
 
         result = run_task(config, task, interactive=False)
 
-        captured = capsys.readouterr()
         assert result.success is True
         assert result.state.plan_review_decision == "approve"
-        assert result.state.plan_review_mode == "advisory-timeout"
-        assert "advisory auto-approve" in captured.err
-        mock_plan_review.assert_not_called()
+        mock_plan_review.assert_called_once()
 
     @patch("theforge.coordinator._plan_review_interactive")
     @patch("theforge.coordinator.run_agent_pool")
