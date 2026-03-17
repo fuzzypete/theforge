@@ -910,8 +910,7 @@ def run_task(
                             state, plan_text, workspace_path, task
                         )
                         state.plan_review_mode = "interactive"
-                    if state.plan_review_waited_seconds is None:
-                        state.plan_review_waited_seconds = time.monotonic() - _pr_start
+                    state.plan_review_waited_seconds = time.monotonic() - _pr_start
                     state.plan_review_decision = plan_review_decision
 
                     if plan_review_decision == "approve":
