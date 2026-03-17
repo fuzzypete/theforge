@@ -13,12 +13,13 @@ New config section alongside the existing `PlanReviewConfig`:
 ```yaml
 plan_agent_review:
   enabled: false
-  profile: sonnet   # references a named profile from the profiles section
+  cli: claude
+  model: sonnet
   budget_usd: 0.50
   timeout: 300
 ```
 
-The `profile` field references a named profile from the `profiles` section in forge.yaml (e.g. `sonnet`, `opus`, `codex`), which already specifies both CLI and model. This avoids ambiguity — `claude` is a CLI provider, not a model. `run_agent()` requires a full `ModelProfile` with both.
+Uses the same `cli` + `model` pair as other profile definitions in forge.yaml (e.g. `profiles.dev` has `cli: claude, model: sonnet`). The config parser builds a `ModelProfile` from these fields, same pattern as `PlanConfig` which already has `model: str` resolved to a profile. `run_agent()` receives the full `ModelProfile`.
 
 Parsed into a new `PlanAgentReviewConfig` dataclass. When `plan_agent_review.enabled` is true, it takes precedence over `plan_review.enabled` — they're mutually exclusive (agent review replaces human review, not stacks on top).
 
@@ -98,7 +99,8 @@ Already handled — line 757-763 skips PLAN_REVIEW when plan is injected. No cha
 ```yaml
 plan_agent_review:
   enabled: true
-  profile: sonnet   # fast, cheap — plan review doesn't need opus
+  cli: claude
+  model: sonnet   # fast, cheap — plan review doesn't need opus
   budget_usd: 0.50
   timeout: 300
 
