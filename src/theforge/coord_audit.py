@@ -169,7 +169,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
         ),
         "plan_review": (
             {
-                "mode": state.plan_review_mode or "interactive",
+                "mode": config.plan_review.mode,
                 "decision": state.plan_review_decision,
                 "regenerated": state.plan_regenerated,
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),

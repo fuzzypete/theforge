@@ -290,7 +290,7 @@ def _plan_review_remote(
         _cu._log("  Timeout: none (blocking — polls until explicit decision)")
 
     since_ts = int(time.time())
-    title = f"plan ready \u2014 {task.slug}"
+    title = f"TheForge: plan ready \u2014 {task.slug}"
     _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
 
     _pr_start = time.monotonic()

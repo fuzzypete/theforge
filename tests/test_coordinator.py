@@ -410,7 +410,7 @@ class TestPlanReview:
         audit = generate_audit_log(config, task, result)
         assert audit["plan_review"]["decision"] == "approve"
         assert audit["plan_review"]["regenerated"] is False
-        assert audit["plan_review"]["mode"] == "interactive"
+        assert audit["plan_review"]["mode"] == "blocking"
         assert mock_human_review.called
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
@@ -798,7 +798,7 @@ class TestPlanReview:
         result = run_task(config, task, interactive=True)
 
         assert result.success is False
-        assert result.phase == Phase.PLAN_REVIEW
+        assert result.phase == Phase.ESCALATE
         assert "unreadable after edit" in result.message
         mock_pool.assert_not_called()
 

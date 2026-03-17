@@ -920,13 +920,15 @@ def run_task(
                                 encoding="utf-8"
                             )
                         except (OSError, UnicodeDecodeError) as exc:
-                            _log(f"  ✗ PLAN_REVIEW   forge_plan.md unreadable after edit: {exc}")
-                            state.phase = Phase.PLAN_REVIEW
+                            state.phase = Phase.ESCALATE
+                            state.error = f"forge_plan.md unreadable after edit: {exc}"
+                            _log(f"  ✗ PLAN_REVIEW   {state.error}")
+                            _escalate_notify(task, state, notify, config)
                             return CoordinatorResult(
                                 success=False,
-                                phase=Phase.PLAN_REVIEW,
+                                phase=Phase.ESCALATE,
                                 state=state,
-                                message=f"forge_plan.md unreadable after edit: {exc}",
+                                message=state.error,
                             )
                         state.plan_output = updated
                         plan_text = updated

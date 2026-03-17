@@ -871,7 +871,7 @@ class TestPlanReviewRemote:
         assert state.plan_review_mode == "advisory-timeout"
 
     def test_remote_ntfy_payload_format(self, tmp_path):
-        """ntfy publish uses 'plan ready — <slug>' title + first 3 lines + worktree path."""
+        """ntfy publish uses 'TheForge: plan ready — <slug>' title + first 3 lines."""
         config = _make_ntfy_plan_review_cfg(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -894,7 +894,7 @@ class TestPlanReviewRemote:
         # First publish call is the plan review notification
         assert len(publish_calls) >= 1
         notif = publish_calls[0]
-        assert notif["title"] == f"plan ready \u2014 {task.slug}"
+        assert notif["title"] == f"TheForge: plan ready \u2014 {task.slug}"
         # Body includes first 3 lines
         assert "# Plan" in notif["body"]
         assert "Line 4" not in notif["body"]
