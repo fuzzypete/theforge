@@ -1252,6 +1252,49 @@ class TestRunCodex:
         assert m_idx < c_idx < C_idx
         assert cmd[c_idx + 1] == "model_reasoning_effort=medium"
 
+    def test_codex_is_pool_suppresses_session_id(
+        self, codex_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """is_pool=True must return session_id=None even if the index file exists."""
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="reviewed", stderr=""
+        )
+        # Patch _get_codex_session_id to prove it is never called in pool mode.
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            with patch(
+                "theforge.runner._get_codex_session_id", return_value="some-uuid"
+            ) as mock_extract:
+                result = run_agent(
+                    prompt="review",
+                    profile=codex_profile,
+                    working_dir=tmp_path,
+                    is_pool=True,
+                )
+
+        mock_extract.assert_not_called()
+        assert result.session_id is None
+
+    def test_codex_sequential_extracts_session_id(
+        self, codex_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """is_pool=False (default) calls _get_codex_session_id and returns its result."""
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="reviewed", stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            with patch(
+                "theforge.runner._get_codex_session_id", return_value="abc-123"
+            ) as mock_extract:
+                result = run_agent(
+                    prompt="review",
+                    profile=codex_profile,
+                    working_dir=tmp_path,
+                    is_pool=False,
+                )
+
+        mock_extract.assert_called_once()
+        assert result.session_id == "abc-123"
+
 
 class TestRunGemini:
     """Test Gemini CLI subprocess invocation."""
@@ -1365,6 +1408,71 @@ class TestRunGemini:
             run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert mock_run.call_args[1]["cwd"] == str(tmp_path)
+
+    def test_gemini_is_pool_suppresses_session_id(
+        self, gemini_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """is_pool=True must return session_id=None to avoid trampling parallel reviewers."""
+        json_output = json.dumps({"result": "looks good"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(
+                prompt="review",
+                profile=gemini_profile,
+                working_dir=tmp_path,
+                is_pool=True,
+            )
+
+        assert result.session_id is None
+
+    def test_gemini_sequential_returns_latest(
+        self, gemini_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """is_pool=False (default) returns 'latest' so the next sequential call can resume."""
+        json_output = json.dumps({"result": "looks good"})
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=json_output, stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            result = run_agent(
+                prompt="review",
+                profile=gemini_profile,
+                working_dir=tmp_path,
+                is_pool=False,
+            )
+
+        assert result.session_id == "latest"
+
+    def test_gemini_parse_failure_returns_none_session_id(
+        self, gemini_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """Parse failure always returns session_id=None regardless of is_pool.
+
+        A failed invocation may not have created a resumable session; resuming
+        it would attach the next call to stale or non-existent context.
+        """
+        mock_proc = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not json at all", stderr=""
+        )
+        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+            # Test both sequential and pool modes
+            result_seq = run_agent(
+                prompt="review",
+                profile=gemini_profile,
+                working_dir=tmp_path,
+                is_pool=False,
+            )
+            result_pool = run_agent(
+                prompt="review",
+                profile=gemini_profile,
+                working_dir=tmp_path,
+                is_pool=True,
+            )
+
+        assert result_seq.session_id is None
+        assert result_pool.session_id is None
 
 
 class TestLogAgentResult:
