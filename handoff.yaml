@@ -1,34 +1,40 @@
-dev_notes: "summary: \"Added src/theforge/sessions.py with save_sessions() and load_sessions()\
-  \ that\n  read/write .forge/sessions.json inside the worktree. Wired save_sessions\
-  \ into three call\n  sites: coord_phases after dev agent call, coordinator after\
-  \ handoff-fix retry, coordinator\n  after review pool. Wired load_sessions into\
-  \ _setup_resume_entry to restore both IDs before\n  the first agent call. Iter 1\
-  \ fix: replaced brittle if/else block (could null dev_session_id)\n  with uniform\
-  \ `or` fallback pattern. Iter 2 fixes: (1) added two coordinator integration\n \
-  \ tests verifying that a pre-existing sessions.json causes dev and reviewer session\
-  \ IDs to\n  be restored and passed to agents on the first forge review invocation;\
-  \ (2) wrapped\n  save_sessions I/O in try/except OSError so a permission failure\
-  \ logs a warning rather\n  than crashing the process.\"\ncommits:\n  - sha: \"8b7f4e9\"\
-  \n    message: \"feat(sessions): persist and restore session IDs across forge review\
-  \ invocations\"\n  - sha: \"2c3af5b\"\n    message: \"fix(sessions): address review\
-  \ findings (iter 1)\"\n  - sha: \"35d34e8\"\n    message: \"fix(sessions): address\
-  \ review findings (iter 1)\"\nacceptance_criteria:\n  - criterion: \"After a dev\
-  \ iteration with a session ID, the session ID is persisted to the worktree\"\n \
-  \   status: MET\n    notes: \"save_sessions called after dev_session_id is updated\
-  \ via or-fallback pattern; verified by test_run_from_review_restores_dev_session_id.\"\
-  \n  - criterion: \"A subsequent forge review on the same worktree restores the session\
-  \ ID before the first dev agent call\"\n    status: MET\n    notes: \"load_sessions\
-  \ called in _setup_resume_entry; test_run_from_review_restores_dev_session_id asserts\
-  \ the restored ID is passed to the first dev agent call.\"\n  - criterion: \"Reviewer\
-  \ session IDs are also persisted and restored\"\n    status: MET\n    notes: \"\
-  save_sessions includes reviewer_session_ids; test_run_from_review_restores_reviewer_session_ids\
-  \ asserts restored IDs are passed to the first pool call.\"\n  - criterion: \"Missing\
-  \ session file → no error, fresh session as before\"\n    status: MET\n    notes:\
-  \ \"load_sessions catches FileNotFoundError and returns {}; _setup_resume_entry\
-  \ only assigns if keys are present.\"\n  - criterion: \"Session file is not committed\
-  \ to git\"\n    status: MET\n    notes: \".gitignore already contains .forge/ at\
-  \ line 26. No change required.\"\n  - criterion: \"All existing tests pass\"\n \
-  \   status: MET\n    notes: \"682 tests pass (680 pre-existing + 2 new integration\
-  \ tests in test_coordinator.py).\"\nspec_deviations: none\ndeferred_items: none\n\
-  gate_result: PASS\n"
-gate_decision: FAIL
+gate_decision: PASS
+dev_notes: |
+  summary: >
+    Implemented project-scoped secrets via .forge/secrets.yaml across all six acceptance
+    criteria. ForgeConfig gains a secrets field loaded by load_config() from
+    .forge/secrets.yaml adjacent to forge.yaml; a _resolve_secret() helper checks that
+    dict before os.environ so secrets satisfy provider API key validation without needing
+    to export keys globally. run_agent(), run_agent_pool(), and all internal CLI/API runners
+    accept a secrets kwarg merged as {**os.environ, **secrets} into subprocess env without
+    mutating the parent process. All coordinator/coord_phases/coord_workspace call sites pass
+    config.secrets. forge secrets-init writes a skeleton generated programmatically from
+    PROVIDER_API_KEY_MAP and updates .gitignore; forge init also ensures .gitignore
+    protection. cmd_run() warns at startup if .forge/secrets.yaml is tracked by git.
+    Pre-existing test mocks in test_coordinator.py and test_coord_preflight.py were updated
+    with **kwargs to tolerate the new secrets= argument. Two pre-existing lint issues fixed.
+  commits:
+    - sha: "84e9c21"
+      message: "feat(secrets): project-scoped secrets via .forge/secrets.yaml"
+  acceptance_criteria:
+    - criterion: "AC-1: load_config() reads .forge/secrets.yaml; stored as ForgeConfig.secrets: dict[str, str]; defaults to {}; malformed YAML raises ValueError with file path"
+      status: MET
+      notes: "Secrets loading block added in load_config() before profile parsing. ForgeConfig.secrets uses field(default_factory=dict). ValueError raised for malformed YAML and non-mapping content with path in message."
+    - criterion: "AC-2: Key resolution checks secrets first, then os.environ in _parse_profile and plan_agent_review validation"
+      status: MET
+      notes: "_resolve_secret(key, secrets) helper replaces os.getenv() in _parse_profile() and plan_agent_review validation block. secrets param threaded into all _parse_profile() calls."
+    - criterion: "AC-3: run_agent() and run_api_agent() accept secrets param; merged into subprocess/SDK env; coordinator passes config.secrets; parent os.environ never mutated"
+      status: MET
+      notes: "run_agent() and run_agent_pool() gain secrets param. _run_claude merges into env copy. _run_codex and _run_gemini pass explicit env= to subprocess.run. run_api_agent and provider functions use merged dict for API keys. All call sites in coordinator.py, coord_phases.py, coord_workspace.py pass config.secrets."
+    - criterion: "AC-4: forge secrets-init writes skeleton from PROVIDER_API_KEY_MAP; warns if exists; updates .gitignore"
+      status: MET
+      notes: "cmd_secrets_init() writes skeleton from PROVIDER_API_KEY_MAP, prints warning+exits 0 when file exists. _ensure_gitignored() creates/appends idempotently."
+    - criterion: "AC-5: forge init calls gitignore logic; startup warning if .forge/secrets.yaml is tracked by git"
+      status: MET
+      notes: "cmd_init() calls _ensure_gitignored(). cmd_run() checks git ls-files --error-unmatch and prints warning. Wrapped in try/except for non-git environments."
+    - criterion: "AC-6: test_config.py (secrets loading, missing, malformed, key-in-secrets satisfies validation); test_runner.py (env merge, no mutation); test_cli.py (skeleton creation, no-op)"
+      status: MET
+      notes: "7 new tests in TestProjectSecrets, 3 in TestSecretsInjection, 6 in TestSecretsInit. 755 total tests pass."
+  spec_deviations: none
+  deferred_items: none
+  gate_result: PASS
