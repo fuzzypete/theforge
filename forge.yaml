@@ -38,25 +38,17 @@ profiles:
       - Glob
       - Grep
   review_pool:
-    - name: openai-reviewer
-      provider: openai
-      model: o4-mini
-      reasoning_effort: medium
+    - name: claude-reviewer
+      cli: claude
+      model: opus
       review_role: correctness
-      budget_usd: 1.00
-      timeout_seconds: 120
-    - name: gemini-reviewer
-      provider: google
-      model: gemini-1.5-pro
-      reasoning_effort: high
-      review_role: patterns
-      budget_usd: 1.00
-      timeout_seconds: 120
-
-smart_config_models:
-  - sonnet
-  - o4-mini
-  - opus
+      budget_usd: 5.00
+      timeout_seconds: 300
+      allowed_tools:
+        - Read
+        - Bash
+        - Glob
+        - Grep
 
 retry:
   max_dev_iterations: 3
@@ -76,10 +68,10 @@ plan_review:
 
 plan_agent_review:
   enabled: true
-  provider: openai
-  model: o4-mini
+  cli: claude
+  model: sonnet
   budget_usd: 0.50
-  timeout: 300
+  timeout: 600
 
 notifications:
   backend: ntfy
