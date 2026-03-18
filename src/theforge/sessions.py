@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import coord_util as _cu
+
 _SESSIONS_FILE = ".forge/sessions.json"
 
 
@@ -17,15 +19,22 @@ def save_sessions(
     dev_session_id: str | None,
     reviewer_session_ids: dict[str, str],
 ) -> None:
-    """Persist session IDs to <workspace_path>/.forge/sessions.json."""
-    target = workspace_path / _SESSIONS_FILE
-    target.parent.mkdir(parents=True, exist_ok=True)
-    data: dict = {}
-    if dev_session_id is not None:
-        data["dev_session_id"] = dev_session_id
-    if reviewer_session_ids:
-        data["reviewer_session_ids"] = reviewer_session_ids
-    target.write_text(json.dumps(data, indent=2))
+    """Persist session IDs to <workspace_path>/.forge/sessions.json.
+
+    Errors are caught and logged as warnings so a failed write never crashes
+    the main process — session persistence is a best-effort operation.
+    """
+    try:
+        target = workspace_path / _SESSIONS_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        data: dict = {}
+        if dev_session_id is not None:
+            data["dev_session_id"] = dev_session_id
+        if reviewer_session_ids:
+            data["reviewer_session_ids"] = reviewer_session_ids
+        target.write_text(json.dumps(data, indent=2))
+    except OSError as exc:
+        _cu._log(f"Warning: could not save session state to {_SESSIONS_FILE}: {exc}")
 
 
 def load_sessions(workspace_path: Path) -> dict:
