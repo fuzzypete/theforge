@@ -1,57 +1,36 @@
+dev_notes: "summary: \"Iter 3 narrows the bare-signature regex to prevent false positives\n\
+  \  on prose lines with parenthetical text (e.g. 'Background (current state)').\n\
+  \  The fix removes the \\\\s* between the function name and '(' in _sig_re,\n  so\
+  \  it now requires the opening paren to immediately follow the identifier.\n  This\
+  \  means prose like 'Context (current state):' no longer matches, while\n  actual\
+  \  bare signatures like 'my_func(a: int) -> bool' still do.\n  Two new tests added:\
+  \  test_has_prohibited_content_bare_signature (P2 coverage)\n  and test_has_prohibited_content_prose_with_parenthetical\
+  \  (false-positive guard).\"\ncommits:\n  - sha: \"234f538\"\n    message: \"feat(ideate):\
+  \  lean story output — behavioral ACs, no implementation detail\"\n  - sha: \"a8ae9a4\"\
+  \n    message: \"fix(ideate): enforce 150-line spec limit deterministically\"\n  -\
+  \  sha: \"f594e60\"\n    message: \"fix(ideate): reject specs containing prohibited\
+  \  implementation detail\"\n  - sha: \"0e8a911\"\n    message: \"fix(lean-story-output):\
+  \  broaden prohibited content detection to catch non-def signatures\"\nacceptance_criteria:\n\
+  \  - criterion: \"forge ideate output contains no function signatures or code blocks\"\
+  \n    status: MET\n    notes: \"_has_prohibited_content() detects code fences, function\
+  \  defs, class defs,\n      @dataclass, and bare typed signatures (name immediately\
+  \  followed by '(').\n      Prose with parenthetical text is no longer falsely rejected.\"\
+  \n  - criterion: \"Acceptance criteria in generated stories describe observable behavior\
+  \  not internal structure\"\n    status: MET\n    notes: \"Both prompts instruct\
+  \  the model to produce observable-behavior ACs and list what is prohibited.\"\n\
+  \  - criterion: \"file_scope is still populated in frontmatter\"\n    status: MET\n\
+  \    notes: \"Template unchanged in both prompts; file_scope remains in the frontmatter\
+  \  block.\"\n  - criterion: \"Phase 1 ideation prompts are unchanged\"\n    status:\
+  \  MET\n    notes: \"_build_phase1_prompt not touched.\"\n  - criterion: \"Single-model\
+  \  path produces the same lean format\"\n    status: MET\n    notes: \"Same prohibition\
+  \  and behavioral AC instructions in _build_single_model_prompt.\n      Prohibited-content\
+  \  and line-limit checks apply to both paths via shared check point.\"\n  - criterion:\
+  \  \"Generated stories are under 150 lines\"\n    status: MET\n    notes: \"_SPEC_LINE_LIMIT\
+  \  = 150 enforced in run_ideation output section.\"\n  - criterion: \"Existing ideate\
+  \  tests pass or are updated to match new output format\"\n    status: MET\n    notes:\
+  \  \"All 48 ideate tests pass (46 from iter 2 + 2 new this iteration).\"\n  - criterion:\
+  \  \"A round-trip test: forge ideate → forge run --dry-run on the output produces\n\
+  \      a valid dev prompt\"\n    status: MET\n    notes: \"test_round_trip_ideate_to_dev_prompt\
+  \  unchanged and passing.\"\nspec_deviations: none\ndeferred_items: none\ngate_result:\
+  \  PASS\n"
 gate_decision: PASS
-dev_notes: |
-  summary: "Iter 2 adds deterministic prohibited-content enforcement. A new
-    _has_prohibited_content(spec_text) function scans the spec body (after
-    stripping frontmatter) for fenced code blocks (lines starting with ```),
-    Python/JS function definitions (def name(), class definitions (class Name:),
-    and @dataclass decorators. A check in the run_ideation output section
-    calls this function after ## Human Decisions Required normalization and
-    returns _failed_result before any file write when prohibited content is
-    detected. This covers both single-model and multi-model synthesis paths
-    through one check point, alongside the pre-existing line-limit check.
-    Original iter 0 (prompt instructions) and iter 1 (line-limit enforcement)
-    are unchanged. New tests: 4 unit tests for _has_prohibited_content
-    (clean, code block, function def, class def, @dataclass) and 2 integration
-    tests (single-model code block rejection, multi-model function-def
-    rejection). _has_prohibited_content is now imported in the test module."
-  commits:
-    - sha: "234f538"
-      message: "feat(ideate): lean story output — behavioral ACs, no implementation detail"
-    - sha: "a8ae9a4"
-      message: "fix(ideate): enforce 150-line spec limit deterministically"
-    - sha: "f594e60"
-      message: "fix(ideate): reject specs containing prohibited implementation detail"
-  acceptance_criteria:
-    - criterion: "forge ideate output contains no function signatures or code blocks"
-      status: MET
-      notes: "_has_prohibited_content() scans the body for code fences, function defs,
-        class defs, and @dataclass; run_ideation rejects specs that fail this check
-        before writing to disk. Verified by test_single_model_spec_with_code_block_returns_failed
-        and test_synthesis_spec_with_function_def_returns_failed."
-    - criterion: "Acceptance criteria in generated stories describe observable behavior not internal structure"
-      status: MET
-      notes: "Both prompts instruct the model to produce observable-behavior ACs and list what is prohibited."
-    - criterion: "file_scope is still populated in frontmatter"
-      status: MET
-      notes: "Template unchanged in both prompts; file_scope remains in the frontmatter block."
-    - criterion: "Phase 1 ideation prompts are unchanged"
-      status: MET
-      notes: "_build_phase1_prompt not touched."
-    - criterion: "Single-model path produces the same lean format"
-      status: MET
-      notes: "Same prohibition and behavioral AC instructions in _build_single_model_prompt.
-        Prohibited-content and line-limit checks apply to both paths via shared check point."
-    - criterion: "Generated stories are under 150 lines"
-      status: MET
-      notes: "_SPEC_LINE_LIMIT = 150 enforced in run_ideation output section. Two tests
-        verify rejection for single-model and multi-model paths."
-    - criterion: "Existing ideate tests pass or are updated to match new output format"
-      status: MET
-      notes: "All 46 ideate tests pass (39 original + 7 new this iteration)."
-    - criterion: "A round-trip test: forge ideate → forge run --dry-run on the output produces a valid dev prompt"
-      status: MET
-      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation then parse_spec_frontmatter
-        + build_dev_prompt, asserting non-empty result containing the spec title."
-  spec_deviations: none
-  deferred_items: none
-  gate_result: PASS

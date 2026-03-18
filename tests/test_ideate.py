@@ -390,6 +390,23 @@ def test_has_prohibited_content_dataclass() -> None:
     assert "dataclass" in reason
 
 
+def test_has_prohibited_content_bare_signature() -> None:
+    """Bare typed function signature (no 'def') is detected as prohibited."""
+    spec = _VALID_SPEC + "\nmy_func(a: int) -> bool\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "signature" in reason
+
+
+def test_has_prohibited_content_prose_with_parenthetical() -> None:
+    """Prose lines with parenthetical text (e.g. in Context/Background) are not flagged."""
+    extra = "\n## Context\nBackground (current state): slow.\nContext (as-is): no cache.\n"
+    spec = _VALID_SPEC + extra
+    found, reason = _has_prohibited_content(spec)
+    assert found is False
+    assert reason == ""
+
+
 # ── Prohibited-content enforcement integration tests ──────────────────
 
 

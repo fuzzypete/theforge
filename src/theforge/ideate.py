@@ -386,7 +386,9 @@ def _has_prohibited_content(spec_text: str) -> tuple[bool, str]:
             body = stripped[end + 3 :]
 
     # Regex for bare typed signatures: "name(args) -> Type" or "name(args):"
-    _sig_re = re.compile(r"^\w[\w.]*\s*\(.*\)\s*(->.*)?:?\s*$")
+    # Requires no space between name and '(' to avoid matching prose like
+    # "Background (current state)" or "Context (current state):".
+    _sig_re = re.compile(r"^\w[\w.]*\(.*\)\s*(->.*)?:?\s*$")
 
     for line in body.splitlines():
         s = line.strip()
