@@ -152,7 +152,7 @@ class PlanConfig:
     model: str = "claude"  # CLI name (the CLI binary, e.g. "claude")
     model_name: str = "sonnet"  # model identifier passed to the CLI
     budget_usd: float = 0.50
-    timeout: int = 300
+    timeout: int = 600
     timeout_medium: int | None = None  # override for medium complexity
     timeout_large: int | None = None  # override for large complexity
 
@@ -618,7 +618,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         model=str(plan_data.get("model", "claude")),
         model_name=str(plan_data.get("model_name", "sonnet")),
         budget_usd=float(plan_data.get("budget_usd", 0.50)),
-        timeout=int(plan_data.get("timeout", 300)),
+        timeout=int(plan_data.get("timeout", 600)),
         timeout_medium=int(plan_timeout_medium_raw)
         if plan_timeout_medium_raw is not None
         else None,

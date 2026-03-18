@@ -504,3 +504,9 @@ class TestLoadConfigTimeoutFields:
         config = load_config(config_path)
         assert config.dev_profile.timeout_medium_seconds is None
         assert config.dev_profile.timeout_large_seconds is None
+
+    def test_plan_timeout_defaults_to_600_when_omitted(self, tmp_path):
+        """plan.timeout falls back to 600s when not specified in forge.yaml."""
+        config_path = _write_config({"plan": {"enabled": True}}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan.timeout == 600
