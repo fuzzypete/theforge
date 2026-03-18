@@ -185,6 +185,7 @@ def run_agent(
     session_id: str | None = None,
     fallback_to_file: bool = True,
     quiet: bool = False,
+    is_pool: bool = False,
 ) -> AgentResult:
     """Run an agent using the CLI specified in profile.cli.
 
@@ -192,6 +193,10 @@ def run_agent(
     Prompt is passed via stdin to avoid shell escaping issues.
     When quiet=True the per-agent 'Starting...' log is suppressed
     (used by run_agent_pool which emits a pool-level banner instead).
+    When is_pool=True the runner will not attempt session-ID extraction
+    strategies that are unsafe for concurrent invocations (e.g. scanning
+    a global index file). Claude is unaffected — it extracts the ID from
+    its own stdout stream. Codex and Gemini are affected.
     """
     runners = {
         "claude": _run_claude,
@@ -220,6 +225,8 @@ def run_agent(
     }
     if profile.cli == "claude":
         runner_kwargs["fallback_to_file"] = fallback_to_file
+    if profile.cli in ("codex", "gemini"):
+        runner_kwargs["is_pool"] = is_pool
     return runner_fn(**runner_kwargs)
 
 
@@ -274,6 +281,7 @@ def run_agent_pool(
                 session_id=sid,
                 fallback_to_file=False,
                 quiet=True,
+                is_pool=True,
             )
         finally:
             agent_durations[idx] = time.monotonic() - t0
@@ -615,11 +623,17 @@ def _run_codex(
     working_dir: Path,
     session_id: str | None = None,
     quiet: bool = False,
+    is_pool: bool = False,
 ) -> AgentResult:
     """Invoke `npx @openai/codex exec --full-auto` as a subprocess.
 
     Output is captured via a temp file using `-o <file>`;
     falls back to stdout if the file is empty.
+
+    Session ID extraction scans ~/.codex/session_index.jsonl for the newest
+    entry after the run start. This is safe for sequential (single-reviewer)
+    runs but not for parallel pools — when is_pool=True we return None to
+    avoid misattributing a concurrent invocation's session to this one.
     """
     fd, output_path_str = tempfile.mkstemp(suffix=".txt", prefix="forge_codex_")
     os.close(fd)
@@ -705,7 +719,9 @@ def _run_codex(
         except (json.JSONDecodeError, ValueError):
             pass
 
-        extracted_sid = _get_codex_session_id(min_mtime=start_wall)
+        # Only extract session_id for sequential runs; parallel pools risk
+        # picking up a sibling invocation's entry from the global index.
+        extracted_sid = None if is_pool else _get_codex_session_id(min_mtime=start_wall)
 
         if result_json:
             return AgentResult(
@@ -744,13 +760,16 @@ def _run_gemini(
     working_dir: Path,
     session_id: str | None = None,
     quiet: bool = False,
+    is_pool: bool = False,
 ) -> AgentResult:
     """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess.
 
     Session resume: gemini --resume accepts "latest", an index number, or a UUID.
-    Sessions are scoped to the current working directory. We use "latest" as the
-    resume key — safe for sequential single-reviewer runs. On the first invocation
-    session_id is None; thereafter we return "latest" so the next call resumes it.
+    Sessions are scoped to the current working directory. We return "latest" so the
+    next sequential call resumes the same project session. This is only safe for
+    single-reviewer runs — parallel pools get session_id=None because "--resume latest"
+    is not invocation-scoped and two concurrent gemini reviewers would trample each
+    other's context.
     """
     cmd: list[str] = ["npx", "@google/gemini-cli"]
     if session_id:
@@ -804,20 +823,25 @@ def _run_gemini(
     try:
         result_json = json.loads(json_candidate)
     except (json.JSONDecodeError, ValueError):
+        # Don't return "latest" on parse failure: the CLI may have exited before
+        # creating a resumable session, so resuming would attach to stale context.
         return AgentResult(
             success=proc.returncode == 0,
             output=proc.stdout or proc.stderr or "(no output)",
-            session_id="latest",
+            session_id=None,
             cost_usd=0.0,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
         )
 
+    # "latest" is only safe for sequential single-reviewer runs; parallel pools
+    # would trample each other since --resume latest is not invocation-scoped.
+    resume_sid = None if is_pool else "latest"
     return AgentResult(
         success=proc.returncode == 0,
         output=result_json.get("response", result_json.get("result", proc.stdout)),
-        session_id="latest",
+        session_id=resume_sid,
         cost_usd=0.0,
         exit_code=proc.returncode,
         raw=result_json,
