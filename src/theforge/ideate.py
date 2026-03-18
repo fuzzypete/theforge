@@ -12,6 +12,7 @@ The coordinator remains fully deterministic. Only the ideation agents are LLMs.
 
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 import time
@@ -384,16 +385,23 @@ def _has_prohibited_content(spec_text: str) -> tuple[bool, str]:
         if end != -1:
             body = stripped[end + 3 :]
 
+    # Regex for bare typed signatures: "name(args) -> Type" or "name(args):"
+    _sig_re = re.compile(r"^\w[\w.]*\s*\(.*\)\s*(->.*)?:?\s*$")
+
     for line in body.splitlines():
         s = line.strip()
         if s.startswith("```"):
             return True, "fenced code block"
         if s.startswith("def ") and "(" in s:
             return True, "function definition"
+        if s.startswith("function ") and "(" in s:
+            return True, "JS function definition"
         if s.startswith("class ") and (":" in s or "(" in s):
             return True, "class definition"
         if s == "@dataclass" or s.startswith("@dataclass("):
             return True, "@dataclass decorator"
+        if _sig_re.match(s) and len(s) > 10:
+            return True, "bare function signature"
 
     return False, ""
 
