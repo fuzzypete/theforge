@@ -15,6 +15,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from datetime import datetime
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -569,6 +570,44 @@ def _run_claude(
 # ── Codex CLI ────────────────────────────────────────────────────────
 
 
+def _get_codex_session_id(*, min_mtime: float) -> str | None:
+    """Return the newest codex session ID created after min_mtime.
+
+    Scans ~/.codex/session_index.jsonl for entries whose updated_at timestamp
+    is strictly after min_mtime (epoch seconds). Same pattern as the Claude
+    transcript-file fallback in _get_claude_session_id().
+    """
+    index_file = Path.home() / ".codex" / "session_index.jsonl"
+    try:
+        lines = index_file.read_text().splitlines()
+    except OSError:
+        return None
+
+    best_id: str | None = None
+    best_ts: float | None = None
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        sid = entry.get("id")
+        updated = entry.get("updated_at")
+        if not sid or not updated:
+            continue
+        try:
+            dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+            ts = dt.timestamp()
+        except ValueError:
+            continue
+        if ts > min_mtime and (best_ts is None or ts > best_ts):
+            best_ts = ts
+            best_id = sid
+    return best_id
+
+
 def _run_codex(
     *,
     prompt: str,
@@ -586,28 +625,43 @@ def _run_codex(
     os.close(fd)
     output_file = Path(output_path_str)
 
-    cmd: list[str] = [
-        "npx",
-        "@openai/codex",
-        "exec",
-        "--full-auto",
-        "-m",
-        profile.model,
-    ]
-    if profile.reasoning_effort:
-        cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-    cmd += [
-        "-C",
-        str(working_dir),
-        "-o",
-        str(output_file),
-        prompt,
-    ]
+    # Resume: `codex exec resume <id> [flags] -` (prompt via stdin).
+    # Fresh start: `codex exec [flags] <prompt>` (prompt as positional arg).
+    if session_id:
+        cmd: list[str] = [
+            "npx",
+            "@openai/codex",
+            "exec",
+            "resume",
+            session_id,
+            "--full-auto",
+            "-m",
+            profile.model,
+        ]
+        if profile.reasoning_effort:
+            cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
+        cmd += ["-C", str(working_dir), "-o", str(output_file), "-"]
+        stdin_prompt: str | None = prompt
+    else:
+        cmd = [
+            "npx",
+            "@openai/codex",
+            "exec",
+            "--full-auto",
+            "-m",
+            profile.model,
+        ]
+        if profile.reasoning_effort:
+            cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
+        cmd += ["-C", str(working_dir), "-o", str(output_file), prompt]
+        stdin_prompt = None
 
+    start_wall = time.time()
     label = profile.name or f"{profile.cli}/{profile.model}"
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
             cmd,
+            input=stdin_prompt,
             capture_output=True,
             text=True,
             timeout=profile.timeout_seconds,
@@ -651,11 +705,13 @@ def _run_codex(
         except (json.JSONDecodeError, ValueError):
             pass
 
+        extracted_sid = _get_codex_session_id(min_mtime=start_wall)
+
         if result_json:
             return AgentResult(
                 success=proc.returncode == 0,
                 output=result_json.get("result", output_text),
-                session_id=None,
+                session_id=extracted_sid,
                 cost_usd=0.0,
                 exit_code=proc.returncode,
                 raw=result_json,
@@ -665,7 +721,7 @@ def _run_codex(
         return AgentResult(
             success=proc.returncode == 0,
             output=output_text,
-            session_id=None,
+            session_id=extracted_sid,
             cost_usd=0.0,
             exit_code=proc.returncode,
             raw={},
@@ -689,10 +745,17 @@ def _run_gemini(
     session_id: str | None = None,
     quiet: bool = False,
 ) -> AgentResult:
-    """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess."""
-    cmd: list[str] = [
-        "npx",
-        "@google/gemini-cli",
+    """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess.
+
+    Session resume: gemini --resume accepts "latest", an index number, or a UUID.
+    Sessions are scoped to the current working directory. We use "latest" as the
+    resume key — safe for sequential single-reviewer runs. On the first invocation
+    session_id is None; thereafter we return "latest" so the next call resumes it.
+    """
+    cmd: list[str] = ["npx", "@google/gemini-cli"]
+    if session_id:
+        cmd += ["--resume", session_id]
+    cmd += [
         "-p",
         prompt,
         "--yolo",
@@ -744,7 +807,7 @@ def _run_gemini(
         return AgentResult(
             success=proc.returncode == 0,
             output=proc.stdout or proc.stderr or "(no output)",
-            session_id=None,
+            session_id="latest",
             cost_usd=0.0,
             exit_code=proc.returncode,
             raw={},
@@ -754,7 +817,7 @@ def _run_gemini(
     return AgentResult(
         success=proc.returncode == 0,
         output=result_json.get("response", result_json.get("result", proc.stdout)),
-        session_id=None,
+        session_id="latest",
         cost_usd=0.0,
         exit_code=proc.returncode,
         raw=result_json,

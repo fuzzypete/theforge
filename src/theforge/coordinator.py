@@ -1033,8 +1033,12 @@ def run_task(
                         prompt=pr_prompt,
                         profile=par_profile,
                         working_dir=workspace_path,
+                        session_id=state.plan_review_session_id,
                     )
                     _pr_elapsed = time.monotonic() - _pr_start
+                    state.plan_review_session_id = (
+                        pr_result.session_id or state.plan_review_session_id
+                    )
                     state.plan_review_results.append(pr_result)
 
                     if not pr_result.success:

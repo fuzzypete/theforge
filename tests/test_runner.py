@@ -1270,7 +1270,7 @@ class TestRunGemini:
 
         assert result.success is True
         assert result.output == "Looks good to me."
-        assert result.session_id is None
+        assert result.session_id == "latest"  # gemini always returns "latest" for resume
         assert result.cost_usd == 0.0
         assert result.exit_code == 0
         assert result.profile_name == "gemini-reviewer"
