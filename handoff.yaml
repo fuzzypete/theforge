@@ -2,29 +2,30 @@ gate_decision: PASS
 dev_notes: |
   summary: "Added src/theforge/sessions.py with save_sessions() and load_sessions() that
     read/write .forge/sessions.json inside the worktree. Wired save_sessions into three call
-    sites: (1) coord_phases._run_dev_phase_impl after dev_session_id is updated following the
-    main dev agent call; (2) coordinator._coordinator_loop after dev_session_id is updated
-    following each handoff-fix retry; (3) coordinator._run_review_pool after reviewer_session_ids
-    are updated following the review pool run. Wired load_sessions into _setup_resume_entry
-    immediately after state.workspace_path is set, restoring both dev_session_id and
-    reviewer_session_ids before the first agent call. Missing or corrupt session files return {}
-    silently. .forge/ is already in .gitignore so no gitignore change was needed."
+    sites: (1) coord_phases._run_dev_phase_impl after dev_session_id is updated; (2)
+    coordinator._coordinator_loop after handoff-fix retry; (3) coordinator._run_review_pool
+    after reviewer_session_ids are updated. Wired load_sessions into _setup_resume_entry to
+    restore both IDs before the first agent call. Iter 1 fix: replaced the brittle if/else
+    block (which could null out dev_session_id when an agent returned None) with the uniform
+    `dev_session_id = dev_result.session_id or state.dev_session_id` pattern."
   commits:
     - sha: "8b7f4e9"
       message: "feat(sessions): persist and restore session IDs across forge review invocations"
+    - sha: "2c3af5b"
+      message: "fix(sessions): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "After a dev iteration with a session ID, the session ID is persisted to the worktree"
       status: MET
-      notes: "save_sessions called in coord_phases after dev_session_id is set from dev_result.session_id, and in coordinator after handoff-fix retry updates dev_session_id."
+      notes: "save_sessions called after dev_session_id is set via the or-fallback pattern; existing ID preserved when agent returns None."
     - criterion: "A subsequent forge review on the same worktree restores the session ID before the first dev agent call"
       status: MET
-      notes: "load_sessions called in _setup_resume_entry (shared by run_from_review and run_from_dev) immediately after workspace_path is validated; state.dev_session_id set from loaded data."
+      notes: "load_sessions called in _setup_resume_entry immediately after workspace_path is validated; state.dev_session_id set from loaded data."
     - criterion: "Reviewer session IDs are also persisted and restored"
       status: MET
       notes: "save_sessions includes reviewer_session_ids in all three call sites; load_sessions restores them into state.reviewer_session_ids in _setup_resume_entry."
     - criterion: "Missing session file → no error, fresh session as before"
       status: MET
-      notes: "load_sessions catches FileNotFoundError and returns {}; _setup_resume_entry only assigns if keys are present, leaving state defaults (None / empty dict) untouched."
+      notes: "load_sessions catches FileNotFoundError and returns {}; _setup_resume_entry only assigns if keys are present."
     - criterion: "Session file is not committed to git"
       status: MET
       notes: ".gitignore already contains .forge/ at line 26. No change required."
