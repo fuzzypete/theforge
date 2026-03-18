@@ -47,6 +47,7 @@ from .coord_workspace import _merge_branch
 from .review import ReviewResult, review_to_dev_handoff
 from .runner import log_agent_result
 from .task import TaskSpec
+from .traces import write_trace
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -200,6 +201,7 @@ def _run_review_phase(
             branch_name,
             meta,
             notify=notify,
+            pool_attempt=_parse_attempt,
         )
 
         if _candidate is None:
@@ -601,7 +603,7 @@ def _run_validate_phase(
         else:
             _log_phase(state.phase, "running gate...")
         gate_decision, gate_err, gate_output_tail = _run_gate_full(
-            config, workspace_path, task=task
+            config, workspace_path, task=task, iter_num=state.dev_iteration
         )
     _gate_elapsed = time.monotonic() - _gate_start
     if logger:
@@ -828,6 +830,11 @@ def _run_dev_phase(
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed
 
+    write_trace(
+        workspace_path / ".forge/traces" / f"{state.dev_iteration}-dev-prompt.txt",
+        prompt,
+    )
+
     _dev_start = time.monotonic()
     dev_result = mod.run_agent(
         prompt=prompt,
@@ -836,6 +843,10 @@ def _run_dev_phase(
         session_id=state.dev_session_id,
     )
     _dev_elapsed = time.monotonic() - _dev_start
+    write_trace(
+        workspace_path / ".forge/traces" / f"{state.dev_iteration}-dev-output.txt",
+        dev_result.output,
+    )
     state.dev_results.append(dev_result)
     state.dev_durations.append(_dev_elapsed)
     if dev_result.exit_code == -9:
