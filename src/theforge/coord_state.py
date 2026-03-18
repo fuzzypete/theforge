@@ -118,23 +118,23 @@ class CoordinatorState:
 
     @property
     def total_dev_cost(self) -> float:
-        return sum(r.cost_usd for r in self.dev_results)
+        return sum(r.cost_usd or 0.0 for r in self.dev_results)
 
     @property
     def total_review_cost(self) -> float:
-        return sum(r.cost_usd for r in self.review_agent_results)
+        return sum(r.cost_usd or 0.0 for r in self.review_agent_results)
 
     @property
     def total_preflight_cost(self) -> float:
-        return self.preflight_result.cost_usd if self.preflight_result else 0.0
+        return self.preflight_result.cost_usd or 0.0 if self.preflight_result else 0.0
 
     @property
     def total_plan_cost(self) -> float:
-        return sum(r.cost_usd for r in self.plan_results)
+        return sum(r.cost_usd or 0.0 for r in self.plan_results)
 
     @property
     def total_plan_review_cost(self) -> float:
-        return sum(r.cost_usd for r in self.plan_review_results)
+        return sum(r.cost_usd or 0.0 for r in self.plan_review_results)
 
     @property
     def total_cost(self) -> float:

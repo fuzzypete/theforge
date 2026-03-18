@@ -88,6 +88,7 @@ from .coord_state import (  # noqa: F401
 )
 from .coord_util import (  # noqa: F401
     _LOG_LEVEL,
+    _fmt_cost,
     _fmt_duration,
     _generate_run_id,
     _log,
@@ -110,6 +111,7 @@ from .review import (  # noqa: F401
     ReviewResult,
     merge_review_results,
     parse_plan_review_output,
+    parse_review_json,
     parse_review_output,
     plan_review_findings_to_text,
     review_to_dev_handoff,
@@ -412,6 +414,7 @@ def _run_review_pool(
                     workspace_path=str(workspace_path),
                     branch=branch_name,
                     handoff_content=handoff_content,
+                    mode=p.mode,
                     review_role=p.review_role,
                     dev_notes=dev_notes,
                 )
@@ -425,10 +428,10 @@ def _run_review_pool(
                 workspace_path=str(workspace_path),
                 branch=branch_name,
                 handoff_content=handoff_content,
+                mode=config.review_pool[0].mode,
                 dev_notes=dev_notes,
             )
         )
-
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
     _pool_start = time.monotonic()
     pool_session_ids = [state.reviewer_session_ids.get(p.name) for p in config.review_pool]
@@ -463,7 +466,9 @@ def _run_review_pool(
     if enforce_budgets:
         for profile in config.review_pool:
             profile_cost = sum(
-                r.cost_usd for r in state.review_agent_results if r.profile_name == profile.name
+                r.cost_usd or 0.0
+                for r in state.review_agent_results
+                if r.profile_name == profile.name
             )
             if profile_cost > profile.budget_usd:
                 state.phase = Phase.ESCALATE
@@ -501,13 +506,21 @@ def _run_review_pool(
         workspace_path / ".forge/traces" / f"{_cycle_num}-{pool_attempt}-synthesis.txt"
     )
     if len(successful) == 1:
-        write_trace(_synthesis_path, successful[0].output)
-        return successful, failed_results, parse_review_output(successful[0].output)
+        result = successful[0]
+        write_trace(_synthesis_path, result.output)
+        if result.structured_data:
+            return successful, failed_results, parse_review_json(result.structured_data)
+        return successful, failed_results, parse_review_output(result.output)
 
     _log_verbose(
         f"Merging {len(successful)} review outputs (+{len(failed_results)} failed excluded)"
     )
-    parsed_results = [parse_review_output(r.output) for r in successful]
+    parsed_results = [
+        parse_review_json(r.structured_data)
+        if r.structured_data
+        else parse_review_output(r.output)
+        for r in successful
+    ]
     names = [r.profile_name for r in successful]
     merged = merge_review_results(parsed_results, names)
     write_trace(
@@ -992,7 +1005,7 @@ def run_task(
             plan_text = plan_result.output
             (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
             state.plan_output = plan_text
-            _log(f"  ✓ PLAN   ${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}")
+            _log(f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}")
 
             if config.plan_agent_review.enabled:
                 # ── Agent plan review ──────────────────────────────
@@ -1002,6 +1015,7 @@ def run_task(
                 par_profile = ModelProfile(
                     name="plan-review",
                     cli=par_cfg.cli,
+                    provider=par_cfg.provider,
                     model=par_cfg.model,
                     budget_usd=par_cfg.budget_usd,
                     timeout_seconds=par_cfg.timeout,
@@ -1022,6 +1036,7 @@ def run_task(
                         story_content=spec_content,
                         plan_content=plan_text,
                         file_contents=file_contents,
+                        mode=par_profile.mode,
                         preflight_output=(
                             preflight_result.output if preflight_result.success else None
                         ),
@@ -1073,7 +1088,7 @@ def run_task(
                         _log(
                             f"  ✓ PLAN_REVIEW   approve (agent, {len(parsed_pr.findings)} "
                             f"advisory)  "
-                            f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
+                            f"{_fmt_cost(pr_result.cost_usd)}  {_fmt_duration(_pr_elapsed)}"
                         )
                         _log(f"  Advisory findings (passed to dev):\n{findings_text}")
                         parsed_pr = PlanReviewResult(
@@ -1086,7 +1101,7 @@ def run_task(
                         state.plan_review_decision = "approve"
                         _log(
                             f"  ✓ PLAN_REVIEW   approve (agent)  "
-                            f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
+                            f"{_fmt_cost(pr_result.cost_usd)}  {_fmt_duration(_pr_elapsed)}"
                         )
                         # Commit the approved plan so it's preserved in git history
                         try:
@@ -1113,7 +1128,7 @@ def run_task(
                     state.plan_agent_review_findings = findings_text
                     _log(
                         f"  ✗ PLAN_REVIEW   reject (agent)  "
-                        f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
+                        f"{_fmt_cost(pr_result.cost_usd)}  {_fmt_duration(_pr_elapsed)}"
                     )
 
                     state.plan_regen_count += 1
@@ -1200,7 +1215,7 @@ def run_task(
                     state.plan_output = plan_text
                     _log(
                         "  ✓ PLAN (regenerated)  "
-                        f"${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}"
+                        f"{_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}"
                     )
 
             elif config.plan_review.enabled:
@@ -1319,7 +1334,7 @@ def run_task(
                         state.plan_output = plan_text
                         _log(
                             "  ✓ PLAN (regenerated)  "
-                            f"${plan_result.cost_usd:.2f}  {_fmt_duration(_plan_elapsed)}"
+                            f"{_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}"
                         )
                         continue
 
@@ -1564,6 +1579,7 @@ def run_review_only(
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content=handoff_content,
+        mode=config.review_pool[0].mode,
         dev_notes=dev_notes,
     )
 
@@ -1624,7 +1640,7 @@ def run_review_only(
 
     _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
-    _ro_cost = sum(r.cost_usd for r in state.review_agent_results)
+    _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
     _ro_elapsed = _pool_elapsed
 
     logger._safe_emit(

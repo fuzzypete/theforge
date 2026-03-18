@@ -223,3 +223,61 @@ def validate_dev_handoff(data: Any) -> list[str]:
         errors.append(f"gate_result must be one of {VALID_GATE_RESULTS}, got: {gate_result!r}")
 
     return errors
+
+
+def review_json_schema() -> dict:
+    """Export the review schema as a JSON Schema dict."""
+    return {
+        "type": "object",
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": list(VALID_VERDICTS),
+                "description": "The overall verdict of the review.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "A one-line summary of the review.",
+            },
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {
+                            "type": "string",
+                            "enum": list(VALID_SEVERITIES),
+                        },
+                        "file": {"type": "string"},
+                        "line": {"type": ["integer", "null"]},
+                        "description": {"type": "string"},
+                        "suggestion": {"type": "string"},
+                    },
+                    "required": ["severity", "file", "description", "suggestion"],
+                },
+            },
+            "spec_compliance": {
+                "type": "object",
+                "properties": {
+                    "matches_spec": {"type": "boolean"},
+                    "mismatches": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["matches_spec"],
+            },
+            "test_coverage": {
+                "type": "object",
+                "properties": {
+                    "adequate": {"type": "boolean"},
+                    "gaps": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["adequate"],
+            },
+        },
+        "required": ["verdict", "summary", "findings", "spec_compliance", "test_coverage"],
+    }

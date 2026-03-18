@@ -41,6 +41,52 @@ class ReviewResult:
     raw_yaml: dict  # the parsed YAML data
 
 
+def parse_review_json(data: dict) -> ReviewResult:
+    """Parse and validate review JSON from API response.
+
+    This path is used for API-based reviewers that return structured JSON.
+    The cross-validation rules are the same as the YAML path.
+    """
+    # Validate schema (re-using the YAML validator which works on dicts)
+    schema_errors = validate_review_yaml(data)
+
+    # Extract findings
+    findings: list[ReviewFinding] = []
+    for f in data.get("findings", []):
+        if isinstance(f, dict):
+            findings.append(
+                ReviewFinding(
+                    severity=f.get("severity", "P2"),
+                    file=f.get("file", "unknown"),
+                    line=f.get("line"),
+                    description=f.get("description", ""),
+                    suggestion=f.get("suggestion"),
+                )
+            )
+
+    # Extract spec compliance
+    spec = data.get("spec_compliance", {})
+    spec_matches = spec.get("matches_spec", False) if isinstance(spec, dict) else False
+    spec_mismatches = spec.get("mismatches", []) if isinstance(spec, dict) else []
+
+    # Extract test coverage
+    tests = data.get("test_coverage", {})
+    test_adequate = tests.get("adequate", False) if isinstance(tests, dict) else False
+    test_gaps = tests.get("gaps", []) if isinstance(tests, dict) else []
+
+    return ReviewResult(
+        verdict=data.get("verdict", "REQUEST_CHANGES"),
+        summary=data.get("summary", "(no summary)"),
+        findings=findings,
+        spec_matches=spec_matches,
+        spec_mismatches=spec_mismatches if isinstance(spec_mismatches, list) else [],
+        test_adequate=test_adequate,
+        test_gaps=test_gaps if isinstance(test_gaps, list) else [],
+        parse_errors=schema_errors,
+        raw_yaml=data,
+    )
+
+
 def parse_review_output(agent_output: str) -> ReviewResult:
     """Extract and parse review YAML from agent output.
 
@@ -51,7 +97,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     """
     # Try to extract YAML from markdown code fences
     yaml_match = re.search(
-        r"```ya?ml\s*\n(.*?)```",
+        r"```ya?ml\s*(.*?)```",
         agent_output,
         flags=re.DOTALL,
     )
@@ -153,7 +199,7 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
     Unparseable output is treated as REJECT.
     """
     yaml_match = re.search(
-        r"```ya?ml\s*\n(.*?)```",
+        r"```ya?ml\s*(.*?)```",
         agent_output,
         flags=re.DOTALL,
     )

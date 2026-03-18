@@ -6,9 +6,10 @@ Uses mocked runner to test all state transitions without real agent calls.
 import dataclasses
 import datetime
 import io
+import json
 import time as _time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -122,7 +123,7 @@ def _make_ntfy_plan_review_config(
 
 
 def _make_pool_config(
-    tmp_path: Path, profiles: list[ModelProfile], synthesis: ModelProfile
+    tmp_path: Path, profiles: list[ModelProfile], synthesis: ModelProfile | None
 ) -> ForgeConfig:
     """Create a test config with multi-model review pool."""
     return ForgeConfig(
@@ -159,8 +160,9 @@ def _make_agent_result(
     success: bool = True,
     output: str = "Done.",
     session_id: str | None = "sess-1",
-    cost_usd: float = 0.50,
+    cost_usd: float | None = 0.50,
     profile_name: str = "",
+    structured_data: dict | None = None,
 ) -> AgentResult:
     return AgentResult(
         success=success,
@@ -170,6 +172,7 @@ def _make_agent_result(
         exit_code=0 if success else 1,
         raw={},
         profile_name=profile_name,
+        structured_data=structured_data,
     )
 
 
@@ -283,6 +286,15 @@ test_coverage:
 ```
 """
 
+APPROVE_REVIEW_JSON = {
+    "verdict": "APPROVE",
+    "summary": "Looks good.",
+    "findings": [],
+    "spec_compliance": {"matches_spec": True},
+    "test_coverage": {"adequate": True},
+}
+
+
 REQUEST_CHANGES_REVIEW = """\
 ```yaml
 verdict: REQUEST_CHANGES
@@ -367,6 +379,130 @@ def _preflight_then(*dev_results: AgentResult):
 
 
 # ── Tests ────────────────────────────────────────────────────────────
+
+
+class TestCoordinatorHybridRunner:
+    @pytest.fixture
+    def api_profile(self) -> ModelProfile:
+        return ModelProfile(
+            name="api-reviewer",
+            provider="openai",
+            model="o4-mini",
+            budget_usd=1.0,
+            timeout_seconds=120,
+            allowed_tools=(),
+        )
+
+    @pytest.fixture
+    def cli_profile(self) -> ModelProfile:
+        return ModelProfile(
+            name="cli-reviewer",
+            cli="claude",
+            provider=None,
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read", "Bash"),
+        )
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_mixed_pool_happy_path(
+        self, mock_shell, mock_agent, tmp_path, api_profile, cli_profile
+    ):
+        """Test a mixed pool of API and CLI reviewers."""
+        config = _make_pool_config(tmp_path, [cli_profile, api_profile], None)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(
+                    success=True, output=APPROVE_REVIEW, profile_name="cli-reviewer"
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=json.dumps(APPROVE_REVIEW_JSON),
+                    profile_name="api-reviewer",
+                    structured_data=APPROVE_REVIEW_JSON,
+                ),
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Check that parse_review_json was called
+        # (implicitly tested by the fact that the merge succeeds)
+        assert len(result.state.review_results) == 1
+        merged_review = result.state.review_results[0]
+        assert merged_review.verdict == "APPROVE"
+
+    @patch("theforge.coordinator.build_review_prompt")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_mode_aware_prompt_builder(
+        self, mock_shell, mock_agent, mock_pool, mock_prompt_builder, tmp_path, api_profile
+    ):
+        """Test that the correct mode is passed to the prompt builder."""
+        config = _make_pool_config(tmp_path, [api_profile], None)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, structured_data=APPROVE_REVIEW_JSON)
+        ]
+
+        run_task(config, task)
+
+        mock_prompt_builder.assert_called()
+        # The first call to build_review_prompt is what we want to check
+        call_args = mock_prompt_builder.call_args_list[0]
+        assert call_args.kwargs["mode"] == "api"
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_cost_summation_with_none(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Test that total_cost handles None from CLI reviewers."""
+        cli_profile = ModelProfile(
+            name="cli-reviewer",
+            cli="codex",
+            provider=None,
+            model="o4-mini",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        config = _make_pool_config(tmp_path, [cli_profile], None)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.", cost_usd=None)
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, cost_usd=None)
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # preflight(0.05) + dev(None) + review(None) = 0.05
+        assert result.state.total_cost == pytest.approx(0.05)
 
 
 class TestCoordinatorHappyPath:
@@ -1511,6 +1647,7 @@ class TestCoordinatorBudgetEnforcement:
         dev_profile = ModelProfile(
             name=DEFAULT_DEV_PROFILE.name,
             cli=DEFAULT_DEV_PROFILE.cli,
+            provider=None,
             model=DEFAULT_DEV_PROFILE.model,
             budget_usd=dev_budget,
             timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
@@ -1519,6 +1656,7 @@ class TestCoordinatorBudgetEnforcement:
         review_profile = ModelProfile(
             name=DEFAULT_REVIEW_PROFILE.name,
             cli=DEFAULT_REVIEW_PROFILE.cli,
+            provider=None,
             model=DEFAULT_REVIEW_PROFILE.model,
             budget_usd=review_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
@@ -1709,6 +1847,7 @@ def _make_review_profile(name: str, budget_usd: float = 1.0) -> ModelProfile:
     return ModelProfile(
         name=name,
         cli="claude",
+        provider=None,
         model="opus",
         budget_usd=budget_usd,
         timeout_seconds=300,
@@ -1719,6 +1858,7 @@ def _make_review_profile(name: str, budget_usd: float = 1.0) -> ModelProfile:
 SYNTHESIS_PROFILE = ModelProfile(
     name="synthesis",
     cli="claude",
+    provider=None,
     model="opus",
     budget_usd=1.50,
     timeout_seconds=300,
