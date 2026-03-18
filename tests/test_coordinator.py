@@ -2768,6 +2768,94 @@ class TestRunFromReview:
         assert audit["preflight"]["verdict"] == "SKIPPED"
         assert audit["preflight"]["cost_usd"] == 0.0
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_run_from_review_restores_dev_session_id(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Pre-existing sessions.json causes dev session ID to be passed on first dev call."""
+        import json
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Write a sessions.json as if a prior run had saved it
+        forge_dir = workspace / ".forge"
+        forge_dir.mkdir()
+        (forge_dir / "sessions.json").write_text(
+            json.dumps({"dev_session_id": "prior-dev-sess"}), encoding="utf-8"
+        )
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        # First pool call → REQUEST_CHANGES, second → APPROVE
+        pool_call_n = {"n": 0}
+
+        def pool_side(prompt=None, profiles=None, working_dir=None, session_ids=None):
+            pool_call_n["n"] += 1
+            if pool_call_n["n"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side
+
+        captured_dev_session_ids: list[str | None] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+            captured_dev_session_ids.append(session_id)
+            return _make_agent_result(success=True, output="Fixed.", session_id="new-dev-sess")
+
+        mock_agent.side_effect = fake_run_agent
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        # The first (and only) dev call should receive the restored session ID
+        assert captured_dev_session_ids == ["prior-dev-sess"]
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coord_util._run_shell")
+    def test_run_from_review_restores_reviewer_session_ids(self, mock_shell, mock_pool, tmp_path):
+        """Pre-existing sessions.json causes reviewer session IDs to be passed to first pool."""
+        import json
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # Write a sessions.json with reviewer session IDs from a prior run
+        forge_dir = workspace / ".forge"
+        forge_dir.mkdir()
+        (forge_dir / "sessions.json").write_text(
+            json.dumps({"reviewer_session_ids": {"review": "prior-rev-sess"}}),
+            encoding="utf-8",
+        )
+
+        mock_shell.return_value = (True, "")
+
+        captured_session_ids: list[list[str | None]] = []
+
+        def pool_side(prompt=None, profiles=None, working_dir=None, session_ids=None):
+            captured_session_ids.append(list(session_ids or []))
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        # First (and only) review pool call should receive the restored reviewer session ID
+        assert len(captured_session_ids) == 1
+        assert captured_session_ids[0] == ["prior-rev-sess"]
+
 
 # ── Dev notes / review_to_dev_handoff coordinator tests ───────────────
 

@@ -1,64 +1,41 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Added complexity-based timeouts for dev and plan phases. ModelProfile gains
-    timeout_medium_seconds / timeout_large_seconds; PlanConfig gains timeout_medium /
-    timeout_large. resolve_timeout() in coord_util.py selects the right timeout by
-    complexity. coord_phases.py uses dataclasses.replace() before run_agent for DEV;
-    coordinator.py inlines the resolved value when constructing plan_profile for PLAN.
-    forge.yaml resets dev base timeout from 1800 to 600 with medium=900/large=1800
-    overrides for both dev and plan. Iter 1 fix (cycle 1): override-active detection for
-    log lines now checks field non-None rather than comparing resolved vs base values,
-    so the complexity suffix appears even when override == base. Iter 1 fix (cycle 2):
-    PlanConfig.timeout default and load_config fallback corrected from 300 to 600."
+  summary: "Added src/theforge/sessions.py with save_sessions() and load_sessions() that
+    read/write .forge/sessions.json inside the worktree. Wired save_sessions into three call
+    sites: coord_phases after dev agent call, coordinator after handoff-fix retry, coordinator
+    after review pool. Wired load_sessions into _setup_resume_entry to restore both IDs before
+    the first agent call. Iter 1 fix: replaced brittle if/else block (could null dev_session_id)
+    with uniform `or` fallback pattern. Iter 2 fixes: (1) added two coordinator integration
+    tests verifying that a pre-existing sessions.json causes dev and reviewer session IDs to
+    be restored and passed to agents on the first forge review invocation; (2) wrapped
+    save_sessions I/O in try/except OSError so a permission failure logs a warning rather
+    than crashing the process."
   commits:
-    - sha: "43e4e5d"
-      message: "feat(timeouts): complexity-based timeouts for dev and plan phases"
-    - sha: "65375b9"
-      message: "fix(timeouts): address review findings (iter 1)"
-    - sha: "83c0226"
-      message: "fix(timeouts): address review findings (iter 1)"
+    - sha: "8b7f4e9"
+      message: "feat(sessions): persist and restore session IDs across forge review invocations"
+    - sha: "2c3af5b"
+      message: "fix(sessions): address review findings (iter 1)"
+    - sha: "35d34e8"
+      message: "fix(sessions): address review findings (iter 1)"
   acceptance_criteria:
-    - criterion: "DevProfile has timeout_medium_seconds and timeout_large_seconds optional fields (default None)"
+    - criterion: "After a dev iteration with a session ID, the session ID is persisted to the worktree"
       status: MET
-      notes: "Added to ModelProfile dataclass in config.py with default None."
-    - criterion: "timeout_for_complexity() returns the right value for small/medium/large/None"
+      notes: "save_sessions called after dev_session_id is updated via or-fallback pattern; verified by test_run_from_review_restores_dev_session_id."
+    - criterion: "A subsequent forge review on the same worktree restores the session ID before the first dev agent call"
       status: MET
-      notes: "Implemented as standalone resolve_timeout() in coord_util.py. Tests cover all complexity values plus None and unknown."
-    - criterion: "Coordinator uses complexity-resolved timeout at DEV invocation"
+      notes: "load_sessions called in _setup_resume_entry; test_run_from_review_restores_dev_session_id asserts the restored ID is passed to the first dev agent call."
+    - criterion: "Reviewer session IDs are also persisted and restored"
       status: MET
-      notes: "coord_phases.py calls resolve_timeout() then dataclasses.replace(profile, timeout_seconds=resolved) before run_agent."
-    - criterion: "PLAN phase uses complexity-resolved timeout"
+      notes: "save_sessions includes reviewer_session_ids; test_run_from_review_restores_reviewer_session_ids asserts restored IDs are passed to the first pool call."
+    - criterion: "Missing session file → no error, fresh session as before"
       status: MET
-      notes: "coordinator.py calls resolve_timeout() and passes the result as timeout_seconds when constructing plan_profile."
-    - criterion: "Falls back to timeout_seconds when complexity-specific field is absent"
+      notes: "load_sessions catches FileNotFoundError and returns {}; _setup_resume_entry only assigns if keys are present."
+    - criterion: "Session file is not committed to git"
       status: MET
-      notes: "resolve_timeout() returns base when medium/large is None or complexity does not match."
-    - criterion: "Log line shows resolved timeout and complexity when override is active"
-      status: MET
-      notes: "Override-active detected by field non-None check, not value comparison. Complexity suffix emitted even when override == base."
-    - criterion: "load_config() parses new fields from forge.yaml"
-      status: MET
-      notes: "_parse_profile(), _apply_profile_overrides(), and the plan block in load_config() all parse the new optional fields."
-    - criterion: "forge.yaml updated with medium/large overrides for dev and plan"
-      status: MET
-      notes: "dev: timeout_seconds=600, timeout_medium_seconds=900, timeout_large_seconds=1800; plan: timeout=600, timeout_medium=900, timeout_large=1800."
-    - criterion: "Existing configs without new fields work unchanged (backward compat)"
-      status: MET
-      notes: "All new fields default to None in both ModelProfile and PlanConfig."
-    - criterion: "New tests: timeout_for_complexity with all complexity values + None"
-      status: MET
-      notes: "TestResolveTimeout has 8 tests covering small, medium, large, None, unknown, and missing-override variants."
-    - criterion: "New tests: coordinator passes resolved timeout to run_agent"
-      status: MET
-      notes: "TestDevPhaseTimeout: large, medium, base-fallback, and equal-value log regression (4 tests)."
-    - criterion: "New tests: plan phase passes resolved timeout"
-      status: MET
-      notes: "TestPlanPhaseTimeout: large override, base-fallback, and equal-value log regression (3 tests)."
+      notes: ".gitignore already contains .forge/ at line 26. No change required."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "693 tests pass (673 pre-existing + 22 new — 1 plan-default test added in cycle 2 fix)."
-  spec_deviations:
-    - description: "resolve_timeout() is a standalone function in coord_util.py rather than a method on ModelProfile/DevProfile."
-      justification: "The implementation plan explicitly chose the standalone approach to avoid duplicating logic between ModelProfile and PlanConfig, which is not a ModelProfile. The spec allows either form."
+      notes: "682 tests pass (680 pre-existing + 2 new integration tests in test_coordinator.py)."
+  spec_deviations: none
   deferred_items: none
   gate_result: PASS
