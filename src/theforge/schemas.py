@@ -56,6 +56,12 @@ def validate_review_yaml(data: Any) -> list[str]:
             )
         if severity == "P1":
             p1_count += 1
+            # P1 findings should cite a specific line to be actionable
+            if not finding.get("line"):
+                errors.append(
+                    f"findings[{i}].line should be set for P1 findings — "
+                    f"vague P1s block the pipeline without clear fix targets"
+                )
 
         if not finding.get("file"):
             errors.append(f"findings[{i}].file must be non-empty")

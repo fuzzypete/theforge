@@ -453,6 +453,7 @@ def build_dev_prompt(
     human_feedback: str | None = None,
     preflight_output: str | None = None,
     plan_output: str | None = None,
+    plan_review_advisory: str | None = None,
     iteration: int = 1,
     escalation_note: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
@@ -535,6 +536,16 @@ def build_dev_prompt(
 
             {plan_output}
         """)
+        if plan_review_advisory:
+            plan_section += dedent(f"""\
+
+                ## Plan Review Notes (advisory)
+
+                The plan reviewer flagged the following. These are not blockers — the plan
+                was approved — but watch for these edge cases during implementation:
+
+                {plan_review_advisory}
+            """)
 
     preflight_section = ""
     if preflight_output:

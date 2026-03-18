@@ -823,6 +823,7 @@ def _run_dev_phase(
             human_feedback=state.human_feedback,
             preflight_output=(state.preflight_result.output if state.preflight_result else None),
             plan_output=state.plan_output,
+            plan_review_advisory=state.plan_agent_review_findings,
             iteration=state.dev_iteration,
             escalation_note=state.escalation_note,
             cycle_history=state.cycle_history or None,
