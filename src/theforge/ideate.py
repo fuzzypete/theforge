@@ -71,11 +71,11 @@ def _extract_pytest_target(config: "ForgeConfig | None") -> str:
     gate_cmd = config.validation.gate_command
     try:
         tokens = shlex.split(gate_cmd)
-        for i, tok in enumerate(tokens):
-            if tok in ("pytest", "python", "-m") and i + 1 < len(tokens):
-                candidate = tokens[i + 1]
-                if candidate.startswith("tests") and not candidate.startswith("-"):
-                    return candidate
+        # Walk all tokens: any token that starts with "tests" and is not a flag
+        # is the pytest target, regardless of what precedes it (handles -q, -v, etc.)
+        for tok in tokens:
+            if tok.startswith("tests") and not tok.startswith("-"):
+                return tok
     except ValueError:
         pass
     return "tests/"

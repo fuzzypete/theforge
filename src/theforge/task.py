@@ -322,14 +322,17 @@ def build_plan_review_prompt(
           hallucinated function, missing caller that would break at runtime.
           REJECT required.
         - **P1** (likely failure): Plan has a gap that will probably cause dev to
-          fail or produce broken code. REJECT required.
+          fail or produce broken code. Log as advisory finding; coordinator
+          downgrades to APPROVE and passes findings to the dev agent.
         - **P2** (suggestion): Plan could be improved but dev can figure it out.
           Does NOT trigger REJECT.
 
         ## Rules
 
-        - verdict MUST be APPROVE if there are zero P0 or P1 findings
-        - verdict MUST be REJECT if any P0 or P1 finding exists
+        - verdict MUST be APPROVE if there are zero P0 findings
+        - verdict MUST be REJECT if any P0 finding exists
+        - verdict SHOULD be REJECT if any P1 finding exists (coordinator will
+          downgrade to APPROVE and pass P1 findings as advisory notes to dev)
         - REJECT MUST include at least one P0 or P1 finding
         - **List ALL issues in a single pass.** Multiple findings in one REJECT
           is far better than discovering new issues across multiple cycles.

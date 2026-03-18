@@ -1053,9 +1053,16 @@ def run_task(
                         )
 
                     # Check if REJECT has only P1/P2 findings (no P0) —
-                    # treat as advisory approve, log findings for dev context
+                    # treat as advisory approve, log findings for dev context.
+                    # Guard: never downgrade when parse_errors is non-empty —
+                    # a malformed response must not silently pass.
                     _has_p0 = any(f.severity == "P0" for f in parsed_pr.findings)
-                    if parsed_pr.verdict == "REJECT" and not _has_p0 and parsed_pr.findings:
+                    if (
+                        parsed_pr.verdict == "REJECT"
+                        and not _has_p0
+                        and parsed_pr.findings
+                        and not parsed_pr.parse_errors
+                    ):
                         # Downgrade to APPROVE — P1/P2 are advisory in plan review
                         findings_text = plan_review_findings_to_text(parsed_pr)
                         state.plan_agent_review_findings = findings_text

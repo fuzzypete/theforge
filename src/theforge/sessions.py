@@ -44,6 +44,10 @@ def load_sessions(workspace_path: Path) -> dict:
     """
     target = workspace_path / _SESSIONS_FILE
     try:
-        return json.loads(target.read_text())
+        data = json.loads(target.read_text())
+        if not isinstance(data, dict):
+            _cu._log(f"Warning: {_SESSIONS_FILE} contained non-object JSON — ignoring")
+            return {}
+        return data
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
