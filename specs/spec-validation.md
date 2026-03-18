@@ -37,9 +37,13 @@ can fix the spec rather than burn planning cycles.
 4. On WARN, findings are logged clearly and the human is not blocked — the run
    continues to PLAN. This is advisory, not a gate.
 5. Findings are recorded in the audit log under `spec_validation`
-6. Validation is fast and cheap — use a small/fast model, not opus
+6. Validation is fast and cheap — use a small/fast model, not opus. Derive
+   the model from the first available configured profile (dev or review_pool)
+   rather than hardcoding a CLI/model pair — do not add a new forge.yaml key
 7. No forge.yaml changes required to enable — spec validation runs whenever
-   the PLAN phase is enabled
+   PLAN would actually run (same `should_plan` condition: plan enabled AND
+   preflight complexity is medium or large). Small/trivial specs that skip
+   PLAN also skip validation.
 8. Validation is skipped when `--plan` is injected (spec already past planning)
 
 ## Acceptance Criteria
