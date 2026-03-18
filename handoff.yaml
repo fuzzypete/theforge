@@ -1,27 +1,33 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Iter 1 adds deterministic 150-line enforcement to run_ideation. A
-    _SPEC_LINE_LIMIT = 150 constant and a post-normalization line-count check
-    were added to run_ideation: after the ## Human Decisions Required section is
-    normalized, len(final_synthesis.splitlines()) is checked against the limit.
-    Specs that exceed it return _failed_result immediately, before any file write,
-    covering both single-model and multi-model paths through one check point.
-    The original iter 0 changes (WHAT-not-HOW prompt instructions in
-    _build_synthesis_prompt and _build_single_model_prompt) are unchanged.
-    New tests: test_single_model_prompt_includes_lean_constraints (verifies the
-    single-model prompt has the same lean constraints as the synthesis prompt),
-    test_single_model_overlong_spec_returns_failed, and
-    test_synthesis_overlong_spec_returns_failed. _build_single_model_prompt and
-    _SPEC_LINE_LIMIT are now imported in the test module. 677 tests pass."
+  summary: "Iter 2 adds deterministic prohibited-content enforcement. A new
+    _has_prohibited_content(spec_text) function scans the spec body (after
+    stripping frontmatter) for fenced code blocks (lines starting with ```),
+    Python/JS function definitions (def name(), class definitions (class Name:),
+    and @dataclass decorators. A check in the run_ideation output section
+    calls this function after ## Human Decisions Required normalization and
+    returns _failed_result before any file write when prohibited content is
+    detected. This covers both single-model and multi-model synthesis paths
+    through one check point, alongside the pre-existing line-limit check.
+    Original iter 0 (prompt instructions) and iter 1 (line-limit enforcement)
+    are unchanged. New tests: 4 unit tests for _has_prohibited_content
+    (clean, code block, function def, class def, @dataclass) and 2 integration
+    tests (single-model code block rejection, multi-model function-def
+    rejection). _has_prohibited_content is now imported in the test module."
   commits:
     - sha: "234f538"
       message: "feat(ideate): lean story output — behavioral ACs, no implementation detail"
     - sha: "a8ae9a4"
       message: "fix(ideate): enforce 150-line spec limit deterministically"
+    - sha: "f594e60"
+      message: "fix(ideate): reject specs containing prohibited implementation detail"
   acceptance_criteria:
     - criterion: "forge ideate output contains no function signatures or code blocks"
       status: MET
-      notes: "Prohibition text added to both _build_synthesis_prompt and _build_single_model_prompt."
+      notes: "_has_prohibited_content() scans the body for code fences, function defs,
+        class defs, and @dataclass; run_ideation rejects specs that fail this check
+        before writing to disk. Verified by test_single_model_spec_with_code_block_returns_failed
+        and test_synthesis_spec_with_function_def_returns_failed."
     - criterion: "Acceptance criteria in generated stories describe observable behavior not internal structure"
       status: MET
       notes: "Both prompts instruct the model to produce observable-behavior ACs and list what is prohibited."
@@ -33,16 +39,19 @@ dev_notes: |
       notes: "_build_phase1_prompt not touched."
     - criterion: "Single-model path produces the same lean format"
       status: MET
-      notes: "Same prohibition and behavioral AC instructions in _build_single_model_prompt, scoped to the SPEC output section. Verified by test_single_model_prompt_includes_lean_constraints."
+      notes: "Same prohibition and behavioral AC instructions in _build_single_model_prompt.
+        Prohibited-content and line-limit checks apply to both paths via shared check point."
     - criterion: "Generated stories are under 150 lines"
       status: MET
-      notes: "_SPEC_LINE_LIMIT = 150 constant enforced in run_ideation: specs exceeding the limit return a failed IdeationResult before any file write. Two tests verify rejection for single-model and multi-model paths."
+      notes: "_SPEC_LINE_LIMIT = 150 enforced in run_ideation output section. Two tests
+        verify rejection for single-model and multi-model paths."
     - criterion: "Existing ideate tests pass or are updated to match new output format"
       status: MET
-      notes: "test_synthesis_prompt_includes_all_outputs updated with four assertions. All 677 tests pass."
+      notes: "All 46 ideate tests pass (39 original + 7 new this iteration)."
     - criterion: "A round-trip test: forge ideate → forge run --dry-run on the output produces a valid dev prompt"
       status: MET
-      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation then parse_spec_frontmatter + build_dev_prompt, asserting non-empty result containing the spec title."
+      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation then parse_spec_frontmatter
+        + build_dev_prompt, asserting non-empty result containing the spec title."
   spec_deviations: none
   deferred_items: none
   gate_result: PASS
