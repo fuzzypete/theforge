@@ -942,7 +942,10 @@ def run_task(
             config.plan.timeout_large,
             state.preflight_complexity,
         )
-        if _plan_timeout != config.plan.timeout:
+        _plan_override_active = (
+            state.preflight_complexity == "large" and config.plan.timeout_large is not None
+        ) or (state.preflight_complexity == "medium" and config.plan.timeout_medium is not None)
+        if _plan_override_active:
             _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
         else:
             _log(f"  Plan timeout: {_plan_timeout}s")

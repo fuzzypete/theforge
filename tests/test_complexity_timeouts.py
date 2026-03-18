@@ -297,6 +297,38 @@ class TestDevPhaseTimeout:
         dev_profile_used = _get_call_profile(mock_agent, 1)
         assert dev_profile_used.timeout_seconds == DEFAULT_DEV_PROFILE.timeout_seconds
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_dev_logs_complexity_suffix_when_override_equals_base(
+        self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
+    ):
+        """Complexity suffix appears in log even when override value equals base timeout."""
+        base = 600
+        dev_profile = dataclasses.replace(
+            DEFAULT_DEV_PROFILE,
+            timeout_seconds=base,
+            timeout_medium_seconds=base,  # same value as base — bug trigger
+            timeout_large_seconds=base,
+        )
+        config = _make_config(tmp_path, dev_profile=dev_profile)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
+            _make_agent_result(output="Implemented.", cost_usd=0.20),
+        ]
+        mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW, profile_name="review")]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        stderr = capsys.readouterr().err
+        assert "Dev timeout: 600s (large complexity)" in stderr
+
 
 # ── PLAN phase timeout resolution ──────────────────────────────────────
 
@@ -356,6 +388,34 @@ class TestPlanPhaseTimeout:
         assert result.success is True
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 600
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_logs_complexity_suffix_when_override_equals_base(
+        self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
+    ):
+        """Complexity suffix appears in plan log even when override value equals base timeout."""
+        base = 600
+        plan = PlanConfig(enabled=True, timeout=base, timeout_medium=base, timeout_large=base)
+        config = _make_config(tmp_path, plan=plan)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
+            _make_agent_result(output="# Plan\n\nDo it.", cost_usd=0.10),
+            _make_agent_result(output="Implemented.", cost_usd=0.20),
+        ]
+        mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW, profile_name="review")]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        stderr = capsys.readouterr().err
+        assert "Plan timeout: 600s (large complexity)" in stderr
 
 
 # ── load_config: new fields parsing ───────────────────────────────────
