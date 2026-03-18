@@ -57,6 +57,69 @@ def _result_line(**fields: object) -> str:
     return json.dumps({"type": "result", **fields}) + "\n"
 
 
+class TestHybridRunner:
+    @pytest.fixture
+    def api_profile(self) -> ModelProfile:
+        return ModelProfile(
+            name="api-reviewer",
+            provider="openai",
+            model="o4-mini",
+            budget_usd=1.0,
+            timeout_seconds=120,
+            allowed_tools=(),
+        )
+
+    def test_run_agent_api_dispatch(self, api_profile: ModelProfile, tmp_path: Path) -> None:
+        """run_agent dispatches to runner_api.run_api_agent for API profiles."""
+        mock_result = AgentResult(
+            success=True,
+            output="api result",
+            session_id=None,
+            cost_usd=0.1,
+            exit_code=0,
+            raw={},
+            profile_name="api-reviewer",
+            structured_data={"verdict": "APPROVE"},
+        )
+        with patch("theforge.runner_api.run_api_agent", return_value=mock_result) as mock_api_run:
+            result = run_agent(prompt="test", profile=api_profile, working_dir=tmp_path)
+
+        mock_api_run.assert_called_once_with(prompt="test", profile=api_profile, quiet=False)
+        assert result == mock_result
+
+    def test_run_agent_cli_dispatch(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        """run_agent dispatches to CLI runner for CLI profiles."""
+        with patch("theforge.runner._run_claude") as mock_cli_run:
+            run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        mock_cli_run.assert_called_once()
+
+    def test_run_agent_pool_mixed(
+        self, dev_profile: ModelProfile, api_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """run_agent_pool handles a mix of CLI and API profiles."""
+        cli_result = AgentResult(
+            success=True, output="cli", cost_usd=None, exit_code=0, raw={}, session_id="s1"
+        )
+        api_result = AgentResult(
+            success=True, output="api", cost_usd=0.1, exit_code=0, raw={}, session_id=None
+        )
+
+        def mock_run_agent_selector(**kwargs):
+            if kwargs["profile"].mode == "api":
+                return api_result
+            return cli_result
+
+        with patch("theforge.runner.run_agent", side_effect=mock_run_agent_selector) as mock_run:
+            results = run_agent_pool(
+                prompt="test", profiles=[dev_profile, api_profile], working_dir=tmp_path
+            )
+
+        assert len(results) == 2
+        assert results[0] == cli_result
+        assert results[1] == api_result
+        assert mock_run.call_count == 2
+
+
 class TestRunAgentClaude:
     """Test Claude CLI subprocess invocation."""
 
@@ -167,7 +230,7 @@ class TestRunAgentClaude:
         assert result.success is True
         assert result.output == "plain text output"
         assert result.session_id is None
-        assert result.cost_usd == 0.0
+        assert result.cost_usd == None
 
     def test_empty_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([], returncode=1, stderr="some error")
@@ -435,14 +498,14 @@ class TestRunAgentCostCoercion:
         with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
-        assert result.cost_usd == 0.0
+        assert result.cost_usd is None
 
     def test_garbage_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="not-a-number")])
         with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
-        assert result.cost_usd == 0.0
+        assert result.cost_usd is None
 
 
 class TestRunAgentModelUsage:
@@ -1125,7 +1188,7 @@ class TestRunCodex:
         assert result.success is True
         assert result.output == "Code looks good."
         assert result.session_id is None
-        assert result.cost_usd == 0.0
+        assert result.cost_usd is None
         assert result.exit_code == 0
         assert result.profile_name == "codex-reviewer"
 
@@ -1188,7 +1251,7 @@ class TestRunCodex:
         assert result.success is False
         assert result.exit_code == 1
         assert result.output == "partial work"
-        assert result.cost_usd == 0.0
+        assert result.cost_usd is None
 
     def test_codex_empty_output_falls_back_to_stderr(
         self, codex_profile: ModelProfile, tmp_path: Path
@@ -1314,7 +1377,7 @@ class TestRunGemini:
         assert result.success is True
         assert result.output == "Looks good to me."
         assert result.session_id == "latest"  # gemini always returns "latest" for resume
-        assert result.cost_usd == 0.0
+        assert result.cost_usd is None
         assert result.exit_code == 0
         assert result.profile_name == "gemini-reviewer"
 
@@ -1385,7 +1448,7 @@ class TestRunGemini:
 
         assert result.success is True
         assert result.output == "plain text response"
-        assert result.cost_usd == 0.0
+        assert result.cost_usd is None
 
     def test_gemini_empty_output_falls_back_to_stderr(
         self, gemini_profile: ModelProfile, tmp_path: Path

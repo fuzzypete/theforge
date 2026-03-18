@@ -6,6 +6,8 @@ validation commands, model selection) live in forge.yaml in the consuming projec
 
 from __future__ import annotations
 
+import importlib
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -81,20 +83,31 @@ class NotificationConfig:
     human_review_timeout_seconds: int = 14400  # 4 hours
 
 
+SUPPORTED_PROVIDERS = {"anthropic", "openai", "google"}
+
+
 @dataclass(frozen=True)
 class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
     name: str  # "dev", "review", or pool entry name like "opus-reviewer"
-    cli: str  # "claude", "codex", or "gemini"
     model: str  # "sonnet", "opus", "claude-sonnet-4-6"
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
+    # Transport — exactly one of cli/provider is set
+    cli: str | None = None  # "claude", "codex", "gemini"
+    provider: str | None = None  # "anthropic", "openai", "google"
+    # Optional
     timeout_medium_seconds: int | None = None  # override for medium complexity
     timeout_large_seconds: int | None = None  # override for large complexity
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
+    base_url: str | None = None  # overrides provider's default API endpoint (Ollama etc.)
+
+    @property
+    def mode(self) -> str:
+        return "api" if self.provider else "cli"
 
 
 @dataclass(frozen=True)
@@ -175,7 +188,8 @@ class PlanAgentReviewConfig:
     """
 
     enabled: bool = False
-    cli: str = "claude"
+    cli: str | None = "claude"
+    provider: str | None = None
     model: str = "sonnet"
     budget_usd: float = 0.50
     timeout: int = 300
@@ -221,6 +235,7 @@ class ForgeConfig:
 DEFAULT_DEV_PROFILE = ModelProfile(
     name="dev",
     cli="claude",
+    provider=None,
     model="sonnet",
     budget_usd=2.00,
     timeout_seconds=900,
@@ -230,6 +245,7 @@ DEFAULT_DEV_PROFILE = ModelProfile(
 DEFAULT_REVIEW_PROFILE = ModelProfile(
     name="review",
     cli="claude",
+    provider=None,
     model="opus",
     budget_usd=1.00,
     timeout_seconds=300,
@@ -239,6 +255,7 @@ DEFAULT_REVIEW_PROFILE = ModelProfile(
 DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     name="preflight",
     cli="claude",
+    provider=None,
     model="sonnet",
     budget_usd=1.00,
     timeout_seconds=300,
@@ -259,6 +276,16 @@ DEFAULT_VALIDATION = ValidationConfig(
 
 # CLIs supported by the runner. Unsupported CLIs are rejected at config load.
 SUPPORTED_CLIS: frozenset[str] = frozenset({"claude", "codex", "gemini"})
+PROVIDER_SDK_MAP = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "google": "google.genai",
+}
+PROVIDER_API_KEY_MAP = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "google": "GOOGLE_API_KEY",
+}
 
 
 # ── Smart config helpers ───────────────────────────────────────────────
@@ -289,6 +316,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
     return ModelProfile(
         name=base.name,
         cli=data.get("cli", base.cli),
+        provider=data.get("provider", base.provider),
         model=data.get("model", base.model),
         budget_usd=float(data.get("budget_usd", base.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
@@ -296,6 +324,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
         allowed_tools=tuple(tools) if tools is not None else base.allowed_tools,
         reasoning_effort=reasoning_effort,
+        base_url=data.get("base_url", base.base_url),
     )
 
 
@@ -341,6 +370,7 @@ def _auto_assign_models(
     dev_profile = ModelProfile(
         name="dev",
         cli=dev_info.cli,
+        provider=None,
         model=dev_info.model,
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
@@ -349,6 +379,7 @@ def _auto_assign_models(
     preflight_profile = ModelProfile(
         name="preflight",
         cli=preflight_info.cli,
+        provider=None,
         model=preflight_info.model,
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
@@ -358,6 +389,7 @@ def _auto_assign_models(
         ModelProfile(
             name=k.replace("/", "-"),
             cli=i.cli,
+            provider=None,
             model=i.model,
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
@@ -372,6 +404,7 @@ def _auto_assign_models(
         synthesis_profile = ModelProfile(
             name="synthesis",
             cli=synth_info.cli,
+            provider=None,
             model=synth_info.model,
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
@@ -392,6 +425,53 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
     named "dev" from accidentally inheriting dev-level tools/timeouts.
     """
     default = DEFAULT_DEV_PROFILE if role == "dev" else DEFAULT_REVIEW_PROFILE
+    cli = data.get("cli")
+    provider = data.get("provider")
+
+    if cli and provider:
+        raise ValueError(f"Profile {name!r} cannot have both 'cli' and 'provider' set. Use one.")
+    if not cli and not provider:
+        # Fallback to default if neither is specified
+        cli = default.cli
+        provider = default.provider
+
+    if cli and cli not in SUPPORTED_CLIS:
+        raise ValueError(
+            f"Unsupported CLI {cli!r} in profile {name!r}. Supported: {sorted(SUPPORTED_CLIS)}"
+        )
+    if provider:
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(
+                f"Unsupported provider {provider!r} in profile {name!r}. "
+                f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+            )
+        if "allowed_tools" in data and data["allowed_tools"]:
+            raise ValueError(
+                f"Profile {name!r} is an API-mode profile (provider={provider!r}) "
+                "and cannot have 'allowed_tools'. Tools are only for CLI-mode agents."
+            )
+        # Eagerly validate provider readiness
+        sdk = PROVIDER_SDK_MAP.get(provider)
+        if sdk:
+            try:
+                importlib.import_module(sdk)
+            except ImportError:
+                raise ValueError(
+                    f"Profile {name!r} uses provider '{provider}' but the required "
+                    f"SDK '{sdk}' is not installed. Please install it."
+                )
+        base_url_early = data.get("base_url")
+        _is_local = base_url_early and any(
+            base_url_early.startswith(p)
+            for p in ("http://localhost", "http://127.0.0.1")
+        )
+        api_key_var = PROVIDER_API_KEY_MAP.get(provider)
+        if api_key_var and not os.getenv(api_key_var) and not _is_local:
+            raise ValueError(
+                f"Profile {name!r} uses provider '{provider}' but the required "
+                f"environment variable ${api_key_var} is not set."
+            )
+
     tools = data.get("allowed_tools")
     reasoning_effort = data.get("reasoning_effort")
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
@@ -402,17 +482,33 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
         )
     timeout_medium_raw = data.get("timeout_medium_seconds")
     timeout_large_raw = data.get("timeout_large_seconds")
+
+    # API-mode profiles must not have tools. If not provided, default to empty for API profiles.
+    if tools is not None:
+        allowed_tools_tuple = tuple(tools)
+    elif provider:
+        allowed_tools_tuple = ()
+    else:
+        allowed_tools_tuple = default.allowed_tools
+    if provider and allowed_tools_tuple:
+        raise ValueError(
+            f"Profile {name!r} is an API-mode profile (provider={provider!r}) "
+            "and cannot have 'allowed_tools'. Tools are only for CLI-mode agents."
+        )
+
     return ModelProfile(
         name=name,
-        cli=data.get("cli", default.cli),
+        cli=cli,
+        provider=provider,
         model=data.get("model", default.model),
         budget_usd=float(data.get("budget_usd", default.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
-        allowed_tools=tuple(tools) if tools is not None else default.allowed_tools,
+        allowed_tools=allowed_tools_tuple,
         reasoning_effort=reasoning_effort,
         review_role=data.get("review_role"),
+        base_url=data.get("base_url"),
     )
 
 
@@ -534,23 +630,10 @@ def load_config(config_path: Path) -> ForgeConfig:
                 raise ValueError("Each profiles.review_pool entry must have a 'name' field")
             if len(names) != len(set(names)):
                 raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
-            for entry in pool_data:
-                cli = entry.get("cli", DEFAULT_REVIEW_PROFILE.cli)
-                if cli not in SUPPORTED_CLIS:
-                    raise ValueError(
-                        f"Unsupported CLI {cli!r} in review_pool entry {entry['name']!r}. "
-                        f"Supported: {sorted(SUPPORTED_CLIS)}"
-                    )
             review_pool = [_parse_profile(e["name"], e, role="review") for e in pool_data]
             # synthesis is optional — multiple reviewers are merged deterministically
             if "synthesis" in profiles:
                 synth_data = profiles["synthesis"]
-                synth_cli = synth_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
-                if synth_cli not in SUPPORTED_CLIS:
-                    raise ValueError(
-                        f"Unsupported CLI {synth_cli!r} in profiles.synthesis. "
-                        f"Supported: {sorted(SUPPORTED_CLIS)}"
-                    )
                 synthesis_profile: ModelProfile | None = _parse_profile(
                     "synthesis", synth_data, role="review"
                 )
@@ -559,14 +642,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
         elif "review" in profiles:
             # Backward compat: single review dict wrapped into a pool of one.
-            # CLI validation applies here too (P1 fix).
             review_data = profiles["review"]
-            cli = review_data.get("cli", DEFAULT_REVIEW_PROFILE.cli)
-            if cli not in SUPPORTED_CLIS:
-                raise ValueError(
-                    f"Unsupported CLI {cli!r} in profiles.review. "
-                    f"Supported: {sorted(SUPPORTED_CLIS)}"
-                )
             review_pool = [_parse_profile("review", review_data, role="review")]
             synthesis_profile = None
 
@@ -635,16 +711,51 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Plan agent review
     par_data = raw.get("plan_agent_review", {})
-    par_cli = str(par_data.get("cli", "claude"))
     par_enabled = bool(par_data.get("enabled", False))
-    if par_enabled and par_cli not in SUPPORTED_CLIS:
-        raise ValueError(
-            f"Unsupported CLI {par_cli!r} in plan_agent_review. "
-            f"Supported: {sorted(SUPPORTED_CLIS)}"
-        )
+    par_cli = par_data.get("cli")
+    par_provider = par_data.get("provider")
+
+    if par_enabled:
+        if par_cli and par_provider:
+            raise ValueError(
+                "plan_agent_review cannot have both 'cli' and 'provider' set. Use one."
+            )
+        if not par_cli and not par_provider:
+            # Default to cli: claude if neither is set
+            par_cli = "claude"
+
+        if par_cli and par_cli not in SUPPORTED_CLIS:
+            raise ValueError(
+                f"Unsupported CLI {par_cli!r} in plan_agent_review. "
+                f"Supported: {sorted(SUPPORTED_CLIS)}"
+            )
+        if par_provider:
+            if par_provider not in SUPPORTED_PROVIDERS:
+                raise ValueError(
+                    f"Unsupported provider {par_provider!r} in plan_agent_review. "
+                    f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+                )
+            # Eagerly validate provider readiness
+            sdk = PROVIDER_SDK_MAP.get(par_provider)
+            if sdk:
+                try:
+                    importlib.import_module(sdk)
+                except ImportError:
+                    raise ValueError(
+                        f"plan_agent_review uses provider '{par_provider}' but the required "
+                        f"SDK '{sdk}' is not installed. Please install it."
+                    )
+            api_key_var = PROVIDER_API_KEY_MAP.get(par_provider)
+            if api_key_var and not os.getenv(api_key_var):
+                raise ValueError(
+                    f"plan_agent_review uses provider '{par_provider}' but the required "
+                    f"environment variable ${api_key_var} is not set."
+                )
+
     plan_agent_review_cfg = PlanAgentReviewConfig(
         enabled=par_enabled,
         cli=par_cli,
+        provider=par_provider,
         model=str(par_data.get("model", "sonnet")),
         budget_usd=float(par_data.get("budget_usd", 0.50)),
         timeout=int(par_data.get("timeout", 300)),

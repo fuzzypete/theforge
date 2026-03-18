@@ -226,6 +226,7 @@ def build_plan_review_prompt(
     story_content: str,
     plan_content: str,
     file_contents: dict[str, str],
+    mode: str = "cli",
     preflight_output: str | None = None,
     rejection_findings: str | None = None,
 ) -> str:
@@ -263,6 +264,27 @@ def build_plan_review_prompt(
             {rejection_findings}
         """)
 
+    output_format_section = dedent("""\
+        ## Output Format
+
+        You MUST output ONLY a YAML block. No prose before or after.
+        Start your response with ```yaml and end with ```.
+
+        ```yaml
+        verdict: APPROVE | REJECT
+        criteria_coverage:
+          - criterion: "<acceptance criterion text from the spec>"
+            covered: true | false
+            plan_section: "<which part of the plan addresses this, or 'missing'>"
+        findings:
+          - severity: P0 | P1 | P2
+            description: "<what is wrong with the plan>"
+            suggestion: "<how to fix it>"
+        ```
+    """)
+    if mode == "api":
+        output_format_section = ""
+
     return dedent(f"""\
         You are a plan reviewer for **{task.name}**.
 
@@ -298,24 +320,7 @@ def build_plan_review_prompt(
 
         Do NOT evaluate: code style, plan verbosity, alternative approaches,
         or hypothetical edge cases that the dev agent can handle at implementation time.
-
-        ## Output Format
-
-        You MUST output ONLY a YAML block. No prose before or after.
-        Start your response with ```yaml and end with ```.
-
-        ```yaml
-        verdict: APPROVE | REJECT
-        criteria_coverage:
-          - criterion: "<acceptance criterion text from the spec>"
-            covered: true | false
-            plan_section: "<which part of the plan addresses this, or 'missing'>"
-        findings:
-          - severity: P0 | P1 | P2
-            description: "<what is wrong with the plan>"
-            suggestion: "<how to fix it>"
-        ```
-
+        {output_format_section}
         ## Severity Definitions
 
         - **P0** (blocker): Plan is impossible to implement as written. Wrong API,
@@ -952,6 +957,7 @@ def build_review_prompt(
     workspace_path: str,
     branch: str,
     handoff_content: str,
+    mode: str = "cli",
     review_role: str | None = None,
     dev_notes: str | None = None,
 ) -> str:
@@ -987,6 +993,35 @@ def build_review_prompt(
         if dev_notes
         else ""
     )
+
+    output_format_section = dedent("""\
+        ## Output Format
+
+        You MUST output ONLY a YAML block. No prose before or after.
+        Start your response with ```yaml and end with ```.
+
+        ```yaml
+        verdict: APPROVE | REQUEST_CHANGES
+        summary: "<one-line summary of your review>"
+        findings:
+          - severity: P1 | P2
+            file: "<file path>"
+            line: <line number or null>
+            description: "<what is wrong>"
+            suggestion: "<how to fix it>"
+        spec_compliance:
+          matches_spec: true | false
+          mismatches:
+            - "<description of mismatch>"
+        test_coverage:
+          adequate: true | false
+          gaps:
+            - "<description of missing test>"
+        ```
+    """)
+    if mode == "api":
+        output_format_section = ""
+
     return dedent(f"""\
         You are reviewing an implementation of **{task.name}**.
 
@@ -1014,29 +1049,7 @@ def build_review_prompt(
         {handoff_content}
         ```
 
-        ## Output Format
-
-        You MUST output ONLY a YAML block. No prose before or after.
-        Start your response with ```yaml and end with ```.
-
-        ```yaml
-        verdict: APPROVE | REQUEST_CHANGES
-        summary: "<one-line summary of your review>"
-        findings:
-          - severity: P1 | P2
-            file: "<file path>"
-            line: <line number or null>
-            description: "<what is wrong>"
-            suggestion: "<how to fix it>"
-        spec_compliance:
-          matches_spec: true | false
-          mismatches:
-            - "<description of mismatch>"
-        test_coverage:
-          adequate: true | false
-          gaps:
-            - "<description of missing test>"
-        ```
+        {output_format_section}
 
         ## Severity Definitions
 

@@ -48,6 +48,11 @@ def _log_verbose(msg: str) -> None:
         print(f"[forge] {msg}", file=sys.stderr, flush=True)
 
 
+def _fmt_cost(cost: float | None) -> str:
+    """Format a cost value as '$1.23', or 'unknown' when cost is None."""
+    return f"${cost:.2f}" if cost is not None else "unknown"
+
+
 def _log_phase(phase: object, detail: str = "") -> None:
     suffix = f"   {detail}" if detail else ""
     _log(f"▸ {phase.name}{suffix}")  # type: ignore[attr-defined]

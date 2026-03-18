@@ -1,6 +1,7 @@
 """Tests for config loading."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -10,6 +11,7 @@ from theforge.config import (
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_WORKSPACE,
     SUPPORTED_CLIS,
+    ModelProfile,
     _auto_assign_models,
     _resolve_model_info,
     generate_default_config,
@@ -21,6 +23,166 @@ def _write_config(data: dict, tmp_dir: Path) -> Path:
     config_path = tmp_dir / "forge.yaml"
     config_path.write_text(yaml.dump(data), encoding="utf-8")
     return config_path
+
+
+class TestHybridRunnerConfig:
+    def test_provider_profile_loads(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        profile = config.review_pool[0]
+        assert profile.provider == "openai"
+        assert profile.cli is None
+        assert profile.mode == "api"
+
+    def test_cli_profile_loads(self, tmp_path):
+        config_path = _write_config(
+            {"profiles": {"dev": {"cli": "claude", "model": "sonnet"}}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        profile = config.dev_profile
+        assert profile.cli == "claude"
+        assert profile.provider is None
+        assert profile.mode == "cli"
+
+    def test_mutual_exclusion_cli_provider_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "dev": {
+                        "cli": "claude",
+                        "provider": "openai",
+                        "model": "sonnet",
+                    }
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="cannot have both 'cli' and 'provider'"):
+            load_config(config_path)
+
+    def test_neither_cli_nor_provider_uses_default(self, tmp_path):
+        config_path = _write_config(
+            {"profiles": {"dev": {"model": "sonnet"}}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.dev_profile.cli == "claude"
+        assert config.dev_profile.provider is None
+
+    def test_allowed_tools_on_api_profile_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                            "allowed_tools": ["Read"],
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="cannot have 'allowed_tools'"):
+            load_config(config_path)
+
+    def test_missing_sdk_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module", side_effect=ImportError),
+        ):
+            with pytest.raises(ValueError, match="SDK 'openai' is not installed"):
+                load_config(config_path)
+
+    def test_missing_api_key_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with patch.dict("os.environ", clear=True), patch("importlib.import_module"):
+            with pytest.raises(ValueError, match=r"\$OPENAI_API_KEY is not set"):
+                load_config(config_path)
+
+    def test_plan_agent_review_provider(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "model": "o4-mini",
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.plan_agent_review.provider == "openai"
+        assert config.plan_agent_review.cli is None
+
+    def test_plan_agent_review_provider_missing_sdk_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "provider": "google",
+                    "model": "gemini-1.5-pro",
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"GOOGLE_API_KEY": "test"}),
+            patch("importlib.import_module", side_effect=ImportError),
+        ):
+            with pytest.raises(ValueError, match="SDK 'google.genai' is not installed"):
+                load_config(config_path)
 
 
 class TestLoadConfig:
@@ -40,7 +202,7 @@ class TestLoadConfig:
                 "project": "custom",
                 "profiles": {
                     "dev": {"model": "opus", "budget_usd": 5.0},
-                    "review": {"model": "haiku", "timeout_seconds": 60},
+                    "review": {"cli": "claude", "model": "haiku", "timeout_seconds": 60},
                 },
             },
             tmp_path,
@@ -200,7 +362,7 @@ class TestReviewPool:
         config_path = _write_config(
             {
                 "profiles": {
-                    "review": {"model": "haiku", "budget_usd": 0.50},
+                    "review": {"cli": "claude", "model": "haiku", "budget_usd": 0.50},
                 }
             },
             tmp_path,

@@ -1,41 +1,34 @@
-gate_decision: PASS
-dev_notes: |
-  summary: "Added src/theforge/sessions.py with save_sessions() and load_sessions() that
-    read/write .forge/sessions.json inside the worktree. Wired save_sessions into three call
-    sites: coord_phases after dev agent call, coordinator after handoff-fix retry, coordinator
-    after review pool. Wired load_sessions into _setup_resume_entry to restore both IDs before
-    the first agent call. Iter 1 fix: replaced brittle if/else block (could null dev_session_id)
-    with uniform `or` fallback pattern. Iter 2 fixes: (1) added two coordinator integration
-    tests verifying that a pre-existing sessions.json causes dev and reviewer session IDs to
-    be restored and passed to agents on the first forge review invocation; (2) wrapped
-    save_sessions I/O in try/except OSError so a permission failure logs a warning rather
-    than crashing the process."
-  commits:
-    - sha: "8b7f4e9"
-      message: "feat(sessions): persist and restore session IDs across forge review invocations"
-    - sha: "2c3af5b"
-      message: "fix(sessions): address review findings (iter 1)"
-    - sha: "35d34e8"
-      message: "fix(sessions): address review findings (iter 1)"
-  acceptance_criteria:
-    - criterion: "After a dev iteration with a session ID, the session ID is persisted to the worktree"
-      status: MET
-      notes: "save_sessions called after dev_session_id is updated via or-fallback pattern; verified by test_run_from_review_restores_dev_session_id."
-    - criterion: "A subsequent forge review on the same worktree restores the session ID before the first dev agent call"
-      status: MET
-      notes: "load_sessions called in _setup_resume_entry; test_run_from_review_restores_dev_session_id asserts the restored ID is passed to the first dev agent call."
-    - criterion: "Reviewer session IDs are also persisted and restored"
-      status: MET
-      notes: "save_sessions includes reviewer_session_ids; test_run_from_review_restores_reviewer_session_ids asserts restored IDs are passed to the first pool call."
-    - criterion: "Missing session file → no error, fresh session as before"
-      status: MET
-      notes: "load_sessions catches FileNotFoundError and returns {}; _setup_resume_entry only assigns if keys are present."
-    - criterion: "Session file is not committed to git"
-      status: MET
-      notes: ".gitignore already contains .forge/ at line 26. No change required."
-    - criterion: "All existing tests pass"
-      status: MET
-      notes: "682 tests pass (680 pre-existing + 2 new integration tests in test_coordinator.py)."
-  spec_deviations: none
-  deferred_items: none
-  gate_result: PASS
+dev_notes: "summary: \"Added src/theforge/sessions.py with save_sessions() and load_sessions()\
+  \ that\n  read/write .forge/sessions.json inside the worktree. Wired save_sessions\
+  \ into three call\n  sites: coord_phases after dev agent call, coordinator after\
+  \ handoff-fix retry, coordinator\n  after review pool. Wired load_sessions into\
+  \ _setup_resume_entry to restore both IDs before\n  the first agent call. Iter 1\
+  \ fix: replaced brittle if/else block (could null dev_session_id)\n  with uniform\
+  \ `or` fallback pattern. Iter 2 fixes: (1) added two coordinator integration\n \
+  \ tests verifying that a pre-existing sessions.json causes dev and reviewer session\
+  \ IDs to\n  be restored and passed to agents on the first forge review invocation;\
+  \ (2) wrapped\n  save_sessions I/O in try/except OSError so a permission failure\
+  \ logs a warning rather\n  than crashing the process.\"\ncommits:\n  - sha: \"8b7f4e9\"\
+  \n    message: \"feat(sessions): persist and restore session IDs across forge review\
+  \ invocations\"\n  - sha: \"2c3af5b\"\n    message: \"fix(sessions): address review\
+  \ findings (iter 1)\"\n  - sha: \"35d34e8\"\n    message: \"fix(sessions): address\
+  \ review findings (iter 1)\"\nacceptance_criteria:\n  - criterion: \"After a dev\
+  \ iteration with a session ID, the session ID is persisted to the worktree\"\n \
+  \   status: MET\n    notes: \"save_sessions called after dev_session_id is updated\
+  \ via or-fallback pattern; verified by test_run_from_review_restores_dev_session_id.\"\
+  \n  - criterion: \"A subsequent forge review on the same worktree restores the session\
+  \ ID before the first dev agent call\"\n    status: MET\n    notes: \"load_sessions\
+  \ called in _setup_resume_entry; test_run_from_review_restores_dev_session_id asserts\
+  \ the restored ID is passed to the first dev agent call.\"\n  - criterion: \"Reviewer\
+  \ session IDs are also persisted and restored\"\n    status: MET\n    notes: \"\
+  save_sessions includes reviewer_session_ids; test_run_from_review_restores_reviewer_session_ids\
+  \ asserts restored IDs are passed to the first pool call.\"\n  - criterion: \"Missing\
+  \ session file → no error, fresh session as before\"\n    status: MET\n    notes:\
+  \ \"load_sessions catches FileNotFoundError and returns {}; _setup_resume_entry\
+  \ only assigns if keys are present.\"\n  - criterion: \"Session file is not committed\
+  \ to git\"\n    status: MET\n    notes: \".gitignore already contains .forge/ at\
+  \ line 26. No change required.\"\n  - criterion: \"All existing tests pass\"\n \
+  \   status: MET\n    notes: \"682 tests pass (680 pre-existing + 2 new integration\
+  \ tests in test_coordinator.py).\"\nspec_deviations: none\ndeferred_items: none\n\
+  gate_result: PASS\n"
+gate_decision: FAIL

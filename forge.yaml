@@ -38,35 +38,24 @@ profiles:
       - Glob
       - Grep
   review_pool:
-    - name: codex
-      cli: codex
-      model: gpt-5.4
+    - name: openai-reviewer
+      provider: openai
+      model: o4-mini
       reasoning_effort: medium
       review_role: correctness
       budget_usd: 1.00
-      timeout_seconds: 600
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
-    - name: gemini
-      cli: gemini
-      model: gemini-2.5-pro
+      timeout_seconds: 120
+    - name: gemini-reviewer
+      provider: google
+      model: gemini-1.5-pro
       reasoning_effort: high
       review_role: patterns
       budget_usd: 1.00
-      timeout_seconds: 600
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
-
+      timeout_seconds: 120
 
 smart_config_models:
   - sonnet
-  - codex
+  - o4-mini
   - opus
 
 retry:
@@ -87,8 +76,8 @@ plan_review:
 
 plan_agent_review:
   enabled: true
-  cli: codex
-  model: gpt-5.4
+  provider: openai
+  model: o4-mini
   budget_usd: 0.50
   timeout: 300
 

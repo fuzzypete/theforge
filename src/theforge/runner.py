@@ -56,7 +56,7 @@ class ModelUsage:
     output_tokens: int
     cache_read_tokens: int
     cache_creation_tokens: int
-    cost_usd: float
+    cost_usd: float | None
 
 
 @dataclass(frozen=True)
@@ -66,11 +66,12 @@ class AgentResult:
     success: bool  # subprocess returned 0
     output: str  # agent's text response
     session_id: str | None  # for --resume on follow-up
-    cost_usd: float  # total invocation cost
+    cost_usd: float | None  # total invocation cost
     exit_code: int  # raw exit code
     raw: dict[str, Any]  # full parsed JSON (if available)
     profile_name: str = ""  # identifies which profile produced this result
     model_usage: tuple[ModelUsage, ...] = ()  # per-model breakdown (Claude only)
+    structured_data: dict | None = None  # NEW: parsed JSON for API reviewers
 
 
 # ── Heartbeat helper ─────────────────────────────────────────────────
@@ -156,7 +157,7 @@ def _handle_exception(
             success=False,
             output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
             session_id=None,
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=-1,
             raw={},
             profile_name=profile.name,
@@ -166,7 +167,7 @@ def _handle_exception(
             success=False,
             output=f"ERROR: '{cli_name}' CLI not found. Is it installed?",
             session_id=None,
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=-1,
             raw={},
             profile_name=profile.name,
@@ -187,10 +188,10 @@ def run_agent(
     quiet: bool = False,
     is_pool: bool = False,
 ) -> AgentResult:
-    """Run an agent using the CLI specified in profile.cli.
+    """Run an agent using the transport specified in its profile.
 
-    Dispatches to the appropriate runner implementation.
-    Prompt is passed via stdin to avoid shell escaping issues.
+    Dispatches to API or CLI runner based on profile.mode.
+    Prompt is passed via stdin to CLI runners to avoid shell escaping issues.
     When quiet=True the per-agent 'Starting...' log is suppressed
     (used by run_agent_pool which emits a pool-level banner instead).
     When is_pool=True the runner will not attempt session-ID extraction
@@ -198,6 +199,15 @@ def run_agent(
     a global index file). Claude is unaffected — it extracts the ID from
     its own stdout stream. Codex and Gemini are affected.
     """
+    if profile.mode == "api":
+        from . import runner_api
+
+        return runner_api.run_api_agent(
+            prompt=prompt,
+            profile=profile,
+            quiet=quiet,
+        )
+
     runners = {
         "claude": _run_claude,
         "codex": _run_codex,
@@ -210,7 +220,7 @@ def run_agent(
             success=False,
             output=f"Unknown CLI: {profile.cli!r}. Supported: {list(runners.keys())}",
             session_id=None,
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=-1,
             raw={},
             profile_name=profile.name,
@@ -263,7 +273,7 @@ def run_agent_pool(
             )
         ]
 
-    names = ", ".join(p.name or f"{p.cli}/{p.model}" for p in profiles)
+    names = ", ".join(p.name or f"{p.cli or p.provider}/{p.model}" for p in profiles)
     _log(f"  Starting review pool: {names} (parallel)")
 
     pool_start = time.monotonic()
@@ -291,7 +301,7 @@ def run_agent_pool(
         for future in as_completed(futures):
             idx = futures[future]
             profile = profiles[idx]
-            label = profile.name or f"{profile.cli}/{profile.model}"
+            label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
             duration = agent_durations[idx]
             try:
                 results[idx] = future.result()
@@ -302,7 +312,7 @@ def run_agent_pool(
                     success=False,
                     output=f"ERROR: {exc}",
                     session_id=None,
-                    cost_usd=0.0,
+                    cost_usd=None,
                     exit_code=-1,
                     raw={},
                     profile_name=profile.name,
@@ -438,7 +448,7 @@ def _run_claude(
     env = os.environ.copy()
     env.pop("CLAUDECODE", None)
 
-    label = profile.name or f"{profile.cli}/{profile.model}"
+    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
     if not quiet:
         _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
@@ -491,7 +501,7 @@ def _run_claude(
             success=False,
             output="ERROR: 'claude' CLI not found. Is it installed?",
             session_id=None,
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=-1,
             raw={},
             profile_name=profile.name,
@@ -511,7 +521,7 @@ def _run_claude(
                 fallback_to_file=fallback_to_file,
                 min_mtime=start_wall,
             ),
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=-9,
             raw={},
             profile_name=profile.name,
@@ -552,16 +562,17 @@ def _run_claude(
                 fallback_to_file=fallback_to_file,
                 min_mtime=start_wall,
             ),
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
         )
 
     try:
-        cost = float(result_json.get("total_cost_usd", 0.0))
+        raw_cost = result_json.get("total_cost_usd")
+        cost = float(raw_cost) if raw_cost is not None else None
     except (TypeError, ValueError):
-        cost = 0.0
+        cost = None
 
     return AgentResult(
         success=proc.returncode == 0,
@@ -671,7 +682,7 @@ def _run_codex(
         stdin_prompt = None
 
     start_wall = time.time()
-    label = profile.name or f"{profile.cli}/{profile.model}"
+    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
             cmd,
@@ -728,7 +739,7 @@ def _run_codex(
                 success=proc.returncode == 0,
                 output=result_json.get("result", output_text),
                 session_id=extracted_sid,
-                cost_usd=0.0,
+                cost_usd=None,
                 exit_code=proc.returncode,
                 raw=result_json,
                 profile_name=profile.name,
@@ -738,7 +749,7 @@ def _run_codex(
             success=proc.returncode == 0,
             output=output_text,
             session_id=extracted_sid,
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
@@ -788,7 +799,7 @@ def _run_gemini(
     # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.
     # The model uses its default thinking level.
 
-    label = profile.name or f"{profile.cli}/{profile.model}"
+    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
             cmd,
@@ -829,7 +840,7 @@ def _run_gemini(
             success=proc.returncode == 0,
             output=proc.stdout or proc.stderr or "(no output)",
             session_id=None,
-            cost_usd=0.0,
+            cost_usd=None,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
@@ -842,7 +853,7 @@ def _run_gemini(
         success=proc.returncode == 0,
         output=result_json.get("response", result_json.get("result", proc.stdout)),
         session_id=resume_sid,
-        cost_usd=0.0,
+        cost_usd=None,
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,
@@ -854,7 +865,7 @@ def log_agent_result(result: AgentResult, role: str) -> None:
     status = "OK" if result.success else "FAIL"
     _log_verbose(
         f"  [{role}] {status} | exit={result.exit_code} | "
-        f"cost=${result.cost_usd:.3f} | "
+        f"cost={'${:.3f}'.format(result.cost_usd) if result.cost_usd is not None else 'unknown'} | "
         f"output={len(result.output)} chars"
     )
     if not result.success and result.output:
