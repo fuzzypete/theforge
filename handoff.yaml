@@ -1,27 +1,30 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Added WHAT-not-HOW constraints to both synthesis and single-model prompts in
-    ideate.py. Both _build_synthesis_prompt and _build_single_model_prompt now instruct
-    the LLM to produce behavioral acceptance criteria, explicitly prohibit function
-    signatures, dataclass definitions, code snippets, file-internal steps, and variable
-    names, and target ≤150 lines for the spec body. The prohibition text is scoped to the
-    SPEC output section in the single-model prompt so ideation thinking remains
-    unconstrained. _build_phase1_prompt is untouched. test_synthesis_prompt_includes_all_outputs
-    gained four new assertions checking for prohibition keywords and behavioral AC instruction
-    text. A new round-trip test (test_round_trip_ideate_to_dev_prompt) calls run_ideation
-    with a mocked single-model agent, parses the written spec via task.py's
-    parse_spec_frontmatter, constructs a TaskSpec, calls build_dev_prompt, and asserts
-    the result is non-empty and contains the spec title."
+  summary: "Iter 1 adds deterministic 150-line enforcement to run_ideation. A
+    _SPEC_LINE_LIMIT = 150 constant and a post-normalization line-count check
+    were added to run_ideation: after the ## Human Decisions Required section is
+    normalized, len(final_synthesis.splitlines()) is checked against the limit.
+    Specs that exceed it return _failed_result immediately, before any file write,
+    covering both single-model and multi-model paths through one check point.
+    The original iter 0 changes (WHAT-not-HOW prompt instructions in
+    _build_synthesis_prompt and _build_single_model_prompt) are unchanged.
+    New tests: test_single_model_prompt_includes_lean_constraints (verifies the
+    single-model prompt has the same lean constraints as the synthesis prompt),
+    test_single_model_overlong_spec_returns_failed, and
+    test_synthesis_overlong_spec_returns_failed. _build_single_model_prompt and
+    _SPEC_LINE_LIMIT are now imported in the test module. 677 tests pass."
   commits:
     - sha: "234f538"
       message: "feat(ideate): lean story output — behavioral ACs, no implementation detail"
+    - sha: "a8ae9a4"
+      message: "fix(ideate): enforce 150-line spec limit deterministically"
   acceptance_criteria:
     - criterion: "forge ideate output contains no function signatures or code blocks"
       status: MET
-      notes: "Prohibition text added to both _build_synthesis_prompt and _build_single_model_prompt. LLM compliance depends on the model following instructions; prompt-level enforcement is the correct mechanism here."
+      notes: "Prohibition text added to both _build_synthesis_prompt and _build_single_model_prompt."
     - criterion: "Acceptance criteria in generated stories describe observable behavior not internal structure"
       status: MET
-      notes: "Both prompts now include 'observable behavior' instruction and examples of what is prohibited."
+      notes: "Both prompts instruct the model to produce observable-behavior ACs and list what is prohibited."
     - criterion: "file_scope is still populated in frontmatter"
       status: MET
       notes: "Template unchanged in both prompts; file_scope remains in the frontmatter block."
@@ -30,16 +33,16 @@ dev_notes: |
       notes: "_build_phase1_prompt not touched."
     - criterion: "Single-model path produces the same lean format"
       status: MET
-      notes: "Same prohibition and behavioral AC instructions added to _build_single_model_prompt, scoped to the SPEC output section."
+      notes: "Same prohibition and behavioral AC instructions in _build_single_model_prompt, scoped to the SPEC output section. Verified by test_single_model_prompt_includes_lean_constraints."
     - criterion: "Generated stories are under 150 lines"
       status: MET
-      notes: "Brevity target (≤150 lines) added to both prompts. Actual LLM compliance is advisory; no post-processing enforcer is in scope."
+      notes: "_SPEC_LINE_LIMIT = 150 constant enforced in run_ideation: specs exceeding the limit return a failed IdeationResult before any file write. Two tests verify rejection for single-model and multi-model paths."
     - criterion: "Existing ideate tests pass or are updated to match new output format"
       status: MET
-      notes: "test_synthesis_prompt_includes_all_outputs updated with four new assertions. All 674 tests pass."
+      notes: "test_synthesis_prompt_includes_all_outputs updated with four assertions. All 677 tests pass."
     - criterion: "A round-trip test: forge ideate → forge run --dry-run on the output produces a valid dev prompt"
       status: MET
-      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation, then parse_spec_frontmatter + build_dev_prompt from task.py, asserting non-empty result containing the spec title."
+      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation then parse_spec_frontmatter + build_dev_prompt, asserting non-empty result containing the spec title."
   spec_deviations: none
   deferred_items: none
   gate_result: PASS
