@@ -1,53 +1,58 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Added src/theforge/traces.py with write_trace(path, content) — creates parent dirs,
-    writes UTF-8, catches all exceptions as warnings. Wired traces at all pipeline integration
-    points: dev prompt/output in coord_phases._run_dev_phase_impl; gate output in
-    coord_gate._run_gate_full (iter_num param); reviewer outputs and synthesis in
-    coordinator._run_review_pool (pool_attempt param); plan.txt at every PLAN agent invocation
-    in coordinator.py (both success and failure paths, including all regen paths). Iter 1 fix:
-    moved plan.txt write_trace to immediately after each run_agent() call, before the success
-    check, so failed PLAN invocations also capture their raw output."
+  summary: "Added complexity-based timeouts for dev and plan phases. ModelProfile gains
+    two optional fields (timeout_medium_seconds, timeout_large_seconds); PlanConfig gains
+    timeout_medium and timeout_large. A standalone resolve_timeout() helper in coord_util.py
+    selects the right value based on preflight complexity. coord_phases.py uses
+    dataclasses.replace() to pass the resolved profile to run_agent for DEV; coordinator.py
+    inlines the resolved value when constructing plan_profile for PLAN. forge.yaml resets
+    dev base timeout from 1800 to 600 and adds medium=900/large=1800 overrides for both
+    dev and plan. All new fields default to None for full backward compatibility."
   commits:
-    - sha: "0f05d53"
-      message: "feat(traces): add best-effort trace artifact capture for post-mortem debugging"
-    - sha: "e204827"
-      message: "chore(handoff): write dev_notes for trace-capture implementation"
-    - sha: "4112ff1"
-      message: "fix(trace-capture): rewrite dev handoff to match schema"
+    - sha: "43e4e5d"
+      message: "feat(timeouts): complexity-based timeouts for dev and plan phases"
   acceptance_criteria:
-    - criterion: "Dev prompt written to .forge/traces/{iter}-dev-prompt.txt before each dev invocation"
+    - criterion: "DevProfile has timeout_medium_seconds and timeout_large_seconds optional fields (default None)"
       status: MET
-      notes: "write_trace called in coord_phases._run_dev_phase_impl before run_agent(), using state.dev_iteration"
-    - criterion: "Dev agent output written to .forge/traces/{iter}-dev-output.txt after each dev invocation"
+      notes: "Added to ModelProfile dataclass in config.py with default None."
+    - criterion: "timeout_for_complexity() returns the right value for small/medium/large/None"
       status: MET
-      notes: "write_trace called immediately after run_agent() returns, before state.dev_results.append()"
-    - criterion: "Each reviewer's raw output written to .forge/traces/{cycle}-review-{profile}.txt per review cycle"
+      notes: "Implemented as standalone resolve_timeout() in coord_util.py per plan. Tests cover all complexity values plus None and unknown."
+    - criterion: "Coordinator uses complexity-resolved timeout at DEV invocation"
       status: MET
-      notes: "Written in _run_review_pool loop using state.review_cycle+1 (matching log output) and pool_attempt. Filename is {cycle}-{attempt}-review-{profile}.txt — see spec_deviations."
-    - criterion: "Synthesis output written to .forge/traces/{cycle}-synthesis.txt per review cycle"
+      notes: "coord_phases.py calls resolve_timeout() then dataclasses.replace(profile, timeout_seconds=resolved) before run_agent."
+    - criterion: "PLAN phase uses complexity-resolved timeout"
       status: MET
-      notes: "Written as {cycle}-{attempt}-synthesis.txt. Single-reviewer: raw output. Multi-reviewer: YAML-serialized merged ReviewResult via dataclasses.asdict+yaml.dump."
-    - criterion: "Plan output written to .forge/traces/plan.txt when PLAN phase runs"
+      notes: "coordinator.py calls resolve_timeout() and passes the result as timeout_seconds when constructing plan_profile."
+    - criterion: "Falls back to timeout_seconds when complexity-specific field is absent"
       status: MET
-      notes: "write_trace called immediately after every run_agent() for PLAN (before success check), covering initial call, agent-review regen, and human-review regen — including failure paths."
-    - criterion: "Gate output written to .forge/traces/{iter}-gate.txt after each gate run"
+      notes: "resolve_timeout() returns base when medium/large is None or complexity does not match."
+    - criterion: "Log line shows resolved timeout and complexity when override is active"
       status: MET
-      notes: "Written in coord_gate._run_gate_full before output_tail truncation, when iter_num is not None. Workspace-setup and sprint gate calls pass iter_num=None (default) so no trace written there."
-    - criterion: "Trace write failures are caught and logged as warnings"
+      notes: "Both coord_phases.py and coordinator.py emit 'Dev/Plan timeout: Xs (Y complexity)' when an override is selected, or 'Dev/Plan timeout: Xs' when using base."
+    - criterion: "load_config() parses new fields from forge.yaml"
       status: MET
-      notes: "traces.write_trace wraps all I/O in except Exception and calls _cu._log() with 'Warning: trace write failed' prefix."
-    - criterion: ".forge/traces/ is gitignored (or traces are written outside the git tree)"
+      notes: "_parse_profile(), _apply_profile_overrides(), and the plan block in load_config() all parse the new optional fields."
+    - criterion: "forge.yaml updated with medium/large overrides for dev and plan"
       status: MET
-      notes: ".gitignore already contains .forge/ (line 26). No change required."
+      notes: "dev: timeout_seconds=600, timeout_medium_seconds=900, timeout_large_seconds=1800; plan: timeout=600, timeout_medium=900, timeout_large=1800."
+    - criterion: "Existing configs without new fields work unchanged (backward compat)"
+      status: MET
+      notes: "All new fields default to None in both ModelProfile and PlanConfig."
+    - criterion: "New tests: timeout_for_complexity with all complexity values + None"
+      status: MET
+      notes: "TestResolveTimeout has 8 tests covering small, medium, large, None, unknown, and missing-override variants."
+    - criterion: "New tests: coordinator passes resolved timeout to run_agent"
+      status: MET
+      notes: "TestDevPhaseTimeout verifies large, medium, and base-fallback scenarios (3 tests)."
+    - criterion: "New tests: plan phase passes resolved timeout"
+      status: MET
+      notes: "TestPlanPhaseTimeout verifies large override and base-fallback (2 tests)."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "673 tests pass (672 pre-existing + 5 new)."
-    - criterion: "No new CLI commands, no forge.yaml schema changes"
-      status: MET
-      notes: "No CLI or schema changes made."
+      notes: "692 tests pass (673 pre-existing + 19 new)."
   spec_deviations:
-    - description: "Reviewer trace filename uses {cycle}-{attempt}-review-{profile}.txt instead of spec's {cycle}-review-{profile}.txt"
-      justification: "The codebase has parse retries that re-invoke _run_review_pool within the same cycle; without the attempt suffix, consecutive retries would overwrite each other. The no-overwrite requirement (spec req 4) takes precedence over the literal filename in the AC."
+    - description: "resolve_timeout() is a standalone function in coord_util.py rather than a method on ModelProfile/DevProfile."
+      justification: "The implementation plan explicitly chose the standalone approach to avoid duplicating logic between ModelProfile and PlanConfig, which is not a ModelProfile. The spec allows either form."
   deferred_items: none
   gate_result: PASS
