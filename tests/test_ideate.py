@@ -25,6 +25,7 @@ from theforge.ideate import (
     _build_phase2_prompt,
     _build_single_model_prompt,
     _build_synthesis_prompt,
+    _has_prohibited_content,
     _parse_synthesis_output,
     _validate_frontmatter,
     generate_ideation_audit,
@@ -349,6 +350,85 @@ def test_synthesis_overlong_spec_returns_failed(tmp_path: Path) -> None:
 
     assert result.success is False
     assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
+
+
+# ── Prohibited-content detection unit tests ──────────────────────────
+
+
+def test_has_prohibited_content_clean_spec() -> None:
+    """Clean spec with no code blocks or signatures returns (False, '')."""
+    found, reason = _has_prohibited_content(_VALID_SPEC)
+    assert found is False
+    assert reason == ""
+
+
+def test_has_prohibited_content_code_block() -> None:
+    spec = _VALID_SPEC + "\n```python\nprint('hi')\n```\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "code block" in reason
+
+
+def test_has_prohibited_content_function_def() -> None:
+    spec = _VALID_SPEC + "\ndef my_func(arg1, arg2):\n    pass\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "function" in reason
+
+
+def test_has_prohibited_content_class_def() -> None:
+    spec = _VALID_SPEC + "\nclass MyClass:\n    pass\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "class" in reason
+
+
+def test_has_prohibited_content_dataclass() -> None:
+    spec = _VALID_SPEC + "\n@dataclass\nclass MyModel:\n    field: str\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "dataclass" in reason
+
+
+# ── Prohibited-content enforcement integration tests ──────────────────
+
+
+def _make_spec_with_code_block() -> str:
+    return (
+        _VALID_SPEC + "\n## Implementation\n```python\ndef cache_get(key):\n    return None\n```\n"
+    )
+
+
+def test_single_model_spec_with_code_block_returns_failed(tmp_path: Path) -> None:
+    """Single-model output with a fenced code block → failed IdeationResult."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    spec_with_code = _make_spec_with_code_block()
+    output = f"SPEC:\n{spec_with_code}"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(output, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert "prohibited" in result.final_synthesis.lower()
+
+
+def test_synthesis_spec_with_function_def_returns_failed(tmp_path: Path) -> None:
+    """Multi-model synthesis output with a function definition → failed IdeationResult."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    spec_with_func = _VALID_SPEC + "\ndef build_cache(ttl: int) -> Cache:\n    pass\n"
+    synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{spec_with_func}"
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(synthesis)),
+    ):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert "prohibited" in result.final_synthesis.lower()
 
 
 # ── Synthesis parsing tests ──────────────────────────────────────────

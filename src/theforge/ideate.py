@@ -368,6 +368,36 @@ def _extract_slug_from_spec(spec_text: str) -> str | None:
     return None
 
 
+def _has_prohibited_content(spec_text: str) -> tuple[bool, str]:
+    """Return (True, reason) if the spec body contains prohibited implementation detail.
+
+    Scans only the markdown body (after the closing --- of frontmatter) for:
+    - Fenced code blocks (lines starting with ```)
+    - Python/JS function definitions (def name()
+    - Class or dataclass definitions
+    """
+    # Strip frontmatter; scan only the body.
+    body = spec_text
+    stripped = spec_text.strip()
+    if stripped.startswith("---"):
+        end = stripped.find("---", 3)
+        if end != -1:
+            body = stripped[end + 3 :]
+
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("```"):
+            return True, "fenced code block"
+        if s.startswith("def ") and "(" in s:
+            return True, "function definition"
+        if s.startswith("class ") and (":" in s or "(" in s):
+            return True, "class definition"
+        if s == "@dataclass" or s.startswith("@dataclass("):
+            return True, "@dataclass decorator"
+
+    return False, ""
+
+
 # ── Core orchestration ───────────────────────────────────────────────
 
 
@@ -654,6 +684,19 @@ def run_ideation(
         final_synthesis = final_synthesis + f"\n\n{hdr}\n{decisions}\n"
 
     human_decision_required = bool(residual_divergence)
+
+    # ── Prohibited-content enforcement ───────────────────────────────
+    # Deterministically reject specs containing fenced code blocks,
+    # function definitions, or class/dataclass definitions.
+    has_prohibited, prohibited_reason = _has_prohibited_content(final_synthesis)
+    if has_prohibited:
+        _log(f"✗ IDEATE   spec contains prohibited content: {prohibited_reason}")
+        return _failed_result(
+            f"Spec contains prohibited implementation detail ({prohibited_reason}). "
+            f"Regenerate without code blocks, function signatures, or class definitions.",
+            all_rounds,
+            total_cost,
+        )
 
     # ── Line-count enforcement ────────────────────────────────────────
     # Deterministically reject specs that exceed the line limit.
