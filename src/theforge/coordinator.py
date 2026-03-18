@@ -93,6 +93,7 @@ from .coord_util import (  # noqa: F401
     _log,
     _log_phase,
     _log_verbose,
+    resolve_timeout,
     set_log_level,
 )
 from .coord_workspace import (  # noqa: F401
@@ -935,12 +936,22 @@ def run_task(
     )
     if should_plan:
         state.phase = Phase.PLAN
+        _plan_timeout = resolve_timeout(
+            config.plan.timeout,
+            config.plan.timeout_medium,
+            config.plan.timeout_large,
+            state.preflight_complexity,
+        )
+        if _plan_timeout != config.plan.timeout:
+            _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
+        else:
+            _log(f"  Plan timeout: {_plan_timeout}s")
         plan_profile = ModelProfile(
             name="plan",
             cli=config.plan.model,
             model=config.plan.model_name,
             budget_usd=config.plan.budget_usd,
-            timeout_seconds=config.plan.timeout,
+            timeout_seconds=_plan_timeout,
             allowed_tools=config.preflight_profile.allowed_tools,
         )
         _log_phase(state.phase, plan_profile.model)

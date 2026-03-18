@@ -91,6 +91,8 @@ class ModelProfile:
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
+    timeout_medium_seconds: int | None = None  # override for medium complexity
+    timeout_large_seconds: int | None = None  # override for large complexity
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
 
@@ -151,6 +153,8 @@ class PlanConfig:
     model_name: str = "sonnet"  # model identifier passed to the CLI
     budget_usd: float = 0.50
     timeout: int = 300
+    timeout_medium: int | None = None  # override for medium complexity
+    timeout_large: int | None = None  # override for large complexity
 
 
 @dataclass(frozen=True)
@@ -280,12 +284,16 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
             f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
             f"got {reasoning_effort!r} in profile {base.name!r}"
         )
+    timeout_medium_raw = data.get("timeout_medium_seconds", base.timeout_medium_seconds)
+    timeout_large_raw = data.get("timeout_large_seconds", base.timeout_large_seconds)
     return ModelProfile(
         name=base.name,
         cli=data.get("cli", base.cli),
         model=data.get("model", base.model),
         budget_usd=float(data.get("budget_usd", base.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
+        timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
+        timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
         allowed_tools=tuple(tools) if tools is not None else base.allowed_tools,
         reasoning_effort=reasoning_effort,
     )
@@ -392,12 +400,16 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
             f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
             f"got {reasoning_effort!r} in profile {name!r}"
         )
+    timeout_medium_raw = data.get("timeout_medium_seconds")
+    timeout_large_raw = data.get("timeout_large_seconds")
     return ModelProfile(
         name=name,
         cli=data.get("cli", default.cli),
         model=data.get("model", default.model),
         budget_usd=float(data.get("budget_usd", default.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
+        timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
+        timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
         allowed_tools=tuple(tools) if tools is not None else default.allowed_tools,
         reasoning_effort=reasoning_effort,
         review_role=data.get("review_role"),
@@ -599,12 +611,18 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Plan
     plan_data = raw.get("plan", {})
+    plan_timeout_medium_raw = plan_data.get("timeout_medium")
+    plan_timeout_large_raw = plan_data.get("timeout_large")
     plan_cfg = PlanConfig(
         enabled=bool(plan_data.get("enabled", False)),
         model=str(plan_data.get("model", "claude")),
         model_name=str(plan_data.get("model_name", "sonnet")),
         budget_usd=float(plan_data.get("budget_usd", 0.50)),
         timeout=int(plan_data.get("timeout", 300)),
+        timeout_medium=int(plan_timeout_medium_raw)
+        if plan_timeout_medium_raw is not None
+        else None,
+        timeout_large=int(plan_timeout_large_raw) if plan_timeout_large_raw is not None else None,
     )
 
     # Plan review
