@@ -113,8 +113,21 @@ def _build_single_model_prompt(brief: str, *, config: "ForgeConfig | None" = Non
 BRIEF:
 {brief}
 
-Think through the brief and produce a complete spec ready for a developer
-agent to implement. Use this exact format:
+Think through the brief, then produce a spec in the exact format below.
+
+The spec describes WHAT to build and WHY — not HOW. A separate plan phase
+derives the implementation from the codebase. Acceptance criteria must describe
+observable behavior that a human or automated test can verify from outside the
+system.
+
+Prohibited in the spec output:
+- Function signatures or method names
+- Dataclass, class, or type definitions
+- Code snippets or pseudocode
+- File-internal implementation steps (e.g. "in foo.py, add a field")
+- Specific variable or parameter names
+
+Keep the spec body under 150 lines.
 
 SPEC:
 ---
@@ -134,7 +147,7 @@ pytest_target: {pytest_target}
 <Numbered list of requirements>
 
 ## Acceptance Criteria
-- [ ] <criterion>
+- [ ] <criterion describing observable behavior>
 
 ## Out of Scope
 <What this spec does NOT address>
@@ -219,6 +232,21 @@ DIVERGENT_ITEMS:
 - <item>
 
 SPEC:
+
+The spec describes WHAT to build and WHY — not HOW. A separate plan phase
+derives the implementation from the codebase. Acceptance criteria must describe
+observable behavior that a human or automated test can verify from outside the
+system.
+
+Prohibited in the spec output:
+- Function signatures or method names
+- Dataclass, class, or type definitions
+- Code snippets or pseudocode
+- File-internal implementation steps (e.g. "in foo.py, add a field")
+- Specific variable or parameter names
+
+Keep the spec body under 150 lines.
+
 ---
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
@@ -235,7 +263,7 @@ pytest_target: {pytest_target}
 <requirements derived from converged items>
 
 ## Acceptance Criteria
-- [ ] <criterion>
+- [ ] <criterion describing observable behavior>
 
 ## Human Decisions Required
 <list any items from DIVERGENT_ITEMS that remained unresolved; omit section if empty>"""

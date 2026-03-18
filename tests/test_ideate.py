@@ -239,6 +239,50 @@ def test_synthesis_prompt_includes_all_outputs() -> None:
     assert "CONVERGED_ITEMS" in prompt
     assert "DIVERGENT_ITEMS" in prompt
     assert "SPEC:" in prompt
+    # Lean output instructions
+    assert "observable behavior" in prompt
+    assert "Function signatures" in prompt
+    assert "Code snippets" in prompt
+    assert "150 lines" in prompt
+
+
+# ── Round-trip test ──────────────────────────────────────────────────
+
+
+def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
+    """Spec produced by run_ideation parses into a non-empty dev prompt."""
+    from theforge.task import TaskSpec, build_dev_prompt, parse_spec_frontmatter
+
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    output_path = tmp_path / "specs" / "test-feature.md"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "Build a feature", output_path, max_rounds=1)
+
+    assert result.success
+    assert output_path.exists()
+
+    fm = parse_spec_frontmatter(output_path)
+    task = TaskSpec(
+        name=fm.get("name", "test"),
+        spec_path=output_path,
+        slug=fm.get("slug", "test"),
+        file_scope=fm.get("file_scope") or [],
+        pytest_target=fm.get("pytest_target", "tests/"),
+    )
+    spec_content = output_path.read_text(encoding="utf-8")
+    dev_prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "workspace",
+        branch_name="feat/test-feature",
+        spec_content=spec_content,
+        gate_command="make gate",
+    )
+    assert len(dev_prompt) > 0
+    assert "Test Feature" in dev_prompt
 
 
 # ── Synthesis parsing tests ──────────────────────────────────────────
