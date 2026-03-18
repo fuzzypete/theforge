@@ -11,13 +11,14 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import yaml
 
-from .config import ForgeConfig, generate_default_config, load_config
+from .config import PROVIDER_API_KEY_MAP, ForgeConfig, generate_default_config, load_config
 from .coordinator import (
     CoordinatorResult,
     _fmt_duration,
@@ -186,6 +187,59 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
 
 # ── Commands ─────────────────────────────────────────────────────────
 
+_SECRETS_FILE = ".forge/secrets.yaml"
+_GITIGNORE_ENTRY = ".forge/secrets.yaml"
+
+
+def _ensure_gitignored(project_root: Path) -> None:
+    """Append .forge/secrets.yaml to .gitignore if not already present."""
+    gitignore = project_root / ".gitignore"
+    if gitignore.exists():
+        content = gitignore.read_text(encoding="utf-8")
+        if _GITIGNORE_ENTRY in content.splitlines():
+            return
+        separator = "" if content.endswith("\n") else "\n"
+        gitignore.write_text(content + separator + _GITIGNORE_ENTRY + "\n", encoding="utf-8")
+    else:
+        gitignore.write_text(_GITIGNORE_ENTRY + "\n", encoding="utf-8")
+
+
+def _generate_secrets_skeleton() -> str:
+    """Generate secrets.yaml skeleton from PROVIDER_API_KEY_MAP."""
+    lines = [
+        "# .forge/secrets.yaml",
+        "# Project-scoped API keys for TheForge.",
+        "# This file is gitignored. Do not commit it.",
+        "#",
+        "# Uncomment and fill in the keys needed for your forge.yaml profiles.",
+        "",
+    ]
+    for _provider, key in PROVIDER_API_KEY_MAP.items():
+        lines.append(f"# {key}: <your-key-here>")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_secrets_init(args: argparse.Namespace) -> int:
+    """Create .forge/secrets.yaml skeleton and update .gitignore."""
+    project_root = Path.cwd()
+    secrets_path = project_root / ".forge" / "secrets.yaml"
+
+    if secrets_path.exists():
+        print(
+            f"Warning: {secrets_path} already exists. Not overwriting.",
+            file=sys.stderr,
+        )
+        return 0
+
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    secrets_path.write_text(_generate_secrets_skeleton(), encoding="utf-8")
+    print(f"Created {secrets_path}")
+
+    _ensure_gitignored(project_root)
+    print(f"Updated .gitignore to exclude {_GITIGNORE_ENTRY}")
+    return 0
+
 
 def cmd_init(args: argparse.Namespace) -> int:
     """Generate a starter forge.yaml in the current directory."""
@@ -197,6 +251,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     target.write_text(generate_default_config(), encoding="utf-8")
     print(f"Created {target}")
     print("Edit the file to match your project, then run: forge run <spec-file>")
+
+    _ensure_gitignored(Path.cwd())
     return 0
 
 
@@ -221,6 +277,21 @@ def cmd_run(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+
+    # AC-5: warn if .forge/secrets.yaml is tracked by git (not gitignored)
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", _SECRETS_FILE],
+            cwd=str(config_path.parent),
+            capture_output=True,
+        )
+        if tracked.returncode == 0:
+            print(
+                f"⚠ {_SECRETS_FILE} is not gitignored — run 'forge secrets-init' to fix",
+                file=sys.stderr,
+            )
+    except (OSError, FileNotFoundError):
+        pass  # not a git repo or git not installed — ignore
 
     config = load_config(config_path)
     task = _build_task(spec_path, slug=args.slug)
@@ -680,6 +751,12 @@ def main() -> None:
     # forge init
     subparsers.add_parser("init", help="Generate a starter forge.yaml")
 
+    # forge secrets-init
+    subparsers.add_parser(
+        "secrets-init",
+        help="Create .forge/secrets.yaml skeleton and update .gitignore",
+    )
+
     # forge run
     run_parser = subparsers.add_parser("run", help="Run dev→review loop for a spec")
     run_parser.add_argument("spec", help="Path to the spec file")
@@ -844,6 +921,7 @@ def main() -> None:
 
     commands = {
         "init": cmd_init,
+        "secrets-init": cmd_secrets_init,
         "run": cmd_run,
         "review": cmd_review,
         "sprint": cmd_sprint,

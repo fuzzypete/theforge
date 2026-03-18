@@ -76,6 +76,7 @@ def _resolve_merge_conflicts(
         profile=config.dev_profile,
         working_dir=project_root,
         session_id=None,
+        secrets=config.secrets,
     )
     _resolve_elapsed = time.monotonic() - _resolve_start
     _cu._log(f"  ... resolution done ({int(_resolve_elapsed)}s)")

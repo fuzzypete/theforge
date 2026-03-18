@@ -443,6 +443,7 @@ def _run_review_pool(
         profiles=config.review_pool,
         working_dir=workspace_path,
         session_ids=pool_session_ids,
+        secrets=config.secrets,
     )
     _pool_elapsed = time.monotonic() - _pool_start
     for profile, result in zip(config.review_pool, pool_results):
@@ -714,6 +715,7 @@ def _coordinator_loop(
                     profile=config.dev_profile,
                     working_dir=workspace_path,
                     session_id=state.dev_session_id,
+                    secrets=config.secrets,
                 )
                 state.dev_results.append(_hf_result)
                 state.dev_session_id = _hf_result.session_id or state.dev_session_id
@@ -876,6 +878,7 @@ def run_task(
         prompt=preflight_prompt,
         profile=preflight_profile,
         working_dir=workspace_path,
+        secrets=config.secrets,
     )
     _preflight_elapsed = time.monotonic() - _preflight_start
     state.preflight_result = preflight_result
@@ -995,6 +998,7 @@ def run_task(
             prompt=plan_prompt,
             profile=plan_profile,
             working_dir=workspace_path,
+            secrets=config.secrets,
         )
         _plan_elapsed = time.monotonic() - _plan_start
         state.plan_results.append(plan_result)
@@ -1049,6 +1053,7 @@ def run_task(
                         profile=par_profile,
                         working_dir=workspace_path,
                         session_id=state.plan_review_session_id,
+                        secrets=config.secrets,
                     )
                     _pr_elapsed = time.monotonic() - _pr_start
                     state.plan_review_session_id = (
@@ -1192,6 +1197,7 @@ def run_task(
                         profile=plan_profile,
                         working_dir=workspace_path,
                         session_id=state.plan_session_id,
+                        secrets=config.secrets,
                     )
                     _plan_elapsed = time.monotonic() - _plan_start
                     state.plan_results.append(plan_result)
@@ -1309,6 +1315,7 @@ def run_task(
                             profile=plan_profile,
                             working_dir=workspace_path,
                             session_id=state.plan_session_id,
+                            secrets=config.secrets,
                         )
                         _plan_elapsed = time.monotonic() - _plan_start
                         state.plan_results.append(plan_result)

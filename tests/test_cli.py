@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from theforge.cli import _build_task, _find_config, _parse_spec_frontmatter
+import argparse
+
+from theforge.cli import (
+    _build_task,
+    _ensure_gitignored,
+    _find_config,
+    _parse_spec_frontmatter,
+    cmd_secrets_init,
+)
 
 # ── Helpers (kept for TestBuildTask / TestFindConfig) ─────────────────
 
@@ -99,3 +107,73 @@ class TestFindConfig:
         # Either None or found somewhere above — both are valid behaviors
         # The important thing is it doesn't crash
         assert result is None or result.name == "forge.yaml"
+
+
+class TestSecretsInit:
+    """AC-4: forge secrets-init creates skeleton and updates .gitignore."""
+
+    def _make_args(self) -> argparse.Namespace:
+        return argparse.Namespace()
+
+    def test_creates_skeleton_file(self, tmp_path, monkeypatch):
+        """forge secrets-init creates .forge/secrets.yaml with commented-out keys."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        rc = cmd_secrets_init(args)
+        assert rc == 0
+        secrets_path = tmp_path / ".forge" / "secrets.yaml"
+        assert secrets_path.exists()
+        content = secrets_path.read_text(encoding="utf-8")
+        assert "ANTHROPIC_API_KEY" in content
+        assert "OPENAI_API_KEY" in content
+        assert "GOOGLE_API_KEY" in content
+        # Keys should be commented out
+        assert "# ANTHROPIC_API_KEY:" in content
+
+    def test_updates_gitignore(self, tmp_path, monkeypatch):
+        """forge secrets-init appends .forge/secrets.yaml to .gitignore."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_secrets_init(args)
+        gitignore = tmp_path / ".gitignore"
+        assert gitignore.exists()
+        assert ".forge/secrets.yaml" in gitignore.read_text(encoding="utf-8")
+
+    def test_noop_when_file_exists(self, tmp_path, monkeypatch, capsys):
+        """forge secrets-init prints warning and exits without overwriting when file exists."""
+        monkeypatch.chdir(tmp_path)
+        forge_dir = tmp_path / ".forge"
+        forge_dir.mkdir()
+        secrets_path = forge_dir / "secrets.yaml"
+        secrets_path.write_text("EXISTING_KEY: existing-value\n", encoding="utf-8")
+
+        args = self._make_args()
+        rc = cmd_secrets_init(args)
+        assert rc == 0
+        # File must not be overwritten
+        assert "existing-value" in secrets_path.read_text(encoding="utf-8")
+        # Warning must be printed
+        captured = capsys.readouterr()
+        assert "already exists" in captured.err
+
+    def test_creates_gitignore_if_absent(self, tmp_path):
+        """_ensure_gitignored creates .gitignore if it doesn't exist."""
+        _ensure_gitignored(tmp_path)
+        gitignore = tmp_path / ".gitignore"
+        assert gitignore.exists()
+        assert ".forge/secrets.yaml" in gitignore.read_text(encoding="utf-8")
+
+    def test_does_not_duplicate_gitignore_entry(self, tmp_path):
+        """_ensure_gitignored is idempotent — calling twice adds entry only once."""
+        _ensure_gitignored(tmp_path)
+        _ensure_gitignored(tmp_path)
+        content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert content.count(".forge/secrets.yaml") == 1
+
+    def test_appends_to_existing_gitignore(self, tmp_path):
+        """_ensure_gitignored appends to an existing .gitignore."""
+        (tmp_path / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        _ensure_gitignored(tmp_path)
+        content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
+        assert "*.pyc" in content
+        assert ".forge/secrets.yaml" in content

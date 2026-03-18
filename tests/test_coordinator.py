@@ -9,7 +9,7 @@ import io
 import json
 import time as _time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -1224,7 +1224,7 @@ class TestCoordinatorSessionResume:
         )
         dev_session_ids: list[str | None] = []
 
-        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
             if profile.name == "preflight":
                 return _PREFLIGHT_RESULT
             dev_session_ids.append(session_id)
@@ -1257,7 +1257,7 @@ class TestCoordinatorSessionResume:
 
         dev_session_ids: list[str | None] = []
 
-        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
             if profile.name == "preflight":
                 return _PREFLIGHT_RESULT
             dev_session_ids.append(session_id)
@@ -1319,7 +1319,7 @@ class TestCoordinatorSessionResume:
         mock_dev_prompt.return_value = "full dev prompt"
         dev_prompts: list[str] = []
 
-        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
             if profile.name == "preflight":
                 return _PREFLIGHT_RESULT
             dev_prompts.append(prompt)
@@ -1363,7 +1363,7 @@ class TestCoordinatorSessionResume:
         mock_dev_prompt.return_value = "full dev prompt"
         dev_prompts: list[str] = []
 
-        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
             if profile.name == "preflight":
                 return _PREFLIGHT_RESULT
             dev_prompts.append(prompt)
@@ -2934,7 +2934,7 @@ class TestRunFromReview:
         # First pool call → REQUEST_CHANGES, second → APPROVE
         pool_call_n = {"n": 0}
 
-        def pool_side(prompt=None, profiles=None, working_dir=None, session_ids=None):
+        def pool_side(prompt=None, profiles=None, working_dir=None, session_ids=None, **kwargs):
             pool_call_n["n"] += 1
             if pool_call_n["n"] == 1:
                 return [
@@ -2948,7 +2948,7 @@ class TestRunFromReview:
 
         captured_dev_session_ids: list[str | None] = []
 
-        def fake_run_agent(prompt, profile, working_dir, session_id=None):
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
             captured_dev_session_ids.append(session_id)
             return _make_agent_result(success=True, output="Fixed.", session_id="new-dev-sess")
 
@@ -2983,7 +2983,7 @@ class TestRunFromReview:
 
         captured_session_ids: list[list[str | None]] = []
 
-        def pool_side(prompt=None, profiles=None, working_dir=None, session_ids=None):
+        def pool_side(prompt=None, profiles=None, working_dir=None, session_ids=None, **kwargs):
             captured_session_ids.append(list(session_ids or []))
             return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
 

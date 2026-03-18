@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 from typing import TYPE_CHECKING, Any, Callable
@@ -39,11 +38,14 @@ def _estimate_cost(
     return ((input_tokens / 1_000_000) * price[0]) + ((output_tokens / 1_000_000) * price[1])
 
 
-def _run_openai(prompt: str, profile: ModelProfile) -> AgentResult:
+def _run_openai(
+    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+) -> AgentResult:
     """Run agent via OpenAI API."""
     import openai
 
-    client_kwargs: dict[str, Any] = {"api_key": os.getenv("OPENAI_API_KEY") or "local"}
+    merged = {**os.environ, **(secrets or {})}
+    client_kwargs: dict[str, Any] = {"api_key": merged.get("OPENAI_API_KEY") or "local"}
     if profile.base_url:
         client_kwargs["base_url"] = profile.base_url
     client = openai.OpenAI(**client_kwargs)
@@ -106,11 +108,14 @@ def _run_openai(prompt: str, profile: ModelProfile) -> AgentResult:
         )
 
 
-def _run_anthropic(prompt: str, profile: ModelProfile) -> AgentResult:
+def _run_anthropic(
+    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+) -> AgentResult:
     """Run agent via Anthropic API."""
     import anthropic
 
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    merged = {**os.environ, **(secrets or {})}
+    client = anthropic.Anthropic(api_key=merged.get("ANTHROPIC_API_KEY"))
     schema = review_json_schema()
 
     try:
@@ -179,12 +184,15 @@ def _run_anthropic(prompt: str, profile: ModelProfile) -> AgentResult:
         )
 
 
-def _run_google(prompt: str, profile: ModelProfile) -> AgentResult:
+def _run_google(
+    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+) -> AgentResult:
     """Run agent via Google Gemini API."""
     import google.genai as genai
     import google.genai.types as genai_types
 
-    client = genai.Client(api_key=os.getenv("GOOGLE_API_KEY"))
+    merged = {**os.environ, **(secrets or {})}
+    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
     schema = review_json_schema()
 
     try:
@@ -239,7 +247,7 @@ def _run_google(prompt: str, profile: ModelProfile) -> AgentResult:
         )
 
 
-PROVIDER_RUNNERS: dict[str, Callable[[str, ModelProfile], AgentResult]] = {
+PROVIDER_RUNNERS: dict[str, Callable[..., AgentResult]] = {
     "openai": _run_openai,
     "anthropic": _run_anthropic,
     "google": _run_google,
@@ -251,6 +259,7 @@ def run_api_agent(
     prompt: str,
     profile: ModelProfile,
     quiet: bool = False,
+    secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run a text-judgment agent via API.
 
@@ -285,7 +294,7 @@ def run_api_agent(
     if not quiet:
         _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
-    result = runner_fn(prompt, profile)
+    result = runner_fn(prompt, profile, secrets)
 
     if not quiet:
         status = "OK" if result.success else "FAIL"

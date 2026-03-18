@@ -11,7 +11,6 @@ from theforge.config import (
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_WORKSPACE,
     SUPPORTED_CLIS,
-    ModelProfile,
     _auto_assign_models,
     _resolve_model_info,
     generate_default_config,
@@ -1028,3 +1027,105 @@ class TestAutoPushConfig:
         )
         config = load_config(config_path)
         assert config.workspace.auto_push is False
+
+
+class TestProjectSecrets:
+    """Tests for project-scoped secrets loading (AC-1, AC-2)."""
+
+    def _make_forge_dir(self, tmp_path: Path) -> Path:
+        forge_dir = tmp_path / ".forge"
+        forge_dir.mkdir()
+        return forge_dir
+
+    def test_secrets_loaded_into_config(self, tmp_path):
+        """AC-1: secrets file is loaded and stored on ForgeConfig.secrets."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        (forge_dir / "secrets.yaml").write_text(
+            "ANTHROPIC_API_KEY: sk-ant-test\nOPENAI_API_KEY: sk-openai-test\n",
+            encoding="utf-8",
+        )
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.secrets == {
+            "ANTHROPIC_API_KEY": "sk-ant-test",
+            "OPENAI_API_KEY": "sk-openai-test",
+        }
+
+    def test_missing_secrets_file_defaults_to_empty(self, tmp_path):
+        """AC-1: absent .forge/secrets.yaml → secrets defaults to {}."""
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.secrets == {}
+
+    def test_empty_secrets_file_defaults_to_empty(self, tmp_path):
+        """AC-1: empty .forge/secrets.yaml → secrets defaults to {}."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        (forge_dir / "secrets.yaml").write_text("", encoding="utf-8")
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.secrets == {}
+
+    def test_malformed_secrets_raises_value_error(self, tmp_path):
+        """AC-1: malformed YAML in secrets file raises ValueError with file path."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        secrets_path = forge_dir / "secrets.yaml"
+        secrets_path.write_text("key: [unclosed\n", encoding="utf-8")
+        config_path = _write_config({"project": "test"}, tmp_path)
+        with pytest.raises(ValueError, match=str(secrets_path)):
+            load_config(config_path)
+
+    def test_non_mapping_secrets_raises_value_error(self, tmp_path):
+        """AC-1: secrets file containing a list raises ValueError."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        secrets_path = forge_dir / "secrets.yaml"
+        secrets_path.write_text("- item1\n- item2\n", encoding="utf-8")
+        config_path = _write_config({"project": "test"}, tmp_path)
+        with pytest.raises(ValueError, match="must be a YAML mapping"):
+            load_config(config_path)
+
+    def test_secret_satisfies_provider_api_key_validation(self, tmp_path):
+        """AC-2: key in secrets satisfies provider API key check even when not in os.environ."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        (forge_dir / "secrets.yaml").write_text(
+            "OPENAI_API_KEY: sk-from-secrets\n", encoding="utf-8"
+        )
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {"name": "api-reviewer", "provider": "openai", "model": "o4-mini"}
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            # Should NOT raise even though OPENAI_API_KEY is not in os.environ
+            config = load_config(config_path)
+        assert config.review_pool[0].provider == "openai"
+
+    def test_plan_agent_review_secret_satisfies_validation(self, tmp_path):
+        """AC-2: plan_agent_review provider key in secrets satisfies validation."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        (forge_dir / "secrets.yaml").write_text(
+            "ANTHROPIC_API_KEY: sk-ant-from-secrets\n", encoding="utf-8"
+        )
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "provider": "anthropic",
+                    "model": "claude-sonnet-4-6",
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.plan_agent_review.provider == "anthropic"
