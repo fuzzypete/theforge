@@ -18,11 +18,14 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.ideate import (
+    _SPEC_LINE_LIMIT,
     IdeationResult,
     IdeationRound,
     _build_phase1_prompt,
     _build_phase2_prompt,
+    _build_single_model_prompt,
     _build_synthesis_prompt,
+    _has_prohibited_content,
     _parse_synthesis_output,
     _validate_frontmatter,
     generate_ideation_audit,
@@ -239,6 +242,210 @@ def test_synthesis_prompt_includes_all_outputs() -> None:
     assert "CONVERGED_ITEMS" in prompt
     assert "DIVERGENT_ITEMS" in prompt
     assert "SPEC:" in prompt
+    # Lean output instructions
+    assert "observable behavior" in prompt
+    assert "Function signatures" in prompt
+    assert "Code snippets" in prompt
+    assert "150 lines" in prompt
+
+
+def test_single_model_prompt_includes_lean_constraints() -> None:
+    brief = "Build a caching layer."
+    prompt = _build_single_model_prompt(brief)
+    assert "observable behavior" in prompt
+    assert "Function signatures" in prompt
+    assert "Code snippets" in prompt
+    assert "150 lines" in prompt
+
+
+# ── Round-trip test ──────────────────────────────────────────────────
+
+
+def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
+    """Spec produced by run_ideation parses into a non-empty dev prompt."""
+    from theforge.task import TaskSpec, build_dev_prompt, parse_spec_frontmatter
+
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    output_path = tmp_path / "specs" / "test-feature.md"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "Build a feature", output_path, max_rounds=1)
+
+    assert result.success
+    assert output_path.exists()
+
+    fm = parse_spec_frontmatter(output_path)
+    task = TaskSpec(
+        name=fm.get("name", "test"),
+        spec_path=output_path,
+        slug=fm.get("slug", "test"),
+        file_scope=fm.get("file_scope") or [],
+        pytest_target=fm.get("pytest_target", "tests/"),
+    )
+    spec_content = output_path.read_text(encoding="utf-8")
+    dev_prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "workspace",
+        branch_name="feat/test-feature",
+        spec_content=spec_content,
+        gate_command="make gate",
+    )
+    assert len(dev_prompt) > 0
+    assert "Test Feature" in dev_prompt
+
+
+# ── Line-limit enforcement tests ─────────────────────────────────────
+
+
+def _make_long_spec(line_count: int = 160) -> str:
+    """Build a spec with valid frontmatter but more than 150 lines total."""
+    padding = "\n".join(f"- AC item {i}" for i in range(line_count))
+    return f"""\
+---
+name: "Test Feature"
+slug: test-feature
+file_scope: []
+pytest_target: tests/
+---
+
+# Test Feature
+
+## Problem
+A test problem.
+
+## Acceptance Criteria
+{padding}
+"""
+
+
+def test_single_model_overlong_spec_returns_failed(tmp_path: Path) -> None:
+    """Single-model output exceeding _SPEC_LINE_LIMIT → failed IdeationResult."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    long_output = f"SPEC:\n{_make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)}"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(long_output, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
+
+
+def test_synthesis_overlong_spec_returns_failed(tmp_path: Path) -> None:
+    """Multi-model synthesis output exceeding _SPEC_LINE_LIMIT → failed IdeationResult."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    long_spec = _make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)
+    long_synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{long_spec}"
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(long_synthesis)),
+    ):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
+
+
+# ── Prohibited-content detection unit tests ──────────────────────────
+
+
+def test_has_prohibited_content_clean_spec() -> None:
+    """Clean spec with no code blocks or signatures returns (False, '')."""
+    found, reason = _has_prohibited_content(_VALID_SPEC)
+    assert found is False
+    assert reason == ""
+
+
+def test_has_prohibited_content_code_block() -> None:
+    spec = _VALID_SPEC + "\n```python\nprint('hi')\n```\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "code block" in reason
+
+
+def test_has_prohibited_content_function_def() -> None:
+    spec = _VALID_SPEC + "\ndef my_func(arg1, arg2):\n    pass\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "function" in reason
+
+
+def test_has_prohibited_content_class_def() -> None:
+    spec = _VALID_SPEC + "\nclass MyClass:\n    pass\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "class" in reason
+
+
+def test_has_prohibited_content_dataclass() -> None:
+    spec = _VALID_SPEC + "\n@dataclass\nclass MyModel:\n    field: str\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "dataclass" in reason
+
+
+def test_has_prohibited_content_bare_signature() -> None:
+    """Bare typed function signature (no 'def') is detected as prohibited."""
+    spec = _VALID_SPEC + "\nmy_func(a: int) -> bool\n"
+    found, reason = _has_prohibited_content(spec)
+    assert found is True
+    assert "signature" in reason
+
+
+def test_has_prohibited_content_prose_with_parenthetical() -> None:
+    """Prose lines with parenthetical text (e.g. in Context/Background) are not flagged."""
+    extra = "\n## Context\nBackground (current state): slow.\nContext (as-is): no cache.\n"
+    spec = _VALID_SPEC + extra
+    found, reason = _has_prohibited_content(spec)
+    assert found is False
+    assert reason == ""
+
+
+# ── Prohibited-content enforcement integration tests ──────────────────
+
+
+def _make_spec_with_code_block() -> str:
+    return (
+        _VALID_SPEC + "\n## Implementation\n```python\ndef cache_get(key):\n    return None\n```\n"
+    )
+
+
+def test_single_model_spec_with_code_block_returns_failed(tmp_path: Path) -> None:
+    """Single-model output with a fenced code block → failed IdeationResult."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    spec_with_code = _make_spec_with_code_block()
+    output = f"SPEC:\n{spec_with_code}"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(output, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert "prohibited" in result.final_synthesis.lower()
+
+
+def test_synthesis_spec_with_function_def_returns_failed(tmp_path: Path) -> None:
+    """Multi-model synthesis output with a function definition → failed IdeationResult."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    spec_with_func = _VALID_SPEC + "\ndef build_cache(ttl: int) -> Cache:\n    pass\n"
+    synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{spec_with_func}"
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(synthesis)),
+    ):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert "prohibited" in result.final_synthesis.lower()
 
 
 # ── Synthesis parsing tests ──────────────────────────────────────────

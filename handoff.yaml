@@ -1,53 +1,59 @@
-gate_decision: PASS
 dev_notes: |
-  summary: "Added src/theforge/traces.py with write_trace(path, content) — creates parent dirs,
-    writes UTF-8, catches all exceptions as warnings. Wired traces at all pipeline integration
-    points: dev prompt/output in coord_phases._run_dev_phase_impl; gate output in
-    coord_gate._run_gate_full (iter_num param); reviewer outputs and synthesis in
-    coordinator._run_review_pool (pool_attempt param); plan.txt at every PLAN agent invocation
-    in coordinator.py (both success and failure paths, including all regen paths). Iter 1 fix:
-    moved plan.txt write_trace to immediately after each run_agent() call, before the success
-    check, so failed PLAN invocations also capture their raw output."
+  summary: "Implemented lean story output for forge ideate across three iterations.
+    Iter 1 (234f538): added behavioral AC instructions and prohibited-content guidance
+    to both single-model and multi-model prompts. Iter 2 (a8ae9a4, f594e60): added
+    deterministic enforcement — a 150-line spec limit and _has_prohibited_content()
+    scanner covering fenced code blocks, function/class definitions, and @dataclass
+    decorators. Iter 3 (0e8a911, f3ba17a): broadened detection to catch bare typed
+    signatures (e.g. 'my_func(a: int) -> bool') while narrowing the regex to avoid
+    false positives on prose with parenthetical text (e.g. 'Background (current state)')
+    by requiring no space between the identifier and '('."
   commits:
-    - sha: "0f05d53"
-      message: "feat(traces): add best-effort trace artifact capture for post-mortem debugging"
-    - sha: "e204827"
-      message: "chore(handoff): write dev_notes for trace-capture implementation"
-    - sha: "4112ff1"
-      message: "fix(trace-capture): rewrite dev handoff to match schema"
+    - sha: "f3ba17a"
+      message: "fix(lean-story-output): address review findings (iter 1)"
+    - sha: "0e8a911"
+      message: "fix(lean-story-output): broaden prohibited content detection to catch non-def signatures"
+    - sha: "f594e60"
+      message: "fix(ideate): reject specs containing prohibited implementation detail"
+    - sha: "a8ae9a4"
+      message: "fix(ideate): enforce 150-line spec limit deterministically"
+    - sha: "234f538"
+      message: "feat(ideate): lean story output — behavioral ACs, no implementation detail"
   acceptance_criteria:
-    - criterion: "Dev prompt written to .forge/traces/{iter}-dev-prompt.txt before each dev invocation"
+    - criterion: "forge ideate output contains no function signatures or code blocks"
       status: MET
-      notes: "write_trace called in coord_phases._run_dev_phase_impl before run_agent(), using state.dev_iteration"
-    - criterion: "Dev agent output written to .forge/traces/{iter}-dev-output.txt after each dev invocation"
+      notes: "_has_prohibited_content() scans for code fences, function/class defs,
+        @dataclass, and bare typed signatures (identifier immediately followed by '(').
+        run_ideation() rejects specs that fail before writing to disk. Verified by
+        test_single_model_spec_with_code_block_returns_failed,
+        test_synthesis_spec_with_function_def_returns_failed, and
+        test_has_prohibited_content_bare_signature."
+    - criterion: "Acceptance criteria in generated stories describe observable behavior not internal structure"
       status: MET
-      notes: "write_trace called immediately after run_agent() returns, before state.dev_results.append()"
-    - criterion: "Each reviewer's raw output written to .forge/traces/{cycle}-review-{profile}.txt per review cycle"
+      notes: "Both single-model and multi-model prompts instruct the LLM to produce
+        observable-behavior ACs and explicitly list what is prohibited."
+    - criterion: "file_scope is still populated in frontmatter"
       status: MET
-      notes: "Written in _run_review_pool loop using state.review_cycle+1 (matching log output) and pool_attempt. Filename is {cycle}-{attempt}-review-{profile}.txt — see spec_deviations."
-    - criterion: "Synthesis output written to .forge/traces/{cycle}-synthesis.txt per review cycle"
+      notes: "Template unchanged in both prompts; file_scope remains in the frontmatter block."
+    - criterion: "Phase 1 ideation prompts are unchanged"
       status: MET
-      notes: "Written as {cycle}-{attempt}-synthesis.txt. Single-reviewer: raw output. Multi-reviewer: YAML-serialized merged ReviewResult via dataclasses.asdict+yaml.dump."
-    - criterion: "Plan output written to .forge/traces/plan.txt when PLAN phase runs"
+      notes: "_build_phase1_prompt not touched."
+    - criterion: "Single-model path produces the same lean format"
       status: MET
-      notes: "write_trace called immediately after every run_agent() for PLAN (before success check), covering initial call, agent-review regen, and human-review regen — including failure paths."
-    - criterion: "Gate output written to .forge/traces/{iter}-gate.txt after each gate run"
+      notes: "Same prohibition and behavioral AC instructions in _build_single_model_prompt.
+        Prohibited-content and line-limit checks apply to both paths via shared check point."
+    - criterion: "Generated stories are under 150 lines"
       status: MET
-      notes: "Written in coord_gate._run_gate_full before output_tail truncation, when iter_num is not None. Workspace-setup and sprint gate calls pass iter_num=None (default) so no trace written there."
-    - criterion: "Trace write failures are caught and logged as warnings"
+      notes: "_SPEC_LINE_LIMIT = 150 enforced in run_ideation output section. Two tests
+        verify rejection for single-model and multi-model paths."
+    - criterion: "Existing ideate tests pass or are updated to match new output format"
       status: MET
-      notes: "traces.write_trace wraps all I/O in except Exception and calls _cu._log() with 'Warning: trace write failed' prefix."
-    - criterion: ".forge/traces/ is gitignored (or traces are written outside the git tree)"
+      notes: "All 48 ideate tests pass (39 original + 9 new across all iterations)."
+    - criterion: "A round-trip test: forge ideate → forge run --dry-run on the output produces a valid dev prompt"
       status: MET
-      notes: ".gitignore already contains .forge/ (line 26). No change required."
-    - criterion: "All existing tests pass"
-      status: MET
-      notes: "673 tests pass (672 pre-existing + 5 new)."
-    - criterion: "No new CLI commands, no forge.yaml schema changes"
-      status: MET
-      notes: "No CLI or schema changes made."
-  spec_deviations:
-    - description: "Reviewer trace filename uses {cycle}-{attempt}-review-{profile}.txt instead of spec's {cycle}-review-{profile}.txt"
-      justification: "The codebase has parse retries that re-invoke _run_review_pool within the same cycle; without the attempt suffix, consecutive retries would overwrite each other. The no-overwrite requirement (spec req 4) takes precedence over the literal filename in the AC."
+      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation then
+        parse_spec_frontmatter + build_dev_prompt, asserting non-empty result containing the spec title."
+  spec_deviations: none
   deferred_items: none
   gate_result: PASS
+gate_decision: PASS

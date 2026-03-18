@@ -12,6 +12,7 @@ The coordinator remains fully deterministic. Only the ideation agents are LLMs.
 
 from __future__ import annotations
 
+import re
 import shlex
 import sys
 import time
@@ -22,6 +23,10 @@ import yaml
 
 from .config import ForgeConfig
 from .runner import run_agent, run_agent_pool
+
+# ── Constants ────────────────────────────────────────────────────────
+
+_SPEC_LINE_LIMIT = 150
 
 # ── Data structures ──────────────────────────────────────────────────
 
@@ -113,8 +118,21 @@ def _build_single_model_prompt(brief: str, *, config: "ForgeConfig | None" = Non
 BRIEF:
 {brief}
 
-Think through the brief and produce a complete spec ready for a developer
-agent to implement. Use this exact format:
+Think through the brief, then produce a spec in the exact format below.
+
+The spec describes WHAT to build and WHY — not HOW. A separate plan phase
+derives the implementation from the codebase. Acceptance criteria must describe
+observable behavior that a human or automated test can verify from outside the
+system.
+
+Prohibited in the spec output:
+- Function signatures or method names
+- Dataclass, class, or type definitions
+- Code snippets or pseudocode
+- File-internal implementation steps (e.g. "in foo.py, add a field")
+- Specific variable or parameter names
+
+Keep the spec body under 150 lines.
 
 SPEC:
 ---
@@ -134,7 +152,7 @@ pytest_target: {pytest_target}
 <Numbered list of requirements>
 
 ## Acceptance Criteria
-- [ ] <criterion>
+- [ ] <criterion describing observable behavior>
 
 ## Out of Scope
 <What this spec does NOT address>
@@ -219,6 +237,21 @@ DIVERGENT_ITEMS:
 - <item>
 
 SPEC:
+
+The spec describes WHAT to build and WHY — not HOW. A separate plan phase
+derives the implementation from the codebase. Acceptance criteria must describe
+observable behavior that a human or automated test can verify from outside the
+system.
+
+Prohibited in the spec output:
+- Function signatures or method names
+- Dataclass, class, or type definitions
+- Code snippets or pseudocode
+- File-internal implementation steps (e.g. "in foo.py, add a field")
+- Specific variable or parameter names
+
+Keep the spec body under 150 lines.
+
 ---
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
@@ -235,7 +268,7 @@ pytest_target: {pytest_target}
 <requirements derived from converged items>
 
 ## Acceptance Criteria
-- [ ] <criterion>
+- [ ] <criterion describing observable behavior>
 
 ## Human Decisions Required
 <list any items from DIVERGENT_ITEMS that remained unresolved; omit section if empty>"""
@@ -334,6 +367,45 @@ def _extract_slug_from_spec(spec_text: str) -> str | None:
     except yaml.YAMLError:
         pass
     return None
+
+
+def _has_prohibited_content(spec_text: str) -> tuple[bool, str]:
+    """Return (True, reason) if the spec body contains prohibited implementation detail.
+
+    Scans only the markdown body (after the closing --- of frontmatter) for:
+    - Fenced code blocks (lines starting with ```)
+    - Python/JS function definitions (def name()
+    - Class or dataclass definitions
+    """
+    # Strip frontmatter; scan only the body.
+    body = spec_text
+    stripped = spec_text.strip()
+    if stripped.startswith("---"):
+        end = stripped.find("---", 3)
+        if end != -1:
+            body = stripped[end + 3 :]
+
+    # Regex for bare typed signatures: "name(args) -> Type" or "name(args):"
+    # Requires no space between name and '(' to avoid matching prose like
+    # "Background (current state)" or "Context (current state):".
+    _sig_re = re.compile(r"^\w[\w.]*\(.*\)\s*(->.*)?:?\s*$")
+
+    for line in body.splitlines():
+        s = line.strip()
+        if s.startswith("```"):
+            return True, "fenced code block"
+        if s.startswith("def ") and "(" in s:
+            return True, "function definition"
+        if s.startswith("function ") and "(" in s:
+            return True, "JS function definition"
+        if s.startswith("class ") and (":" in s or "(" in s):
+            return True, "class definition"
+        if s == "@dataclass" or s.startswith("@dataclass("):
+            return True, "@dataclass decorator"
+        if _sig_re.match(s) and len(s) > 10:
+            return True, "bare function signature"
+
+    return False, ""
 
 
 # ── Core orchestration ───────────────────────────────────────────────
@@ -622,6 +694,33 @@ def run_ideation(
         final_synthesis = final_synthesis + f"\n\n{hdr}\n{decisions}\n"
 
     human_decision_required = bool(residual_divergence)
+
+    # ── Prohibited-content enforcement ───────────────────────────────
+    # Deterministically reject specs containing fenced code blocks,
+    # function definitions, or class/dataclass definitions.
+    has_prohibited, prohibited_reason = _has_prohibited_content(final_synthesis)
+    if has_prohibited:
+        _log(f"✗ IDEATE   spec contains prohibited content: {prohibited_reason}")
+        return _failed_result(
+            f"Spec contains prohibited implementation detail ({prohibited_reason}). "
+            f"Regenerate without code blocks, function signatures, or class definitions.",
+            all_rounds,
+            total_cost,
+        )
+
+    # ── Line-count enforcement ────────────────────────────────────────
+    # Deterministically reject specs that exceed the line limit.
+    # The prompt instructs the model to stay under _SPEC_LINE_LIMIT lines;
+    # this check ensures overlong responses never reach the output file.
+    spec_line_count = len(final_synthesis.splitlines())
+    if spec_line_count > _SPEC_LINE_LIMIT:
+        _log(f"✗ IDEATE   spec exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines)")
+        return _failed_result(
+            f"Spec exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines). "
+            f"Revise the brief to reduce scope.",
+            all_rounds,
+            total_cost,
+        )
 
     # Resolve output path: explicit path takes precedence; fall back to specs_dir + slug.
     written_path: Path | None = None
