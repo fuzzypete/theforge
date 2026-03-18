@@ -113,6 +113,7 @@ from .review import (  # noqa: F401
     review_to_dev_handoff,
 )
 from .runner import LogLevel, log_agent_result, run_agent, run_agent_pool
+from .sessions import load_sessions, save_sessions
 from .task import (  # noqa: F401
     TaskSpec,
     build_dev_prompt,
@@ -442,6 +443,7 @@ def _run_review_pool(
     for profile, result in zip(config.review_pool, pool_results):
         if result.session_id:
             state.reviewer_session_ids[profile.name] = result.session_id
+    save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
     _cycle_num = state.review_cycle + 1
     for r in pool_results:
@@ -565,6 +567,13 @@ def _setup_resume_entry(
         )
 
     state.workspace_path = workspace_path
+
+    # Restore session IDs from prior run if available
+    _sessions = load_sessions(workspace_path)
+    if _sessions.get("dev_session_id"):
+        state.dev_session_id = _sessions["dev_session_id"]
+    if _sessions.get("reviewer_session_ids"):
+        state.reviewer_session_ids = _sessions["reviewer_session_ids"]
 
     # Resolve branch name from actual worktree HEAD
     _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
@@ -693,6 +702,7 @@ def _coordinator_loop(
                 )
                 state.dev_results.append(_hf_result)
                 state.dev_session_id = _hf_result.session_id or state.dev_session_id
+                save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
                 log_agent_result(_hf_result, "DEV/handoff-fix")
                 _handoff = _parse_dev_handoff(config, workspace_path)
                 if _handoff is None or not _handoff.parse_errors:

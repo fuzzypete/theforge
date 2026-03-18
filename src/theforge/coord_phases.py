@@ -46,6 +46,7 @@ from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose
 from .coord_workspace import _merge_branch
 from .review import ReviewResult, review_to_dev_handoff
 from .runner import log_agent_result
+from .sessions import save_sessions
 from .task import TaskSpec
 from .traces import write_trace
 
@@ -853,6 +854,7 @@ def _run_dev_phase(
         state.dev_session_id = dev_result.session_id or state.dev_session_id
     else:
         state.dev_session_id = dev_result.session_id
+    save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
     _log(f"  ✓ DEV   ${dev_result.cost_usd:.2f}  {_fmt_duration(_dev_elapsed)}")
     if logger:
