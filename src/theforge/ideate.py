@@ -23,6 +23,10 @@ import yaml
 from .config import ForgeConfig
 from .runner import run_agent, run_agent_pool
 
+# ── Constants ────────────────────────────────────────────────────────
+
+_SPEC_LINE_LIMIT = 150
+
 # ── Data structures ──────────────────────────────────────────────────
 
 
@@ -650,6 +654,20 @@ def run_ideation(
         final_synthesis = final_synthesis + f"\n\n{hdr}\n{decisions}\n"
 
     human_decision_required = bool(residual_divergence)
+
+    # ── Line-count enforcement ────────────────────────────────────────
+    # Deterministically reject specs that exceed the line limit.
+    # The prompt instructs the model to stay under _SPEC_LINE_LIMIT lines;
+    # this check ensures overlong responses never reach the output file.
+    spec_line_count = len(final_synthesis.splitlines())
+    if spec_line_count > _SPEC_LINE_LIMIT:
+        _log(f"✗ IDEATE   spec exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines)")
+        return _failed_result(
+            f"Spec exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines). "
+            f"Revise the brief to reduce scope.",
+            all_rounds,
+            total_cost,
+        )
 
     # Resolve output path: explicit path takes precedence; fall back to specs_dir + slug.
     written_path: Path | None = None

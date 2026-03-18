@@ -18,10 +18,12 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.ideate import (
+    _SPEC_LINE_LIMIT,
     IdeationResult,
     IdeationRound,
     _build_phase1_prompt,
     _build_phase2_prompt,
+    _build_single_model_prompt,
     _build_synthesis_prompt,
     _parse_synthesis_output,
     _validate_frontmatter,
@@ -246,6 +248,15 @@ def test_synthesis_prompt_includes_all_outputs() -> None:
     assert "150 lines" in prompt
 
 
+def test_single_model_prompt_includes_lean_constraints() -> None:
+    brief = "Build a caching layer."
+    prompt = _build_single_model_prompt(brief)
+    assert "observable behavior" in prompt
+    assert "Function signatures" in prompt
+    assert "Code snippets" in prompt
+    assert "150 lines" in prompt
+
+
 # ── Round-trip test ──────────────────────────────────────────────────
 
 
@@ -283,6 +294,61 @@ def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
     )
     assert len(dev_prompt) > 0
     assert "Test Feature" in dev_prompt
+
+
+# ── Line-limit enforcement tests ─────────────────────────────────────
+
+
+def _make_long_spec(line_count: int = 160) -> str:
+    """Build a spec with valid frontmatter but more than 150 lines total."""
+    padding = "\n".join(f"- AC item {i}" for i in range(line_count))
+    return f"""\
+---
+name: "Test Feature"
+slug: test-feature
+file_scope: []
+pytest_target: tests/
+---
+
+# Test Feature
+
+## Problem
+A test problem.
+
+## Acceptance Criteria
+{padding}
+"""
+
+
+def test_single_model_overlong_spec_returns_failed(tmp_path: Path) -> None:
+    """Single-model output exceeding _SPEC_LINE_LIMIT → failed IdeationResult."""
+    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
+    long_output = f"SPEC:\n{_make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)}"
+
+    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+        return _ok_result(long_output, "solo")
+
+    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
+
+
+def test_synthesis_overlong_spec_returns_failed(tmp_path: Path) -> None:
+    """Multi-model synthesis output exceeding _SPEC_LINE_LIMIT → failed IdeationResult."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    long_spec = _make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)
+    long_synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{long_spec}"
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(long_synthesis)),
+    ):
+        result = run_ideation(config, "A brief", None, max_rounds=1)
+
+    assert result.success is False
+    assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
 
 
 # ── Synthesis parsing tests ──────────────────────────────────────────
