@@ -41,6 +41,18 @@ class ReviewResult:
     raw_yaml: dict  # the parsed YAML data
 
 
+def _sanitize_yaml_text(yaml_text: str) -> str:
+    """Replace backslash-escaped quotes that break YAML double-quoted strings.
+
+    In YAML, \" inside a double-quoted string is a valid escape for a literal
+    quote character — NOT a string terminator. Reviewers sometimes write
+    descriptions ending with r\" thinking it closes the string, causing the
+    parser to scan past the intended end and hit EOF. Replacing \" with an
+    apostrophe preserves readability without breaking the YAML structure.
+    """
+    return yaml_text.replace('\\"', "'")
+
+
 def parse_review_output(agent_output: str) -> ReviewResult:
     """Extract and parse review YAML from agent output.
 
@@ -57,6 +69,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     )
 
     yaml_text = yaml_match.group(1) if yaml_match else agent_output
+    yaml_text = _sanitize_yaml_text(yaml_text)
 
     # Parse YAML
     try:
@@ -158,6 +171,7 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
         flags=re.DOTALL,
     )
     yaml_text = yaml_match.group(1) if yaml_match else agent_output
+    yaml_text = _sanitize_yaml_text(yaml_text)
 
     try:
         data = yaml.safe_load(yaml_text)

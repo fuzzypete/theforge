@@ -1062,4 +1062,9 @@ def build_review_prompt(
           previous review cycle.
         - This review may be merged with other reviewers' outputs. One speculative
           P1 from you blocks the entire pipeline. Be precise.
+        - **YAML safety**: In `description` and `suggestion` fields, do NOT use
+          backslashes or double-quote characters inside double-quoted strings —
+          they break YAML parsing. Use single quotes or paraphrase instead.
+          Bad:  description: "Regex changed from r\\"..."
+          Good: description: "Regex changed from raw string pattern ..."
     """)
