@@ -1,23 +1,27 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Added complexity-based timeouts for dev and plan phases. ModelProfile gains
-    two optional fields (timeout_medium_seconds, timeout_large_seconds); PlanConfig gains
-    timeout_medium and timeout_large. A standalone resolve_timeout() helper in coord_util.py
-    selects the right value based on preflight complexity. coord_phases.py uses
-    dataclasses.replace() to pass the resolved profile to run_agent for DEV; coordinator.py
-    inlines the resolved value when constructing plan_profile for PLAN. forge.yaml resets
-    dev base timeout from 1800 to 600 and adds medium=900/large=1800 overrides for both
-    dev and plan. All new fields default to None for full backward compatibility."
+  summary: "Added complexity-based timeouts for dev and plan phases (iter 1 fix: corrected
+    override-active detection for logging). ModelProfile gains timeout_medium_seconds /
+    timeout_large_seconds; PlanConfig gains timeout_medium / timeout_large. resolve_timeout()
+    in coord_util.py selects the right timeout by complexity. coord_phases.py uses
+    dataclasses.replace() before run_agent for DEV; coordinator.py inlines the resolved
+    value when constructing plan_profile for PLAN. forge.yaml resets dev base timeout from
+    1800 to 600 with medium=900/large=1800 overrides for both dev and plan. Iter 1 fix:
+    the complexity suffix in log lines was previously only emitted when resolved != base;
+    now it is emitted whenever a matching complexity-specific override is configured (non-None),
+    even if its value equals base."
   commits:
     - sha: "43e4e5d"
       message: "feat(timeouts): complexity-based timeouts for dev and plan phases"
+    - sha: "65375b9"
+      message: "fix(timeouts): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "DevProfile has timeout_medium_seconds and timeout_large_seconds optional fields (default None)"
       status: MET
       notes: "Added to ModelProfile dataclass in config.py with default None."
     - criterion: "timeout_for_complexity() returns the right value for small/medium/large/None"
       status: MET
-      notes: "Implemented as standalone resolve_timeout() in coord_util.py per plan. Tests cover all complexity values plus None and unknown."
+      notes: "Implemented as standalone resolve_timeout() in coord_util.py. Tests cover all complexity values plus None and unknown."
     - criterion: "Coordinator uses complexity-resolved timeout at DEV invocation"
       status: MET
       notes: "coord_phases.py calls resolve_timeout() then dataclasses.replace(profile, timeout_seconds=resolved) before run_agent."
@@ -29,7 +33,7 @@ dev_notes: |
       notes: "resolve_timeout() returns base when medium/large is None or complexity does not match."
     - criterion: "Log line shows resolved timeout and complexity when override is active"
       status: MET
-      notes: "Both coord_phases.py and coordinator.py emit 'Dev/Plan timeout: Xs (Y complexity)' when an override is selected, or 'Dev/Plan timeout: Xs' when using base."
+      notes: "Fixed in iter 1: override-active is now detected by checking whether the matching field is non-None, not by comparing resolved vs base values. Complexity suffix is emitted even when override == base."
     - criterion: "load_config() parses new fields from forge.yaml"
       status: MET
       notes: "_parse_profile(), _apply_profile_overrides(), and the plan block in load_config() all parse the new optional fields."
@@ -44,13 +48,13 @@ dev_notes: |
       notes: "TestResolveTimeout has 8 tests covering small, medium, large, None, unknown, and missing-override variants."
     - criterion: "New tests: coordinator passes resolved timeout to run_agent"
       status: MET
-      notes: "TestDevPhaseTimeout verifies large, medium, and base-fallback scenarios (3 tests)."
+      notes: "TestDevPhaseTimeout: large, medium, base-fallback, and equal-value log regression (4 tests)."
     - criterion: "New tests: plan phase passes resolved timeout"
       status: MET
-      notes: "TestPlanPhaseTimeout verifies large override and base-fallback (2 tests)."
+      notes: "TestPlanPhaseTimeout: large override, base-fallback, and equal-value log regression (3 tests)."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "692 tests pass (673 pre-existing + 19 new)."
+      notes: "692 tests pass (673 pre-existing + 21 new — 2 new capsys tests added in iter 1 fix)."
   spec_deviations:
     - description: "resolve_timeout() is a standalone function in coord_util.py rather than a method on ModelProfile/DevProfile."
       justification: "The implementation plan explicitly chose the standalone approach to avoid duplicating logic between ModelProfile and PlanConfig, which is not a ModelProfile. The spec allows either form."
