@@ -64,6 +64,24 @@ def _generate_run_id() -> str:
 # ── Shell helper ─────────────────────────────────────────────────────
 
 
+def resolve_timeout(
+    base: int,
+    medium: int | None,
+    large: int | None,
+    complexity: str | None,
+) -> int:
+    """Return the appropriate timeout for the given preflight complexity.
+
+    Selects large/medium override when complexity matches and override is set;
+    falls back to base otherwise.
+    """
+    if complexity == "large" and large is not None:
+        return large
+    if complexity == "medium" and medium is not None:
+        return medium
+    return base
+
+
 def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
     """Run a shell command. Returns (success, combined output)."""
     try:

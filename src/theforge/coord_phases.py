@@ -42,7 +42,7 @@ from .coord_state import (
     Phase,
     ReviewCycleMetadata,
 )
-from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose
+from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 from .coord_workspace import _merge_branch
 from .review import ReviewResult, review_to_dev_handoff
 from .runner import log_agent_result
@@ -835,10 +835,29 @@ def _run_dev_phase(
         prompt,
     )
 
+    _dev_timeout = resolve_timeout(
+        config.dev_profile.timeout_seconds,
+        config.dev_profile.timeout_medium_seconds,
+        config.dev_profile.timeout_large_seconds,
+        state.preflight_complexity,
+    )
+    _dev_override_active = (
+        state.preflight_complexity == "large"
+        and config.dev_profile.timeout_large_seconds is not None
+    ) or (
+        state.preflight_complexity == "medium"
+        and config.dev_profile.timeout_medium_seconds is not None
+    )
+    if _dev_override_active:
+        _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
+    else:
+        _log(f"  Dev timeout: {_dev_timeout}s")
+    _dev_profile = _dc_replace(config.dev_profile, timeout_seconds=_dev_timeout)
+
     _dev_start = time.monotonic()
     dev_result = mod.run_agent(
         prompt=prompt,
-        profile=config.dev_profile,
+        profile=_dev_profile,
         working_dir=workspace_path,
         session_id=state.dev_session_id,
     )

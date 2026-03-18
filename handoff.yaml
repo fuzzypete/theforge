@@ -1,59 +1,64 @@
+gate_decision: PASS
 dev_notes: |
-  summary: "Implemented lean story output for forge ideate across three iterations.
-    Iter 1 (234f538): added behavioral AC instructions and prohibited-content guidance
-    to both single-model and multi-model prompts. Iter 2 (a8ae9a4, f594e60): added
-    deterministic enforcement — a 150-line spec limit and _has_prohibited_content()
-    scanner covering fenced code blocks, function/class definitions, and @dataclass
-    decorators. Iter 3 (0e8a911, f3ba17a): broadened detection to catch bare typed
-    signatures (e.g. 'my_func(a: int) -> bool') while narrowing the regex to avoid
-    false positives on prose with parenthetical text (e.g. 'Background (current state)')
-    by requiring no space between the identifier and '('."
+  summary: "Added complexity-based timeouts for dev and plan phases. ModelProfile gains
+    timeout_medium_seconds / timeout_large_seconds; PlanConfig gains timeout_medium /
+    timeout_large. resolve_timeout() in coord_util.py selects the right timeout by
+    complexity. coord_phases.py uses dataclasses.replace() before run_agent for DEV;
+    coordinator.py inlines the resolved value when constructing plan_profile for PLAN.
+    forge.yaml resets dev base timeout from 1800 to 600 with medium=900/large=1800
+    overrides for both dev and plan. Iter 1 fix (cycle 1): override-active detection for
+    log lines now checks field non-None rather than comparing resolved vs base values,
+    so the complexity suffix appears even when override == base. Iter 1 fix (cycle 2):
+    PlanConfig.timeout default and load_config fallback corrected from 300 to 600."
   commits:
-    - sha: "f3ba17a"
-      message: "fix(lean-story-output): address review findings (iter 1)"
-    - sha: "0e8a911"
-      message: "fix(lean-story-output): broaden prohibited content detection to catch non-def signatures"
-    - sha: "f594e60"
-      message: "fix(ideate): reject specs containing prohibited implementation detail"
-    - sha: "a8ae9a4"
-      message: "fix(ideate): enforce 150-line spec limit deterministically"
-    - sha: "234f538"
-      message: "feat(ideate): lean story output — behavioral ACs, no implementation detail"
+    - sha: "43e4e5d"
+      message: "feat(timeouts): complexity-based timeouts for dev and plan phases"
+    - sha: "65375b9"
+      message: "fix(timeouts): address review findings (iter 1)"
+    - sha: "83c0226"
+      message: "fix(timeouts): address review findings (iter 1)"
   acceptance_criteria:
-    - criterion: "forge ideate output contains no function signatures or code blocks"
+    - criterion: "DevProfile has timeout_medium_seconds and timeout_large_seconds optional fields (default None)"
       status: MET
-      notes: "_has_prohibited_content() scans for code fences, function/class defs,
-        @dataclass, and bare typed signatures (identifier immediately followed by '(').
-        run_ideation() rejects specs that fail before writing to disk. Verified by
-        test_single_model_spec_with_code_block_returns_failed,
-        test_synthesis_spec_with_function_def_returns_failed, and
-        test_has_prohibited_content_bare_signature."
-    - criterion: "Acceptance criteria in generated stories describe observable behavior not internal structure"
+      notes: "Added to ModelProfile dataclass in config.py with default None."
+    - criterion: "timeout_for_complexity() returns the right value for small/medium/large/None"
       status: MET
-      notes: "Both single-model and multi-model prompts instruct the LLM to produce
-        observable-behavior ACs and explicitly list what is prohibited."
-    - criterion: "file_scope is still populated in frontmatter"
+      notes: "Implemented as standalone resolve_timeout() in coord_util.py. Tests cover all complexity values plus None and unknown."
+    - criterion: "Coordinator uses complexity-resolved timeout at DEV invocation"
       status: MET
-      notes: "Template unchanged in both prompts; file_scope remains in the frontmatter block."
-    - criterion: "Phase 1 ideation prompts are unchanged"
+      notes: "coord_phases.py calls resolve_timeout() then dataclasses.replace(profile, timeout_seconds=resolved) before run_agent."
+    - criterion: "PLAN phase uses complexity-resolved timeout"
       status: MET
-      notes: "_build_phase1_prompt not touched."
-    - criterion: "Single-model path produces the same lean format"
+      notes: "coordinator.py calls resolve_timeout() and passes the result as timeout_seconds when constructing plan_profile."
+    - criterion: "Falls back to timeout_seconds when complexity-specific field is absent"
       status: MET
-      notes: "Same prohibition and behavioral AC instructions in _build_single_model_prompt.
-        Prohibited-content and line-limit checks apply to both paths via shared check point."
-    - criterion: "Generated stories are under 150 lines"
+      notes: "resolve_timeout() returns base when medium/large is None or complexity does not match."
+    - criterion: "Log line shows resolved timeout and complexity when override is active"
       status: MET
-      notes: "_SPEC_LINE_LIMIT = 150 enforced in run_ideation output section. Two tests
-        verify rejection for single-model and multi-model paths."
-    - criterion: "Existing ideate tests pass or are updated to match new output format"
+      notes: "Override-active detected by field non-None check, not value comparison. Complexity suffix emitted even when override == base."
+    - criterion: "load_config() parses new fields from forge.yaml"
       status: MET
-      notes: "All 48 ideate tests pass (39 original + 9 new across all iterations)."
-    - criterion: "A round-trip test: forge ideate → forge run --dry-run on the output produces a valid dev prompt"
+      notes: "_parse_profile(), _apply_profile_overrides(), and the plan block in load_config() all parse the new optional fields."
+    - criterion: "forge.yaml updated with medium/large overrides for dev and plan"
       status: MET
-      notes: "test_round_trip_ideate_to_dev_prompt calls run_ideation then
-        parse_spec_frontmatter + build_dev_prompt, asserting non-empty result containing the spec title."
-  spec_deviations: none
+      notes: "dev: timeout_seconds=600, timeout_medium_seconds=900, timeout_large_seconds=1800; plan: timeout=600, timeout_medium=900, timeout_large=1800."
+    - criterion: "Existing configs without new fields work unchanged (backward compat)"
+      status: MET
+      notes: "All new fields default to None in both ModelProfile and PlanConfig."
+    - criterion: "New tests: timeout_for_complexity with all complexity values + None"
+      status: MET
+      notes: "TestResolveTimeout has 8 tests covering small, medium, large, None, unknown, and missing-override variants."
+    - criterion: "New tests: coordinator passes resolved timeout to run_agent"
+      status: MET
+      notes: "TestDevPhaseTimeout: large, medium, base-fallback, and equal-value log regression (4 tests)."
+    - criterion: "New tests: plan phase passes resolved timeout"
+      status: MET
+      notes: "TestPlanPhaseTimeout: large override, base-fallback, and equal-value log regression (3 tests)."
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "693 tests pass (673 pre-existing + 22 new — 1 plan-default test added in cycle 2 fix)."
+  spec_deviations:
+    - description: "resolve_timeout() is a standalone function in coord_util.py rather than a method on ModelProfile/DevProfile."
+      justification: "The implementation plan explicitly chose the standalone approach to avoid duplicating logic between ModelProfile and PlanConfig, which is not a ModelProfile. The spec allows either form."
   deferred_items: none
   gate_result: PASS
-gate_decision: PASS
