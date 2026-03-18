@@ -178,7 +178,8 @@ findings: []
         assert result.verdict == "REJECT"
         assert len(result.parse_errors) == 1
 
-    def test_approve_with_p1_findings_demoted_to_reject(self):
+    def test_approve_with_p1_findings_allowed(self):
+        """P1 findings are advisory in plan review — APPROVE is valid."""
         yaml_text = """\
 ```yaml
 verdict: APPROVE
@@ -186,6 +187,21 @@ findings:
   - severity: P1
     description: "Hallucinated API"
     suggestion: "Fix it"
+```
+"""
+        result = parse_plan_review_output(yaml_text)
+        assert result.verdict == "APPROVE"
+        assert len(result.findings) == 1
+
+    def test_approve_with_p0_findings_demoted_to_reject(self):
+        """P0 findings are blocking — APPROVE with P0 is demoted to REJECT."""
+        yaml_text = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P0
+    description: "Architecturally broken"
+    suggestion: "Rethink"
 ```
 """
         result = parse_plan_review_output(yaml_text)

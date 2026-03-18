@@ -198,7 +198,7 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
             errors.append(f"findings[{i}] must be a mapping")
             continue
         severity = f.get("severity", "P1")
-        if severity in ("P0", "P1"):
+        if severity == "P0":
             blocking_count += 1
         desc = f.get("description", "")
         if not desc:
@@ -216,7 +216,7 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
         errors.append("REJECT verdict without findings — cannot justify rejection")
     if verdict == "APPROVE" and blocking_count > 0:
         errors.append(
-            f"verdict is APPROVE but {blocking_count} P0/P1 finding(s) exist — "
+            f"verdict is APPROVE but {blocking_count} P0 finding(s) exist — "
             "cannot approve with blocking findings"
         )
 

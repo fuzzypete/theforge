@@ -106,6 +106,7 @@ from .coord_workspace import (  # noqa: F401
 )
 from .devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
 from .review import (  # noqa: F401
+    PlanReviewResult,
     ReviewResult,
     merge_review_results,
     parse_plan_review_output,
@@ -1049,6 +1050,25 @@ def run_task(
                     if parsed_pr.parse_errors:
                         _log(
                             f"  ⚠ PLAN_REVIEW   parse issues: {'; '.join(parsed_pr.parse_errors)}"
+                        )
+
+                    # Check if REJECT has only P1/P2 findings (no P0) —
+                    # treat as advisory approve, log findings for dev context
+                    _has_p0 = any(f.severity == "P0" for f in parsed_pr.findings)
+                    if parsed_pr.verdict == "REJECT" and not _has_p0 and parsed_pr.findings:
+                        # Downgrade to APPROVE — P1/P2 are advisory in plan review
+                        findings_text = plan_review_findings_to_text(parsed_pr)
+                        state.plan_agent_review_findings = findings_text
+                        _log(
+                            f"  ✓ PLAN_REVIEW   approve (agent, {len(parsed_pr.findings)} "
+                            f"advisory)  "
+                            f"${pr_result.cost_usd:.2f}  {_fmt_duration(_pr_elapsed)}"
+                        )
+                        _log(f"  Advisory findings (passed to dev):\n{findings_text}")
+                        parsed_pr = PlanReviewResult(
+                            verdict="APPROVE",
+                            findings=parsed_pr.findings,
+                            parse_errors=parsed_pr.parse_errors,
                         )
 
                     if parsed_pr.verdict == "APPROVE":

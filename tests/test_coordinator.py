@@ -3292,13 +3292,23 @@ findings: []
 ```
 """
 
-PLAN_AGENT_REJECT = """\
+PLAN_AGENT_REJECT_P1 = """\
 ```yaml
 verdict: REJECT
 findings:
   - severity: P1
     description: "Plan references nonexistent function parse_config()"
     suggestion: "Use load_config() from config.py instead"
+```
+"""
+
+PLAN_AGENT_REJECT_P0 = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P0
+    description: "Plan is architecturally broken — wrong module entirely"
+    suggestion: "Rethink the approach"
 ```
 """
 
@@ -3367,10 +3377,47 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_plan_agent_review_reject_then_approve(
+    def test_plan_agent_review_p1_advisory_approve(
         self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
     ):
-        """First review REJECT, plan regenerated, second review APPROVE."""
+        """P1 findings are advisory — plan is approved without regen."""
+        config = _make_plan_agent_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_REJECT_P1,
+                cost_usd=0.08,
+                profile_name="plan-review",
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_regen_count == 0  # no regen needed
+        assert result.state.plan_review_decision == "approve"
+        assert result.state.plan_output == "# Plan\n\nGood plan."
+        assert len(result.state.plan_results) == 1  # only one plan attempt
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_plan_agent_review_p0_reject_then_approve(
+        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+    ):
+        """P0 finding blocks — plan regenerated, second review APPROVE."""
         config = _make_plan_agent_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -3381,7 +3428,10 @@ class TestPlanAgentReview:
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
             _make_agent_result(
-                success=True, output=PLAN_AGENT_REJECT, cost_usd=0.08, profile_name="plan-review"
+                success=True,
+                output=PLAN_AGENT_REJECT_P0,
+                cost_usd=0.08,
+                profile_name="plan-review",
             ),
             _make_agent_result(success=True, output="# Plan\n\nFixed plan.", cost_usd=0.12),
             _make_agent_result(
@@ -3405,10 +3455,10 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_plan_agent_review_double_reject_escalates(
+    def test_plan_agent_review_double_p0_reject_escalates(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
-        """Two REJECTs, run escalates with findings."""
+        """Two P0 REJECTs, run escalates with findings."""
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
@@ -3424,11 +3474,17 @@ class TestPlanAgentReview:
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
             _make_agent_result(
-                success=True, output=PLAN_AGENT_REJECT, cost_usd=0.08, profile_name="plan-review"
+                success=True,
+                output=PLAN_AGENT_REJECT_P0,
+                cost_usd=0.08,
+                profile_name="plan-review",
             ),
             _make_agent_result(success=True, output="# Plan\n\nStill bad.", cost_usd=0.12),
             _make_agent_result(
-                success=True, output=PLAN_AGENT_REJECT, cost_usd=0.08, profile_name="plan-review"
+                success=True,
+                output=PLAN_AGENT_REJECT_P0,
+                cost_usd=0.08,
+                profile_name="plan-review",
             ),
         ]
 
@@ -3566,7 +3622,7 @@ class TestPlanAgentReview:
     def test_plan_regen_receives_rejection_findings(
         self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
     ):
-        """Regenerated plan prompt includes rejection findings from first review."""
+        """Regenerated plan prompt includes rejection findings from P0 review."""
         config = _make_plan_agent_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -3577,7 +3633,10 @@ class TestPlanAgentReview:
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
             _make_agent_result(
-                success=True, output=PLAN_AGENT_REJECT, cost_usd=0.08, profile_name="plan-review"
+                success=True,
+                output=PLAN_AGENT_REJECT_P0,
+                cost_usd=0.08,
+                profile_name="plan-review",
             ),
             _make_agent_result(success=True, output="# Plan\n\nFixed plan.", cost_usd=0.12),
             _make_agent_result(
@@ -3598,7 +3657,7 @@ class TestPlanAgentReview:
             "prompt", regen_call.args[0] if regen_call.args else ""
         )
         assert "Previous Plan Review Findings" in regen_prompt
-        assert "parse_config()" in regen_prompt
+        assert "architecturally broken" in regen_prompt.lower()
 
 
 # ── Structured logging tests ──────────────────────────────────────────
