@@ -72,6 +72,17 @@ profiles:
         - Bash
         - Glob
         - Grep
+    - name: deepseek-reviewer
+      provider: deepseek
+      model: deepseek-chat
+      review_role: patterns
+      budget_usd: 1.00
+      timeout_seconds: 300
+      allowed_tools:
+        - Read
+        - Bash
+        - Glob
+        - Grep
 
 retry:
   max_dev_iterations: 3

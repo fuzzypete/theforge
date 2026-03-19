@@ -73,8 +73,10 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("google", "gemini-2.5-pro"): (3.50, 10.50),
     ("google", "gemini-2.5-flash"): (0.15, 0.60),
     ("google", "gemini-2.0-flash"): (0.10, 0.40),
+    ("deepseek", "deepseek-chat"): (0.27, 1.10),  # V3 alias
     ("deepseek", "deepseek-r1"): (0.55, 2.19),
     ("deepseek", "deepseek-v3"): (0.27, 1.10),
+    ("deepseek", "deepseek-reasoner"): (0.55, 2.19),  # R1 alias
 }
 
 # Models that use the Responses API (/v1/responses) instead of Chat Completions.
@@ -724,10 +726,14 @@ class AgentLoopManager:
 
 def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = None):  # type: ignore[return]
     """Build an OpenAI client from profile + secrets."""
+    import httpx
     import openai
 
     merged = {**os.environ, **(secrets or {})}
-    kwargs: dict[str, Any] = {"api_key": merged.get("OPENAI_API_KEY") or "local"}
+    kwargs: dict[str, Any] = {
+        "api_key": merged.get("OPENAI_API_KEY") or "local",
+        "http_client": httpx.Client(timeout=httpx.Timeout(profile.timeout_seconds)),
+    }
     if profile.base_url:
         kwargs["base_url"] = profile.base_url
     return openai.OpenAI(**kwargs)
@@ -735,12 +741,14 @@ def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = Non
 
 def _deepseek_client(profile: "ModelProfile", secrets: dict[str, str] | None = None):  # type: ignore[return]
     """Build an OpenAI-compatible client for the DeepSeek API."""
+    import httpx
     import openai
 
     merged = {**os.environ, **(secrets or {})}
     kwargs: dict[str, Any] = {
         "api_key": merged.get("DEEPSEEK_API_KEY") or "local",
         "base_url": profile.base_url or "https://api.deepseek.com",
+        "http_client": httpx.Client(timeout=httpx.Timeout(profile.timeout_seconds)),
     }
     return openai.OpenAI(**kwargs)
 
@@ -890,7 +898,10 @@ def _run_anthropic(
     import anthropic
 
     merged = {**os.environ, **(secrets or {})}
-    client = anthropic.Anthropic(api_key=merged.get("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic(
+        api_key=merged.get("ANTHROPIC_API_KEY"),
+        timeout=profile.timeout_seconds,
+    )
     schema = review_json_schema()
 
     try:
@@ -1278,7 +1289,10 @@ def _make_anthropic_adapter(
     import anthropic
 
     merged = {**os.environ, **(secrets or {})}
-    client = anthropic.Anthropic(api_key=merged.get("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic(
+        api_key=merged.get("ANTHROPIC_API_KEY"),
+        timeout=profile.timeout_seconds,
+    )
 
     def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
         anth_messages = _translate_messages_anthropic(messages)
@@ -1651,7 +1665,10 @@ def _make_anthropic_finalizer(
     import anthropic
 
     merged = {**os.environ, **(secrets or {})}
-    client = anthropic.Anthropic(api_key=merged.get("ANTHROPIC_API_KEY"))
+    client = anthropic.Anthropic(
+        api_key=merged.get("ANTHROPIC_API_KEY"),
+        timeout=profile.timeout_seconds,
+    )
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         anth_messages = _translate_messages_anthropic(messages)

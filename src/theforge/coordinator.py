@@ -998,6 +998,7 @@ def run_task(
             allowed_tools=config.preflight_profile.allowed_tools,
         )
         _log_phase(state.phase, plan_profile.model)
+        logger._safe_emit("phase_start", phase="PLAN", iteration=0)
 
         plan_prompt = build_plan_prompt(
             task,
@@ -1023,6 +1024,13 @@ def run_task(
             (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
             state.plan_output = plan_text
             _log(f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}")
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN",
+                outcome="success",
+                cost_usd=round(plan_result.cost_usd or 0.0, 6),
+                duration_s=round(_plan_elapsed, 2),
+            )
 
             if config.plan_agent_review.enabled:
                 # ── Agent plan review (pool) ───────────────────────
@@ -1043,6 +1051,7 @@ def run_task(
                         state.phase,
                         f"agent review ({_pool_label}, {len(par_profiles)} reviewer(s))",
                     )
+                    logger._safe_emit("phase_start", phase="PLAN_REVIEW", iteration=_attempt)
 
                     pr_prompt = build_plan_review_prompt(
                         task,
@@ -1139,6 +1148,13 @@ def run_task(
                                 f"  ✓ PLAN_REVIEW   approve (merged)  "
                                 f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
                             )
+                        logger._safe_emit(
+                            "phase_end",
+                            phase="PLAN_REVIEW",
+                            outcome="approve",
+                            cost_usd=round(_total_pr_cost, 6),
+                            duration_s=round(_pr_elapsed, 2),
+                        )
                         # Commit the approved plan so it's preserved in git history
                         try:
                             _cu._run_shell(
@@ -1165,6 +1181,13 @@ def run_task(
                     _log(
                         f"  ✗ PLAN_REVIEW   reject (merged)  "
                         f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+                    )
+                    logger._safe_emit(
+                        "phase_end",
+                        phase="PLAN_REVIEW",
+                        outcome="reject",
+                        cost_usd=round(_total_pr_cost, 6),
+                        duration_s=round(_pr_elapsed, 2),
                     )
 
                     state.plan_regen_count += 1
@@ -1392,6 +1415,7 @@ def run_task(
                 "Consider increasing plan timeout or simplifying the spec."
             )
             _log("  ✗ PLAN failed — escalating (not proceeding blind)")
+            logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
             _log(f"✗ ESCALATE   {state.error}")
             _escalate_notify(task, state, notify, config)
             return CoordinatorResult(
@@ -1673,11 +1697,17 @@ def run_review_only(
         )
         state.review_results[-1] = parsed_review
 
-    _log_verbose(f"Review verdict: {parsed_review.verdict}")
-    _log_verbose(f"  Summary: {parsed_review.summary}")
-
     _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
+
+    _log(f"  Summary: {parsed_review.summary}")
+    _ro_findings_by_sev: dict[str, list] = {}
+    for _f in parsed_review.findings:
+        _ro_findings_by_sev.setdefault(_f.severity, []).append(_f)
+    for _sev in sorted(_ro_findings_by_sev):
+        for _f in _ro_findings_by_sev[_sev]:
+            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
+            _log(f"  [{_sev}]{_loc} {_f.description}")
     _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
     _ro_elapsed = _pool_elapsed
 
@@ -1724,7 +1754,7 @@ def run_review_only(
         f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
     )
     _log(
-        f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
+        f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
     )
     _log(f"✗ ESCALATE   {state.error}")
     logger._safe_emit(
