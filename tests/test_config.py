@@ -50,6 +50,32 @@ class TestHybridRunnerConfig:
         assert profile.cli is None
         assert profile.mode == "api"
 
+    def test_deepseek_profile_parses(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "deepseek-reviewer",
+                            "provider": "deepseek",
+                            "model": "deepseek-r1",
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        profile = config.review_pool[0]
+        assert profile.provider == "deepseek"
+        assert profile.model == "deepseek-r1"
+        assert profile.cli is None
+        assert profile.mode == "api"
+
     def test_cli_profile_loads(self, tmp_path):
         config_path = _write_config(
             {"profiles": {"dev": {"cli": "claude", "model": "sonnet"}}},
