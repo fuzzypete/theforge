@@ -6,7 +6,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = ["pyyaml>=6.0"]
-authors = [{name = "Pete Wickersham"}]
+authors = [{name = "Peter Wickersham"}]
 urls = {Homepage = "https://github.com/fuzzypete/theforge", Repository = "https://github.com/fuzzypete/theforge"}
 
 [project.optional-dependencies]
