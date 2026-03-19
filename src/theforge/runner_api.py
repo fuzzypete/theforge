@@ -73,6 +73,8 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("google", "gemini-2.5-pro"): (3.50, 10.50),
     ("google", "gemini-2.5-flash"): (0.15, 0.60),
     ("google", "gemini-2.0-flash"): (0.10, 0.40),
+    ("deepseek", "deepseek-r1"): (0.55, 2.19),
+    ("deepseek", "deepseek-v3"): (0.27, 1.10),
 }
 
 # Models that use the Responses API (/v1/responses) instead of Chat Completions.
@@ -92,8 +94,8 @@ _REASONING_MODEL_RE = re.compile(r"^o\d")
 
 
 def _is_reasoning_model(model: str) -> bool:
-    """Return True for OpenAI reasoning models (o1, o3, o4-mini, etc.)."""
-    return bool(_REASONING_MODEL_RE.match(model))
+    """Return True for reasoning models that do not support temperature=0."""
+    return bool(_REASONING_MODEL_RE.match(model)) or model.startswith("deepseek-r1")
 
 
 # Submit tool names — loop-internal, not in TOOL_REGISTRY
@@ -731,15 +733,28 @@ def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = Non
     return openai.OpenAI(**kwargs)
 
 
+def _deepseek_client(profile: "ModelProfile", secrets: dict[str, str] | None = None):  # type: ignore[return]
+    """Build an OpenAI-compatible client for the DeepSeek API."""
+    import openai
+
+    merged = {**os.environ, **(secrets or {})}
+    kwargs: dict[str, Any] = {
+        "api_key": merged.get("DEEPSEEK_API_KEY") or "local",
+        "base_url": profile.base_url or "https://api.deepseek.com",
+    }
+    return openai.OpenAI(**kwargs)
+
+
 def _openai_result(
     profile: "ModelProfile",
     output_text: str,
     input_tokens: int,
     output_tokens: int,
     raw: dict,
+    provider: str = "openai",
 ) -> AgentResult:
-    """Build AgentResult from parsed OpenAI response fields."""
-    cost = _estimate_cost("openai", profile.model, input_tokens, output_tokens)
+    """Build AgentResult from parsed OpenAI-compatible response fields."""
+    cost = _estimate_cost(provider, profile.model, input_tokens, output_tokens)
     if profile.base_url:
         cost = None
     model_usage = ModelUsage(
@@ -767,10 +782,15 @@ def _openai_result(
 
 
 def _run_openai_chat(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+    prompt: str,
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None = None,
+    client: Any = None,
+    provider: str = "openai",
 ) -> AgentResult:
     """Run via OpenAI Chat Completions (/v1/chat/completions)."""
-    client = _openai_client(profile, secrets)
+    if client is None:
+        client = _openai_client(profile, secrets)
     schema = review_json_schema()
     try:
         create_kwargs: dict[str, Any] = {
@@ -792,6 +812,7 @@ def _run_openai_chat(
             usage.prompt_tokens if usage else 0,
             usage.completion_tokens if usage else 0,
             response.model_dump(),
+            provider=provider,
         )
     except Exception as e:
         return AgentResult(
@@ -852,6 +873,14 @@ def _run_openai(
     if profile.model in _RESPONSES_API_MODELS:
         return _run_openai_responses(prompt, profile, secrets)
     return _run_openai_chat(prompt, profile, secrets)
+
+
+def _run_deepseek(
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+) -> AgentResult:
+    """Run via DeepSeek API (OpenAI-compatible Chat Completions)."""
+    client = _deepseek_client(profile, secrets)
+    return _run_openai_chat(prompt, profile, secrets, client=client, provider="deepseek")
 
 
 def _run_anthropic(
@@ -997,6 +1026,7 @@ PROVIDER_RUNNERS: dict[str, Callable[..., AgentResult]] = {
     "openai": _run_openai,
     "anthropic": _run_anthropic,
     "google": _run_google,
+    "deepseek": _run_deepseek,
 }
 
 
@@ -1051,9 +1081,11 @@ def _translate_messages_openai_chat(messages: list[dict]) -> list[dict]:
 def _make_openai_chat_adapter(
     profile: "ModelProfile",
     secrets: dict[str, str] | None,
+    client: Any = None,
 ) -> ProviderAdapter:
     """Build OpenAI Chat Completions adapter for AgentLoopManager."""
-    client = _openai_client(profile, secrets)
+    if client is None:
+        client = _openai_client(profile, secrets)
 
     def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
         oai_messages = _translate_messages_openai_chat(messages)
@@ -1500,9 +1532,11 @@ def _make_google_adapter(
 def _make_openai_chat_finalizer(
     profile: "ModelProfile",
     secrets: dict[str, str] | None,
+    client: Any = None,
 ) -> Finalizer:
     """Build a Chat Completions finalizer using response_format: json_schema."""
-    client = _openai_client(profile, secrets)
+    if client is None:
+        client = _openai_client(profile, secrets)
     schema = review_json_schema()
 
     def finalizer(messages: list[dict]) -> LoopTurn:
@@ -1836,10 +1870,40 @@ def _run_loop_google(
     )
 
 
+def _run_loop_deepseek(
+    prompt: str,
+    profile: "ModelProfile",
+    working_dir: Path,
+    secrets: dict[str, str] | None = None,
+) -> AgentResult:
+    """Run DeepSeek provider in agent loop mode (OpenAI Chat Completions)."""
+    client = _deepseek_client(profile, secrets)
+    tools = _build_registry_tools(profile)
+    tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai(
+        responses_api=False
+    )
+    adapter = _make_openai_chat_adapter(profile, secrets, client=client)
+    finalizer = _make_openai_chat_finalizer(profile, secrets, client=client)
+
+    manager = AgentLoopManager(
+        profile=profile,
+        provider="deepseek",
+        working_dir=working_dir,
+        tools=tools,
+        provider_adapter=adapter,
+        finalizer=finalizer,
+    )
+    return manager.run(
+        initial_messages=[{"role": "user", "content": prompt}],
+        tool_schemas=tool_schemas,
+    )
+
+
 _LOOP_RUNNERS: dict[str, Callable[..., AgentResult]] = {
     "openai": _run_loop_openai,
     "anthropic": _run_loop_anthropic,
     "google": _run_loop_google,
+    "deepseek": _run_loop_deepseek,
 }
 
 

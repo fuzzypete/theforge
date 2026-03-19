@@ -50,6 +50,58 @@ class TestHybridRunnerConfig:
         assert profile.cli is None
         assert profile.mode == "api"
 
+    def test_deepseek_profile_parses(self, tmp_path):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "deepseek-reviewer",
+                            "provider": "deepseek",
+                            "model": "deepseek-r1",
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        profile = config.review_pool[0]
+        assert profile.provider == "deepseek"
+        assert profile.model == "deepseek-r1"
+        assert profile.cli is None
+        assert profile.mode == "api"
+
+    def test_deepseek_local_base_url_no_api_key_no_error(self, tmp_path):
+        """A local base_url override should not require DEEPSEEK_API_KEY."""
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "deepseek-local",
+                            "provider": "deepseek",
+                            "model": "deepseek-r1",
+                            "base_url": "http://localhost:11434",
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        profile = config.review_pool[0]
+        assert profile.provider == "deepseek"
+        assert profile.base_url == "http://localhost:11434"
+
     def test_cli_profile_loads(self, tmp_path):
         config_path = _write_config(
             {"profiles": {"dev": {"cli": "claude", "model": "sonnet"}}},

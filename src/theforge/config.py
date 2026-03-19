@@ -83,7 +83,7 @@ class NotificationConfig:
     human_review_timeout_seconds: int = 14400  # 4 hours
 
 
-SUPPORTED_PROVIDERS = {"anthropic", "openai", "google"}
+SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
 
 
 @dataclass(frozen=True)
@@ -311,11 +311,13 @@ PROVIDER_SDK_MAP = {
     "anthropic": "anthropic",
     "openai": "openai",
     "google": "google.genai",
+    "deepseek": "openai",
 }
 PROVIDER_API_KEY_MAP = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
 }
 
 
