@@ -37,7 +37,7 @@ class ToolDef:
     handler: Callable[..., str]  # accepts **args + working_dir kwarg; returns str
 
     def to_openai_function(self) -> dict:
-        """Translate to OpenAI function tool schema."""
+        """Translate to OpenAI Chat Completions function tool schema."""
         return {
             "type": "function",
             "function": {
@@ -45,6 +45,20 @@ class ToolDef:
                 "description": self.description,
                 "parameters": self.parameters,
             },
+        }
+
+    def to_openai_responses_function(self) -> dict:
+        """Translate to OpenAI Responses API function tool schema.
+
+        The Responses API (used by Codex models) uses a flat format with
+        'type', 'name', 'description', 'parameters' at the top level,
+        unlike Chat Completions which nests under 'function'.
+        """
+        return {
+            "type": "function",
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters,
         }
 
     def to_anthropic_tool(self) -> dict:
@@ -56,11 +70,17 @@ class ToolDef:
         }
 
     def to_google_declaration(self) -> dict:
-        """Translate to Google function declaration schema."""
+        """Translate to Google function declaration schema.
+
+        Google's API does not support additionalProperties, anyOf, or other
+        advanced JSON Schema features. These are stripped recursively.
+        """
+        from .runner_api import _sanitize_schema_for_google
+
         return {
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters,
+            "parameters": _sanitize_schema_for_google(self.parameters),
         }
 
 

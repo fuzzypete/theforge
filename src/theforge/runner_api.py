@@ -191,21 +191,35 @@ def _submit_plan_review_schema() -> dict:
     }
 
 
-def _build_submit_tools_openai() -> list[dict]:
-    """Build submit tool schemas in OpenAI function format."""
+def _build_submit_tools_openai(responses_api: bool = False) -> list[dict]:
+    """Build submit tool schemas in OpenAI function format.
+
+    When responses_api=True, uses the flat Responses API format (Codex models).
+    Otherwise uses the nested Chat Completions format.
+    """
     result = []
     for schema_fn in (_submit_review_schema, _submit_plan_review_schema):
         s = schema_fn()
-        result.append(
-            {
-                "type": "function",
-                "function": {
+        if responses_api:
+            result.append(
+                {
+                    "type": "function",
                     "name": s["name"],
                     "description": s["description"],
                     "parameters": s["parameters"],
-                },
-            }
-        )
+                }
+            )
+        else:
+            result.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": s["name"],
+                        "description": s["description"],
+                        "parameters": s["parameters"],
+                    },
+                }
+            )
     return result
 
 
@@ -225,7 +239,11 @@ def _build_submit_tools_anthropic() -> list[dict]:
 
 
 def _build_submit_tools_google() -> list[dict]:
-    """Build submit tool function declarations for Google."""
+    """Build submit tool function declarations for Google.
+
+    Sanitizes parameters to strip additionalProperties and other unsupported
+    JSON Schema features.
+    """
     result = []
     for schema_fn in (_submit_review_schema, _submit_plan_review_schema):
         s = schema_fn()
@@ -233,7 +251,7 @@ def _build_submit_tools_google() -> list[dict]:
             {
                 "name": s["name"],
                 "description": s["description"],
-                "parameters": s["parameters"],
+                "parameters": _sanitize_schema_for_google(s["parameters"]),
             }
         )
     return result
@@ -1221,11 +1239,19 @@ def _run_loop_openai(
 ) -> AgentResult:
     """Run OpenAI provider in agent loop mode."""
     tools = _build_registry_tools(profile)
-    tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai()
+    is_responses = profile.model in _RESPONSES_API_MODELS
 
-    if profile.model in _RESPONSES_API_MODELS:
+    if is_responses:
+        tool_schemas = (
+            [t.to_openai_responses_function() for t in tools]
+            + _build_submit_tools_openai(responses_api=True)
+        )
         adapter = _make_openai_responses_adapter(profile, secrets)
     else:
+        tool_schemas = (
+            [t.to_openai_function() for t in tools]
+            + _build_submit_tools_openai(responses_api=False)
+        )
         adapter = _make_openai_chat_adapter(profile, secrets)
 
     manager = AgentLoopManager(
