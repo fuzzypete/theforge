@@ -1,55 +1,44 @@
-dev_notes: |
-  summary: "Added per-run verbose log capture. Every run_task(), run_from_review(), and
-    run_from_dev() call now tees sys.stderr to ~/.forge/logs/<project>/<slug>-<run_id>.log
-    alongside the existing forge.log. Three module-level helpers handle the lifecycle:
-    _begin_run_log_tee() opens the file and installs the _TeeStderr wrapper;
-    _end_run_log_tee() restores sys.stderr and closes the file; _make_sigterm_handler()
-    returns a SIGTERM handler that emits run_end:crashed to forge.log before closing
-    the tee and re-raising. Each entry point wraps its body in try/finally to guarantee
-    cleanup on normal exit and KeyboardInterrupt. Feature gates on config.log.enabled
-    so all existing tests with LogConfig(enabled=False) are unaffected."
-  commits:
-    - sha: "08a366f"
-      message: "feat(coordinator): add per-run verbose log capture"
-    - sha: "34db264"
-      message: "chore(run-log-capture): write handoff.yaml with dev notes"
-  acceptance_criteria:
-    - criterion: "Every forge run and forge sprint creates ~/.forge/logs/<project>/<slug>-<run_id>.log"
-      status: MET
-      notes: "run_task(), run_from_review(), run_from_dev() all call _begin_run_log_tee()
-        after logger creation. sprint dispatches to all three, so all paths are covered."
-    - criterion: "The file contains the full stderr stream — both _log and _log_verbose lines"
-      status: MET
-      notes: "_TeeStderr wraps sys.stderr and copies every write to the log file.
-        Both _log and _log_verbose write to sys.stderr so all output is captured."
-    - criterion: "The file is written incrementally (not buffered to end of run)"
-      status: MET
-      notes: "_TeeStderr.write() calls self._fh.flush() on every write."
-    - criterion: "File is closed cleanly on normal exit, KeyboardInterrupt, and SIGTERM"
-      status: MET
-      notes: "try/finally in all three entry points handles normal exit and KeyboardInterrupt.
-        SIGTERM handler calls _end_run_log_tee() before re-raising."
-    - criterion: "SIGTERM handler emits run_end with outcome: crashed to forge.log before dying"
-      status: MET
-      notes: "_make_sigterm_handler() emits logger._safe_emit('run_end', outcome='crashed')
-        then closes the tee, restores the previous handler, and sends SIGTERM to self."
-    - criterion: "Log directory is created if it doesn't exist (same logic as forge.log)"
-      status: MET
-      notes: "_begin_run_log_tee() calls per_run_path.parent.mkdir(parents=True, exist_ok=True)
-        mirroring coord_logging.py:49."
-    - criterion: "forge.log already captures run_id — the per-run filename uses the same run_id"
-      status: MET
-      notes: "Per-run path derived as logger._log_path.parent / f'{task_slug}-{logger._run_id}.log'
-        using the same _run_id passed to StructuredLogger."
-    - criterion: "Existing tests pass unchanged"
-      status: MET
-      notes: "All 879 tests pass. Feature gates on config.log.enabled; all test fixtures
-        use LogConfig(enabled=False)."
-  spec_deviations:
-    - description: "Tee implemented in coordinator.py rather than cli.py as the spec suggested"
-      justification: "Placing it in cli.py cannot cover forge sprint without per-spec lifecycle
-        hooks. coordinator.py's three entry points (run_task, run_from_review, run_from_dev)
-        are the natural boundary — each gets its own slug and run_id."
-  deferred_items: none
-  gate_result: PASS
 gate_decision: PASS
+dev_notes: |
+  summary: "All five functional ACs were already implemented in the codebase (confirmed by
+  preflight). The only gap was AC-7: new tests covering the added audit fields. I added
+  tests/test_generate_audit_log.py with 18 tests covering generate_audit_log() timing
+  (started_at propagation, finished_at presence, duration_seconds computation, and None
+  when started_at is absent), cost.agents per-invocation entries (role, profile, cost_usd,
+  duration_seconds, ordering of dev-before-review, None duration when list is shorter), and
+  reviews[].findings (findings list with severity/file/line/description, p1/p2 counts still
+  present, empty findings, null line, multiple review cycles). Also fixed a pre-existing
+  E501 lint error in tests/test_runner_api.py that was blocking make fmt/lint."
+
+  commits:
+    - sha: "2f8086b"
+      message: "test(audit): add tests for generate_audit_log timing, cost.agents, and reviews findings"
+
+  acceptance_criteria:
+    - criterion: "CoordinatorState has a started_at: str | None field set during INIT"
+      status: MET
+      notes: "Already implemented: coord_state.py:67 declares the field; coordinator.py:561 sets it during INIT."
+    - criterion: "generate_audit_log() includes started_at, finished_at, duration_seconds"
+      status: MET
+      notes: "Already implemented: coord_audit.py:54-60 computes values; :155-160 emits them under 'timing' key."
+    - criterion: "Audit YAML cost.agents list has per-invocation entries with role, profile, cost, duration"
+      status: MET
+      notes: "Already implemented: coord_audit.py:65-108 builds agents list with role/profile/cost_usd/duration_seconds."
+    - criterion: "Audit YAML reviews[].findings includes the actual findings (not just counts; counts stay too)"
+      status: MET
+      notes: "Already implemented: coord_audit.py:124-141 builds findings_list and includes both 'findings' and counts."
+    - criterion: "cmd_audit displays timing, per-agent costs, and finding details"
+      status: MET
+      notes: "Already implemented: cli.py:758-770 prints timing; :789-800 per-agent table; :814-822 finding detail."
+    - criterion: "All existing tests continue to pass"
+      status: MET
+      notes: "894 tests pass after the changes."
+    - criterion: "New tests cover the added audit fields"
+      status: MET
+      notes: "Added tests/test_generate_audit_log.py with 18 tests covering timing, cost.agents, and reviews[].findings."
+
+  spec_deviations: none
+
+  deferred_items: none
+
+  gate_result: PASS
