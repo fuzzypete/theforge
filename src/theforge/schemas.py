@@ -226,9 +226,17 @@ def validate_dev_handoff(data: Any) -> list[str]:
 
 
 def review_json_schema() -> dict:
-    """Export the review schema as a JSON Schema dict."""
+    """Export the review schema as a JSON Schema dict.
+
+    Conforms to OpenAI strict JSON Schema requirements:
+    - additionalProperties: false on every object
+    - no type arrays (use anyOf/oneOf for nullable fields)
+    - all object properties listed in required
+    """
     return {
         "type": "object",
+        "additionalProperties": False,
+        "required": ["verdict", "summary", "findings", "spec_compliance", "test_coverage"],
         "properties": {
             "verdict": {
                 "type": "string",
@@ -243,21 +251,24 @@ def review_json_schema() -> dict:
                 "type": "array",
                 "items": {
                     "type": "object",
+                    "additionalProperties": False,
+                    "required": ["severity", "file", "line", "description", "suggestion"],
                     "properties": {
                         "severity": {
                             "type": "string",
                             "enum": list(VALID_SEVERITIES),
                         },
                         "file": {"type": "string"},
-                        "line": {"type": ["integer", "null"]},
+                        "line": {"anyOf": [{"type": "integer"}, {"type": "null"}]},
                         "description": {"type": "string"},
                         "suggestion": {"type": "string"},
                     },
-                    "required": ["severity", "file", "description", "suggestion"],
                 },
             },
             "spec_compliance": {
                 "type": "object",
+                "additionalProperties": False,
+                "required": ["matches_spec", "mismatches"],
                 "properties": {
                     "matches_spec": {"type": "boolean"},
                     "mismatches": {
@@ -265,10 +276,11 @@ def review_json_schema() -> dict:
                         "items": {"type": "string"},
                     },
                 },
-                "required": ["matches_spec"],
             },
             "test_coverage": {
                 "type": "object",
+                "additionalProperties": False,
+                "required": ["adequate", "gaps"],
                 "properties": {
                     "adequate": {"type": "boolean"},
                     "gaps": {
@@ -276,8 +288,6 @@ def review_json_schema() -> dict:
                         "items": {"type": "string"},
                     },
                 },
-                "required": ["adequate"],
             },
         },
-        "required": ["verdict", "summary", "findings", "spec_compliance", "test_coverage"],
     }
