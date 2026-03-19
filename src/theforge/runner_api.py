@@ -359,7 +359,7 @@ class AgentLoopManager:
             # Check for submit tool call
             for call in turn.tool_calls:
                 if call.name in _SUBMIT_TOOL_NAMES:
-                    self._total_tool_calls += 1
+                    self._total_tool_calls += len(turn.tool_calls)
                     label = self._profile.name or f"{self._provider}/{self._profile.model}"
                     _log(
                         f"  ... {label} done "
@@ -381,46 +381,56 @@ class AgentLoopManager:
                     structured_data=turn.structured_data,
                 )
 
-            # Validate tool calls
+            # Validate all calls in this turn and collect results for the full set.
+            # We must call _append_tool_results ONCE with all of turn.tool_calls so
+            # that every tool_call/tool_use in the assistant message has a matching
+            # result — all three providers require this.
+            turn_results: list[dict] = []
+            has_malformed = False
             valid_calls: list[ToolCallRequest] = []
-            malformed_this_turn = False
+
             for call in turn.tool_calls:
                 if not call.name or not isinstance(call.arguments, dict):
+                    has_malformed = True
                     consecutive_malformed += 1
-                    malformed_this_turn = True
-                    if consecutive_malformed >= _MAX_MALFORMED:
-                        return self._failure_result(
-                            f"Aborted after {_MAX_MALFORMED} consecutive malformed tool calls"
-                        )
-                    # Feed error back to model via a synthetic result
-                    messages = self._append_tool_results(
-                        messages,
-                        turn.tool_calls,
-                        [
-                            {
-                                "id": call.id,
-                                "name": call.name or "unknown",
-                                "content": (
-                                    f"Error: malformed tool call — "
-                                    f"name={call.name!r}, arguments={call.arguments!r}"
-                                ),
-                            }
-                        ],
+                    turn_results.append(
+                        {
+                            "id": call.id,
+                            "name": call.name or "unknown",
+                            "content": (
+                                f"Error: malformed tool call — "
+                                f"name={call.name!r}, arguments={call.arguments!r}"
+                            ),
+                        }
                     )
                 else:
                     valid_calls.append(call)
 
-            if malformed_this_turn:
-                continue
+            if has_malformed and consecutive_malformed >= _MAX_MALFORMED:
+                return self._failure_result(
+                    f"Aborted after {_MAX_MALFORMED} consecutive malformed tool calls"
+                )
 
-            consecutive_malformed = 0
+            # Execute valid calls in parallel and merge results in original order
+            if valid_calls:
+                consecutive_malformed = 0
+                self._total_tool_calls += len(valid_calls)
+                executed = self._execute_tools(valid_calls)
+                # executed is ordered by valid_calls; turn_results holds errors so far;
+                # rebuild in original turn order
+                executed_by_id = {r["id"]: r for r in executed}
+                turn_results = [
+                    executed_by_id[call.id]
+                    if call.id in executed_by_id
+                    else next(r for r in turn_results if r["id"] == call.id)
+                    for call in turn.tool_calls
+                ]
+            elif not has_malformed:
+                # All calls were skipped (shouldn't happen), reset counter
+                consecutive_malformed = 0
 
-            # Execute tool calls in parallel
-            self._total_tool_calls += len(valid_calls)
-            results = self._execute_tools(valid_calls)
-
-            # Append assistant turn + tool results to message history
-            messages = self._append_tool_results(messages, valid_calls, results)
+            # Append assistant turn + all tool results in a single history entry
+            messages = self._append_tool_results(messages, turn.tool_calls, turn_results)
 
         return self._timeout_result(iterations, reason="max iterations reached")
 

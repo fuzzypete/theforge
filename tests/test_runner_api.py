@@ -391,6 +391,55 @@ class TestAgentLoopLifecycle:
         # One malformed call should not abort
         assert call_count[0] == 2
 
+    def test_mixed_malformed_and_valid_calls_in_same_turn(self, tmp_path):
+        """Mixed malformed and valid calls: error for bad, execute good, one history entry."""
+        (tmp_path / "real.py").write_text("content", encoding="utf-8")
+        received_second_call_messages = []
+
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                # One valid call + one malformed call in the same turn
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="good", name="read_file", arguments={"path": "real.py"}
+                        ),
+                        ToolCallRequest(id="bad", name="", arguments={}),
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            received_second_call_messages.extend(messages)
+            return LoopTurn(
+                tool_calls=[],
+                text_output="done",
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_manager(tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert result.success
+        # History should be: user, assistant, tool_results (one append_tool_results call)
+        assert call_count[0] == 2
+        roles = [m["role"] for m in received_second_call_messages]
+        assert roles == ["user", "assistant", "tool_results"]
+        # Both tool results (good result + error for bad) must be present
+        tool_results = received_second_call_messages[2]["results"]
+        assert len(tool_results) == 2
+        result_ids = {r["id"] for r in tool_results}
+        assert result_ids == {"good", "bad"}
+        # The bad call result should contain an error message
+        bad_result = next(r for r in tool_results if r["id"] == "bad")
+        assert "Error" in bad_result["content"]
+
     def test_three_consecutive_malformed_aborts_loop(self, tmp_path):
         """3 consecutive malformed calls abort the loop."""
 

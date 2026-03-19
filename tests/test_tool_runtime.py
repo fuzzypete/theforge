@@ -203,6 +203,16 @@ class TestGrep:
         result = _handle_grep(pattern="beta", working_dir=tmp_path)
         assert "test.py:2: beta" in result
 
+    def test_path_is_a_file_searches_that_file(self, tmp_path):
+        """When path resolves to a file, grep searches within it directly."""
+        f = tmp_path / "single.py"
+        f.write_text("TARGET\nother\n", encoding="utf-8")
+        (tmp_path / "other.py").write_text("TARGET\n", encoding="utf-8")
+        result = _handle_grep(pattern="TARGET", working_dir=tmp_path, path="single.py")
+        assert "single.py" in result
+        # Should not include the other file
+        assert "other.py" not in result
+
 
 class TestGlob:
     def test_finds_files(self, tmp_path):

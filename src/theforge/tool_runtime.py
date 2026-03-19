@@ -169,7 +169,9 @@ def _handle_grep(
         search_root = resolved
 
     results: list[str] = []
-    for file_path in sorted(search_root.rglob("*")):
+    # When search_root is a file, search it directly; otherwise walk the tree.
+    candidates = [search_root] if search_root.is_file() else sorted(search_root.rglob("*"))
+    for file_path in candidates:
         if not file_path.is_file():
             continue
         if glob and not fnmatch.fnmatch(file_path.name, glob):
