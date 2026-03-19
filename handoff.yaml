@@ -1,85 +1,54 @@
+dev_notes: "summary: >\n  Implemented full worktree resume logic: (1) added has_review_approve()\
+  \ to\n  coord_audit.py that reads history.jsonl to check for a prior APPROVE for\
+  \ a\n  given slug; (2) removed age-based staleness check from _is_stale_worktree\
+  \ —\n  commits ahead of base = not stale, regardless of age; (3) added ALREADY_DONE\n\
+  \  guard in coordinator.py that checks commits-ahead + no-prior-APPROVE and\n  redirects\
+  \ to REVIEW instead of short-circuiting to DONE; (4) added audit-trail\n  APPROVE\
+  \ check to sprint._triage_spec with a new 'skip' action (explicitly\n  handled in\
+  \ run_sprint dispatch); (5) added --resume flag to forge run in cli.py\n  with triage\
+  \ dispatch to review/dev/full entry points. Fixed a pre-existing E501\n  lint violation\
+  \ in coordinator.py run_review_only.\n\ncommits:\n  - sha: \"fad7001\"\n    message:\
+  \ \"feat(stale-worktree): detect partial progress and resume from correct phase\"\
+  \n\nacceptance_criteria:\n  - criterion: \"Existing worktree with commits but no\
+  \ review APPROVE resumes from REVIEW\"\n    status: MET\n    notes: >\n      coordinator.py\
+  \ ALREADY_DONE guard checks git log (commits ahead) and\n      has_review_approve();\
+  \ if commits exist but no APPROVE, redirects to\n      _coordinator_loop with skip_dev_first_iter=True.\
+  \ sprint._triage_spec\n      also routes to 'review' action when no APPROVE found\
+  \ and gate passes.\n      Tested by TestAlreadyDoneOverride::test_already_done_with_commits_no_approve_resumes_review.\n\
+  \n  - criterion: \"Existing worktree with commits and a prior APPROVE allows ALREADY_DONE\"\
+  \n    status: MET\n    notes: >\n      coordinator.py ALREADY_DONE guard honours\
+  \ ALREADY_DONE when\n      has_review_approve() returns True. sprint._triage_spec\
+  \ returns 'skip'\n      action when APPROVE found in audit trail, and run_sprint\
+  \ skips without\n      calling run_task. Tested by TestAlreadyDoneOverride::test_already_done_with_prior_approve_honours_already_done\n\
+  \      and TestResumeSprintSkipApproved::test_resume_sprint_skips_approved.\n\n\
+  \  - criterion: \"Existing worktree with zero commits ahead is removed and recreated\"\
+  \n    status: MET\n    notes: >\n      Already satisfied per preflight assessment.\
+  \ The age-based deletion was\n      removed, but the 0-commits-ahead path still\
+  \ returns is_stale=True in\n      _is_stale_worktree. Verified test_stale_zero_commits_ahead\
+  \ still passes.\n\n  - criterion: \"forge run supports --resume flag (parity with\
+  \ forge sprint --resume)\"\n    status: MET\n    notes: >\n      Added --resume\
+  \ argument to run_parser in cli.py. cmd_run calls _triage_spec\n      when resume=True\
+  \ and dispatches to run_from_review, run_from_dev, or run_task\n      (full) based\
+  \ on triage action. 'skip' and 'skip_merged' both log and return 0.\n\n  - criterion:\
+  \ \"Clear log output explains resume decision and which phase is resuming\"\n  \
+  \  status: MET\n    notes: >\n      _triage_spec logs each action with reason during\
+  \ sprint --resume triage.\n      coordinator.py ALREADY_DONE override logs the commit\
+  \ count and reason before\n      resuming from REVIEW. cli.py cmd_run --resume prints\
+  \ the triage action and\n      reason to stderr.\n\n  - criterion: \"Never deletes\
+  \ a worktree that has commits ahead of base without --force\"\n    status: MET\n\
+  \    notes: >\n      Removed age-based staleness check from _is_stale_worktree.\
+  \ Worktrees with\n      commits ahead of base now always return is_stale=False regardless\
+  \ of commit\n      age. Only 0-commits-ahead, missing branch, or stale_worktree_days=0\
+  \ trigger\n      deletion. Tested by test_old_commit_not_stale.\n\nspec_deviations:\n\
+  \  - deviation: \"P1 reviewer flagged 'skip' action not handled in run_sprint\"\n\
+  \    resolution: >\n      Added explicit 'skip' handling in run_sprint dispatch\
+  \ (before budget check),\n      separate from 'skip_merged', because semantics differ:\
+  \ 'skip_merged' means\n      branch is already in base, 'skip' means approved but\
+  \ not yet merged. The\n      'skip' case does NOT add to merged_slugs to avoid unblocking\
+  \ dependencies\n      on unmerged branches.\n\n  - deviation: \"P2 reviewer suggested\
+  \ gate check as secondary signal for REVIEW vs DEV\"\n    resolution: >\n      Preserved:\
+  \ no-APPROVE + gate-passes → review; no-APPROVE + gate-fails → dev.\n      This\
+  \ matches both the spec AC ('resume from REVIEW') and the reviewer's\n      P2 suggestion\
+  \ to avoid sending broken code to review.\n\ndeferred_items: none\n\ngate_result:\
+  \ PASS\n"
 gate_decision: PASS
-dev_notes: |
-  summary: >
-    Implemented full worktree resume logic: (1) added has_review_approve() to
-    coord_audit.py that reads history.jsonl to check for a prior APPROVE for a
-    given slug; (2) removed age-based staleness check from _is_stale_worktree —
-    commits ahead of base = not stale, regardless of age; (3) added ALREADY_DONE
-    guard in coordinator.py that checks commits-ahead + no-prior-APPROVE and
-    redirects to REVIEW instead of short-circuiting to DONE; (4) added audit-trail
-    APPROVE check to sprint._triage_spec with a new 'skip' action (explicitly
-    handled in run_sprint dispatch); (5) added --resume flag to forge run in cli.py
-    with triage dispatch to review/dev/full entry points. Fixed a pre-existing E501
-    lint violation in coordinator.py run_review_only.
-
-  commits:
-    - sha: "fad7001"
-      message: "feat(stale-worktree): detect partial progress and resume from correct phase"
-
-  acceptance_criteria:
-    - criterion: "Existing worktree with commits but no review APPROVE resumes from REVIEW"
-      status: MET
-      notes: >
-        coordinator.py ALREADY_DONE guard checks git log (commits ahead) and
-        has_review_approve(); if commits exist but no APPROVE, redirects to
-        _coordinator_loop with skip_dev_first_iter=True. sprint._triage_spec
-        also routes to 'review' action when no APPROVE found and gate passes.
-        Tested by TestAlreadyDoneOverride::test_already_done_with_commits_no_approve_resumes_review.
-
-    - criterion: "Existing worktree with commits and a prior APPROVE allows ALREADY_DONE"
-      status: MET
-      notes: >
-        coordinator.py ALREADY_DONE guard honours ALREADY_DONE when
-        has_review_approve() returns True. sprint._triage_spec returns 'skip'
-        action when APPROVE found in audit trail, and run_sprint skips without
-        calling run_task. Tested by TestAlreadyDoneOverride::test_already_done_with_prior_approve_honours_already_done
-        and TestResumeSprintSkipApproved::test_resume_sprint_skips_approved.
-
-    - criterion: "Existing worktree with zero commits ahead is removed and recreated"
-      status: MET
-      notes: >
-        Already satisfied per preflight assessment. The age-based deletion was
-        removed, but the 0-commits-ahead path still returns is_stale=True in
-        _is_stale_worktree. Verified test_stale_zero_commits_ahead still passes.
-
-    - criterion: "forge run supports --resume flag (parity with forge sprint --resume)"
-      status: MET
-      notes: >
-        Added --resume argument to run_parser in cli.py. cmd_run calls _triage_spec
-        when resume=True and dispatches to run_from_review, run_from_dev, or run_task
-        (full) based on triage action. 'skip' and 'skip_merged' both log and return 0.
-
-    - criterion: "Clear log output explains resume decision and which phase is resuming"
-      status: MET
-      notes: >
-        _triage_spec logs each action with reason during sprint --resume triage.
-        coordinator.py ALREADY_DONE override logs the commit count and reason before
-        resuming from REVIEW. cli.py cmd_run --resume prints the triage action and
-        reason to stderr.
-
-    - criterion: "Never deletes a worktree that has commits ahead of base without --force"
-      status: MET
-      notes: >
-        Removed age-based staleness check from _is_stale_worktree. Worktrees with
-        commits ahead of base now always return is_stale=False regardless of commit
-        age. Only 0-commits-ahead, missing branch, or stale_worktree_days=0 trigger
-        deletion. Tested by test_old_commit_not_stale.
-
-  spec_deviations:
-    - deviation: "P1 reviewer flagged 'skip' action not handled in run_sprint"
-      resolution: >
-        Added explicit 'skip' handling in run_sprint dispatch (before budget check),
-        separate from 'skip_merged', because semantics differ: 'skip_merged' means
-        branch is already in base, 'skip' means approved but not yet merged. The
-        'skip' case does NOT add to merged_slugs to avoid unblocking dependencies
-        on unmerged branches.
-
-    - deviation: "P2 reviewer suggested gate check as secondary signal for REVIEW vs DEV"
-      resolution: >
-        Preserved: no-APPROVE + gate-passes → review; no-APPROVE + gate-fails → dev.
-        This matches both the spec AC ('resume from REVIEW') and the reviewer's
-        P2 suggestion to avoid sending broken code to review.
-
-  deferred_items: none
-
-  gate_result: PASS
