@@ -404,41 +404,66 @@ def review_to_dev_handoff(result: ReviewResult) -> str:
 def merge_review_results(results: list[ReviewResult], names: list[str]) -> ReviewResult:
     """Merge multiple ReviewResults into one without an LLM call.
 
-    - Verdict: REQUEST_CHANGES if any reviewer says so, else APPROVE
-    - Summary: one line per reviewer labelled by name
-    - Findings: union of all findings (preserves duplicates — dev sees full picture)
-    - spec_matches: False if any reviewer says False
-    - test_adequate: False if any reviewer says False
+    - Reviewers with parse_errors are **excluded** (degraded, not poison).
+      If ALL reviewers have parse errors, the merged result carries the errors
+      so the parse-retry loop in coord_phases can fire.
+    - Verdict: REQUEST_CHANGES if any valid reviewer says so, else APPROVE
+    - Summary: one line per valid reviewer labelled by name
+    - Findings: union of all valid findings (preserves duplicates)
+    - spec_matches: False if any valid reviewer says False
+    - test_adequate: False if any valid reviewer says False
     """
+    import logging as _logging
+
+    valid: list[tuple[str, ReviewResult]] = []
+    excluded_errors: list[str] = []
+    for name, r in zip(names, results):
+        if r.parse_errors:
+            _logging.getLogger(__name__).warning(
+                "REVIEW merge: excluding %s due to parse errors: %s",
+                name,
+                "; ".join(r.parse_errors),
+            )
+            for e in r.parse_errors:
+                excluded_errors.append(f"[{name}] {e}")
+        else:
+            valid.append((name, r))
+
+    # If ALL reviewers had parse errors, propagate so the retry loop can fire.
+    if not valid:
+        return ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary="All reviewers produced unparseable output",
+            findings=[],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=excluded_errors or ["All reviewers failed to produce valid output"],
+            raw_yaml={},
+        )
+
     verdict = (
-        "REQUEST_CHANGES" if any(r.verdict == "REQUEST_CHANGES" for r in results) else "APPROVE"
+        "REQUEST_CHANGES" if any(r.verdict == "REQUEST_CHANGES" for _, r in valid) else "APPROVE"
     )
-    summary_parts = [f"[{name}] {r.summary}" for name, r in zip(names, results)]
+    summary_parts = [f"[{name}] {r.summary}" for name, r in valid]
     summary = " | ".join(summary_parts)
 
     all_findings: list[ReviewFinding] = []
-    for r in results:
+    for _, r in valid:
         all_findings.extend(r.findings)
 
-    spec_matches = all(r.spec_matches for r in results)
+    spec_matches = all(r.spec_matches for _, r in valid)
     spec_mismatches: list[str] = []
-    for name, r in zip(names, results):
+    for name, r in valid:
         for m in r.spec_mismatches:
             spec_mismatches.append(f"[{name}] {m}")
 
-    test_adequate = all(r.test_adequate for r in results)
+    test_adequate = all(r.test_adequate for _, r in valid)
     test_gaps: list[str] = []
-    for name, r in zip(names, results):
+    for name, r in valid:
         for g in r.test_gaps:
             test_gaps.append(f"[{name}] {g}")
-
-    # Propagate parse errors from any reviewer so the parse-retry loop in
-    # _run_review_phase() can fire instead of treating malformed output as a
-    # real REQUEST_CHANGES verdict.
-    all_parse_errors: list[str] = []
-    for name, r in zip(names, results):
-        for e in r.parse_errors:
-            all_parse_errors.append(f"[{name}] {e}")
 
     return ReviewResult(
         verdict=verdict,
@@ -448,7 +473,7 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         spec_mismatches=spec_mismatches,
         test_adequate=test_adequate,
         test_gaps=test_gaps,
-        parse_errors=all_parse_errors,
+        parse_errors=[],  # valid reviewers had no errors
         raw_yaml={},
     )
 

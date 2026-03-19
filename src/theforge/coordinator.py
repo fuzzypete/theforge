@@ -616,6 +616,64 @@ def _run_review_pool(
         for r in successful
     ]
     names = [r.profile_name for r in successful]
+
+    # ── Per-reviewer parse retry (API-mode only) ─────────────────────
+    # If a reviewer's output has parse errors and it's an API agent, re-ask
+    # once with a corrective prompt. CLI agents can't cheaply retry.
+    _profile_by_name = {p.name: p for p in config.review_pool}
+    for i, (name, parsed) in enumerate(zip(names, parsed_results)):
+        if not parsed.parse_errors:
+            continue
+        _prof = _profile_by_name.get(name)
+        if _prof is None or _prof.mode != "api":
+            continue  # CLI agent — can't retry cheaply
+        _error_desc = "; ".join(parsed.parse_errors)
+        _log(f"  ⚠ {name} produced invalid YAML, retrying: {_error_desc[:120]}")
+        _retry_prompt = (
+            f"Your previous review output had schema/parse errors:\n{_error_desc}\n\n"
+            "Please produce valid review YAML with this exact structure:\n"
+            "verdict: APPROVE | REQUEST_CHANGES\n"
+            'summary: "one-line summary"\n'
+            "findings:\n"
+            "  - severity: P1 | P2\n"
+            '    file: "path"\n'
+            "    line: <number or null>\n"
+            '    description: "what is wrong"\n'
+            '    suggestion: "how to fix"\n'
+            "spec_compliance:\n"
+            "  matches_spec: true | false\n"
+            "  mismatches: []\n"
+            "test_coverage:\n"
+            "  adequate: true | false\n"
+            "  gaps: []\n\n"
+            "Reproduce your review findings in this format."
+        )
+        _retry_result = run_agent(
+            prompt=_retry_prompt,
+            profile=_prof,
+            working_dir=workspace_path,
+            quiet=True,
+            secrets=config.secrets,
+        )
+        if _retry_result.success:
+            _retried = (
+                parse_review_json(_retry_result.structured_data)
+                if _retry_result.structured_data
+                else parse_review_output(_retry_result.output)
+            )
+            if not _retried.parse_errors:
+                _log(f"  ✓ {name} retry succeeded")
+                parsed_results[i] = _retried
+                state.review_agent_results.append(_retry_result)
+                write_trace(
+                    workspace_path
+                    / ".forge/traces"
+                    / f"{_cycle_num}-{pool_attempt}-review-{name}-retry.txt",
+                    _retry_result.output,
+                )
+            else:
+                _log_verbose(f"  {name} retry still has parse errors: {_retried.parse_errors}")
+
     merged = merge_review_results(parsed_results, names)
     write_trace(
         _synthesis_path,
