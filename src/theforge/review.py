@@ -191,6 +191,32 @@ def parse_review_output(agent_output: str) -> ReviewResult:
     )
 
 
+def _try_parse_review(output: str, structured_data: dict | None = None) -> ReviewResult | None:
+    """Parse review output; return None if any parse errors occurred."""
+    if structured_data:
+        result = parse_review_json(structured_data)
+    else:
+        result = parse_review_output(output)
+    return None if result.parse_errors else result
+
+
+def _best_individual_result(results: list[ReviewResult]) -> ReviewResult | None:
+    """Return the best individual ReviewResult from a list.
+
+    Priority: first result with P1 findings (→ REQUEST_CHANGES), then first
+    APPROVE, then first overall.  Returns None if the list is empty.
+    """
+    if not results:
+        return None
+    for r in results:
+        if any(f.severity == "P1" for f in r.findings):
+            return r
+    for r in results:
+        if r.verdict == "APPROVE":
+            return r
+    return results[0]
+
+
 @dataclass(frozen=True)
 class PlanReviewFinding:
     """A single finding from plan review."""

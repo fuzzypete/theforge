@@ -2,6 +2,9 @@
 
 from theforge.review import (
     ReviewFinding,
+    ReviewResult,
+    _best_individual_result,
+    _try_parse_review,
     findings_to_markdown,
     parse_plan_review_output,
     parse_review_output,
@@ -232,3 +235,137 @@ findings: "not a list"
         result = parse_plan_review_output(yaml_text)
         assert result.verdict == "REJECT"
         assert any("must be a list" in e for e in result.parse_errors)
+
+
+# ── Tests: _try_parse_review ──────────────────────────────────────────
+
+
+VALID_APPROVE_OUTPUT = """\
+```yaml
+verdict: APPROVE
+summary: "All good"
+findings: []
+spec_compliance:
+  matches_spec: true
+  mismatches: []
+test_coverage:
+  adequate: true
+  gaps: []
+```
+"""
+
+INVALID_OUTPUT = "not yaml at all {{{{ garbage"
+
+
+class TestTryParseReview:
+    """Tests for _try_parse_review helper."""
+
+    def test_valid_output_returns_result(self):
+        result = _try_parse_review(VALID_APPROVE_OUTPUT)
+        assert result is not None
+        assert result.verdict == "APPROVE"
+        assert not result.parse_errors
+
+    def test_invalid_yaml_returns_none(self):
+        result = _try_parse_review("not valid yaml {{{")
+        assert result is None
+
+    def test_schema_error_returns_none(self):
+        # Valid YAML but missing required fields
+        bad = """\
+```yaml
+verdict: APPROVE
+summary: "ok"
+findings: []
+```
+"""
+        result = _try_parse_review(bad)
+        assert result is None
+
+    def test_structured_data_path(self):
+        data = {
+            "verdict": "APPROVE",
+            "summary": "ok",
+            "findings": [],
+            "spec_compliance": {"matches_spec": True, "mismatches": []},
+            "test_coverage": {"adequate": True, "gaps": []},
+        }
+        result = _try_parse_review("", structured_data=data)
+        assert result is not None
+        assert result.verdict == "APPROVE"
+
+    def test_structured_data_with_schema_error_returns_none(self):
+        # Missing required fields
+        data = {"verdict": "APPROVE", "summary": "ok", "findings": []}
+        result = _try_parse_review("", structured_data=data)
+        assert result is None
+
+
+# ── Tests: _best_individual_result ───────────────────────────────────
+
+
+def _make_review_result(
+    verdict: str,
+    findings: list | None = None,
+    parse_errors: list | None = None,
+) -> ReviewResult:
+    return ReviewResult(
+        verdict=verdict,
+        summary=f"summary for {verdict}",
+        findings=findings or [],
+        spec_matches=True,
+        spec_mismatches=[],
+        test_adequate=True,
+        test_gaps=[],
+        parse_errors=parse_errors or [],
+        raw_yaml={},
+    )
+
+
+def _p1_finding() -> ReviewFinding:
+    return ReviewFinding(severity="P1", file="foo.py", line=1, description="Bug", suggestion="Fix")
+
+
+def _p2_finding() -> ReviewFinding:
+    return ReviewFinding(
+        severity="P2", file="foo.py", line=2, description="Style", suggestion="Clean up"
+    )
+
+
+class TestBestIndividualResult:
+    """Tests for _best_individual_result helper."""
+
+    def test_empty_list_returns_none(self):
+        assert _best_individual_result([]) is None
+
+    def test_single_approve_returns_it(self):
+        r = _make_review_result("APPROVE")
+        assert _best_individual_result([r]) is r
+
+    def test_p1_result_returned_when_any_has_p1(self):
+        approve = _make_review_result("APPROVE")
+        with_p1 = _make_review_result("REQUEST_CHANGES", findings=[_p1_finding()])
+        result = _best_individual_result([approve, with_p1])
+        assert result is with_p1
+
+    def test_first_p1_wins_over_later(self):
+        p1_first = _make_review_result("REQUEST_CHANGES", findings=[_p1_finding()])
+        p1_second = _make_review_result("REQUEST_CHANGES", findings=[_p1_finding()])
+        result = _best_individual_result([p1_first, p1_second])
+        assert result is p1_first
+
+    def test_all_approve_returns_first(self):
+        a1 = _make_review_result("APPROVE")
+        a2 = _make_review_result("APPROVE")
+        result = _best_individual_result([a1, a2])
+        assert result is a1
+
+    def test_p2_only_no_p1_returns_first_approve_if_present(self):
+        with_p2 = _make_review_result("REQUEST_CHANGES", findings=[_p2_finding()])
+        approve = _make_review_result("APPROVE")
+        result = _best_individual_result([with_p2, approve])
+        assert result is approve
+
+    def test_single_p1_result(self):
+        with_p1 = _make_review_result("REQUEST_CHANGES", findings=[_p1_finding()])
+        assert _best_individual_result([with_p1]) is with_p1
