@@ -1,67 +1,42 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented project-local log directory with per-story trace artifacts. All log
-    and trace artifacts now land under <project_root>/.forge/logs/ with a per-story directory
-    structure that survives worktree cleanup. forge.log moves from ~/.forge/logs/<project>/
-    to <project>/.forge/logs/. A story log dir is created early in run_task (before the tee
-    is installed). Per-run tee writes run-<id>.log, dev iterations write dev-iter-N-<profile>.log,
-    review cycles write review-cycle-N/<profile>.yaml + synthesized.yaml, preflight writes
-    preflight.yaml, approved plan snapshots are copied as plan.md with plan-review/<profile>.yaml
-    per reviewer, and the final audit is copied as audit.yaml. Sprint runs nest under the sprint
-    name: .forge/logs/<sprint-name>/<slug>/. Sprint completion writes sprint-summary.yaml
-    alongside the existing sprint-audit.yaml."
+  summary: "Implemented sprint spec dependency support (iter 1 review fixes included).
+    Two original gaps: (1) dependency failure halted the entire sprint instead of skipping
+    only the dependent spec, and (2) eager merge logic was absent. Fixed both in sprint.py.
+    Pre-scan builds dependent_slugs set (cached TaskSpec objects to avoid double I/O);
+    effective_auto_merge computed per spec as auto_merge or (task.slug in dependent_slugs);
+    missing-deps block uses continue instead of break+inner-loop.
+    Iter 1 review fix: resume mode 'skip' triage (prior APPROVE) now adds slug to
+    merged_slugs so downstream dependents are not incorrectly skipped."
   commits:
-    - sha: "f9d470b"
-      message: "feat(logs): project-local log directory with per-story trace artifacts"
-    - sha: "4720ec9"
-      message: "chore(project-local-logs): write dev handoff"
+    - sha: "862f29e"
+      message: "feat(sprint): add spec dependency support with eager merge and skip-not-halt"
+    - sha: "b10b89f"
+      message: "fix(sprint): address review findings (iter 1)"
   acceptance_criteria:
-    - criterion: "All log and trace artifacts land under <project_root>/.forge/logs/"
+    - criterion: "TaskSpec.depends_on parses correctly from frontmatter (str → list, list → list, missing → [])"
       status: MET
-      notes: "forge.log goes to .forge/logs/forge.log (config.py default changed). Per-run tee, dev iteration logs, review cycle artifacts, preflight.yaml, plan.md, plan-review/, and audit.yaml all go to .forge/logs/<slug>/."
-    - criterion: "forge.log moves from ~/.forge/logs/<project>/ to <project>/.forge/logs/"
+      notes: "Already implemented in task.py and sprint.py; existing tests cover all three cases."
+    - criterion: "Sprint eagerly merges an APPROVED spec when a later spec declares it as a dependency"
       status: MET
-      notes: "config.py default changed from ~/.forge/logs/{project}/forge.log to .forge/logs/forge.log. coord_logging.py resolves relative paths against project_root. Best-effort migration: if old path exists and new doesn't, moves it and creates a symlink from old to new."
-    - criterion: "Per-story directory created with slug name (or sprint/slug for sprint runs)"
+      notes: "Pre-scan builds dependent_slugs. effective_auto_merge = auto_merge or (task.slug in dependent_slugs) at all four call sites. Test verifies True is passed even when global auto_merge=False."
+    - criterion: "Sprint skips a spec (not halts) when its dependency did not merge — remaining independent specs still run"
       status: MET
-      notes: "_make_story_log_dir() creates .forge/logs/<slug>/ for standalone runs and .forge/logs/<sprint-name>/<slug>/ for sprint runs. Created early in run_task before the tee is installed."
-    - criterion: "Raw reviewer YAML outputs stored per cycle, per reviewer profile"
+      notes: "Replaced break + inner skip loop with continue. test_skips_dependent_continues_independent verifies independent spec C still runs when B is skipped."
+    - criterion: "Sprint proceeds normally when dependency merged successfully"
       status: MET
-      notes: "_run_review_pool() writes review-cycle-N/<profile>.yaml per reviewer using _write_log_artifact(). Existing .forge/traces/ writes preserved."
-    - criterion: "Plan reviewer outputs stored in plan-review/ subdirectory"
+      notes: "Already implemented; test_proceeds_when_dependency_merged passes unchanged."
+    - criterion: "Sprint proceeds normally when depends_on is absent"
       status: MET
-      notes: "After agent plan review approval, per-reviewer outputs written to plan-review/<profile>.yaml in story log dir."
-    - criterion: "Approved plan snapshot stored as plan.md"
+      notes: "Already implemented; test_proceeds_normally_when_no_depends_on passes unchanged."
+    - criterion: "Eager merge does not fire for specs with no downstream dependents (respects auto_merge)"
       status: MET
-      notes: "After each plan review approval (both agent and human paths), the approved plan text is written to plan.md in story log dir."
-    - criterion: "Preflight verdict stored as preflight.yaml"
+      notes: "dependent_slugs check gates the override. test_eager_merge_does_not_fire_for_spec_without_downstream_dependent verifies auto_merge=False is preserved."
+    - criterion: "make test passes. make lint passes."
       status: MET
-      notes: "After PREFLIGHT completes, writes preflight.yaml with verdict, reason, complexity, cost_usd, and duration_s."
-    - criterion: "audit.yaml copied to per-story log dir at run completion"
-      status: MET
-      notes: "cli.py _write_audit() copies audit to result.state.log_dir/audit.yaml. sprint.py also copies per-spec audit to story log dir."
-    - criterion: "Dev agent stdout/stderr captured per iteration"
-      status: MET
-      notes: "coord_phases.py _run_dev_phase() writes dev-iter-N-<profile>.log using write_trace() to state.log_dir after each dev invocation."
-    - criterion: "Sprint runs nest stories under sprint name directory"
-      status: MET
-      notes: "sprint_name parameter added to run_task, run_from_review, run_from_dev. sprint.py passes manifest.name as sprint_name to all three entry points."
-    - criterion: "sprint-summary.yaml written at sprint completion"
-      status: MET
-      notes: "_write_sprint_summary() added to sprint.py; writes to .forge/logs/<sprint-name>/sprint-summary.yaml. Existing sprint-audit.yaml in .forge/audits/ is preserved for backward compatibility."
-    - criterion: "Worktree cleanup does NOT remove .forge/logs/ artifacts"
-      status: MET
-      notes: ".forge/logs/ is at project root, not inside .forge/worktrees/. Worktree cleanup touches only the worktree directory."
-    - criterion: "All existing tests pass"
-      status: MET
-      notes: "943 tests pass (939 original + 4 new). make lint clean."
-    - criterion: ".gitignore updated: .forge/logs/ ignored"
-      status: MET
-      notes: ".gitignore already ignores .forge/ entirely (line 26), covering .forge/logs/. No change needed."
+      notes: "946 tests pass. make lint clean."
   spec_deviations:
-    - description: "Plan-review artifacts written in coordinator.py instead of coord_phases.py"
-      justification: "Plan review logic lives in coordinator.py (not coord_phases.py), so writing plan-review/<profile>.yaml there avoids cross-module coupling. Confirmed correct by plan reviewer P2 note."
-    - description: "Human plan review path saves only plan.md, not plan-review/ subdirectory artifacts"
-      justification: "Human plan review has no agent results to capture — the human approves/rejects interactively. There are no raw reviewer outputs to write to plan-review/. Only the approved plan text is available."
+    - description: "dependent_slugs pre-scan collects all deps regardless of ordering (not 'later only')"
+      justification: "Merging a spec that was already going to merge is a no-op. Simpler and safe. Code comment documents the design choice."
   deferred_items: none
   gate_result: PASS
