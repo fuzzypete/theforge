@@ -1,53 +1,54 @@
-dev_notes: "summary: >\n  Mirrored the review_pool pattern onto plan_agent_review.\
-  \ PlanAgentReviewConfig\n  gained a pool field (list[ModelProfile]) and a profiles\
-  \ property that returns the\n  pool when non-empty or constructs a single-profile\
-  \ pool from legacy scalar fields.\n  The config parser detects the pool key in plan_agent_review\
-  \ YAML and parses each\n  entry via _parse_profile(). In review.py, merge_plan_review_results()\
-  \ was added\n  with per-reviewer advisory downgrade applied before merging (any\
-  \ P0 -> REJECT, no\n  P0 -> APPROVE, parse errors excluded with warning, all fail\
-  \ -> REJECT). The\n  coordinator replaces its single run_agent() call with run_agent_pool(),\
-  \ tracks\n  session IDs in state.plan_review_session_ids (dict, replacing the singular\
-  \ field),\n  saves them via an updated save_sessions() signature, and merges results\n\
-  \  deterministically. All 828 tests pass.\n\ncommits:\n  - sha: \"41e8ff1\"\n  \
-  \  message: \"feat(plan-review): add multi-model plan review pool\"\n\nacceptance_criteria:\n\
-  \  - criterion: \"AC-1: forge.yaml supports pool format and legacy single-profile\
-  \ format; legacy auto-converts to pool of one\"\n    status: MET\n    notes: >\n\
-  \      PlanAgentReviewConfig.pool field added; profiles property returns pool when\n\
-  \      non-empty, else constructs ModelProfile from legacy scalars. load_forge_yaml\n\
-  \      parses pool entries via _parse_profile(). 6 new test_config.py tests cover\n\
-  \      both paths and edge cases (empty list, duplicate names, provider entries).\n\
-  \n  - criterion: \"AC-2: Coordinator dispatches plan reviewers via run_agent_pool()\
-  \ concurrently\"\n    status: MET\n    notes: >\n      coordinator.py plan review\
-  \ block replaced: builds profiles from\n      config.plan_agent_review.profiles,\
-  \ calls run_agent_pool() with session_ids\n      from state.plan_review_session_ids.\n\
-  \n  - criterion: \"AC-3: Deterministic verdict merging — P0 from any -> REJECT,\
-  \ no P0 -> APPROVE, parse errors excluded, all fail -> REJECT\"\n    status: MET\n\
-  \    notes: >\n      merge_plan_review_results() in review.py implements all four\
-  \ rules.\n      Per-reviewer advisory downgrade applied before merge so only P0-bearing\n\
-  \      results remain as REJECT when passed to the merger.\n\n  - criterion: \"\
-  AC-4: Plan review findings from all reviewers concatenated with reviewer-name attribution\"\
-  \n    status: MET\n    notes: >\n      merge_plan_review_results() prefixes each\
-  \ finding description with [name].\n      Coordinator stores merged findings in\
-  \ state.plan_agent_review_findings.\n      Validated by test_plan_review_pool_advisory_p1s_concatenated.\n\
-  \n  - criterion: \"AC-5: state.plan_review_session_ids is a dict mapping reviewer\
-  \ name -> session_id\"\n    status: MET\n    notes: >\n      coord_state.py: plan_review_session_id\
-  \ (str|None) replaced with\n      plan_review_session_ids (dict[str,str]). sessions.py\
-  \ persists it under\n      plan_review_session_ids key. coordinator.py restores\
-  \ on load and updates\n      per pool result.\n\n  - criterion: \"AC-6: Per-reviewer\
-  \ cost tracking and budget enforcement escalates\"\n    status: MET\n    notes:\
-  \ >\n      state.plan_review_results.extend(pr_results) accumulates all pool results;\n\
-  \      total_plan_review_cost sums them. Budget enforcement delegated to runner\n\
-  \      (budget_usd on each ModelProfile). Coordinator logs total pool cost.\n\n\
-  \  - criterion: \"AC-7: PlanAgentReviewConfig gains pool field; existing fields\
-  \ become optional; profiles property returns pool regardless of format\"\n    status:\
-  \ MET\n    notes: >\n      pool: list[ModelProfile] field added with field(default_factory=list).\n\
-  \      Legacy fields retain their defaults (backward compat). profiles property\n\
-  \      returns pool or constructs single-profile from legacy fields.\n\n  - criterion:\
-  \ \"AC-8: Tests — pool format loads correctly, legacy converts to pool of one, concurrent\
-  \ pool, P0 merging, all-fail REJECT, advisory P1 concatenation\"\n    status: MET\n\
-  \    notes: >\n      6 new tests in test_config.py; 3 new tests in test_coordinator.py\n\
-  \      (pool_p0_from_one_reviewer_rejects, pool_all_fail_rejects,\n      pool_advisory_p1s_concatenated).\
-  \ All existing TestPlanAgentReview tests\n      updated to route plan review through\
-  \ mock_pool instead of mock_agent.\n      828 total tests pass.\n\nspec_deviations:\
-  \ none\n\ndeferred_items: none\n\ngate_result: PASS\n"
+dev_notes: |
+  summary: >
+    Implemented four targeted changes. (1) Inserted a static preamble into
+    build_dev_prompt() immediately before {spec_content} — it tells the dev agent
+    that ACs are the definitive checklist, context sections are not requirements,
+    and ambiguity should be flagged in dev_notes. The preamble is a blockquote
+    inside the ## Spec section so it is visually co-located with the content it
+    describes. (2) Extended cmd_init() to create specs/TEMPLATE.md alongside
+    forge.yaml, guarded by an existence check to avoid silently overwriting a
+    user-customized template. The template constant (_STORY_TEMPLATE) lives near
+    the other top-level constants in cli.py. (3) Updated docs/vision.md with a
+    new "Upstream Workflow" section (brief → story → plan → dev), updated the
+    pipeline diagram block with --until flag examples, and rewrote Principle 4
+    from "Specs are the contract" to "Stories are the contract" with the AC-is-
+    normative framing. (4) Added test_preamble_appears_before_spec_content to
+    TestBuildDevPrompt; it asserts that the preamble text ("acceptance criteria
+    are the definitive checklist") appears in the prompt at an index strictly
+    before the injected spec content.
+
+  commits:
+    - sha: "20e1e11"
+      message: "feat(dev-prompt): add AC preamble to build_dev_prompt and story template to forge init"
+
+  acceptance_criteria:
+    - criterion: "build_dev_prompt() includes a preamble before spec content that identifies acceptance criteria as the definitive checklist"
+      status: MET
+      notes: "Preamble inserted as a blockquote inside the ## Spec section of the prompt template in task.py, immediately before {spec_content}."
+
+    - criterion: "Preamble tells the agent: context sections are not requirements, ACs are the checklist, flag ambiguity in handoff notes"
+      status: MET
+      notes: "Preamble text explicitly states: ACs are definitive checklist, context sections are informational not requirements, flag ambiguity in dev_notes."
+
+    - criterion: "forge init creates specs/TEMPLATE.md alongside forge.yaml with annotated story structure (frontmatter, problem, ACs)"
+      status: MET
+      notes: "cmd_init() creates specs/ dir (exist_ok=True) and writes TEMPLATE.md if it does not already exist. Template has frontmatter, Problem/context, Acceptance criteria, and Notes sections with inline comments."
+
+    - criterion: "docs/vision.md updated: pipeline diagram shows --until, upstream workflow section (brief → story → plan → dev), story vs spec terminology clarified"
+      status: MET
+      notes: "Added 'Upstream Workflow' section with brief→story→plan→dev table. Updated pipeline diagram block with --until examples. Principle 4 rewritten to 'Stories are the contract' with AC-normative framing."
+
+    - criterion: "New test verifies the preamble appears in dev prompt output"
+      status: MET
+      notes: "test_preamble_appears_before_spec_content in TestBuildDevPrompt asserts checklist text present, dev_notes reference present, and preamble index < spec content index."
+
+    - criterion: "Existing tests pass"
+      status: MET
+      notes: "840 tests passed (pytest -q). Preamble is purely additive; no signature changes."
+
+  spec_deviations: none
+
+  deferred_items: none
+
+  gate_result: PASS
 gate_decision: PASS

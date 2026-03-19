@@ -20,12 +20,48 @@ The human stays at every decision point that matters.
 
 ---
 
+## Upstream Workflow: Brief → Story → Plan → Dev
+
+TheForge operates on _stories_ — markdown files that describe WHAT and WHY.
+Stories are not implementation tasks; they contain acceptance criteria that
+define observable, testable behavior.
+
+```
+Brief (human) → Story (forge ideate / human) → Plan (PLAN phase) → Dev (DEV phase)
+```
+
+| Artifact | Author | Contains |
+|----------|--------|----------|
+| Brief | Human | One-paragraph problem statement |
+| Story | Human or `forge ideate` | Problem context + acceptance criteria |
+| Plan | Planning agent (PLAN phase) | Implementation approach, file changes, risks |
+| Code | Dev agent (DEV phase) | Implementation satisfying every AC |
+
+**A story says WHAT and WHY. The plan says HOW. The dev agent implements the HOW.**
+
+The dev prompt includes a preamble that tells agents:
+- Acceptance criteria are the definitive checklist
+- Context and background sections are informational, not requirements
+- Ambiguity should be flagged in `dev_notes`
+
+Story files live in `specs/` by convention (e.g. `specs/my-feature.md`) and are
+passed to `forge run <story-file>`. `forge init` creates `specs/TEMPLATE.md` with
+annotated structure so new projects have a reference for what a well-written story
+looks like.
+
+---
+
 ## Current State (v0.2)
 
 ```
 INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → HUMAN_REVIEW → DONE/ESCALATE
                                  ↑                  ↓              ↓
                                  └──── (REQUEST_CHANGES) ◄─── (reject)
+
+forge run --until <state>  stops the pipeline after reaching that state
+  e.g. --until preflight   run spec classification only, no dev cycles
+       --until dev          run through DEV+gate, skip review
+       --until review        run through review, skip HUMAN_REVIEW
 ```
 
 **Implemented:**
@@ -342,9 +378,11 @@ only the ideation agents are LLMs.
    Claude's code is that Codex has different blind spots. Same-model
    review catches bugs; cross-model review catches assumptions.
 
-4. **Specs are the contract.** The dev agent's only input is the spec.
-   If the spec is bad, the output will be bad. Spec quality is worth
-   investing in.
+4. **Stories are the contract.** A story (the markdown file passed to
+   `forge run`) is the dev agent's only input. The acceptance criteria in
+   that story are the definitive checklist — context sections are not
+   requirements. If the story is bad, the output will be bad. Story quality
+   is worth investing in.
 
 5. **Process is not optional.** Worktrees, gates, handoffs, reviews —
    every shortcut generates cleanup debt. The coordinator enforces

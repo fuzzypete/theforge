@@ -190,6 +190,41 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
 _SECRETS_FILE = ".forge/secrets.yaml"
 _GITIGNORE_ENTRY = ".forge/secrets.yaml"
 
+_STORY_TEMPLATE = """\
+---
+# Story frontmatter — required fields
+name: "Short human-readable title"
+slug: my-feature-slug        # used for branch and worktree names
+pytest_target: tests/        # path passed to pytest for gate
+# file_scope: []             # optional: restrict dev agent to these files
+---
+
+# Story title
+
+## Problem / context
+
+One paragraph explaining WHY this change is needed and WHAT problem it solves.
+Background and motivation belong here. This section is informational — it is
+NOT a list of requirements.
+
+## Acceptance criteria
+
+<!--
+  ACs are the definitive checklist. The dev agent will implement exactly what
+  is stated here. Write them as observable, testable behaviors.
+  Each AC should be a single bullet starting with a verb.
+-->
+
+- The system does X when Y
+- Existing tests continue to pass
+- New test verifies Z
+
+## Notes (optional)
+
+Any additional context, constraints, or design guidance. The dev agent will
+read this as context, not as requirements.
+"""
+
 
 def _ensure_gitignored(project_root: Path) -> None:
     """Append .forge/secrets.yaml to .gitignore if not already present."""
@@ -250,7 +285,15 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     target.write_text(generate_default_config(), encoding="utf-8")
     print(f"Created {target}")
-    print("Edit the file to match your project, then run: forge run <spec-file>")
+
+    specs_dir = Path.cwd() / "specs"
+    specs_dir.mkdir(exist_ok=True)
+    template_path = specs_dir / "TEMPLATE.md"
+    if not template_path.exists():
+        template_path.write_text(_STORY_TEMPLATE, encoding="utf-8")
+        print(f"Created {template_path}")
+
+    print("Edit forge.yaml to match your project, then run: forge run <spec-file>")
 
     _ensure_gitignored(Path.cwd())
     return 0
