@@ -21,10 +21,24 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("openai", "o4-mini"): (1.10, 4.40),
     ("openai", "gpt-4o"): (2.50, 10.00),
     ("openai", "gpt-4o-mini"): (0.15, 0.60),
+    ("openai", "gpt-5.1-codex-mini"): (1.50, 6.00),
+    ("openai", "gpt-5.1-codex"): (3.00, 12.00),
+    ("openai", "gpt-5.1-codex-max"): (6.00, 24.00),
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
     ("google", "gemini-2.5-pro"): (3.50, 10.50),
     ("google", "gemini-2.0-flash"): (0.10, 0.40),
+}
+
+# Models that use the Responses API (/v1/responses) instead of Chat Completions.
+# Codex models are agentic and only available on this newer endpoint.
+_RESPONSES_API_MODELS: set[str] = {
+    "gpt-5.1-codex-mini",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5-codex",
+    "gpt-5.2-codex",
+    "gpt-5.3-codex",
 }
 
 
@@ -38,25 +52,59 @@ def _estimate_cost(
     return ((input_tokens / 1_000_000) * price[0]) + ((output_tokens / 1_000_000) * price[1])
 
 
-def _run_openai(
-    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
-) -> AgentResult:
-    """Run agent via OpenAI API."""
+def _openai_client(profile: ModelProfile, secrets: dict[str, str] | None = None):  # type: ignore[return]
+    """Build an OpenAI client from profile + secrets."""
     import openai
 
     merged = {**os.environ, **(secrets or {})}
-    client_kwargs: dict[str, Any] = {"api_key": merged.get("OPENAI_API_KEY") or "local"}
+    kwargs: dict[str, Any] = {"api_key": merged.get("OPENAI_API_KEY") or "local"}
     if profile.base_url:
-        client_kwargs["base_url"] = profile.base_url
-    client = openai.OpenAI(**client_kwargs)
+        kwargs["base_url"] = profile.base_url
+    return openai.OpenAI(**kwargs)
 
+
+def _openai_result(
+    profile: ModelProfile,
+    output_text: str,
+    input_tokens: int,
+    output_tokens: int,
+    raw: dict,
+) -> AgentResult:
+    """Build AgentResult from parsed OpenAI response fields."""
+    cost = _estimate_cost("openai", profile.model, input_tokens, output_tokens)
+    if profile.base_url:
+        cost = None
+    model_usage = ModelUsage(
+        model=profile.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        cost_usd=cost,
+    )
+    return AgentResult(
+        success=True,
+        output=output_text,
+        session_id=None,
+        cost_usd=cost,
+        exit_code=0,
+        raw=raw,
+        profile_name=profile.name,
+        model_usage=(model_usage,),
+        structured_data=json.loads(output_text),
+    )
+
+
+def _run_openai_chat(
+    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+) -> AgentResult:
+    """Run via OpenAI Chat Completions (/v1/chat/completions)."""
+    client = _openai_client(profile, secrets)
     schema = review_json_schema()
-    messages = [{"role": "user", "content": prompt}]
-
     try:
         response = client.chat.completions.create(
             model=profile.model,
-            messages=messages,
+            messages=[{"role": "user", "content": prompt}],
             temperature=0,
             response_format={
                 "type": "json_schema",
@@ -64,37 +112,13 @@ def _run_openai(
             },
         )
         output_text = response.choices[0].message.content or ""
-        structured_data = json.loads(output_text)
         usage = response.usage
-
-        model_usage: ModelUsage | None = None
-        cost: float | None = None
-        if usage:
-            cost = _estimate_cost(
-                "openai", profile.model, usage.prompt_tokens, usage.completion_tokens
-            )
-            # Local models have no metered cost
-            if profile.base_url:
-                cost = None
-            model_usage = ModelUsage(
-                model=profile.model,
-                input_tokens=usage.prompt_tokens,
-                output_tokens=usage.completion_tokens,
-                cache_read_tokens=0,
-                cache_creation_tokens=0,
-                cost_usd=cost,
-            )
-
-        return AgentResult(
-            success=True,
-            output=output_text,
-            session_id=None,
-            cost_usd=cost,
-            exit_code=0,
-            raw=response.model_dump(),
-            profile_name=profile.name,
-            model_usage=(model_usage,) if model_usage else (),
-            structured_data=structured_data,
+        return _openai_result(
+            profile,
+            output_text,
+            usage.prompt_tokens if usage else 0,
+            usage.completion_tokens if usage else 0,
+            response.model_dump(),
         )
     except Exception as e:
         return AgentResult(
@@ -106,6 +130,55 @@ def _run_openai(
             raw={},
             profile_name=profile.name,
         )
+
+
+def _run_openai_responses(
+    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+) -> AgentResult:
+    """Run via OpenAI Responses API (/v1/responses) — required for Codex models."""
+    client = _openai_client(profile, secrets)
+    schema = review_json_schema()
+    try:
+        response = client.responses.create(
+            model=profile.model,
+            input=prompt,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "review_output",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+        output_text = response.output_text
+        usage = response.usage
+        return _openai_result(
+            profile,
+            output_text,
+            usage.input_tokens if usage else 0,
+            usage.output_tokens if usage else 0,
+            {},
+        )
+    except Exception as e:
+        return AgentResult(
+            success=False,
+            output=f"OpenAI Responses API error: {e}",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name=profile.name,
+        )
+
+
+def _run_openai(
+    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+) -> AgentResult:
+    """Dispatch to Chat Completions or Responses API based on model."""
+    if profile.model in _RESPONSES_API_MODELS:
+        return _run_openai_responses(prompt, profile, secrets)
+    return _run_openai_chat(prompt, profile, secrets)
 
 
 def _run_anthropic(
