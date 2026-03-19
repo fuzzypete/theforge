@@ -1,139 +1,97 @@
 dev_notes: |
-  summary: >
-    Replaced .forge/secrets.yaml (yaml.safe_load) with .forge/.env (dotenv_values) as the
-    canonical secrets file. Added python-dotenv>=1.0 to pyproject.toml. config.py now loads
-    .forge/.env via dotenv_values(), raises ValueError if any key maps to None (malformed),
-    and emits a logging.WARNING when secrets.yaml exists without .env (no auto-migrate). The
-    ntfy URL block now falls back to secrets.get("NTFY_URL") or os.getenv("NTFY_URL") when
-    forge.yaml omits the url field, gated on notif_backend == "ntfy". cli.py constants and
-    _generate_secrets_skeleton() updated to .env format; cmd_secrets_init() now writes .forge/.env,
-    prints the migration warning when secrets.yaml exists, and guards against overwriting .env.
-    .forge/.env.example created (tracked via git add -f due to .forge/ gitignore) with all four
-    provider keys plus NTFY_URL. .gitignore entry replaced from .forge/secrets.yaml to .forge/.env.
-    Also fixed pre-existing test failures in TestDeepSeekProvider by mocking httpx alongside openai.
-    All 861 tests pass.
-
+  summary: "Replaced .forge/secrets.yaml (yaml.safe_load) with .forge/.env (dotenv_values) as the canonical secrets file. Added python-dotenv>=1.0 to pyproject.toml. config.py loads .forge/.env via dotenv_values(), raises ValueError if any key maps to None (malformed), and emits a logging.WARNING when secrets.yaml exists without .env. The ntfy URL block falls back to secrets.get('NTFY_URL') or os.getenv('NTFY_URL') when forge.yaml omits the url field, gated on notif_backend == 'ntfy'. cli.py constants and _generate_secrets_skeleton() updated to .env format; cmd_secrets_init() writes .forge/.env, prints migration warning when secrets.yaml exists, and guards against overwriting .env. .forge/.env.example created with all four provider keys plus NTFY_URL. .gitignore entry replaced. Also fixed pre-existing test failures in TestDeepSeekProvider by mocking httpx alongside openai. All 861 tests pass."
   commits:
     - sha: "69703cf"
       message: "feat(secrets): migrate secrets from .forge/secrets.yaml to .forge/.env"
     - sha: "6aa7029"
       message: "fix(tests): mock httpx in DeepSeek client tests to avoid missing dependency"
-
+    - sha: "a48373e"
+      message: "chore: update handoff.yaml — gate PASS, 861 tests"
   acceptance_criteria:
     - criterion: "AC-1: Add python-dotenv to pyproject.toml dependencies"
       status: MET
       notes: "Added python-dotenv>=1.0 to dependencies list in pyproject.toml"
-
     - criterion: "AC-1: Import and use dotenv_values() for loading .forge/.env"
       status: MET
       notes: "dotenv_values imported at module level in config.py; used in load_config()"
-
     - criterion: "AC-2: load_config() reads .forge/.env via dotenv_values() if the file exists"
       status: MET
       notes: "env_path = project_root / '.forge' / '.env'; dotenv_values(env_path) called when file exists"
-
     - criterion: "AC-2: ForgeConfig.secrets stores loaded values"
       status: MET
       notes: "Unchanged — ForgeConfig.secrets: dict[str, str] already existed"
-
     - criterion: "AC-2: secrets defaults to {} when file is absent or empty"
       status: MET
       notes: "secrets initialized to {}; dotenv_values returns {} for empty files"
-
     - criterion: "AC-2: Malformed .env raises a clear ValueError with the file path"
       status: MET
-      notes: "Checks for None values in dotenv_values() result; raises ValueError(f'{env_path}: malformed .env'). A bare key with no = sign produces a None value."
-
-    - criterion: "AC-3: _resolve_secret() unchanged"
+      notes: "Checks for None values in dotenv_values() result; raises ValueError. A bare key with no = sign produces a None value."
+    - criterion: "AC-3: _resolve_secret() checks secrets first, then os.environ — no change"
       status: MET
       notes: "No changes to _resolve_secret(); dict interface is identical"
-
     - criterion: "AC-4: forge.yaml ntfy.url becomes optional; fallback to NTFY_URL from secrets/env"
       status: MET
       notes: "ntfy_url = ntfy_data.get('url') or secrets.get('NTFY_URL') or os.getenv('NTFY_URL'); also handles case where ntfy block is absent but backend=='ntfy'"
-
-    - criterion: "AC-4: Warn and disable if neither is set and ntfy backend enabled"
+    - criterion: "AC-4: If neither is set and ntfy backend enabled, warn and disable"
       status: MET
-      notes: "log.warning('ntfy backend enabled but no URL configured — notifications disabled') emitted; ntfy_config left None"
-
+      notes: "log.warning emitted; ntfy_config left None"
     - criterion: "AC-5: .forge/.env.example committed to repository"
       status: MET
       notes: "Created .forge/.env.example with git add -f (needed because .forge/ is gitignored)"
-
-    - criterion: "AC-5: Contents include PROVIDER_API_KEY_MAP keys plus NTFY_URL"
+    - criterion: "AC-5: Contents generated from PROVIDER_API_KEY_MAP plus NTFY_URL"
       status: MET
       notes: "Includes ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, DEEPSEEK_API_KEY (per P2 reviewer note), NTFY_URL"
-
-    - criterion: "AC-6: forge secrets-init generates .forge/.env"
+    - criterion: "AC-6: forge secrets-init generates .forge/.env (not secrets.yaml)"
       status: MET
       notes: "_SECRETS_FILE and _GITIGNORE_ENTRY constants updated; cmd_secrets_init writes .forge/.env"
-
     - criterion: "AC-6: Skeleton content matches .env.example"
       status: MET
       notes: "_generate_secrets_skeleton() produces .env format with commented KEY= lines"
-
     - criterion: "AC-6: Adds .forge/.env to .gitignore"
       status: MET
       notes: "_GITIGNORE_ENTRY = '.forge/.env'; _ensure_gitignored() propagates the change"
-
-    - criterion: "AC-6: Guard against overwrite of .forge/.env"
+    - criterion: "AC-6: If .forge/.env already exists, prints warning and exits without overwriting"
       status: MET
       notes: "cmd_secrets_init() checks env_path.exists() before writing"
-
-    - criterion: "AC-6: forge init also runs gitignore logic"
+    - criterion: "AC-6: forge init also runs the gitignore logic"
       status: MET
       notes: "cmd_init() already calls _ensure_gitignored(); constant change propagates automatically"
-
-    - criterion: "AC-7: Migration warning when secrets.yaml exists and .env does not"
+    - criterion: "AC-7: If secrets.yaml exists and .env does not, print migration warning"
       status: MET
       notes: "log.warning() in load_config(); stderr print in cmd_secrets_init()"
-
     - criterion: "AC-7: Do NOT auto-migrate"
       status: MET
       notes: "secrets.yaml is not loaded; only a warning is emitted"
-
     - criterion: "AC-7: Remove secrets.yaml loading code"
       status: MET
       notes: "The yaml.safe_load secrets block is fully replaced; no yaml loading of secrets remains"
-
-    - criterion: "AC-8: .gitignore entry replaced with .forge/.env"
+    - criterion: "AC-8: Replace .forge/secrets.yaml entry with .forge/.env in .gitignore"
       status: MET
-      notes: "Line 40 of .gitignore changed from .forge/secrets.yaml to .forge/.env"
-
+      notes: ".gitignore changed from .forge/secrets.yaml to .forge/.env"
     - criterion: "AC-9: test_config.py — .env file loaded and merged into ForgeConfig.secrets"
       status: MET
       notes: "test_secrets_loaded_into_config writes .forge/.env in KEY=value format"
-
     - criterion: "AC-9: test_config.py — missing file -> empty dict"
       status: MET
-      notes: "test_missing_secrets_file_defaults_to_empty unchanged"
-
+      notes: "test_missing_secrets_file_defaults_to_empty covers this"
     - criterion: "AC-9: test_config.py — provider key in .env satisfies API key validation"
       status: MET
-      notes: "test_secret_satisfies_provider_api_key_validation and test_plan_agent_review_secret_satisfies_validation updated to write .env"
-
+      notes: "test_secret_satisfies_provider_api_key_validation updated to write .env"
     - criterion: "AC-9: test_config.py — NTFY_URL from env used when forge.yaml omits the URL"
       status: MET
       notes: "New tests: test_ntfy_url_from_env_when_forge_yaml_omits_url and test_ntfy_url_missing_warns_and_disables"
-
     - criterion: "AC-9: test_runner.py — secrets injection unchanged"
       status: MET
       notes: "No changes needed; dict interface is unchanged; all runner tests pass"
-
     - criterion: "AC-9: test_cli.py — forge secrets-init creates .env skeleton"
       status: MET
       notes: "TestSecretsInit updated to assert .forge/.env creation and .forge/.env in gitignore"
-
     - criterion: "AC-9: test_cli.py — migration warning emitted when secrets.yaml exists"
       status: MET
       notes: "New test: test_migration_warning_when_secrets_yaml_exists"
-
   spec_deviations:
-    - "The malformed .env detection raises ValueError when dotenv_values() returns any key
-      mapping to None. In practice this fires on bare keys (e.g. 'BARE_KEY_NO_EQUALS') but
-      not on comment-only or empty files. This matches the spec intent and the P2 reviewer
-      clarification (check raw.values() for None, not raw itself)."
-
+    - description: "Malformed .env detection fires on bare keys (no = sign) producing None values"
+      justification: "dotenv_values() never raises; checking for None values in result is the only reliable signal. This matches the P2 reviewer clarification to iterate raw.values() and raise ValueError if any value is None."
   deferred_items: none
-
   gate_result: PASS
+gate_decision: PASS
