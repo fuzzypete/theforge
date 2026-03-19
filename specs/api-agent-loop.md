@@ -65,7 +65,8 @@ exposed to the API model — not a hint, but the contract.
 
 ### AC-1: Tool schema registry
 
-A module `tool_runtime.py` defines all available tools as a registry:
+A module `tool_runtime.py` defines all available tools as a registry. This is the
+single canonical source for tool names, schemas, and provider-specific translations.
 
 ```python
 @dataclass
@@ -75,7 +76,25 @@ class ToolDef:
     parameters: dict               # JSON Schema for arguments
     handler: Callable[..., str]    # executes the tool, returns text result
 
+    def to_openai_function(self) -> dict: ...
+    def to_anthropic_tool(self) -> dict: ...
+    def to_google_declaration(self) -> dict: ...
+
 TOOL_REGISTRY: dict[str, ToolDef] = { ... }
+```
+
+The name-mapping from forge.yaml's capitalized convention to registry names is also
+centralized here:
+
+```python
+TOOL_NAME_MAP = {
+    "Read": "read_file",
+    "Bash": "bash",
+    "Grep": "grep",
+    "Glob": "glob",
+    "Write": "write_file",
+    "Edit": "edit_file",
+}
 ```
 
 Tools implemented in phase 1:
@@ -98,9 +117,9 @@ exposed to the model. The agent loop filters the registry:
 
 ```python
 tool_schemas = [
-    registry[name].to_schema()
+    TOOL_REGISTRY[TOOL_NAME_MAP[name]].to_openai_function()  # or .to_anthropic_tool(), etc.
     for name in profile.allowed_tools
-    if name in registry
+    if name in TOOL_NAME_MAP
 ]
 ```
 
@@ -122,8 +141,12 @@ agent loop that:
 
 The loop has two safety limits:
 - **Max iterations**: configurable, default 25. Prevents runaway tool loops.
-- **Timeout**: uses `profile.timeout_seconds`. The entire loop (all iterations)
-  must complete within this window.
+- **Timeout**: uses `profile.timeout_seconds` as a **wall-clock deadline** for the
+  entire loop (all iterations combined). Checked before each iteration and before
+  each tool execution. Individual tool timeouts (e.g. bash 30s) count against the
+  global budget — if a bash call takes 25s of a 120s total, 95s remain for the rest
+  of the loop. If the global timeout is reached mid-tool, the tool is terminated and
+  the loop returns a failure result with accumulated cost.
 
 Provider-specific tool call protocol:
 
@@ -163,7 +186,7 @@ response = client.models.generate_content(
 #   execute each, append function_response, loop
 ```
 
-### AC-4: Working directory scoping
+### AC-4: Working directory scoping and tool output limits
 
 All tool handlers receive `working_dir: Path` and scope filesystem operations to it:
 - `read_file`: resolves path relative to working_dir, rejects `..` traversal
@@ -173,6 +196,22 @@ All tool handlers receive `working_dir: Path` and scope filesystem operations to
 
 This provides the same sandboxing that CLI agents get from running inside the worktree.
 
+**Output truncation**: tool results are capped at 50KB. If a tool output exceeds this
+limit, it is truncated and a notice is appended:
+
+```
+[output truncated — {original_size} bytes, showing first 50KB]
+```
+
+This prevents a single large file read or verbose test output from exhausting the
+model's context window. The 50KB default is configurable via `max_tool_output_bytes`
+on `ModelProfile` (optional, defaults to 51200).
+
+**Security**: API agents inherit the same security profile as CLI agents regarding
+shell execution. The `bash` tool runs commands as the forge user with the worktree
+as cwd. No command filtering is applied — the agent is trusted within the worktree,
+consistent with CLI-mode behavior.
+
 ### AC-5: Cost accumulation across iterations
 
 Each loop iteration's token usage is accumulated into a single `ModelUsage` record:
@@ -180,8 +219,14 @@ Each loop iteration's token usage is accumulated into a single `ModelUsage` reco
 ```python
 total_input_tokens += iteration_usage.input_tokens
 total_output_tokens += iteration_usage.output_tokens
+total_cache_read_tokens += iteration_usage.cache_read_tokens
+total_cache_creation_tokens += iteration_usage.cache_creation_tokens
 # cost estimated from totals at the end
 ```
+
+All four token fields are accumulated (input, output, cache_read, cache_creation)
+to maintain consistency with the `ModelUsage` definition and ensure accurate cost
+reporting for providers that use prompt caching (Anthropic, Google).
 
 The `AgentResult.cost_usd` reflects the entire loop, not just the last call.
 
@@ -196,12 +241,18 @@ completion.
 
 ### AC-7: Logging
 
-Each tool call is logged at verbose level, matching CLI agent log format:
+Each tool call is logged at verbose level with duration, matching CLI agent log format:
 
 ```
-[forge]   ↳ read_file: src/theforge/runner.py
-[forge]   ↳ bash: python -m pytest tests/ -q
-[forge]   ↳ grep: cost_usd in src/theforge/
+[forge]   ↳ read_file: src/theforge/runner.py (2ms)
+[forge]   ↳ bash: python -m pytest tests/ -q (4.2s)
+[forge]   ↳ grep: cost_usd in src/theforge/ (12ms)
+```
+
+Tool output truncation is logged at verbose level:
+
+```
+[forge]   ↳ read_file: data/large.json (truncated 2.1MB → 50KB)
 ```
 
 Total iterations and tool calls logged at normal level on completion:
@@ -214,14 +265,18 @@ Total iterations and tool calls logged at normal level on completion:
 
 - `test_tool_runtime.py`: each tool handler tested in isolation with a temp dir
   - read_file returns contents, rejects path traversal
+  - read_file truncates output beyond max_tool_output_bytes
   - bash runs commands, returns output, respects timeout
+  - bash returns exit code + stderr on failure
   - grep matches patterns, returns formatted results
   - glob finds files by pattern
+  - provider-specific schema translation (to_openai_function, to_anthropic_tool,
+    to_google_declaration) returns correct format for each provider
 - `test_runner_api.py`: agent loop tested with mocked provider SDKs
   - mock model returns tool_call → verify handler called → mock final response
-  - verify token accumulation across iterations
+  - verify token accumulation across iterations (all four fields)
   - verify max iteration limit terminates loop
-  - verify timeout terminates loop
+  - verify timeout terminates loop (including mid-tool timeout)
   - verify empty allowed_tools skips tool registration (stateless mode)
 
 ## Implementation Notes
@@ -230,45 +285,29 @@ Total iterations and tool calls logged at normal level on completion:
 
 ```
 src/theforge/
-  tool_runtime.py     # NEW: ToolDef, TOOL_REGISTRY, handlers
+  tool_runtime.py     # NEW: ToolDef, TOOL_REGISTRY, TOOL_NAME_MAP, handlers,
+                      #       provider-specific schema methods
   runner_api.py       # MODIFIED: agent loop in each provider adapter
 ```
 
-### Tool schema format
+### Provider-specific schema translation
 
-Each provider uses slightly different tool schema formats. `ToolDef.to_schema()`
-returns the provider-agnostic definition; provider adapters translate:
-
-```python
-# ToolDef stores:
-{"name": "read_file", "description": "...", "parameters": {"type": "object", ...}}
-
-# OpenAI wants:
-{"type": "function", "function": {"name": "read_file", ...}}
-
-# Anthropic wants:
-{"name": "read_file", "input_schema": {...}}
-
-# Google wants:
-{"function_declarations": [{"name": "read_file", ...}]}
-```
-
-### Path mapping from allowed_tools
-
-`allowed_tools` values in forge.yaml use capitalized names (`Read`, `Bash`, `Glob`,
-`Grep`, `Edit`, `Write`) matching the CLI tool convention. The registry maps these
-to lowercase handler names:
+Schema translation lives on `ToolDef` itself, not in provider adapters. Each adapter
+calls the appropriate method:
 
 ```python
-TOOL_NAME_MAP = {
-    "Read": "read_file",
-    "Bash": "bash",
-    "Grep": "grep",
-    "Glob": "glob",
-    "Write": "write_file",
-    "Edit": "edit_file",
-}
+# In _run_openai:
+tools = [registry[t].to_openai_function() for t in resolved_tools]
+
+# In _run_anthropic:
+tools = [registry[t].to_anthropic_tool() for t in resolved_tools]
+
+# In _run_google:
+tools = [{"function_declarations": [registry[t].to_google_declaration() for t in resolved_tools]}]
 ```
+
+This keeps translation centralized in `tool_runtime.py` and prevents adapters from
+diverging on schema format.
 
 ### Backward compatibility
 
@@ -281,6 +320,7 @@ TOOL_NAME_MAP = {
 
 - `bash` tool: no command filtering (same as CLI agents). The agent is trusted
   within the worktree. Commands run as the forge user with the worktree as cwd.
+  API agents inherit the same security profile and risks as CLI agents.
 - Path traversal: `read_file`, `write_file`, `edit_file` reject paths that resolve
   outside `working_dir` (via `Path.resolve()` prefix check).
 - No network tools. The model cannot make HTTP requests except through `bash`
