@@ -149,6 +149,37 @@ TOOL_NAME_MAP = {
 }
 ```
 
+**Tool error handling**: tool handlers always return a string, even on failure.
+If a handler raises an exception or encounters an error (file not found, permission
+denied, command timeout), the error is formatted as a tool result string and fed
+back to the model:
+
+```
+Error: FileNotFoundError — src/theforge/nonexistent.py does not exist
+```
+
+The model sees the error and can adjust its next tool call. The loop only terminates
+on global timeout, max iterations, or when the model emits a final response — never
+on a tool execution error.
+
+**Unknown or malformed tool calls**: if the model emits an unknown tool name or
+malformed arguments (bad types, missing required fields), the loop returns a
+synthetic error result to the model and continues:
+
+```
+Error: unknown tool 'list_files' — available tools: read_file, bash, grep, glob
+Error: read_file requires 'path' (string), got: {}
+```
+
+The loop aborts with a failure result only after 3 consecutive malformed tool calls
+(configurable), preventing infinite retry loops with a broken model.
+
+**Parallel tool execution**: when a model response contains multiple tool calls in
+a single turn (supported by OpenAI and Anthropic), the loop executes them in parallel
+using `concurrent.futures.ThreadPoolExecutor`. Each tool call still respects its own
+timeout and the global wall-clock deadline. Results are collected and sent back as
+a batch.
+
 Tools implemented in phase 1 (read-only + bash):
 - `read_file(path: str, start_line: int | None, end_line: int | None) -> str` —
   read file contents (or line range), scoped to working_dir. When `start_line`
@@ -166,85 +197,114 @@ Phase 2 tools (dev agents):
 - `edit_file(path: str, old_string: str, new_string: str) -> str` — exact string
   replacement, scoped to working_dir
 
-### AC-2: Tool filtering from allowed_tools
+### AC-2: Tool name normalization and filtering
 
-`allowed_tools` on `ModelProfile` controls which tools from the registry are
-exposed to the model. The agent loop filters the registry:
+`allowed_tools` in forge.yaml uses user-facing capitalized names (`Read`, `Bash`,
+`Glob`, `Grep`). These are normalized to canonical internal names (`read_file`,
+`bash`, `grep`, `glob`) **at config parse time** in `_parse_profile()`, not at
+loop time. `ModelProfile.allowed_tools` stores canonical names after parsing.
+
+```python
+# In _parse_profile():
+allowed_tools_tuple = tuple(
+    TOOL_NAME_MAP.get(t, t) for t in raw_tools
+) if raw_tools else ()
+```
+
+This means every downstream caller — the agent loop, logging, tests — works with
+canonical names only. No runtime translation needed.
+
+The agent loop filters the registry using the normalized names:
 
 ```python
 tool_schemas = [
-    TOOL_REGISTRY[TOOL_NAME_MAP[name]].to_openai_function()  # or .to_anthropic_tool(), etc.
+    TOOL_REGISTRY[name].to_openai_function()
     for name in profile.allowed_tools
-    if name in TOOL_NAME_MAP
+    if name in TOOL_REGISTRY
 ]
 ```
 
-If `allowed_tools` is empty, no tools are provided (current stateless behavior).
-This preserves backward compatibility — existing API profiles with `allowed_tools: ()`
-continue to work as text-judgment-only.
+If `allowed_tools` is empty, no tools are provided and the loop is skipped entirely
+(single-shot stateless call — current behavior). This is an explicit fast path, not
+just "loop with zero tools." No `AgentLoopManager` overhead for stateless calls.
 
-### AC-3: Agent loop per provider
+### AC-3: Centralized agent loop with provider adapters
 
-Each provider adapter (`_run_openai`, `_run_anthropic`, `_run_google`) gains an
-agent loop that:
+The agent loop is **not** reimplemented per provider. A single `AgentLoopManager`
+in `runner_api.py` owns the loop orchestration. Each provider adapter is responsible
+only for:
 
-1. Sends the initial prompt + tool schemas to the model
-2. Inspects the response for tool call requests
-3. Executes each tool call via the registry handler
-4. Sends tool results back to the model
-5. Repeats until the model emits a final text/structured response
-6. Accumulates token usage across all loop iterations for cost tracking
+1. Translating the conversation history + tool schemas into the provider's wire format
+2. Making the API call
+3. Parsing the provider's response into a unified intermediate representation
 
-The loop has two safety limits:
+```python
+@dataclass
+class ToolCallRequest:
+    """Provider-agnostic representation of a tool call from the model."""
+    id: str                  # provider-assigned call ID
+    name: str                # tool name (e.g. "read_file")
+    arguments: dict          # parsed arguments
+
+@dataclass
+class LoopTurn:
+    """Unified result of one API call, regardless of provider."""
+    tool_calls: list[ToolCallRequest]   # empty = model is done
+    text_output: str | None             # final text (when no tool calls)
+    structured_data: dict | None        # final structured output (when available)
+    usage: ModelUsage | None            # token usage for this turn
+```
+
+The `AgentLoopManager` then handles:
+- Iteration counting and max iteration enforcement
+- Global wall-clock timeout (checked before each iteration and each tool execution)
+- Tool execution via the registry (with error handling and output truncation)
+- Parallel execution of multiple tool calls within a single turn
+- Usage accumulation across all turns
+- Logging
+
+```python
+class AgentLoopManager:
+    def run(self, *, prompt, tools, provider_adapter, working_dir, ...) -> AgentResult:
+        while iterations < max_iterations and not timed_out:
+            turn = provider_adapter.call(messages, tools)
+            accumulate_usage(turn.usage)
+            if not turn.tool_calls:
+                return build_result(turn)  # done
+            results = execute_tools(turn.tool_calls)  # parallel
+            messages.append(tool_results_message(results))
+```
+
+This eliminates the risk of four divergent loop implementations.
+
+**Safety limits:**
 - **Max iterations**: configurable, default 25. Prevents runaway tool loops.
-- **Timeout**: uses `profile.timeout_seconds` as a **wall-clock deadline** for the
-  entire loop (all iterations combined). Checked before each iteration and before
-  each tool execution. Individual tool timeouts (e.g. bash 30s) count against the
-  global budget — if a bash call takes 25s of a 120s total, 95s remain for the rest
-  of the loop. If the global timeout is reached mid-tool, the tool is terminated and
+- **Timeout**: `profile.timeout_seconds` as a **wall-clock deadline** for the
+  entire loop. Individual tool timeouts (e.g. bash 30s) count against the global
+  budget. If the global timeout is reached mid-tool, the tool is terminated and
   the loop returns a failure result with accumulated cost.
 
-`run_api_agent()` gains a required `working_dir: Path` parameter. This is the
-worktree path passed through from the coordinator. All tool handlers receive it
-for filesystem scoping.
+**Failed loops still report cost**: if a loop fails due to timeout or max iterations,
+the `AgentResult` still includes accumulated `ModelUsage` and `cost_usd` for all
+work done up to that point. This is critical for budget enforcement.
 
-Provider-specific tool call protocol:
+`run_api_agent()` gains a required `working_dir: Path` parameter passed through
+from the coordinator.
 
-**OpenAI (Chat Completions)**:
-```python
-response = client.chat.completions.create(
-    model=..., messages=messages, tools=tool_schemas, ...
-)
-# If response.choices[0].message.tool_calls is not None:
-#   execute each, append tool results to messages, loop
-```
+**Provider adapter responsibilities** (format translation only):
 
-**OpenAI (Responses API — Codex models)**:
-```python
-response = client.responses.create(
-    model=..., input=..., tools=tool_schemas, ...
-)
-# If response has function_call output items:
-#   execute each, append to input, loop
-```
+**OpenAI (Chat Completions)**: translate messages → `messages` param,
+parse `response.choices[0].message.tool_calls` → `ToolCallRequest` list.
 
-**Anthropic**:
-```python
-response = client.messages.create(
-    model=..., messages=messages, tools=tool_schemas, ...
-)
-# If response.stop_reason == "tool_use":
-#   execute each tool_use block, append tool_result, loop
-```
+**OpenAI (Responses API — Codex models)**: translate messages → `input` param,
+parse `function_call` output items → `ToolCallRequest` list.
 
-**Google**:
-```python
-response = client.models.generate_content(
-    model=..., contents=contents, tools=tool_declarations, ...
-)
-# If response.candidates[0].content.parts has function_call:
-#   execute each, append function_response, loop
-```
+**Anthropic**: translate messages → `messages` param,
+parse `tool_use` content blocks → `ToolCallRequest` list,
+detect `stop_reason == "tool_use"` vs `"end_turn"`.
+
+**Google**: translate messages → `contents` param,
+parse `function_call` parts → `ToolCallRequest` list.
 
 ### AC-4: Working directory scoping and tool output limits
 
@@ -290,24 +350,34 @@ reporting for providers that use prompt caching (Anthropic, Google).
 
 The `AgentResult.cost_usd` reflects the entire loop, not just the last call.
 
-### AC-6: Structured output on final iteration
+### AC-6: Structured output via submit tool
 
-The final iteration (when the model stops calling tools) must return structured
-output matching the expected verdict schema for the agent's role.
+The model signals completion by calling a designated **submit tool** rather than
+simply stopping tool calls. This eliminates the ambiguous "final no-tools call"
+pattern and works consistently across all providers.
 
-**For code review** (`review_pool`): the final output must be parseable by
-`parse_review_output()` or `parse_review_json()` — verdict, findings, spec
-compliance, test coverage.
+Two submit tools are registered (not in `TOOL_REGISTRY` — they are loop-internal):
 
-**For plan review** (`plan_agent_review`): the final output must be parseable by
-`parse_plan_review_output()` — verdict, findings. This is a control-plane output
-that drives coordinator behavior (approve, reject, downgrade advisory, regenerate
-plan, escalate).
+- `submit_review` — JSON Schema matches `review_json_schema()`. Used for code review.
+- `submit_plan_review` — JSON Schema matches plan review verdict fields. Used for
+  plan review.
 
-For models that support combining tools + structured output, the final call includes
-the `response_format` / `tool_choice` constraint. For models that don't, the loop
-does a final no-tools call with just `response_format` after the model signals
-completion.
+The agent loop registers the appropriate submit tool alongside the read/grep/glob/bash
+tools. The model calls `submit_review({"verdict": "APPROVE", ...})` when it has
+finished inspecting code. The loop extracts the structured data from the tool call
+arguments and returns it as `AgentResult.structured_data`.
+
+**For code review** (`review_pool`): `submit_review` schema enforces verdict,
+summary, findings, spec_compliance, test_coverage. Parseable by `parse_review_json()`.
+
+**For plan review** (`plan_agent_review`): `submit_plan_review` schema enforces
+verdict and findings. This is a control-plane output that drives coordinator behavior
+(approve, reject, downgrade advisory, regenerate plan, escalate).
+
+If the model stops calling tools without calling a submit tool (e.g. emits plain
+text), the loop treats the text output as raw review output and falls back to
+`parse_review_output()` / `parse_plan_review_output()` for YAML extraction. This
+preserves compatibility but is the degraded path.
 
 ### AC-7: Logging
 
@@ -352,17 +422,26 @@ via the agent loop. API profiles without `allowed_tools` continue as stateless.
   - read_file truncates output beyond max_tool_output_bytes
   - bash runs commands, returns output, respects timeout
   - bash returns exit code + stderr on failure
+  - bash returns error string (not exception) on command failure
   - grep matches patterns, returns formatted results
   - glob finds files by pattern
   - provider-specific schema translation (to_openai_function, to_anthropic_tool,
     to_google_declaration) returns correct format for each provider
 - `test_runner_api.py`: agent loop tested with mocked provider SDKs
   - mock model returns tool_call → verify handler called → mock final response
+  - mock model calls submit_review tool → verify structured_data extracted
   - verify token accumulation across iterations (all four fields)
-  - verify max iteration limit terminates loop
-  - verify timeout terminates loop (including mid-tool timeout)
-  - verify empty allowed_tools skips tool registration (stateless mode)
-- `test_config.py`: API profiles with allowed_tools now pass validation
+  - verify max iteration limit terminates loop with accumulated cost
+  - verify timeout terminates loop with accumulated cost
+  - verify empty allowed_tools takes single-shot path (no loop overhead)
+  - verify tool error is fed back to model as text result, loop continues
+  - verify unknown tool name returns error result, loop continues
+  - verify malformed arguments return error result, loop continues
+  - verify 3 consecutive malformed calls aborts loop
+  - verify parallel tool execution (multiple calls in one turn)
+- `test_config.py`:
+  - API profiles with allowed_tools now pass validation
+  - allowed_tools normalized from user-facing to canonical names at parse time
 
 ## Implementation Notes
 
