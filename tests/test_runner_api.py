@@ -15,7 +15,10 @@ from theforge.runner_api import (
     AgentLoopManager,
     LoopTurn,
     ToolCallRequest,
+    _deepseek_client,
+    _is_reasoning_model,
     _make_google_adapter,
+    _run_deepseek,
     run_api_agent,
 )
 from theforge.tool_runtime import TOOL_REGISTRY
@@ -1211,3 +1214,145 @@ class TestRateLimitRetry:
         assert not result.success
         assert "Provider API error" in result.output
         assert call_count[0] == 1
+
+
+class TestDeepSeekProvider:
+    """Tests for DeepSeek provider wiring."""
+
+    def _make_deepseek_profile(
+        self,
+        model: str = "deepseek-r1",
+        base_url: str | None = None,
+        allowed_tools: tuple[str, ...] = (),
+    ) -> ModelProfile:
+        return ModelProfile(
+            name="deepseek-reviewer",
+            provider="deepseek",
+            cli=None,
+            model=model,
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=allowed_tools,
+            base_url=base_url,
+        )
+
+    # ── _is_reasoning_model ──────────────────────────────────────────
+
+    def test_is_reasoning_model_deepseek_r1(self):
+        assert _is_reasoning_model("deepseek-r1") is True
+
+    def test_is_reasoning_model_deepseek_r1_prefix_variants(self):
+        assert _is_reasoning_model("deepseek-r1-zero") is True
+        assert _is_reasoning_model("deepseek-r1-distill-qwen-7b") is True
+
+    def test_is_reasoning_model_deepseek_v3_is_false(self):
+        assert _is_reasoning_model("deepseek-v3") is False
+
+    # ── _deepseek_client base_url ─────────────────────────────────────
+
+    def _patch_openai(self):
+        """Return a context manager that stubs the openai module for _deepseek_client."""
+        import sys
+
+        mock_module = MagicMock()
+        mock_module.OpenAI = MagicMock()
+        return patch.dict(sys.modules, {"openai": mock_module}), mock_module
+
+    def test_deepseek_client_default_base_url(self):
+        profile = self._make_deepseek_profile()
+        mod_patch, mock_module = self._patch_openai()
+        with (
+            patch.dict("os.environ", {"DEEPSEEK_API_KEY": "sk-test"}),
+            mod_patch,
+        ):
+            _deepseek_client(profile, {})
+        _, kwargs = mock_module.OpenAI.call_args
+        assert kwargs["base_url"] == "https://api.deepseek.com"
+
+    def test_deepseek_client_respects_profile_base_url(self):
+        profile = self._make_deepseek_profile(base_url="http://localhost:11434")
+        mod_patch, mock_module = self._patch_openai()
+        with mod_patch:
+            _deepseek_client(profile, {})
+        _, kwargs = mock_module.OpenAI.call_args
+        assert kwargs["base_url"] == "http://localhost:11434"
+
+    def test_deepseek_client_uses_deepseek_api_key(self):
+        profile = self._make_deepseek_profile()
+        mod_patch, mock_module = self._patch_openai()
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            mod_patch,
+        ):
+            _deepseek_client(profile, {"DEEPSEEK_API_KEY": "sk-secrets"})
+        _, kwargs = mock_module.OpenAI.call_args
+        assert kwargs["api_key"] == "sk-secrets"
+
+    # ── _run_deepseek single-shot ─────────────────────────────────────
+
+    def _mock_review_response(self, mock_client: MagicMock) -> MagicMock:
+        """Wire mock_client to return a minimal valid review JSON."""
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = json.dumps(
+            {
+                "verdict": "APPROVE",
+                "summary": "ok",
+                "findings": [],
+                "spec_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response.model_dump.return_value = {}
+        mock_client.chat.completions.create.return_value = mock_response
+        return mock_response
+
+    def test_run_deepseek_calls_chat_completions(self, tmp_path):
+        profile = self._make_deepseek_profile(model="deepseek-v3")
+        mock_client = MagicMock()
+        self._mock_review_response(mock_client)
+
+        with patch("theforge.runner_api._deepseek_client", return_value=mock_client):
+            result = _run_deepseek("review this", profile)
+
+        assert result.success
+        mock_client.chat.completions.create.assert_called_once()
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert call_kwargs["model"] == "deepseek-v3"
+        # deepseek-v3 is not a reasoning model — temperature should be set
+        assert call_kwargs.get("temperature") == 0
+
+    def test_run_deepseek_r1_skips_temperature(self, tmp_path):
+        profile = self._make_deepseek_profile(model="deepseek-r1")
+        mock_client = MagicMock()
+        self._mock_review_response(mock_client)
+
+        with patch("theforge.runner_api._deepseek_client", return_value=mock_client):
+            result = _run_deepseek("review this", profile)
+
+        assert result.success
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert "temperature" not in call_kwargs
+
+    # ── _run_loop_deepseek dispatch ───────────────────────────────────
+
+    def test_run_api_agent_deepseek_single_shot_dispatches(self, tmp_path):
+        profile = self._make_deepseek_profile(allowed_tools=())
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.cost_usd = None
+        mock_fn = MagicMock(return_value=mock_result)
+        with patch.dict("theforge.runner_api.PROVIDER_RUNNERS", {"deepseek": mock_fn}):
+            run_api_agent(prompt="review", profile=profile, working_dir=tmp_path, quiet=True)
+        mock_fn.assert_called_once()
+
+    def test_run_api_agent_deepseek_loop_dispatches(self, tmp_path):
+        profile = self._make_deepseek_profile(allowed_tools=("read_file",))
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.cost_usd = None
+        mock_fn = MagicMock(return_value=mock_result)
+        with patch.dict("theforge.runner_api._LOOP_RUNNERS", {"deepseek": mock_fn}):
+            run_api_agent(prompt="review", profile=profile, working_dir=tmp_path, quiet=True)
+        mock_fn.assert_called_once_with("review", profile, tmp_path, None)

@@ -755,7 +755,7 @@ def _openai_result(
 ) -> AgentResult:
     """Build AgentResult from parsed OpenAI-compatible response fields."""
     cost = _estimate_cost(provider, profile.model, input_tokens, output_tokens)
-    if profile.base_url and provider == "openai":
+    if profile.base_url:
         cost = None
     model_usage = ModelUsage(
         model=profile.model,
