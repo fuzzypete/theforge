@@ -49,6 +49,11 @@ profiles:
         - Bash
         - Glob
         - Grep
+    - name: gemini-reviewer
+      cli: gemini
+      review_role: patterns
+      budget_usd: 1.00
+      timeout_seconds: 300
 
 retry:
   max_dev_iterations: 3
