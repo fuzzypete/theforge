@@ -79,8 +79,11 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_preflight_already_done_skips_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """ALREADY_DONE verdict → DONE immediately, no dev or review cycles."""
+    @patch("theforge.coordinator.has_review_approve", return_value=True)
+    def test_preflight_already_done_skips_dev(
+        self, mock_approve, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """ALREADY_DONE verdict with prior APPROVE → DONE immediately, no dev or review."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"

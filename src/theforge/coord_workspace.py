@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime
 import subprocess
 import time
 from pathlib import Path
@@ -243,35 +242,10 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
     if not commits_ahead:
         return True, f"0 commits ahead of {base_branch} — removing (stale)"
 
-    ok, ts_out = _cu._run_shell(
-        f"git log -1 --format=%ct {branch_name}",
-        config.project_root,
-    )
-    if not ok or not ts_out.strip():
-        return True, "could not determine last commit timestamp — removing (stale)"
-
-    try:
-        last_commit_ts = int(ts_out.strip())
-    except ValueError:
-        return True, "could not parse commit timestamp — removing (stale)"
-
-    now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-    age_seconds = max(0, now_ts - last_commit_ts)
-    age_days_float = age_seconds / 86400
     n_commits = len(commits_ahead)
-    age_str = _fmt_age(age_seconds)
-
-    if age_days_float > stale_days:
-        return (
-            True,
-            f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}, "
-            f"last commit {age_str} ago — removing (stale)",
-        )
-
     return (
         False,
-        f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}, "
-        f"last commit {age_str} ago",
+        f"{n_commits} commit{'s' if n_commits != 1 else ''} ahead of {base_branch}",
     )
 
 

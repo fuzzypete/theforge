@@ -669,6 +669,104 @@ class TestTriageSpec:
         assert triage.action == "full"
         assert "stale" in triage.reason or "0 commits" in triage.reason
 
+    def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
+        """Worktree has commits ahead and prior APPROVE in audit trail → skip."""
+        import json
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        # Write an APPROVE record to history.jsonl
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        record = {
+            "task": {"slug": "feature-a"},
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1  # not merged
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123 some commit\n"
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "skip"
+        assert "APPROVE" in triage.reason or "approve" in triage.reason.lower()
+        assert triage.worktree_path == worktree
+
+    def test_triage_gate_pass_no_approve_routes_to_review(self, tmp_path: Path) -> None:
+        """Worktree with commits, gate passes, but no APPROVE → review (not skip)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 1
+            elif "log" in cmd:
+                m.returncode = 0
+                m.stdout = b"abc123 some commit\n"
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint._run_gate", return_value=("PASS", None, "")):
+                triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "review"
+
+
+class TestResumeSprintSkipApproved:
+    def test_resume_sprint_skips_approved(self, tmp_path: Path) -> None:
+        """Resume sprint: spec with prior APPROVE is skipped without running."""
+        import json
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        # Write an APPROVE record
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        record = {"task": {"slug": "feature-a"}, "reviews": [{"verdict": "APPROVE"}]}
+        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        skip_triage = SpecTriage(
+            spec_path="feature-a.md",
+            action="skip",
+            reason="prior APPROVE in audit trail (2 commits ahead)",
+            worktree_path=worktree,
+            slug="feature-a",
+        )
+
+        with patch("theforge.sprint._triage_spec", return_value=skip_triage):
+            with patch("theforge.sprint.run_task") as mock_run_task:
+                result = run_sprint(config, manifest_path, resume=True)
+
+        mock_run_task.assert_not_called()
+        assert result.specs_succeeded == 1
+
 
 class TestResumeSprintIntegration:
     def test_resume_sprint_skips_merged(self, tmp_path: Path) -> None:

@@ -575,53 +575,37 @@ class TestStaleWorktree:
         assert "0 commits ahead" in info
 
     @patch("theforge.coord_util._run_shell")
-    def test_stale_old_commit(self, mock_shell, tmp_path):
-        """Branch has commits but last commit is >1 day old -> stale."""
+    def test_old_commit_not_stale(self, mock_shell, tmp_path):
+        """Branch has commits ahead even if old -> NOT stale (age alone is no reason to delete)."""
         workspace = tmp_path / "my-spec"
         workspace.mkdir()
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
-
-        # Timestamp 3 days ago
-        old_ts = int(
-            (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=3)).timestamp()
-        )
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "feat/my-spec")
             if "--oneline" in cmd:
                 return (True, "abc123 some commit")
-            if "--format=%ct" in cmd:
-                return (True, str(old_ts))
             return (True, "")
 
         mock_shell.side_effect = shell_side_effect
 
         is_stale, info = _is_stale_worktree(workspace, "main", config)
-        assert is_stale is True
-        assert "stale" in info
+        assert is_stale is False
+        assert "1 commit ahead" in info
 
     @patch("theforge.coord_util._run_shell")
     def test_fresh_worktree_reused(self, mock_shell, tmp_path):
-        """Branch has commits ahead, last commit recent -> not stale (safe to reuse)."""
+        """Branch has commits ahead -> not stale (safe to reuse, age is irrelevant)."""
         workspace = tmp_path / "my-spec"
         workspace.mkdir()
         config = _make_stale_config(tmp_path, stale_worktree_days=1)
-
-        # Timestamp 12 minutes ago
-        recent_ts = int(
-            (
-                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=12)
-            ).timestamp()
-        )
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "feat/my-spec")
             if "--oneline" in cmd:
                 return (True, "abc123 commit one\ndef456 commit two\nghi789 commit three")
-            if "--format=%ct" in cmd:
-                return (True, str(recent_ts))
             return (True, "")
 
         mock_shell.side_effect = shell_side_effect
@@ -633,25 +617,14 @@ class TestStaleWorktree:
 
     @patch("theforge.coord_util._run_shell")
     def test_stale_worktree_days_zero_always_removes(self, mock_shell, tmp_path):
-        """stale_worktree_days=0 -> always stale regardless of commit state."""
+        """stale_worktree_days=0 -> always stale regardless of commit state (CI/automated mode)."""
         workspace = tmp_path / "my-spec"
         workspace.mkdir()
         config = _make_stale_config(tmp_path, stale_worktree_days=0)
 
-        # Even with a recent commit, stale_days=0 means always remove
-        recent_ts = int(
-            (
-                datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)
-            ).timestamp()
-        )
-
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "feat/my-spec")
-            if "--oneline" in cmd:
-                return (True, "abc123 recent commit")
-            if "--format=%ct" in cmd:
-                return (True, str(recent_ts))
             return (True, "")
 
         mock_shell.side_effect = shell_side_effect

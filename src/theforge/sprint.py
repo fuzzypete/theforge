@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
+from .coord_audit import has_review_approve
 from .coordinator import (
     CoordinatorResult,
     StructuredLogger,
@@ -162,7 +163,7 @@ class SpecTriage:
     """Result of triaging a spec for sprint resume."""
 
     spec_path: str
-    action: str  # "skip_merged", "review", "dev", "full"
+    action: str  # "skip_merged", "skip", "review", "dev", "full"
     reason: str
     worktree_path: Path | None = None
     slug: str = ""
@@ -246,7 +247,17 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 4. Gate pre-check to decide REVIEW vs DEV entry
+    # 4. Check audit trail for a prior review APPROVE
+    if has_review_approve(project_root, slug):
+        return SpecTriage(
+            spec_path=spec_path,
+            action="skip",
+            reason=f"prior APPROVE in audit trail ({len(commits_ahead)} commits ahead)",
+            worktree_path=worktree_path,
+            slug=slug,
+        )
+
+    # 5. Gate pre-check to decide REVIEW vs DEV entry
     gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
 
     if gate_err is None and gate_decision == "PASS":
@@ -361,14 +372,18 @@ def run_sprint(
         spec_str = manifest.specs[idx - 1]
         task = _build_task_from_spec(spec_path)
 
-        # Resume mode: skip already-merged specs before budget check.
-        # Merged = work already done successfully; not subject to budget enforcement.
+        # Resume mode: skip already-merged or already-approved specs before budget check.
+        # These represent completed work; not subject to budget enforcement.
         if resume:
             triage = triages.get(spec_str)
             if triage and triage.action == "skip_merged":
                 _log(f"[{idx}/{total}] SKIP {task.slug} ({triage.reason})")
                 specs_succeeded += 1
                 merged_slugs.add(task.slug)
+                continue
+            if triage and triage.action == "skip":
+                _log(f"[{idx}/{total}] SKIP {task.slug} — already approved ({triage.reason})")
+                specs_succeeded += 1
                 continue
 
         # Budget check before starting (cumulative: prior + current run)
