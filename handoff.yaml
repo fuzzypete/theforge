@@ -1,25 +1,28 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented sprint spec dependency support. Two gaps existed: (1) dependency
-    failure halted the entire sprint instead of skipping only the dependent spec, and
-    (2) eager merge logic (force auto_merge for specs with downstream dependents) was
-    absent. Fixed both in sprint.py only — task.py/config.py parsing was already correct.
-    Pre-scan builds dependent_slugs set before the loop; effective_auto_merge is computed
-    per spec as auto_merge or (task.slug in dependent_slugs); the missing-deps block now
-    uses continue instead of break+inner-loop. Tests updated accordingly."
+  summary: "Implemented sprint spec dependency support (iter 1 review fixes included).
+    Two original gaps: (1) dependency failure halted the entire sprint instead of skipping
+    only the dependent spec, and (2) eager merge logic was absent. Fixed both in sprint.py.
+    Pre-scan builds dependent_slugs set (cached TaskSpec objects to avoid double I/O);
+    effective_auto_merge computed per spec as auto_merge or (task.slug in dependent_slugs);
+    missing-deps block uses continue instead of break+inner-loop.
+    Iter 1 review fix: resume mode 'skip' triage (prior APPROVE) now adds slug to
+    merged_slugs so downstream dependents are not incorrectly skipped."
   commits:
     - sha: "862f29e"
       message: "feat(sprint): add spec dependency support with eager merge and skip-not-halt"
+    - sha: "b10b89f"
+      message: "fix(sprint): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "TaskSpec.depends_on parses correctly from frontmatter (str → list, list → list, missing → [])"
       status: MET
-      notes: "Already implemented in task.py and sprint.py; existing tests in test_task.py and test_sprint.py cover all three cases. No code changes needed."
+      notes: "Already implemented in task.py and sprint.py; existing tests cover all three cases."
     - criterion: "Sprint eagerly merges an APPROVED spec when a later spec declares it as a dependency"
       status: MET
-      notes: "Pre-scan builds dependent_slugs set. effective_auto_merge = auto_merge or (task.slug in dependent_slugs) computed before all four run_task/run_from_review/run_from_dev call sites. New test test_eager_merge_fires_for_spec_with_downstream_dependent verifies True is passed even when global auto_merge=False."
+      notes: "Pre-scan builds dependent_slugs. effective_auto_merge = auto_merge or (task.slug in dependent_slugs) at all four call sites. Test verifies True is passed even when global auto_merge=False."
     - criterion: "Sprint skips a spec (not halts) when its dependency did not merge — remaining independent specs still run"
       status: MET
-      notes: "Replaced break + inner skip loop with continue in missing-deps block. Removed stopped_reason assignment for this case. New test test_skips_dependent_continues_independent verifies independent spec C still runs when B is skipped. Renamed test_halts_remaining_on_dependency_failure to test_skips_dependent_continues_independent and revised assertions."
+      notes: "Replaced break + inner skip loop with continue. test_skips_dependent_continues_independent verifies independent spec C still runs when B is skipped."
     - criterion: "Sprint proceeds normally when dependency merged successfully"
       status: MET
       notes: "Already implemented; test_proceeds_when_dependency_merged passes unchanged."
@@ -28,12 +31,12 @@ dev_notes: |
       notes: "Already implemented; test_proceeds_normally_when_no_depends_on passes unchanged."
     - criterion: "Eager merge does not fire for specs with no downstream dependents (respects auto_merge)"
       status: MET
-      notes: "dependent_slugs check gates the override. New test test_eager_merge_does_not_fire_for_spec_without_downstream_dependent verifies auto_merge=False is preserved when no spec declares a dependency."
+      notes: "dependent_slugs check gates the override. test_eager_merge_does_not_fire_for_spec_without_downstream_dependent verifies auto_merge=False is preserved."
     - criterion: "make test passes. make lint passes."
       status: MET
-      notes: "945 tests pass. make lint clean."
+      notes: "946 tests pass. make lint clean."
   spec_deviations:
     - description: "dependent_slugs pre-scan collects all deps regardless of ordering (not 'later only')"
-      justification: "Spec says 'if any later spec declares it as a dependency' but collecting all is simpler and equally safe — merging a spec that was already going to merge is a no-op. Plan reviewer P2 notes this is acceptable. A code comment documents the design choice."
+      justification: "Merging a spec that was already going to merge is a no-op. Simpler and safe. Code comment documents the design choice."
   deferred_items: none
   gate_result: PASS
