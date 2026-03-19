@@ -17,6 +17,43 @@ from .tool_runtime import TOOL_REGISTRY, ToolDef
 if TYPE_CHECKING:
     from .config import ModelProfile
 
+
+def _sanitize_schema_for_google(schema: dict) -> dict:
+    """Strip JSON Schema features unsupported by Google's API.
+
+    Google's response_schema does not support:
+    - additionalProperties
+    - anyOf / oneOf / allOf
+    - $schema, $id, $ref
+
+    This recursively cleans the schema so it can be passed to Gemini.
+    """
+    cleaned: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key in ("additionalProperties", "$schema", "$id", "$ref"):
+            continue
+        if key == "anyOf":
+            # Simplify anyOf to first non-null type
+            for option in value:
+                if isinstance(option, dict) and option.get("type") != "null":
+                    cleaned.update(_sanitize_schema_for_google(option))
+                    break
+            else:
+                # All null — just use string
+                cleaned["type"] = "string"
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = _sanitize_schema_for_google(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _sanitize_schema_for_google(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
 # ── Pricing table (per 1M tokens) ──────────────────────────────────────
 
 # Fallback for when API response doesn't include cost.
@@ -713,7 +750,7 @@ def _run_google(
 
     merged = {**os.environ, **(secrets or {})}
     client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
-    schema = review_json_schema()
+    schema = _sanitize_schema_for_google(review_json_schema())
 
     try:
         response = client.models.generate_content(
