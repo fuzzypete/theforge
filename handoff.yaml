@@ -1,26 +1,56 @@
-gate_decision: PASS
 dev_notes: |
-  summary: "Implemented full worktree resume logic: (1) added has_review_approve() to coord_audit.py that reads history.jsonl to check for a prior APPROVE for a given slug; (2) removed age-based staleness check from _is_stale_worktree — commits ahead of base = not stale regardless of age; (3) added ALREADY_DONE guard in coordinator.py that checks commits-ahead + no-prior-APPROVE and redirects to REVIEW via _coordinator_loop(skip_dev_first_iter=True); (4) added audit-trail APPROVE check to sprint._triage_spec with a new skip action explicitly handled in run_sprint dispatch; (5) added --resume flag to forge run in cli.py with triage dispatch to review/dev/full entry points; fixed pre-existing E501 lint violation and installed openai/httpx to resolve 3 pre-existing test failures."
+  summary: "Added per-run verbose log capture. Every run_task(), run_from_review(),
+    and run_from_dev() call now tees sys.stderr to ~/.forge/logs/<project>/<slug>-<run_id>.log
+    alongside the existing forge.log. Three module-level helpers handle the lifecycle:
+    _begin_run_log_tee() opens the file and installs the _TeeStderr wrapper;
+    _end_run_log_tee() restores sys.stderr and closes the file; _make_sigterm_handler()
+    returns a handler that emits run_end:crashed to forge.log before closing the tee
+    and re-raising. Each entry point (run_task, run_from_review, run_from_dev) uses
+    try/finally to guarantee cleanup on normal exit and KeyboardInterrupt. The feature
+    gates on config.log.enabled so all existing tests with LogConfig(enabled=False)
+    are unaffected. Log path is derived from logger._log_path (same resolved parent
+    directory as forge.log) per the P2 reviewer suggestion. A pre-existing E501 in
+    test_runner_api.py was suppressed with noqa."
   commits:
-    - sha: "07d80a1"
-      message: "chore(stale-worktree): gate PASS — install openai/httpx, all 873 tests pass"
-    - sha: "b4f1304"
-      message: "chore(stale-worktree): update handoff.yaml with dev notes"
-    - sha: "fad7001"
-      message: "feat(stale-worktree): detect partial progress and resume from correct phase"
+    - sha: "08a366f"
+      message: "feat(coordinator): add per-run verbose log capture"
   acceptance_criteria:
-    - criterion: "Existing worktree with commits but no review APPROVE resumes from REVIEW"
+    - criterion: "Every forge run and forge sprint creates ~/.forge/logs/<project>/<slug>-<run_id>.log"
       status: MET
-    - criterion: "Existing worktree with commits and a prior APPROVE allows ALREADY_DONE"
+      notes: "run_task(), run_from_review(), run_from_dev() all call _begin_run_log_tee()
+        after logger creation. sprint dispatches to all three, so all paths are covered."
+    - criterion: "The file contains the full stderr stream — both _log and _log_verbose lines"
       status: MET
-    - criterion: "Existing worktree with zero commits ahead is removed and recreated"
+      notes: "_TeeStderr wraps sys.stderr and copies every write to the log file.
+        Both _log and _log_verbose write to sys.stderr, so all output is captured."
+    - criterion: "The file is written incrementally (not buffered to end of run)"
       status: MET
-    - criterion: "forge run supports --resume flag (parity with forge sprint --resume)"
+      notes: "_TeeStderr.write() calls self._fh.flush() on every write."
+    - criterion: "File is closed cleanly on normal exit, KeyboardInterrupt, and SIGTERM"
       status: MET
-    - criterion: "Clear log output explains resume decision and which phase is resuming"
+      notes: "try/finally in all three entry points handles normal exit and KeyboardInterrupt.
+        SIGTERM handler calls _end_run_log_tee() before re-raising."
+    - criterion: "SIGTERM handler emits run_end with outcome: crashed to forge.log before dying"
       status: MET
-    - criterion: "Never deletes a worktree that has commits ahead of base without --force"
+      notes: "_make_sigterm_handler() emits logger._safe_emit('run_end', outcome='crashed')
+        then closes the tee, restores the previous handler, and sends SIGTERM to self."
+    - criterion: "Log directory is created if it doesn't exist (same logic as forge.log)"
       status: MET
+      notes: "_begin_run_log_tee() calls per_run_path.parent.mkdir(parents=True, exist_ok=True)
+        mirroring coord_logging.py:49."
+    - criterion: "forge.log already captures run_id — the per-run filename uses the same run_id"
+      status: MET
+      notes: "Both use the same _run_id variable. Per-run path is derived as
+        logger._log_path.parent / f'{task_slug}-{logger._run_id}.log'."
+    - criterion: "Existing tests pass unchanged"
+      status: MET
+      notes: "All 876 pre-existing tests pass. Feature gates on config.log.enabled;
+        all test fixtures use LogConfig(enabled=False)."
+  spec_deviations:
+    - "Spec suggested implementing in cli.py but the plan (and implementation) places it
+      in coordinator.py to cover forge sprint without requiring per-spec lifecycle hooks
+      in cli.py. The plan reviewers confirmed run_from_review() also needed coverage,
+      which is implemented."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
