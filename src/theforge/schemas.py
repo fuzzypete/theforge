@@ -63,8 +63,10 @@ def validate_review_yaml(data: Any) -> list[str]:
                     f"vague P1s block the pipeline without clear fix targets"
                 )
 
-        if not finding.get("file"):
-            errors.append(f"findings[{i}].file must be non-empty")
+        # P1 findings must cite a specific file to be actionable.
+        # P2 findings may omit file (e.g. "missing integration tests").
+        if severity == "P1" and not finding.get("file"):
+            errors.append(f"findings[{i}].file must be non-empty for P1 findings")
 
         if not finding.get("description"):
             errors.append(f"findings[{i}].description must be non-empty")
