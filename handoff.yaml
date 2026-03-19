@@ -1,18 +1,22 @@
 gate_decision: PASS
 dev_notes: |
   summary: >
-    Implemented the full API agent loop spec. Created tool_runtime.py as the canonical
-    source for tool definitions, handlers, and provider schema translation. Added
-    AgentLoopManager to runner_api.py to drive the multi-turn tool-use loop with parallel
-    execution, timeout enforcement, cost accumulation, and submit-tool-based structured
-    completion. Modified config.py to remove the API+tools rejection and normalize
-    allowed_tools at parse time for API profiles only (CLI profiles keep capitalized names).
-    Updated runner.py to pass working_dir through to run_api_agent(). Added comprehensive
-    tests covering all acceptance criteria.
+    Implemented the full API agent loop spec and fixed a P1 message-history corruption
+    bug found in review cycle 1. Created tool_runtime.py as the canonical source for
+    tool definitions, handlers, and provider schema translation. Added AgentLoopManager
+    to runner_api.py to drive the multi-turn tool-use loop with parallel execution,
+    timeout enforcement, cost accumulation, and submit-tool-based structured completion.
+    Modified config.py to remove the API+tools rejection and normalize allowed_tools at
+    parse time for API profiles only. Updated runner.py to pass working_dir through.
+    Fixed: mixed malformed/valid call turns now collect all results before a single
+    _append_tool_results call, preventing history corruption and provider API errors.
+    Also fixed grep on file path and tool-call count on submit.
 
   commits:
     - sha: "91fdb9e"
       message: "feat(api-agent-loop): tool-use runtime for API-mode agents"
+    - sha: "6557461"
+      message: "fix(api-agent-loop): address review findings (iter 1)"
 
   acceptance_criteria:
     - criterion: "AC-1: tool_runtime.py with ToolDef, TOOL_REGISTRY, TOOL_NAME_MAP, provider schema methods"
@@ -30,8 +34,10 @@ dev_notes: |
     - criterion: "AC-1: Unknown/malformed tool calls return synthetic error; abort after 3 consecutive malformed"
       status: MET
       notes: >
-        Unknown tool names return descriptive error result. Malformed calls increment
-        consecutive_malformed counter; abort after _MAX_MALFORMED=3.
+        Fixed in iter 1: malformed calls in a mixed turn now get error results while valid
+        calls are still executed. All results collected before a single _append_tool_results
+        call so history stays consistent. Consecutive_malformed counter resets when valid
+        calls are present.
 
     - criterion: "AC-1: Parallel tool execution via ThreadPoolExecutor"
       status: MET
@@ -99,7 +105,8 @@ dev_notes: |
       status: MET
       notes: >
         Both submit tools registered alongside TOOL_REGISTRY tools. Loop detects calls
-        by name and extracts arguments as structured_data.
+        by name and extracts arguments as structured_data. Tool count now correctly
+        counts all calls in the submit turn (fixed in iter 1).
 
     - criterion: "AC-6: Model calling submit tool returns structured_data; plain-text fallback"
       status: PARTIAL
@@ -121,15 +128,17 @@ dev_notes: |
     - criterion: "AC-9: test_tool_runtime.py"
       status: MET
       notes: >
-        73 tests covering all handlers (contents, errors, traversal, line ranges, truncation),
-        TOOL_NAME_MAP, TOOL_REGISTRY structure, all three provider schema translations.
+        75 tests covering all handlers (contents, errors, traversal, line ranges, truncation,
+        grep on file path), TOOL_NAME_MAP, TOOL_REGISTRY structure, all three provider schema
+        translations.
 
     - criterion: "AC-9: test_runner_api.py"
       status: MET
       notes: >
-        69 tests covering full loop lifecycle, submit tool extraction, token accumulation
+        71 tests covering full loop lifecycle, submit tool extraction, token accumulation
         (all 4 fields), max iterations, timeout, single-shot path, tool errors, unknown tools,
-        malformed args, 3-consecutive-malformed abort, parallel execution, message history.
+        malformed args, 3-consecutive-malformed abort, mixed malformed+valid turn (new),
+        parallel execution, message history.
 
     - criterion: "AC-9: test_config.py updated"
       status: MET
