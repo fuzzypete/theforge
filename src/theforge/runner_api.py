@@ -150,6 +150,18 @@ class ProviderAdapter(Protocol):
     ) -> LoopTurn: ...
 
 
+class Finalizer(Protocol):
+    """Protocol for forced-output finalization when the loop runs out of budget.
+
+    Called with the full conversation history when the agent hits a wall-clock
+    or iteration timeout. Returns a LoopTurn with structured_data extracted
+    via provider-specific constrained output (response_format, tool_choice,
+    response_schema).
+    """
+
+    def __call__(self, messages: list[dict]) -> LoopTurn: ...
+
+
 # ── Submit tool schemas ───────────────────────────────────────────────
 
 
@@ -335,6 +347,7 @@ class AgentLoopManager:
         working_dir: Path,
         tools: list[ToolDef],
         provider_adapter: ProviderAdapter,
+        finalizer: Finalizer | None = None,
         max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     ) -> None:
         self._profile = profile
@@ -342,12 +355,14 @@ class AgentLoopManager:
         self._working_dir = working_dir
         self._tools = {t.name: t for t in tools}
         self._adapter = provider_adapter
+        self._finalizer = finalizer
         # Per-profile max_iterations takes precedence over the constructor default
         self._max_iterations = profile.max_iterations or max_iterations
         self._usage = _UsageAccumulator()
         self._total_tool_calls = 0
         self._deadline = time.monotonic() + profile.timeout_seconds
-        self._nudge_sent = False
+        self._iter_nudge_sent = False
+        self._time_nudge_sent = False
 
     def _timed_out(self) -> bool:
         return time.monotonic() > self._deadline
@@ -463,7 +478,7 @@ class AgentLoopManager:
 
         while iterations < self._max_iterations:
             if self._timed_out():
-                return self._timeout_result(iterations)
+                return self._finalize_or_timeout(messages, iterations, "wall-clock timeout")
 
             try:
                 turn = self._call_with_retry(messages, tool_schemas)
@@ -562,22 +577,86 @@ class AgentLoopManager:
             messages = self._append_tool_results(messages, turn.tool_calls, turn_results)
 
             # Nudge: when approaching the iteration limit, tell the model to wrap up
-            if not self._nudge_sent:
+            if not self._iter_nudge_sent:
                 nudge_threshold = int(self._max_iterations * 0.8)
-                remaining = self._max_iterations - iterations
-                if iterations >= nudge_threshold and remaining > 0:
-                    self._nudge_sent = True
+                remaining_iter = self._max_iterations - iterations
+                if iterations >= nudge_threshold and remaining_iter > 0:
+                    self._iter_nudge_sent = True
                     nudge_msg = (
-                        f"[SYSTEM] You have {remaining} iterations remaining before "
+                        f"[SYSTEM] You have {remaining_iter} iterations remaining before "
                         f"this session terminates. Finish your analysis and submit "
                         f"your response now using the submit tool."
                     )
                     messages = list(messages)
                     messages.append({"role": "user", "content": nudge_msg})
                     label = self._profile.name or f"{self._provider}/{self._profile.model}"
-                    _log_verbose(f"  ⚠ {label} nudge sent ({remaining} iterations remaining)")
+                    _log_verbose(f"  ⚠ {label} nudge sent ({remaining_iter} iterations remaining)")
 
-        return self._timeout_result(iterations, reason="max iterations reached")
+            # Time-based nudge: when approaching wall-clock deadline
+            if not self._time_nudge_sent:
+                elapsed = time.monotonic() - (self._deadline - self._profile.timeout_seconds)
+                time_fraction = elapsed / self._profile.timeout_seconds
+                if time_fraction >= 0.8:
+                    self._time_nudge_sent = True
+                    remaining_secs = int(self._deadline - time.monotonic())
+                    if remaining_secs > 0:
+                        nudge_msg = (
+                            f"[SYSTEM] You have approximately {remaining_secs} seconds "
+                            f"remaining before timeout. Finish your analysis and submit "
+                            f"your response now using the submit tool."
+                        )
+                        messages = list(messages)
+                        messages.append({"role": "user", "content": nudge_msg})
+                        label = self._profile.name or f"{self._provider}/{self._profile.model}"
+                        _log_verbose(f"  ⚠ {label} time nudge sent ({remaining_secs}s remaining)")
+
+        return self._finalize_or_timeout(messages, iterations, "max iterations reached")
+
+    def _finalize_or_timeout(
+        self, messages: list[dict], iterations: int, reason: str
+    ) -> AgentResult:
+        """Attempt finalization via constrained output; fall back to timeout failure."""
+        if self._finalizer is None:
+            return self._timeout_result(iterations, reason=reason)
+
+        label = self._profile.name or f"{self._provider}/{self._profile.model}"
+        _log(f"  ⚠ {label} {reason} after {iterations} iterations — attempting finalization")
+
+        try:
+            turn = self._finalizer(messages)
+            self._usage.add(turn.usage)
+
+            if turn.structured_data:
+                _log(
+                    f"  ... {label} finalized "
+                    f"({iterations} iter, {self._total_tool_calls} tool calls)"
+                )
+                return self._success_result(
+                    output=json.dumps(turn.structured_data, indent=2),
+                    structured_data=turn.structured_data,
+                )
+
+            # Finalizer returned but no structured data — try parsing text
+            if turn.text_output and turn.text_output.strip():
+                try:
+                    data = json.loads(turn.text_output)
+                    _log(
+                        f"  ... {label} finalized from text "
+                        f"({iterations} iter, {self._total_tool_calls} tool calls)"
+                    )
+                    return self._success_result(
+                        output=turn.text_output,
+                        structured_data=data,
+                    )
+                except json.JSONDecodeError:
+                    pass
+
+            _log(f"  ... {label} finalization produced no structured output")
+        except Exception as exc:
+            _log_verbose(f"  ... {label} finalization failed: {exc}")
+            _log_verbose(traceback.format_exc())
+
+        return self._timeout_result(iterations, reason=reason)
 
     def _append_tool_results(
         self,
@@ -1415,6 +1494,250 @@ def _make_google_adapter(
     return adapter
 
 
+# ── Finalizers (forced structured output on timeout) ──────────────────
+
+
+def _make_openai_chat_finalizer(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> Finalizer:
+    """Build a Chat Completions finalizer using response_format: json_schema."""
+    client = _openai_client(profile, secrets)
+    schema = review_json_schema()
+
+    def finalizer(messages: list[dict]) -> LoopTurn:
+        oai_messages = _translate_messages_openai_chat(messages)
+        oai_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Time is up. Deliver your code review verdict now as structured JSON. "
+                    "Include verdict, summary, findings, spec_compliance, and test_coverage."
+                ),
+            }
+        )
+        kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "messages": oai_messages,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "review_output", "schema": schema, "strict": True},
+            },
+        }
+        if not _is_reasoning_model(profile.model):
+            kwargs["temperature"] = 0
+
+        response = client.chat.completions.create(**kwargs)
+        output_text = response.choices[0].message.content or ""
+        usage = _make_openai_usage(response.usage, profile.model)
+
+        structured_data = None
+        if output_text.strip():
+            try:
+                structured_data = json.loads(output_text)
+            except json.JSONDecodeError:
+                pass
+
+        return LoopTurn(
+            tool_calls=[],
+            text_output=output_text,
+            structured_data=structured_data,
+            usage=usage,
+        )
+
+    return finalizer
+
+
+def _make_openai_responses_finalizer(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> Finalizer:
+    """Build a Responses API finalizer using text.format: json_schema."""
+    client = _openai_client(profile, secrets)
+    schema = review_json_schema()
+
+    def finalizer(messages: list[dict]) -> LoopTurn:
+        input_items = _translate_messages_openai_responses(messages)
+        input_items.append(
+            {
+                "role": "user",
+                "content": (
+                    "Time is up. Deliver your code review verdict now as structured JSON. "
+                    "Include verdict, summary, findings, spec_compliance, and test_coverage."
+                ),
+            }
+        )
+        response = client.responses.create(
+            model=profile.model,
+            input=input_items,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "review_output",
+                    "schema": schema,
+                    "strict": True,
+                }
+            },
+        )
+        output_text = response.output_text or ""
+        usage_obj = getattr(response, "usage", None)
+        usage: ModelUsage | None = None
+        if usage_obj:
+            usage = ModelUsage(
+                model=profile.model,
+                input_tokens=getattr(usage_obj, "input_tokens", 0),
+                output_tokens=getattr(usage_obj, "output_tokens", 0),
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=None,
+            )
+
+        structured_data = None
+        if output_text.strip():
+            try:
+                structured_data = json.loads(output_text)
+            except json.JSONDecodeError:
+                pass
+
+        return LoopTurn(
+            tool_calls=[],
+            text_output=output_text,
+            structured_data=structured_data,
+            usage=usage,
+        )
+
+    return finalizer
+
+
+def _make_anthropic_finalizer(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> Finalizer:
+    """Build an Anthropic finalizer using tool_choice to force submit_review."""
+    import anthropic
+
+    merged = {**os.environ, **(secrets or {})}
+    client = anthropic.Anthropic(api_key=merged.get("ANTHROPIC_API_KEY"))
+
+    def finalizer(messages: list[dict]) -> LoopTurn:
+        anth_messages = _translate_messages_anthropic(messages)
+        anth_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Time is up. Deliver your code review verdict now. "
+                    "Include verdict, summary, findings, spec_compliance, and test_coverage."
+                ),
+            }
+        )
+        submit_tool = _build_submit_tools_anthropic()[0]  # submit_review
+        response = client.messages.create(
+            model=profile.model,
+            max_tokens=8192,
+            temperature=0,
+            messages=anth_messages,
+            tools=[submit_tool],
+            tool_choice={"type": "tool", "name": SUBMIT_REVIEW},
+        )
+
+        structured_data = None
+        text_parts: list[str] = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use" and block.name == SUBMIT_REVIEW:
+                structured_data = block.input if isinstance(block.input, dict) else {}
+
+        usage = ModelUsage(
+            model=profile.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+            cost_usd=None,
+        )
+
+        output = (
+            json.dumps(structured_data, indent=2) if structured_data else "\n".join(text_parts)
+        )
+        return LoopTurn(
+            tool_calls=[],
+            text_output=output,
+            structured_data=structured_data,
+            usage=usage,
+        )
+
+    return finalizer
+
+
+def _make_google_finalizer(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> Finalizer:
+    """Build a Google Gemini finalizer using response_schema."""
+    import google.genai as genai
+    import google.genai.types as genai_types
+
+    merged = {**os.environ, **(secrets or {})}
+    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
+    finalize_schema = _sanitize_schema_for_google(review_json_schema())
+
+    def finalizer(messages: list[dict]) -> LoopTurn:
+        contents = _translate_messages_google(messages)
+        contents.append(
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": (
+                            "Time is up. Deliver your code review verdict now "
+                            "as structured JSON. Include verdict, summary, "
+                            "findings, spec_compliance, and test_coverage."
+                        )
+                    }
+                ],
+            }
+        )
+        config = genai_types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=finalize_schema,
+        )
+        response = client.models.generate_content(
+            model=profile.model,
+            contents=contents,
+            config=config,
+        )
+        output_text = response.text or ""
+        structured_data = None
+        if output_text.strip():
+            try:
+                structured_data = json.loads(output_text)
+            except json.JSONDecodeError:
+                pass
+
+        usage_meta = response.usage_metadata
+        usage: ModelUsage | None = None
+        if usage_meta:
+            usage = ModelUsage(
+                model=profile.model,
+                input_tokens=usage_meta.prompt_token_count or 0,
+                output_tokens=usage_meta.candidates_token_count or 0,
+                cache_read_tokens=getattr(usage_meta, "cached_content_token_count", 0) or 0,
+                cache_creation_tokens=0,
+                cost_usd=None,
+            )
+
+        return LoopTurn(
+            tool_calls=[],
+            text_output=output_text,
+            structured_data=structured_data,
+            usage=usage,
+        )
+
+    return finalizer
+
+
 # ── Loop-mode entry points ────────────────────────────────────────────
 
 
@@ -1438,11 +1761,13 @@ def _run_loop_openai(
             t.to_openai_responses_function() for t in tools
         ] + _build_submit_tools_openai(responses_api=True)
         adapter = _make_openai_responses_adapter(profile, secrets)
+        finalizer = _make_openai_responses_finalizer(profile, secrets)
     else:
         tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai(
             responses_api=False
         )
         adapter = _make_openai_chat_adapter(profile, secrets)
+        finalizer = _make_openai_chat_finalizer(profile, secrets)
 
     manager = AgentLoopManager(
         profile=profile,
@@ -1450,6 +1775,7 @@ def _run_loop_openai(
         working_dir=working_dir,
         tools=tools,
         provider_adapter=adapter,
+        finalizer=finalizer,
     )
     return manager.run(
         initial_messages=[{"role": "user", "content": prompt}],
@@ -1467,6 +1793,7 @@ def _run_loop_anthropic(
     tools = _build_registry_tools(profile)
     tool_schemas = [t.to_anthropic_tool() for t in tools] + _build_submit_tools_anthropic()
     adapter = _make_anthropic_adapter(profile, secrets)
+    finalizer = _make_anthropic_finalizer(profile, secrets)
 
     manager = AgentLoopManager(
         profile=profile,
@@ -1474,6 +1801,7 @@ def _run_loop_anthropic(
         working_dir=working_dir,
         tools=tools,
         provider_adapter=adapter,
+        finalizer=finalizer,
     )
     return manager.run(
         initial_messages=[{"role": "user", "content": prompt}],
@@ -1492,6 +1820,7 @@ def _run_loop_google(
     # Google adapter wraps declarations into genai_types.Tool objects internally
     tool_schemas = [t.to_google_declaration() for t in tools] + _build_submit_tools_google()
     adapter = _make_google_adapter(profile, secrets)
+    finalizer = _make_google_finalizer(profile, secrets)
 
     manager = AgentLoopManager(
         profile=profile,
@@ -1499,6 +1828,7 @@ def _run_loop_google(
         working_dir=working_dir,
         tools=tools,
         provider_adapter=adapter,
+        finalizer=finalizer,
     )
     return manager.run(
         initial_messages=[{"role": "user", "content": prompt}],

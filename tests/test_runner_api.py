@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -775,6 +776,273 @@ class TestAgentLoopLifecycle:
 
         assert turn.tool_calls == []
         assert turn.text_output is None
+
+
+class TestTimeNudge:
+    """Tests for wall-clock time-based nudge."""
+
+    def test_time_nudge_sent_at_80_percent_deadline(self, tmp_path):
+        """Time-based nudge is injected when 80% of wall-clock has elapsed."""
+        messages_seen = []
+        call_count = [0]
+        # Use a controllable clock: start at 1000, timeout=100s, deadline=1100
+        # 80% threshold = 80s elapsed = time 1080
+        current_time = [1000.0]
+
+        def adapter(messages, tools):
+            messages_seen.append(list(messages))
+            call_count[0] += 1
+            # Advance time by 12s per iteration
+            current_time[0] += 12.0
+            if call_count[0] <= 8:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id=f"c{call_count[0]}", name="glob", arguments={"pattern": "*.py"}
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="submit1",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        with patch("theforge.runner_api.time") as mock_time:
+            mock_time.monotonic = lambda: current_time[0]
+            profile = _make_profile(timeout_seconds=100)
+            manager = AgentLoopManager(
+                profile=profile,
+                provider="openai",
+                working_dir=tmp_path,
+                tools=list(TOOL_REGISTRY.values()),
+                provider_adapter=adapter,
+                max_iterations=50,
+            )
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+
+        assert result.success
+        # Check that a time nudge message was sent (it persists in subsequent calls,
+        # so count unique nudge contents — should be exactly 1 unique nudge)
+        all_messages = [m for msgs in messages_seen for m in msgs]
+        time_nudges = [
+            m.get("content", "")
+            for m in all_messages
+            if m.get("role") == "user" and "seconds remaining" in m.get("content", "")
+        ]
+        assert len(time_nudges) >= 1
+        # All nudge messages should be identical (sent once, seen in subsequent turns)
+        assert len(set(time_nudges)) == 1
+
+
+class TestFinalization:
+    """Tests for forced-output finalization on timeout."""
+
+    def test_finalization_on_wall_clock_timeout(self, tmp_path):
+        """When wall-clock times out, finalizer is called and returns structured data."""
+        review_data = {
+            "verdict": "APPROVE",
+            "summary": "Finalized review",
+            "findings": [],
+            "spec_compliance": {"matches_spec": True, "mismatches": []},
+            "test_coverage": {"adequate": True, "gaps": []},
+        }
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[ToolCallRequest(id="c1", name="glob", arguments={"pattern": "*.py"})],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        def finalizer(messages):
+            return LoopTurn(
+                tool_calls=[],
+                text_output=json.dumps(review_data),
+                structured_data=review_data,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=1)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            finalizer=finalizer,
+        )
+        # Force immediate timeout
+        past_deadline = time.monotonic() + 999
+        with patch("theforge.runner_api.time") as mock_time:
+            mock_time.monotonic.return_value = past_deadline
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+        assert result.success
+        assert result.structured_data == review_data
+        assert result.structured_data["verdict"] == "APPROVE"
+
+    def test_finalization_on_max_iterations(self, tmp_path):
+        """When max iterations exceeded, finalizer is called."""
+        review_data = {"verdict": "APPROVE", "summary": "From finalizer", "findings": []}
+
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"c{call_count[0]}", name="glob", arguments={"pattern": "*.py"}
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        def finalizer(messages):
+            return LoopTurn(
+                tool_calls=[],
+                text_output=json.dumps(review_data),
+                structured_data=review_data,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=300)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            finalizer=finalizer,
+            max_iterations=3,
+        )
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert result.success
+        assert result.structured_data["summary"] == "From finalizer"
+        assert call_count[0] == 3
+
+    def test_finalization_failure_falls_back_to_timeout(self, tmp_path):
+        """When finalizer raises, fall back to normal timeout failure."""
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[ToolCallRequest(id="c1", name="glob", arguments={"pattern": "*.py"})],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        def finalizer(messages):
+            raise RuntimeError("API error during finalization")
+
+        profile = _make_profile(timeout_seconds=300)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            finalizer=finalizer,
+            max_iterations=2,
+        )
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert not result.success
+        assert "max iterations" in result.output
+
+    def test_no_finalizer_returns_timeout_failure(self, tmp_path):
+        """Without a finalizer, timeout returns failure as before."""
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[ToolCallRequest(id="c1", name="glob", arguments={"pattern": "*.py"})],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=300)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            # No finalizer
+            max_iterations=2,
+        )
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert not result.success
+        assert "max iterations" in result.output
+
+    def test_finalization_with_text_only_parses_json(self, tmp_path):
+        """Finalizer returning text_output (no structured_data) still parses JSON."""
+        review_data = {
+            "verdict": "REQUEST_CHANGES",
+            "summary": "Needs work",
+            "findings": [{"severity": "P1", "file": "x.py", "description": "bug"}],
+        }
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[ToolCallRequest(id="c1", name="glob", arguments={"pattern": "*.py"})],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        def finalizer(messages):
+            # Returns text but no structured_data — should be parsed
+            return LoopTurn(
+                tool_calls=[],
+                text_output=json.dumps(review_data),
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=300)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            finalizer=finalizer,
+            max_iterations=2,
+        )
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert result.success
+        assert result.structured_data["verdict"] == "REQUEST_CHANGES"
 
 
 class TestRunApiAgentLoopIntegration:
