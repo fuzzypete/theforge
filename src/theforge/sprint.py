@@ -337,6 +337,7 @@ def run_sprint(
         task=manifest.name,
         log_file=config.log.log_file,
         enabled=config.log.enabled,
+        project_root=config.project_root,
     )
     _sprint_logger.emit(
         "run_start",
@@ -344,6 +345,13 @@ def run_sprint(
         budget_usd=manifest.budget_usd,
         resume=resume,
     )
+
+    # Create sprint-level log directory
+    _sprint_log_dir = config.project_root / ".forge" / "logs" / manifest.name
+    try:
+        _sprint_log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        _sprint_log_dir = None  # type: ignore[assignment]
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
@@ -429,6 +437,7 @@ def run_sprint(
                     auto_merge=auto_merge,
                     notify=notify,
                     run_id=_sprint_run_id,
+                    sprint_name=manifest.name,
                 )
             elif triage and triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -439,6 +448,7 @@ def run_sprint(
                     auto_merge=auto_merge,
                     notify=notify,
                     run_id=_sprint_run_id,
+                    sprint_name=manifest.name,
                 )
             else:
                 result = run_task(
@@ -448,6 +458,7 @@ def run_sprint(
                     auto_merge=auto_merge,
                     notify=notify,
                     run_id=_sprint_run_id,
+                    sprint_name=manifest.name,
                 )
         else:
             result = run_task(
@@ -457,6 +468,7 @@ def run_sprint(
                 auto_merge=auto_merge,
                 notify=notify,
                 run_id=_sprint_run_id,
+                sprint_name=manifest.name,
             )
         _spec_elapsed = (
             datetime.datetime.now(datetime.timezone.utc) - _spec_start
@@ -471,6 +483,16 @@ def run_sprint(
             with open(audit_path, "w", encoding="utf-8") as f:
                 yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
             _log(f"[{idx}/{total}] Per-spec audit written: {audit_path}")
+        # Copy audit to durable per-story log dir
+        if result.state.log_dir is not None:
+            try:
+                audit = generate_audit_log(config, task, result)
+                _story_audit_path = result.state.log_dir / "audit.yaml"
+                _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(_story_audit_path, "w", encoding="utf-8") as f:
+                    yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+            except Exception:
+                pass  # best-effort
 
         spec_cost = result.state.total_cost
         accumulated_cost += spec_cost
@@ -559,7 +581,7 @@ def run_sprint(
                 priority=config.notifications.ntfy.priority,
             )
 
-    # Write sprint-audit.yaml
+    # Write sprint-audit.yaml (existing format; kept for backward compatibility)
     _write_sprint_audit(
         manifest=manifest,
         result=sprint_result,
@@ -569,6 +591,18 @@ def run_sprint(
         duration=duration,
         project_root=config.project_root,
     )
+
+    # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
+    if _sprint_log_dir is not None:
+        _write_sprint_summary(
+            manifest=manifest,
+            result=sprint_result,
+            spec_paths=spec_paths,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration=duration,
+            sprint_log_dir=_sprint_log_dir,
+        )
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
@@ -706,3 +740,74 @@ def _write_sprint_audit(
     except OSError:
         pass
     _log(f"Audit written: {audit_path}")
+
+
+def _write_sprint_summary(
+    manifest: SprintManifest,
+    result: SprintResult,
+    spec_paths: list[Path],
+    started_at: datetime.datetime,
+    finished_at: datetime.datetime,
+    duration: float,
+    sprint_log_dir: Path,
+) -> None:
+    """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/."""
+    spec_entries = []
+    results_by_spec = {spec_str: res for spec_str, res in result.results}
+
+    for spec_str, spec_path in zip(manifest.specs, spec_paths):
+        if spec_str in results_by_spec:
+            res = results_by_spec[spec_str]
+            preflight = res.state.preflight_verdict or "PROCEED"
+            outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
+            last_verdict = ""
+            if res.state.review_results:
+                last_verdict = res.state.review_results[-1].verdict
+            elif res.success:
+                last_verdict = "APPROVE"
+            entry = {
+                "path": spec_str,
+                "slug": spec_path.stem,
+                "outcome": outcome,
+                "verdict": last_verdict or None,
+                "cost_usd": round(res.state.total_cost, 4),
+                "preflight": preflight,
+                "merge": res.merge is not None and res.merge.get("merged", False),
+            }
+        else:
+            entry = {
+                "path": spec_str,
+                "slug": Path(spec_str).stem,
+                "outcome": "SKIPPED",
+                "verdict": None,
+                "cost_usd": 0.0,
+                "preflight": None,
+                "merge": False,
+            }
+        spec_entries.append(entry)
+
+    summary = {
+        "sprint": {
+            "name": manifest.name,
+            "budget_usd": manifest.budget_usd,
+            "total_cost_usd": round(result.total_cost_usd, 4),
+            "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration_seconds": round(duration, 1),
+            "specs_total": result.specs_total,
+            "specs_succeeded": result.specs_succeeded,
+            "specs_failed": result.specs_failed,
+            "specs_skipped": result.specs_skipped,
+            "stopped_reason": result.stopped_reason,
+        },
+        "stories": spec_entries,
+    }
+
+    try:
+        sprint_log_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            yaml.dump(summary, f, default_flow_style=False, sort_keys=False)
+        _log(f"Sprint summary written: {summary_path}")
+    except Exception as exc:
+        _log(f"Warning: sprint summary write failed: {exc}")

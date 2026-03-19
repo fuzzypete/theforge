@@ -4473,8 +4473,8 @@ class TestPerRunLogCapture:
 
         assert result.success is True
 
-        # Per-run log file exists at expected path
-        per_run_path = log_dir / "myproject" / "test-task-abc123xyz.log"
+        # Per-run log file exists at expected path (project-local: .forge/logs/<slug>/run-<id>.log)
+        per_run_path = tmp_path / ".forge" / "logs" / "test-task" / "run-abc123xyz.log"
         assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
         content = per_run_path.read_text(encoding="utf-8")
         assert len(content) > 0, "Per-run log is empty"
@@ -4544,35 +4544,25 @@ class TestPerRunLogCapture:
             result = run_from_review(config, task, workspace, run_id="reviewrun1")
 
         assert result.success is True
-        per_run_path = log_dir / "myproject" / "test-task-reviewrun1.log"
+        per_run_path = tmp_path / ".forge" / "logs" / "test-task" / "run-reviewrun1.log"
         assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
         assert sys.stderr is original_stderr
 
 
-# ── PR on Approve Tests ───────────────────────────────────────────────
+# ── Project-local log directory tests ───────────────────────────────
 
 
-class TestPrOnApprove:
-    """Tests for on_approve="pr" | "none" | "merge" dispatch."""
+class TestProjectLocalLogDir:
+    """Tests for per-story log directory creation and artifact writes."""
 
-    def _make_pr_config(
-        self,
-        tmp_path: Path,
-        *,
-        on_approve: str = "pr",
-        pr_labels: tuple[str, ...] = (),
-        pr_draft: bool = False,
-    ) -> ForgeConfig:
+    def _make_config(self, tmp_path: Path) -> ForgeConfig:
         return ForgeConfig(
-            project="test",
+            project="testproj",
             project_root=tmp_path,
             workspace=WorkspaceConfig(
                 create_command="mkdir -p {slug}",
                 path_pattern="{slug}",
                 branch_pattern="forge/{slug}",
-                on_approve=on_approve,
-                pr_labels=pr_labels,
-                pr_draft=pr_draft,
             ),
             validation=DEFAULT_VALIDATION,
             dev_profile=DEFAULT_DEV_PROFILE,
@@ -4580,206 +4570,14 @@ class TestPrOnApprove:
             review_pool=[DEFAULT_REVIEW_PROFILE],
             synthesis_profile=None,
             retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-            log=LogConfig(enabled=False),
+            log=LogConfig(enabled=True),
         )
-
-    @patch("theforge.coord_phases.subprocess.run")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_on_approve_pr_calls_gh(self, mock_shell, mock_agent, mock_subprocess, tmp_path):
-        """on_approve='pr' calls gh pr create and records PR URL."""
-        config = self._make_pr_config(tmp_path, on_approve="pr")
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
-        mock_subprocess.return_value = type(
-            "Proc",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "https://github.com/owner/repo/pull/42\n",
-                "stderr": "",
-            },
-        )()
-
-        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
-            mock_pool.return_value = [
-                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-            ]
-            result = run_task(config, task)
-
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert mock_subprocess.called
-        cmd = mock_subprocess.call_args[0][0]
-        assert "gh" in cmd
-        assert "pr" in cmd
-        assert "create" in cmd
-        assert result.merge is not None
-        assert result.merge["action"] == "pr"
-        assert result.merge["pr_url"] == "https://github.com/owner/repo/pull/42"
-        assert result.merge["success"] is True
-
-    @patch("theforge.coord_phases.subprocess.run")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_on_approve_pr_body_includes_summary(
-        self, mock_shell, mock_agent, mock_subprocess, tmp_path
-    ):
-        """PR body includes review summary and reviewer names."""
-        config = self._make_pr_config(tmp_path, on_approve="pr")
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
-        mock_subprocess.return_value = type(
-            "Proc",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "https://github.com/owner/repo/pull/1\n",
-                "stderr": "",
-            },
-        )()
-
-        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
-            mock_pool.return_value = [
-                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-            ]
-            run_task(config, task)
-
-        cmd_args = mock_subprocess.call_args[0][0]
-        body_idx = cmd_args.index("--body") + 1
-        body = cmd_args[body_idx]
-        assert "Looks good." in body
-        assert "APPROVE" in body
-        assert "review" in body  # reviewer name
-
-    @patch("theforge.coord_phases.subprocess.run")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_on_approve_pr_labels_applied(self, mock_shell, mock_agent, mock_subprocess, tmp_path):
-        """pr_labels are passed as --label flags to gh pr create."""
-        config = self._make_pr_config(
-            tmp_path, on_approve="pr", pr_labels=("forge-approved", "automated")
-        )
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
-        mock_subprocess.return_value = type(
-            "Proc",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "https://github.com/owner/repo/pull/2\n",
-                "stderr": "",
-            },
-        )()
-
-        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
-            mock_pool.return_value = [
-                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-            ]
-            run_task(config, task)
-
-        cmd = mock_subprocess.call_args[0][0]
-        assert "--label" in cmd
-        label_indices = [i for i, v in enumerate(cmd) if v == "--label"]
-        labels = [cmd[i + 1] for i in label_indices]
-        assert "forge-approved" in labels
-        assert "automated" in labels
-
-    @patch("theforge.coord_phases.subprocess.run")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_on_approve_pr_draft(self, mock_shell, mock_agent, mock_subprocess, tmp_path):
-        """pr_draft=True passes --draft to gh pr create."""
-        config = self._make_pr_config(tmp_path, on_approve="pr", pr_draft=True)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
-        mock_subprocess.return_value = type(
-            "Proc",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "https://github.com/owner/repo/pull/3\n",
-                "stderr": "",
-            },
-        )()
-
-        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
-            mock_pool.return_value = [
-                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-            ]
-            run_task(config, task)
-
-        cmd = mock_subprocess.call_args[0][0]
-        assert "--draft" in cmd
-
-    @patch("theforge.coord_phases.subprocess.run")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_on_approve_pr_failure_is_warning_not_fatal(
-        self, mock_shell, mock_agent, mock_subprocess, tmp_path
-    ):
-        """PR creation failure logs a warning but forge outcome is still DONE."""
-        config = self._make_pr_config(tmp_path, on_approve="pr")
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
-        mock_subprocess.return_value = type(
-            "Proc",
-            (),
-            {
-                "returncode": 1,
-                "stdout": "",
-                "stderr": "gh: not authenticated",
-            },
-        )()
-
-        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
-            mock_pool.return_value = [
-                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-            ]
-            result = run_task(config, task)
-
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.merge is not None
-        assert result.merge["action"] == "pr"
-        assert result.merge["success"] is False
-        assert "not authenticated" in result.merge["error"]
 
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_on_approve_none_skips_merge_and_pr(self, mock_shell, mock_agent, tmp_path):
-        """on_approve='none' skips merge and PR creation, returns DONE."""
-        config = self._make_pr_config(tmp_path, on_approve="none")
+    def test_story_log_dir_created(self, mock_shell, mock_agent, tmp_path):
+        """Per-story log directory created under <project_root>/.forge/logs/<slug>/."""
+        config = self._make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -4796,20 +4594,15 @@ class TestPrOnApprove:
             result = run_task(config, task)
 
         assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.merge is not None
-        assert result.merge["action"] == "none"
-        assert result.merge["success"] is True
+        story_log_dir = tmp_path / ".forge" / "logs" / "test-task"
+        assert story_log_dir.is_dir(), f"Story log dir not created: {story_log_dir}"
+        assert result.state.log_dir == story_log_dir
 
-    @patch("theforge.coord_phases._merge_branch")
-    @patch("theforge.coord_phases.subprocess.run")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_auto_merge_flag_overrides_on_approve_pr(
-        self, mock_shell, mock_agent, mock_subprocess, mock_merge, tmp_path
-    ):
-        """--auto-merge flag forces merge even when on_approve='pr'."""
-        config = self._make_pr_config(tmp_path, on_approve="pr")
+    def test_preflight_yaml_written(self, mock_shell, mock_agent, tmp_path):
+        """preflight.yaml written to story log dir after PREFLIGHT phase."""
+        config = self._make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -4818,18 +4611,99 @@ class TestPrOnApprove:
         mock_agent.side_effect = _preflight_then(
             _make_agent_result(success=True, output="Implemented.")
         )
-        mock_merge.return_value = {"merged": True, "error": None}
 
         with patch("theforge.coordinator.run_agent_pool") as mock_pool:
             mock_pool.return_value = [
                 _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
             ]
-            result = run_task(config, task, auto_merge=True)
+            result = run_task(config, task)
 
         assert result.success is True
-        assert result.phase == Phase.DONE
-        # gh subprocess should NOT have been called
-        assert not mock_subprocess.called
-        # _merge_branch should have been called
-        assert mock_merge.called
-        assert result.merge["action"] == "merge"
+        import yaml as _yaml
+
+        preflight_path = tmp_path / ".forge" / "logs" / "test-task" / "preflight.yaml"
+        assert preflight_path.exists(), "preflight.yaml not written"
+        data = _yaml.safe_load(preflight_path.read_text())
+        assert "verdict" in data
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_review_cycle_artifacts_written(self, mock_shell, mock_agent, tmp_path):
+        """Review cycle artifacts written per reviewer and synthesized."""
+        config = self._make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(
+                    success=True, output=APPROVE_REVIEW, profile_name="claude-reviewer"
+                )
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        cycle_dir = tmp_path / ".forge" / "logs" / "test-task" / "review-cycle-1"
+        assert cycle_dir.is_dir(), f"review-cycle-1 dir not created: {cycle_dir}"
+        synthesized = cycle_dir / "synthesized.yaml"
+        assert synthesized.exists(), "synthesized.yaml not written"
+
+    def test_sprint_nesting(self, tmp_path):
+        """Sprint passes sprint_name and creates sprint-level log dir + sprint-summary.yaml."""
+        import yaml as _yaml
+
+        from theforge.coord_state import CoordinatorState, Phase
+        from theforge.sprint import run_sprint
+
+        spec = tmp_path / "story.md"
+        spec.write_text("---\nslug: my-story\n---\n# Story", encoding="utf-8")
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.write_text(
+            _yaml.dump({"name": "my-sprint", "budget_usd": 10.0, "specs": ["story.md"]}),
+            encoding="utf-8",
+        )
+
+        config = self._make_config(tmp_path)
+
+        # Mock run_task to return a successful result with a log_dir
+        _state = CoordinatorState()
+        _state.log_dir = tmp_path / ".forge" / "logs" / "my-sprint" / "my-story"
+        _state.log_dir.mkdir(parents=True, exist_ok=True)
+
+        class _FakeResult:
+            success = True
+            phase = Phase.DONE
+            state = _state
+            merge = None
+            message = "done"
+
+        captured_kwargs: dict = {}
+
+        def _fake_run_task(cfg, tsk, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeResult()
+
+        with (
+            patch("theforge.sprint.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.generate_audit_log", return_value={"task": {}}),
+        ):
+            run_sprint(config, manifest_path)
+
+        # run_task called with sprint_name="my-sprint"
+        assert captured_kwargs.get("sprint_name") == "my-sprint"
+
+        # Sprint-level log dir exists
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "my-sprint"
+        assert sprint_log_dir.is_dir(), f"Sprint log dir not created: {sprint_log_dir}"
+
+        # sprint-summary.yaml written
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        assert summary_path.exists(), "sprint-summary.yaml not written"
+        data = _yaml.safe_load(summary_path.read_text())
+        assert data["sprint"]["name"] == "my-sprint"

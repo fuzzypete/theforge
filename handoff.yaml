@@ -1,93 +1,67 @@
 gate_decision: PASS
-gate_result: PASS
 dev_notes: |
-  summary: "Added on_approve/pr_labels/pr_draft to WorkspaceConfig, a _create_pr() function in
-  coord_phases.py, and a three-way dispatch in _finalize_approve(). The --auto-merge CLI flag
-  continues to force 'merge' via effective_on_approve resolution inside _finalize_approve itself
-  (no signature changes to public API). PR creation shells to gh pr create with a structured body
-  (summary, findings, cost, reviewer names; test_count=N/A per plan); labels and draft flag are
-  applied from config. Failure is best-effort: logged as warning, forge outcome stays DONE.
-  The merge_info dict now always carries an 'action' key so audit is automatically enriched.
-  WorkspaceConfig.on_approve defaults to 'none' (not 'merge') to preserve backward compat with
-  auto_merge=False: without explicit config or --auto-merge flag nothing happens, same as before."
-
+  summary: "Implemented project-local log directory with per-story trace artifacts. All log
+    and trace artifacts now land under <project_root>/.forge/logs/ with a per-story directory
+    structure that survives worktree cleanup. forge.log moves from ~/.forge/logs/<project>/
+    to <project>/.forge/logs/. A story log dir is created early in run_task (before the tee
+    is installed). Per-run tee writes run-<id>.log, dev iterations write dev-iter-N-<profile>.log,
+    review cycles write review-cycle-N/<profile>.yaml + synthesized.yaml, preflight writes
+    preflight.yaml, approved plan snapshots are copied as plan.md with plan-review/<profile>.yaml
+    per reviewer, and the final audit is copied as audit.yaml. Sprint runs nest under the sprint
+    name: .forge/logs/<sprint-name>/<slug>/. Sprint completion writes sprint-summary.yaml
+    alongside the existing sprint-audit.yaml."
   commits:
-    - sha: "5b5d081"
-      message: "feat(pr-on-approve): create GitHub PR instead of auto-merge on APPROVE"
-    - sha: "bfe91d9"
-      message: "chore: write handoff.yaml for pr-on-approve"
-
+    - sha: "f9d470b"
+      message: "feat(logs): project-local log directory with per-story trace artifacts"
+    - sha: "4720ec9"
+      message: "chore(project-local-logs): write dev handoff"
   acceptance_criteria:
-    - criterion: "forge.yaml workspace.on_approve parsed into config (default: 'merge')"
+    - criterion: "All log and trace artifacts land under <project_root>/.forge/logs/"
       status: MET
-      notes: "Parsed and stored in WorkspaceConfig. Default is 'none' (not 'merge') to preserve
-        backward compat — see spec_deviations."
-
-    - criterion: "on_approve: pr creates a GitHub PR via gh pr create after APPROVE"
+      notes: "forge.log goes to .forge/logs/forge.log (config.py default changed). Per-run tee, dev iteration logs, review cycle artifacts, preflight.yaml, plan.md, plan-review/, and audit.yaml all go to .forge/logs/<slug>/."
+    - criterion: "forge.log moves from ~/.forge/logs/<project>/ to <project>/.forge/logs/"
       status: MET
-      notes: "_create_pr() in coord_phases.py shells to gh pr create with title, body, base/head
-        branch, labels, and draft flag. Called from _finalize_approve() when effective_on_approve='pr'."
-
-    - criterion: "PR body includes review summary, findings, cost, reviewer names"
+      notes: "config.py default changed from ~/.forge/logs/{project}/forge.log to .forge/logs/forge.log. coord_logging.py resolves relative paths against project_root. Best-effort migration: if old path exists and new doesn't, moves it and creates a symlink from old to new."
+    - criterion: "Per-story directory created with slug name (or sprint/slug for sprint runs)"
       status: MET
-      notes: "Body includes ## Summary (review summary), ## Review (verdict, reviewer names,
-        total cost, dev iterations, Tests: N/A), ## Findings (P2 findings or '_No findings.'),
-        ## Spec (task name and spec path), and TheForge attribution footer."
-
-    - criterion: "on_approve: none skips merge and PR, logs branch name"
+      notes: "_make_story_log_dir() creates .forge/logs/<slug>/ for standalone runs and .forge/logs/<sprint-name>/<slug>/ for sprint runs. Created early in run_task before the tee is installed."
+    - criterion: "Raw reviewer YAML outputs stored per cycle, per reviewer profile"
       status: MET
-      notes: "_finalize_approve() 'none' arm logs branch name and sets merge_info to
-        {'action': 'none', 'success': True, 'error': None}."
-
-    - criterion: "--auto-merge CLI flag overrides on_approve to 'merge'"
+      notes: "_run_review_pool() writes review-cycle-N/<profile>.yaml per reviewer using _write_log_artifact(). Existing .forge/traces/ writes preserved."
+    - criterion: "Plan reviewer outputs stored in plan-review/ subdirectory"
       status: MET
-      notes: "effective_on_approve = 'merge' if auto_merge else config.workspace.on_approve.
-        No signature changes to run_task/run_from_review/run_from_dev."
-
-    - criterion: "PR creation failure: warning logged, forge outcome unchanged (DONE)"
+      notes: "After agent plan review approval, per-reviewer outputs written to plan-review/<profile>.yaml in story log dir."
+    - criterion: "Approved plan snapshot stored as plan.md"
       status: MET
-      notes: "_create_pr() wraps subprocess.run in try/except and handles non-zero returncode.
-        Returns success=False dict; _finalize_approve proceeds to DONE regardless."
-
-    - criterion: "pr_labels applied to PR when configured"
+      notes: "After each plan review approval (both agent and human paths), the approved plan text is written to plan.md in story log dir."
+    - criterion: "Preflight verdict stored as preflight.yaml"
       status: MET
-      notes: "Each label in config.workspace.pr_labels appended as --label <label> to gh cmd."
-
-    - criterion: "pr_draft: true creates draft PR"
+      notes: "After PREFLIGHT completes, writes preflight.yaml with verdict, reason, complexity, cost_usd, and duration_s."
+    - criterion: "audit.yaml copied to per-story log dir at run completion"
       status: MET
-      notes: "--draft flag appended to gh cmd when config.workspace.pr_draft is True."
-
-    - criterion: "Audit records PR URL or merge result"
+      notes: "cli.py _write_audit() copies audit to result.state.log_dir/audit.yaml. sprint.py also copies per-spec audit to story log dir."
+    - criterion: "Dev agent stdout/stderr captured per iteration"
       status: MET
-      notes: "merge_info dict always populated with 'action' key ('merge', 'pr', 'none').
-        PR path includes 'pr_url'. Audit key remains 'merge' for backward compat."
-
-    - criterion: "Sprint mode respects on_approve per-run"
+      notes: "coord_phases.py _run_dev_phase() writes dev-iter-N-<profile>.log using write_trace() to state.log_dir after each dev invocation."
+    - criterion: "Sprint runs nest stories under sprint name directory"
       status: MET
-      notes: "Sprint loop calls run_task which calls _finalize_approve which reads
-        config.workspace.on_approve. No sprint-specific changes needed."
-
+      notes: "sprint_name parameter added to run_task, run_from_review, run_from_dev. sprint.py passes manifest.name as sprint_name to all three entry points."
+    - criterion: "sprint-summary.yaml written at sprint completion"
+      status: MET
+      notes: "_write_sprint_summary() added to sprint.py; writes to .forge/logs/<sprint-name>/sprint-summary.yaml. Existing sprint-audit.yaml in .forge/audits/ is preserved for backward compatibility."
+    - criterion: "Worktree cleanup does NOT remove .forge/logs/ artifacts"
+      status: MET
+      notes: ".forge/logs/ is at project root, not inside .forge/worktrees/. Worktree cleanup touches only the worktree directory."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "946 tests pass. Two existing tests updated: test_auto_merge_false_no_merge and
-        test_auto_merge_false_no_merge_key_in_audit now assert action='none' instead of None,
-        reflecting the enriched audit dict."
-
-    - criterion: "New tests for PR creation path (mock subprocess)"
+      notes: "943 tests pass (939 original + 4 new). make lint clean."
+    - criterion: ".gitignore updated: .forge/logs/ ignored"
       status: MET
-      notes: "TestPrOnApprove class with 7 tests: gh called, body content, labels, draft,
-        failure resilience, none path, auto_merge override forcing merge."
-
+      notes: ".gitignore already ignores .forge/ entirely (line 26), covering .forge/logs/. No change needed."
   spec_deviations:
-    - description: "on_approve default is 'none' not 'merge'"
-      justification: "Spec comment says 'merge (default, current behavior)' but using 'merge' as
-        default would silently enable merging for all existing users without --auto-merge, breaking
-        backward compat. 'none' preserves current behavior where merge only happens with --auto-merge."
-
-    - description: "Tests: N/A in PR body instead of {test_count} passed"
-      justification: "No test count is captured in CoordinatorState. Plan risk #4 acknowledged;
-        using 'N/A' per plan recommendation."
-
+    - description: "Plan-review artifacts written in coordinator.py instead of coord_phases.py"
+      justification: "Plan review logic lives in coordinator.py (not coord_phases.py), so writing plan-review/<profile>.yaml there avoids cross-module coupling. Confirmed correct by plan reviewer P2 note."
+    - description: "Human plan review path saves only plan.md, not plan-review/ subdirectory artifacts"
+      justification: "Human plan review has no agent results to capture — the human approves/rejects interactively. There are no raw reviewer outputs to write to plan-review/. Only the approved plan text is available."
   deferred_items: none
-
   gate_result: PASS

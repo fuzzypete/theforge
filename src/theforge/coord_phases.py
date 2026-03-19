@@ -988,6 +988,12 @@ def _run_dev_phase(
         workspace_path / ".forge/traces" / f"{state.dev_iteration}-dev-output.txt",
         dev_result.output,
     )
+    # Write dev iteration log to durable story log dir
+    if state.log_dir is not None:
+        write_trace(
+            state.log_dir / f"dev-iter-{state.dev_iteration}-{config.dev_profile.name}.log",
+            dev_result.output or "",
+        )
     state.dev_results.append(dev_result)
     state.dev_durations.append(_dev_elapsed)
     state.dev_session_id = dev_result.session_id or state.dev_session_id
