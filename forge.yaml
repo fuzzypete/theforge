@@ -78,6 +78,7 @@ profiles:
       review_role: patterns
       budget_usd: 1.00
       timeout_seconds: 300
+      max_iterations: 50
       allowed_tools:
         - Read
         - Bash
@@ -127,7 +128,7 @@ plan_agent_review:
       model: deepseek-chat
       budget_usd: 0.50
       timeout_seconds: 300
-      max_iterations: 25
+      max_iterations: 50
       allowed_tools:
         - Read
         - Glob
