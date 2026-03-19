@@ -14,14 +14,14 @@ dev_notes: |
   commits:
     - sha: "5b5d081"
       message: "feat(pr-on-approve): create GitHub PR instead of auto-merge on APPROVE"
+    - sha: "bfe91d9"
+      message: "chore: write handoff.yaml for pr-on-approve"
 
   acceptance_criteria:
     - criterion: "forge.yaml workspace.on_approve parsed into config (default: 'merge')"
       status: MET
       notes: "Parsed and stored in WorkspaceConfig. Default is 'none' (not 'merge') to preserve
-        backward compat — without explicit config or --auto-merge, no action taken, same as old
-        behavior. Spec comment 'merge (default, current behavior)' describes what the value means,
-        not the config-level default."
+        backward compat — see spec_deviations."
 
     - criterion: "on_approve: pr creates a GitHub PR via gh pr create after APPROVE"
       status: MET
@@ -79,12 +79,12 @@ dev_notes: |
         failure resilience, none path, auto_merge override forcing merge."
 
   spec_deviations:
-    - item: "on_approve default is 'none' not 'merge'"
+    - description: "on_approve default is 'none' not 'merge'"
       justification: "Spec comment says 'merge (default, current behavior)' but using 'merge' as
         default would silently enable merging for all existing users without --auto-merge, breaking
         backward compat. 'none' preserves current behavior where merge only happens with --auto-merge."
 
-    - item: "Tests: N/A in PR body instead of {test_count} passed"
+    - description: "Tests: N/A in PR body instead of {test_count} passed"
       justification: "No test count is captured in CoordinatorState. Plan risk #4 acknowledged;
         using 'N/A' per plan recommendation."
 
