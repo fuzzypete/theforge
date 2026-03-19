@@ -4547,3 +4547,289 @@ class TestPerRunLogCapture:
         per_run_path = log_dir / "myproject" / "test-task-reviewrun1.log"
         assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
         assert sys.stderr is original_stderr
+
+
+# ── PR on Approve Tests ───────────────────────────────────────────────
+
+
+class TestPrOnApprove:
+    """Tests for on_approve="pr" | "none" | "merge" dispatch."""
+
+    def _make_pr_config(
+        self,
+        tmp_path: Path,
+        *,
+        on_approve: str = "pr",
+        pr_labels: tuple[str, ...] = (),
+        pr_draft: bool = False,
+    ) -> ForgeConfig:
+        return ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve=on_approve,
+                pr_labels=pr_labels,
+                pr_draft=pr_draft,
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+            log=LogConfig(enabled=False),
+        )
+
+    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_on_approve_pr_calls_gh(self, mock_shell, mock_agent, mock_subprocess, tmp_path):
+        """on_approve='pr' calls gh pr create and records PR URL."""
+        config = self._make_pr_config(tmp_path, on_approve="pr")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_subprocess.return_value = type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "https://github.com/owner/repo/pull/42\n",
+                "stderr": "",
+            },
+        )()
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert mock_subprocess.called
+        cmd = mock_subprocess.call_args[0][0]
+        assert "gh" in cmd
+        assert "pr" in cmd
+        assert "create" in cmd
+        assert result.merge is not None
+        assert result.merge["action"] == "pr"
+        assert result.merge["pr_url"] == "https://github.com/owner/repo/pull/42"
+        assert result.merge["success"] is True
+
+    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_on_approve_pr_body_includes_summary(
+        self, mock_shell, mock_agent, mock_subprocess, tmp_path
+    ):
+        """PR body includes review summary and reviewer names."""
+        config = self._make_pr_config(tmp_path, on_approve="pr")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_subprocess.return_value = type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "https://github.com/owner/repo/pull/1\n",
+                "stderr": "",
+            },
+        )()
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            run_task(config, task)
+
+        cmd_args = mock_subprocess.call_args[0][0]
+        body_idx = cmd_args.index("--body") + 1
+        body = cmd_args[body_idx]
+        assert "Looks good." in body
+        assert "APPROVE" in body
+        assert "review" in body  # reviewer name
+
+    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_on_approve_pr_labels_applied(self, mock_shell, mock_agent, mock_subprocess, tmp_path):
+        """pr_labels are passed as --label flags to gh pr create."""
+        config = self._make_pr_config(
+            tmp_path, on_approve="pr", pr_labels=("forge-approved", "automated")
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_subprocess.return_value = type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "https://github.com/owner/repo/pull/2\n",
+                "stderr": "",
+            },
+        )()
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            run_task(config, task)
+
+        cmd = mock_subprocess.call_args[0][0]
+        assert "--label" in cmd
+        label_indices = [i for i, v in enumerate(cmd) if v == "--label"]
+        labels = [cmd[i + 1] for i in label_indices]
+        assert "forge-approved" in labels
+        assert "automated" in labels
+
+    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_on_approve_pr_draft(self, mock_shell, mock_agent, mock_subprocess, tmp_path):
+        """pr_draft=True passes --draft to gh pr create."""
+        config = self._make_pr_config(tmp_path, on_approve="pr", pr_draft=True)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_subprocess.return_value = type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "https://github.com/owner/repo/pull/3\n",
+                "stderr": "",
+            },
+        )()
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            run_task(config, task)
+
+        cmd = mock_subprocess.call_args[0][0]
+        assert "--draft" in cmd
+
+    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_on_approve_pr_failure_is_warning_not_fatal(
+        self, mock_shell, mock_agent, mock_subprocess, tmp_path
+    ):
+        """PR creation failure logs a warning but forge outcome is still DONE."""
+        config = self._make_pr_config(tmp_path, on_approve="pr")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_subprocess.return_value = type(
+            "Proc",
+            (),
+            {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "gh: not authenticated",
+            },
+        )()
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["action"] == "pr"
+        assert result.merge["success"] is False
+        assert "not authenticated" in result.merge["error"]
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_on_approve_none_skips_merge_and_pr(self, mock_shell, mock_agent, tmp_path):
+        """on_approve='none' skips merge and PR creation, returns DONE."""
+        config = self._make_pr_config(tmp_path, on_approve="none")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge is not None
+        assert result.merge["action"] == "none"
+        assert result.merge["success"] is True
+
+    @patch("theforge.coord_phases._merge_branch")
+    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_auto_merge_flag_overrides_on_approve_pr(
+        self, mock_shell, mock_agent, mock_subprocess, mock_merge, tmp_path
+    ):
+        """--auto-merge flag forces merge even when on_approve='pr'."""
+        config = self._make_pr_config(tmp_path, on_approve="pr")
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_merge.return_value = {"merged": True, "error": None}
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task, auto_merge=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # gh subprocess should NOT have been called
+        assert not mock_subprocess.called
+        # _merge_branch should have been called
+        assert mock_merge.called
+        assert result.merge["action"] == "merge"

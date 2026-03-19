@@ -1,63 +1,93 @@
 gate_decision: PASS
+gate_result: PASS
 dev_notes: |
-  summary: "Implemented lifecycle hooks: HooksConfig dataclass in config.py; new coord_hooks.py
-    with run_hook() (subprocess executor, best-effort, never raises, emits structured log event)
-    and four payload builders; pre_run fires before WORKSPACE (non-zero aborts); post_run fires
-    after the coordinator loop via _fire_post_run_hook() helper; post_merge after successful
-    auto-merge; post_sprint after _write_sprint_audit. Iter 1 review: fixed P1 (malformed
-    command strings now silently skipped via shlex.split ValueError catch), extracted
-    _fire_post_run_hook() to eliminate post_run duplication, simplified verdict fallback.
-    17 unit tests; 921 tests pass."
+  summary: "Added on_approve/pr_labels/pr_draft to WorkspaceConfig, a _create_pr() function in
+  coord_phases.py, and a three-way dispatch in _finalize_approve(). The --auto-merge CLI flag
+  continues to force 'merge' via effective_on_approve resolution inside _finalize_approve itself
+  (no signature changes to public API). PR creation shells to gh pr create with a structured body
+  (summary, findings, cost, reviewer names; test_count=N/A per plan); labels and draft flag are
+  applied from config. Failure is best-effort: logged as warning, forge outcome stays DONE.
+  The merge_info dict now always carries an 'action' key so audit is automatically enriched.
+  WorkspaceConfig.on_approve defaults to 'none' (not 'merge') to preserve backward compat with
+  auto_merge=False: without explicit config or --auto-merge flag nothing happens, same as before."
+
   commits:
-    - sha: "c3c5c66"
-      message: "feat(hooks): add lifecycle hooks — post_run, post_merge, post_sprint, pre_run"
-    - sha: "46e8e37"
-      message: "chore: write handoff.yaml for lifecycle-hooks story"
-    - sha: "aca92cd"
-      message: "fix(lifecycle-hooks): rewrite dev handoff to match schema"
-    - sha: "7f2b2ea"
-      message: "fix(hooks): address review findings (iter 1)"
+    - sha: "5b5d081"
+      message: "feat(pr-on-approve): create GitHub PR instead of auto-merge on APPROVE"
+    - sha: "bfe91d9"
+      message: "chore: write handoff.yaml for pr-on-approve"
+
   acceptance_criteria:
-    - criterion: "forge.yaml hooks block parsed into ForgeConfig.hooks"
+    - criterion: "forge.yaml workspace.on_approve parsed into config (default: 'merge')"
       status: MET
-      notes: "HooksConfig dataclass added; ForgeConfig.hooks field added; load_config() parses the hooks key."
-    - criterion: "post_run fires after every completed run with full payload"
+      notes: "Parsed and stored in WorkspaceConfig. Default is 'none' (not 'merge') to preserve
+        backward compat — see spec_deviations."
+
+    - criterion: "on_approve: pr creates a GitHub PR via gh pr create after APPROVE"
       status: MET
-      notes: "Called at end of run_task, run_from_dev, run_from_review before logger run_end emit. Payload built from CoordinatorState/CoordinatorResult directly."
-    - criterion: "post_merge fires after successful auto-merge"
+      notes: "_create_pr() in coord_phases.py shells to gh pr create with title, body, base/head
+        branch, labels, and draft flag. Called from _finalize_approve() when effective_on_approve='pr'."
+
+    - criterion: "PR body includes review summary, findings, cost, reviewer names"
       status: MET
-      notes: "_finalize_approve fires post_merge after merge_info[merged] is True. run_id threaded from _coordinator_loop through _run_review_phase to _finalize_approve."
-    - criterion: "post_sprint fires after sprint audit is written"
+      notes: "Body includes ## Summary (review summary), ## Review (verdict, reviewer names,
+        total cost, dev iterations, Tests: N/A), ## Findings (P2 findings or '_No findings.'),
+        ## Spec (task name and spec path), and TheForge attribution footer."
+
+    - criterion: "on_approve: none skips merge and PR, logs branch name"
       status: MET
-      notes: "sprint.py fires post_sprint after _write_sprint_audit returns, using _sprint_run_id."
-    - criterion: "pre_run fires before WORKSPACE; non-zero exit aborts run"
+      notes: "_finalize_approve() 'none' arm logs branch name and sets merge_info to
+        {'action': 'none', 'success': True, 'error': None}."
+
+    - criterion: "--auto-merge CLI flag overrides on_approve to 'merge'"
       status: MET
-      notes: "Fires in run_task only before WORKSPACE phase. Non-zero exit returns ESCALATE CoordinatorResult immediately."
-    - criterion: "All hook payloads include project, slug, run_id at minimum"
+      notes: "effective_on_approve = 'merge' if auto_merge else config.workspace.on_approve.
+        No signature changes to run_task/run_from_review/run_from_dev."
+
+    - criterion: "PR creation failure: warning logged, forge outcome unchanged (DONE)"
       status: MET
-      notes: "All four payload builders include event, project, slug/sprint, and run_id."
-    - criterion: "Hook timeout enforced (default 30s); exceeded = warning, not failure"
+      notes: "_create_pr() wraps subprocess.run in try/except and handles non-zero returncode.
+        Returns success=False dict; _finalize_approve proceeds to DONE regardless."
+
+    - criterion: "pr_labels applied to PR when configured"
       status: MET
-      notes: "subprocess.TimeoutExpired caught in run_hook(); logs warning, returns HookResult(success=False, exit_code=-1). Never raises."
-    - criterion: "Hook exit non-zero (except pre_run): warning logged, run unaffected"
+      notes: "Each label in config.workspace.pr_labels appended as --label <label> to gh cmd."
+
+    - criterion: "pr_draft: true creates draft PR"
       status: MET
-      notes: "run_hook() returns HookResult on non-zero exit, logs warning. Only pre_run call site checks exit_code != 0 to abort."
-    - criterion: "run_hook() unit-tested with mocked subprocess"
+      notes: "--draft flag appended to gh cmd when config.workspace.pr_draft is True."
+
+    - criterion: "Audit records PR URL or merge result"
       status: MET
-      notes: "tests/test_coord_hooks.py: 11 run_hook tests (success, non-zero, timeout, exception, missing file, non-executable, malformed command, system command, log events, stdin payload) + 6 payload builder tests."
-    - criterion: "Reference scripts committed under .forge/hooks/"
+      notes: "merge_info dict always populated with 'action' key ('merge', 'pr', 'none').
+        PR path includes 'pr_url'. Audit key remains 'merge' for backward compat."
+
+    - criterion: "Sprint mode respects on_approve per-run"
       status: MET
-      notes: ".forge/hooks/post-run-gh-issues.sh and .forge/hooks/post-run-backlog-sync.sh committed verbatim from spec with executable bit set."
-    - criterion: "Structured log event emitted for each hook invocation"
-      status: MET
-      notes: "run_hook() calls logger._safe_emit('hook', hook=label, success=..., exit_code=..., duration_s=...) unconditionally when logger is not None."
+      notes: "Sprint loop calls run_task which calls _finalize_approve which reads
+        config.workspace.on_approve. No sprint-specific changes needed."
+
     - criterion: "All existing tests pass"
       status: MET
-      notes: "921 tests pass (904 existing + 17 new)."
+      notes: "946 tests pass. Two existing tests updated: test_auto_merge_false_no_merge and
+        test_auto_merge_false_no_merge_key_in_audit now assert action='none' instead of None,
+        reflecting the enriched audit dict."
+
+    - criterion: "New tests for PR creation path (mock subprocess)"
+      status: MET
+      notes: "TestPrOnApprove class with 7 tests: gh called, body content, labels, draft,
+        failure resilience, none path, auto_merge override forcing merge."
+
   spec_deviations:
-    - description: "post_run fires inside coordinator entry points before returning, not after generate_audit_log in cli.py. The plan assumed generate_audit_log would run inside the coordinator, but it is called by cli.py and sprint.py after the coordinator returns."
-      justification: "Plan reviewer P1 note flagged this exact issue and identified this as the cleaner alternative. All spec-required payload fields are available from CoordinatorState and CoordinatorResult without needing the audit dict."
-    - description: "pre_run fires only in run_task, not in run_from_dev or run_from_review."
-      justification: "Consistent with plan guidance that pre_run only fires on the full path. Resume entry points skip WORKSPACE entirely, so pre_run as a runnable-state gate is not applicable."
+    - description: "on_approve default is 'none' not 'merge'"
+      justification: "Spec comment says 'merge (default, current behavior)' but using 'merge' as
+        default would silently enable merging for all existing users without --auto-merge, breaking
+        backward compat. 'none' preserves current behavior where merge only happens with --auto-merge."
+
+    - description: "Tests: N/A in PR body instead of {test_count} passed"
+      justification: "No test count is captured in CoordinatorState. Plan risk #4 acknowledged;
+        using 'N/A' per plan recommendation."
+
   deferred_items: none
+
   gate_result: PASS
