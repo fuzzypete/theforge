@@ -56,7 +56,18 @@ def run_hook(
     try:
         tokens = shlex.split(command)
     except ValueError:
-        tokens = [command]
+        # Malformed command string (e.g. unmatched quote) — silently skip.
+        if logger:
+            logger._safe_emit(
+                "hook",
+                hook=label,
+                success=True,
+                exit_code=0,
+                duration_s=0.0,
+                skipped=True,
+                reason="malformed_command",
+            )
+        return HookResult(success=True, exit_code=0, output="", duration_s=0.0)
     exe = tokens[0] if tokens else command
     if os.sep in exe or exe.startswith("."):
         if not os.path.exists(exe):
@@ -181,12 +192,8 @@ def build_post_run_payload(
     summary: str
     findings: list[dict] = []
 
-    if result.success:
-        verdict = "APPROVE"
-    elif state.phase.name == "ESCALATE":
-        verdict = "ESCALATE"
-    else:
-        verdict = "ESCALATE"
+    # Default verdict before checking review_results (which overrides below).
+    verdict = "APPROVE" if result.success else "ESCALATE"
 
     if state.review_results:
         last_review = state.review_results[-1]

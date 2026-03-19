@@ -150,6 +150,15 @@ class TestRunHook:
         assert result.success is False
         assert result.exit_code == -1
 
+    def test_malformed_command_skipped(self):
+        """Malformed command (unmatched quote) → silently skipped (success=True)."""
+        with patch("subprocess.run") as mock_run:
+            result = run_hook("script.sh 'unmatched", {}, timeout=30, label="test")
+
+        assert result.success is True
+        assert result.exit_code == 0
+        mock_run.assert_not_called()
+
     def test_missing_file_skipped(self, tmp_path):
         """Path that doesn't exist → silently skipped (success=True, exit_code=0)."""
         missing = str(tmp_path / "no-such-hook.sh")

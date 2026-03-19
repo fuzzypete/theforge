@@ -231,6 +231,30 @@ def _set_timeout_resume(state: CoordinatorState, gate_result: str) -> None:
     )
 
 
+def _fire_post_run_hook(
+    config: "ForgeConfig",
+    state: "CoordinatorState",
+    task: "TaskSpec",
+    result: "CoordinatorResult",
+    run_id: str,
+    elapsed: float,
+    logger: "StructuredLogger | None",
+) -> None:
+    """Fire the post_run lifecycle hook if configured. Best-effort; never raises."""
+    if not (config.hooks and config.hooks.post_run):
+        return
+    from .coord_hooks import build_post_run_payload
+    from .coord_hooks import run_hook as _run_hook
+
+    _run_hook(
+        config.hooks.post_run,
+        build_post_run_payload(state, config, task, result, run_id, elapsed),
+        config.hooks.timeout_seconds,
+        "post_run",
+        logger,
+    )
+
+
 def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
     """Run a shell command. Returns (success, combined output).
 
@@ -1641,21 +1665,7 @@ def run_task(
             logger=logger,
         )
         _total_elapsed = time.monotonic() - _task_start
-        # ── POST_RUN hook ─────────────────────────────────────────────
-        if config.hooks and config.hooks.post_run:
-            from .coord_hooks import build_post_run_payload
-            from .coord_hooks import run_hook as _run_hook
-
-            _post_payload = build_post_run_payload(
-                state, config, task, result, _run_id, _total_elapsed
-            )
-            _run_hook(
-                config.hooks.post_run,
-                _post_payload,
-                config.hooks.timeout_seconds,
-                "post_run",
-                logger,
-            )
+        _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
         logger._safe_emit(
             "run_end",
             outcome="done" if result.success else "escalate",
@@ -1735,21 +1745,7 @@ def run_from_review(
             logger=logger,
         )
         _total_elapsed = time.monotonic() - _task_start
-        # ── POST_RUN hook ─────────────────────────────────────────────
-        if config.hooks and config.hooks.post_run:
-            from .coord_hooks import build_post_run_payload
-            from .coord_hooks import run_hook as _run_hook
-
-            _post_payload = build_post_run_payload(
-                state, config, task, result, logger._run_id, _total_elapsed
-            )
-            _run_hook(
-                config.hooks.post_run,
-                _post_payload,
-                config.hooks.timeout_seconds,
-                "post_run",
-                logger,
-            )
+        _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
         logger._safe_emit(
             "run_end",
             outcome="done" if result.success else "escalate",
@@ -1825,21 +1821,7 @@ def run_from_dev(
             logger=logger,
         )
         _total_elapsed = time.monotonic() - _task_start
-        # ── POST_RUN hook ─────────────────────────────────────────────
-        if config.hooks and config.hooks.post_run:
-            from .coord_hooks import build_post_run_payload
-            from .coord_hooks import run_hook as _run_hook
-
-            _post_payload = build_post_run_payload(
-                state, config, task, result, logger._run_id, _total_elapsed
-            )
-            _run_hook(
-                config.hooks.post_run,
-                _post_payload,
-                config.hooks.timeout_seconds,
-                "post_run",
-                logger,
-            )
+        _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
         logger._safe_emit(
             "run_end",
             outcome="done" if result.success else "escalate",
