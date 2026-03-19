@@ -3,10 +3,5 @@ budget_usd: 100.00
 auto_merge: true
 
 specs:
-  - slug: project-local-logs
-    spec: specs/backlog/project-local-logs.md
-    budget_usd: 50.00
-
-  - slug: lifecycle-hooks
-    spec: specs/backlog/lifecycle-hooks.md
-    budget_usd: 50.00
+  - specs/backlog/project-local-logs.md
+  - specs/backlog/lifecycle-hooks.md
