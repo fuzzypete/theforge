@@ -30,7 +30,7 @@ from .coordinator import set_log_level as coordinator_set_log_level
 from .ideate import generate_ideation_audit, run_ideation
 from .runner import LogLevel
 from .runner import set_log_level as runner_set_log_level
-from .sprint import run_sprint
+from .sprint import _triage_spec, run_sprint
 from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
 
 
@@ -366,14 +366,56 @@ def cmd_run(args: argparse.Namespace) -> int:
     interactive = getattr(args, "interactive", False)
     auto_merge = getattr(args, "auto_merge", False)
     plan_path = Path(args.plan).resolve() if args.plan else None
-    result = run_task(
-        config,
-        task,
-        interactive=interactive,
-        auto_merge=auto_merge,
-        notify=not args.no_notify,
-        plan_path=plan_path,
-    )
+    resume = getattr(args, "resume", False)
+
+    if resume:
+        triage = _triage_spec(str(spec_path), config, config.project_root)
+        action_label = triage.action.upper().replace("_", " ")
+        print(f"  Resume triage: {action_label} — {triage.reason}", file=sys.stderr)
+
+        if triage.action in ("skip_merged", "skip"):
+            print(f"  ✓ Nothing to do — {triage.reason}", file=sys.stderr)
+            return 0
+
+        if triage.action == "review" and triage.worktree_path is not None:
+            result = run_from_review(
+                config,
+                task,
+                triage.worktree_path,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                notify=not args.no_notify,
+            )
+        elif triage.action == "dev" and triage.worktree_path is not None:
+            from .coordinator import run_from_dev
+
+            result = run_from_dev(
+                config,
+                task,
+                triage.worktree_path,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                notify=not args.no_notify,
+            )
+        else:
+            # "full" or no worktree — run from scratch
+            result = run_task(
+                config,
+                task,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                notify=not args.no_notify,
+                plan_path=plan_path,
+            )
+    else:
+        result = run_task(
+            config,
+            task,
+            interactive=interactive,
+            auto_merge=auto_merge,
+            notify=not args.no_notify,
+            plan_path=plan_path,
+        )
 
     # Write audit log
     audit_path = _write_audit(result, config, task)
@@ -840,6 +882,12 @@ def main() -> None:
         metavar="PATH",
         default=None,
         help="Inject an existing plan file, skipping the PLAN phase",
+    )
+    run_parser.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Triage existing worktree and resume from correct phase (REVIEW/DEV/full)",
     )
 
     # forge review

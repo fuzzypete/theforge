@@ -3,10 +3,43 @@
 from __future__ import annotations
 
 import datetime
+import json
+from pathlib import Path
 
 from .config import ForgeConfig
 from .coord_state import CoordinatorResult
 from .task import TaskSpec
+
+
+def has_review_approve(project_root: Path, slug: str) -> bool:
+    """Return True if any prior run for slug produced a review APPROVE.
+
+    Reads .forge/audits/history.jsonl line-by-line. Returns False on missing
+    file, parse errors, or if no matching APPROVE record exists (safe default:
+    assume no APPROVE so review is never skipped incorrectly).
+    """
+    history_path = project_root / ".forge" / "audits" / "history.jsonl"
+    if not history_path.exists():
+        return False
+    try:
+        with open(history_path, encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    record = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                task_info = record.get("task", {})
+                if task_info.get("slug") != slug:
+                    continue
+                for review in record.get("reviews", []):
+                    if review.get("verdict") == "APPROVE":
+                        return True
+    except OSError:
+        pass
+    return False
 
 
 def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorResult) -> dict:

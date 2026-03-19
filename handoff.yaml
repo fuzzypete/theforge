@@ -1,51 +1,36 @@
+gate_decision: PASS
 dev_notes: |
-  summary: >
-    Added first-class `provider: deepseek` support across all four extension
-    points (config.py, runner_api.py, tests). Iteration 1 review cycle addressed:
-    (1) reverted default base_url to https://api.deepseek.com per spec AC 4
-    (a /v1 suffix was incorrectly added during an earlier pass based on a
-    contradictory P2 suggestion); (2) extended the cost-skip logic in
-    _openai_result to null cost for any custom base_url, not just openai provider;
-    (3) added TestDeepSeekProvider test class covering _is_reasoning_model
-    (deepseek-r1 prefix variants), _deepseek_client (default base_url, profile
-    override, API key from secrets), _run_deepseek single-shot (temperature
-    present/absent per reasoning model detection), and run_api_agent dispatch
-    for both single-shot and loop paths; (4) added
-    test_deepseek_local_base_url_no_api_key_no_error in test_config.py.
-
+  summary: "Implemented full worktree resume logic: (1) added has_review_approve() to coord_audit.py that reads history.jsonl to check for a prior APPROVE for a given slug; (2) removed age-based staleness check from _is_stale_worktree — commits ahead of base = not stale regardless of age; (3) added ALREADY_DONE guard in coordinator.py that checks commits-ahead + no-prior-APPROVE and redirects to REVIEW via _coordinator_loop(skip_dev_first_iter=True); (4) added audit-trail APPROVE check to sprint._triage_spec with a new skip action explicitly handled in run_sprint dispatch; (5) added --resume flag to forge run in cli.py with triage dispatch to review/dev/full entry points; fixed pre-existing E501 lint violation and installed openai/httpx to resolve 3 pre-existing test failures."
   commits:
-    - sha: "1bd6270"
-      message: "feat(providers): add first-class DeepSeek provider support"
-    - sha: "67ec41c"
-      message: "fix(providers): address review findings (iter 1)"
-
+    - sha: "07d80a1"
+      message: "chore(stale-worktree): gate PASS — install openai/httpx, all 873 tests pass"
+    - sha: "b4f1304"
+      message: "chore(stale-worktree): update handoff.yaml with dev notes"
+    - sha: "fad7001"
+      message: "feat(stale-worktree): detect partial progress and resume from correct phase"
   acceptance_criteria:
-    - criterion: "provider: deepseek recognized in forge.yaml profiles"
+    - criterion: "Existing worktree with commits but no review APPROVE resumes from REVIEW"
       status: MET
-      notes: "Added 'deepseek' to SUPPORTED_PROVIDERS in config.py; profile validation accepts it."
-
-    - criterion: "Pricing table includes deepseek-r1 and deepseek-v3"
+      notes: "coordinator.py ALREADY_DONE guard checks git log (commits ahead) and has_review_approve(); if commits exist but no APPROVE, redirects to _coordinator_loop with skip_dev_first_iter=True. Tested by TestAlreadyDoneOverride::test_already_done_with_commits_no_approve_resumes_review."
+    - criterion: "Existing worktree with commits and a prior APPROVE allows ALREADY_DONE"
       status: MET
-      notes: "Added ('deepseek', 'deepseek-r1'): (0.55, 2.19) and ('deepseek', 'deepseek-v3'): (0.27, 1.10) to PRICING_TABLE."
-
-    - criterion: "DEEPSEEK_API_KEY env var / secrets support"
+      notes: "coordinator.py ALREADY_DONE guard honours ALREADY_DONE when has_review_approve() returns True. sprint._triage_spec returns skip action when APPROVE found in audit trail, and run_sprint skips without calling run_task. Tested by TestAlreadyDoneOverride and TestResumeSprintSkipApproved."
+    - criterion: "Existing worktree with zero commits ahead is removed and recreated"
       status: MET
-      notes: "Added 'deepseek': 'DEEPSEEK_API_KEY' to PROVIDER_API_KEY_MAP; _deepseek_client reads DEEPSEEK_API_KEY from merged env+secrets. Covered by test_deepseek_client_uses_deepseek_api_key."
-
-    - criterion: "Base URL defaults to https://api.deepseek.com when not overridden"
+      notes: "Already satisfied per preflight. Age-based deletion removed, but 0-commits-ahead path still returns is_stale=True. test_stale_zero_commits_ahead passes."
+    - criterion: "forge run supports --resume flag (parity with forge sprint --resume)"
       status: MET
-      notes: "_deepseek_client sets base_url = profile.base_url or 'https://api.deepseek.com'. Covered by test_deepseek_client_default_base_url and test_deepseek_client_respects_profile_base_url."
-
-    - criterion: "Reasoning model detection covers DeepSeek R1 (no temperature=0)"
+      notes: "Added --resume argument to run_parser in cli.py. cmd_run calls _triage_spec when resume=True and dispatches to run_from_review, run_from_dev, or run_task based on triage action."
+    - criterion: "Clear log output explains resume decision and which phase is resuming"
       status: MET
-      notes: "_is_reasoning_model extended with 'or model.startswith(\"deepseek-r1\")'. Covered by three _is_reasoning_model tests including prefix variants."
-
-    - criterion: "Existing tests pass; new test for deepseek profile parsing"
+      notes: "_triage_spec logs each action with reason during sprint --resume triage. coordinator.py ALREADY_DONE override logs commit count and reason. cli.py cmd_run --resume prints triage action and reason to stderr."
+    - criterion: "Never deletes a worktree that has commits ahead of base without --force"
       status: MET
-      notes: "847 existing + 12 new = 859 tests pass. New tests: TestDeepSeekProvider (10 tests) in test_runner_api.py and 2 new tests in test_config.py."
-
-  spec_deviations: none
-
+      notes: "Removed age-based staleness check from _is_stale_worktree. Worktrees with commits ahead are never stale regardless of age. Only 0-commits-ahead, missing branch, or stale_worktree_days=0 trigger deletion. Tested by test_old_commit_not_stale."
+  spec_deviations:
+    - description: "Added new skip action to SpecTriage rather than reusing skip_merged"
+      justification: "skip_merged means branch merged to base; skip means approved-not-yet-merged. Keeping them distinct avoids adding approved-but-unmerged branches to merged_slugs which would incorrectly unblock dependencies."
+    - description: "Preserved gate check as secondary signal for no-APPROVE worktrees (gate-pass -> review, gate-fail -> dev)"
+      justification: "Plan reviewer P2 note suggested this to avoid sending broken code straight to review. Spec AC says resume from REVIEW but does not prohibit routing gate-fail worktrees to DEV first."
   deferred_items: none
-
   gate_result: PASS

@@ -41,6 +41,7 @@ import yaml
 
 from . import coord_util as _cu
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
+from .coord_audit import has_review_approve
 from .coord_gate import (  # noqa: F401
     _auto_commit_side_effects,
     _is_gate_skip,
@@ -928,6 +929,46 @@ def run_task(
     )
 
     if verdict == "ALREADY_DONE":
+        # Guard: if commits exist on the branch but no prior review APPROVE, the
+        # dev work was never reviewed (interrupted run). Resume from REVIEW instead
+        # of short-circuiting to DONE.
+        ok_log, log_out = _cu._run_shell(
+            f"git log {config.workspace.base_branch}..{branch_name} --oneline",
+            config.project_root,
+        )
+        commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
+        if commits_ahead and not has_review_approve(config.project_root, task.slug):
+            n = len(commits_ahead)
+            _log(
+                f"  ↻ ALREADY_DONE overridden — {n} commit{'s' if n != 1 else ''} on "
+                f"{branch_name} without prior APPROVE; resuming from REVIEW"
+            )
+            logger._safe_emit(
+                "phase_end",
+                phase="PREFLIGHT",
+                outcome="already_done_override",
+                reason="commits_ahead_no_approve",
+            )
+            result = _coordinator_loop(
+                state,
+                config,
+                task,
+                spec_content,
+                _task_start,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                skip_dev_first_iter=True,
+                notify=notify,
+                logger=logger,
+            )
+            logger._safe_emit(
+                "run_end",
+                outcome="done" if result.success else "escalate",
+                total_cost_usd=round(state.total_cost, 6),
+                total_duration_s=round(time.monotonic() - _task_start, 2),
+            )
+            return result
+
         state.phase = Phase.DONE
         elapsed = time.monotonic() - _task_start
         _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(elapsed)}")
@@ -1754,7 +1795,8 @@ def run_review_only(
         f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
     )
     _log(
-        f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
+        f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2"
+        f"  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
     )
     _log(f"✗ ESCALATE   {state.error}")
     logger._safe_emit(
