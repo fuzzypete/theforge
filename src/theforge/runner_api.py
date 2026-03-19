@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-from typing import TYPE_CHECKING, Any, Callable
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from .runner import AgentResult, ModelUsage, _log, _log_verbose
 from .schemas import review_json_schema
+from .tool_runtime import TOOL_REGISTRY, ToolDef
 
 if TYPE_CHECKING:
     from .config import ModelProfile
@@ -41,6 +46,17 @@ _RESPONSES_API_MODELS: set[str] = {
     "gpt-5.3-codex",
 }
 
+# Submit tool names — loop-internal, not in TOOL_REGISTRY
+SUBMIT_REVIEW = "submit_review"
+SUBMIT_PLAN_REVIEW = "submit_plan_review"
+_SUBMIT_TOOL_NAMES = {SUBMIT_REVIEW, SUBMIT_PLAN_REVIEW}
+
+# Max consecutive malformed tool calls before aborting
+_MAX_MALFORMED = 3
+
+# Default max loop iterations
+_DEFAULT_MAX_ITERATIONS = 25
+
 
 def _estimate_cost(
     provider: str, model: str, input_tokens: int, output_tokens: int
@@ -52,7 +68,435 @@ def _estimate_cost(
     return ((input_tokens / 1_000_000) * price[0]) + ((output_tokens / 1_000_000) * price[1])
 
 
-def _openai_client(profile: ModelProfile, secrets: dict[str, str] | None = None):  # type: ignore[return]
+# ── Provider-agnostic intermediate types ──────────────────────────────
+
+
+@dataclass
+class ToolCallRequest:
+    """Provider-agnostic representation of a tool call from the model."""
+
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
+class LoopTurn:
+    """Unified result of one API call, regardless of provider."""
+
+    tool_calls: list[ToolCallRequest]  # empty = model is done
+    text_output: str | None  # final text when no tool calls
+    structured_data: dict | None  # final structured output when available
+    usage: ModelUsage | None  # token usage for this turn
+
+
+class ProviderAdapter(Protocol):
+    """Protocol for provider adapters used by AgentLoopManager."""
+
+    def __call__(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> LoopTurn: ...
+
+
+# ── Submit tool schemas ───────────────────────────────────────────────
+
+
+def _submit_review_schema() -> dict:
+    """Schema for submit_review tool — matches review_json_schema()."""
+    return {
+        "name": SUBMIT_REVIEW,
+        "description": (
+            "Submit the final structured code review. Call this when you have finished "
+            "inspecting the codebase and are ready to deliver your verdict."
+        ),
+        "parameters": review_json_schema(),
+    }
+
+
+def _submit_plan_review_schema() -> dict:
+    """Schema for submit_plan_review tool — for plan agent review."""
+    return {
+        "name": SUBMIT_PLAN_REVIEW,
+        "description": (
+            "Submit the final plan review verdict. Call this when you have finished "
+            "verifying the implementation plan against the codebase."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["verdict", "summary", "findings"],
+            "properties": {
+                "verdict": {
+                    "type": "string",
+                    "enum": ["APPROVE", "REQUEST_CHANGES"],
+                    "description": "Overall verdict on the plan.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One-line summary of the review.",
+                },
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["severity", "description"],
+                        "properties": {
+                            "severity": {"type": "string", "enum": ["P1", "P2"]},
+                            "description": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _build_submit_tools_openai() -> list[dict]:
+    """Build submit tool schemas in OpenAI function format."""
+    result = []
+    for schema_fn in (_submit_review_schema, _submit_plan_review_schema):
+        s = schema_fn()
+        result.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": s["name"],
+                    "description": s["description"],
+                    "parameters": s["parameters"],
+                },
+            }
+        )
+    return result
+
+
+def _build_submit_tools_anthropic() -> list[dict]:
+    """Build submit tool schemas in Anthropic tool format."""
+    result = []
+    for schema_fn in (_submit_review_schema, _submit_plan_review_schema):
+        s = schema_fn()
+        result.append(
+            {
+                "name": s["name"],
+                "description": s["description"],
+                "input_schema": s["parameters"],
+            }
+        )
+    return result
+
+
+def _build_submit_tools_google() -> list[dict]:
+    """Build submit tool function declarations for Google."""
+    result = []
+    for schema_fn in (_submit_review_schema, _submit_plan_review_schema):
+        s = schema_fn()
+        result.append(
+            {
+                "name": s["name"],
+                "description": s["description"],
+                "parameters": s["parameters"],
+            }
+        )
+    return result
+
+
+# ── Agent loop manager ────────────────────────────────────────────────
+
+
+@dataclass
+class _UsageAccumulator:
+    """Accumulate token usage across loop iterations."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+
+    def add(self, usage: ModelUsage | None) -> None:
+        if usage is None:
+            return
+        self.input_tokens += usage.input_tokens
+        self.output_tokens += usage.output_tokens
+        self.cache_read_tokens += usage.cache_read_tokens
+        self.cache_creation_tokens += usage.cache_creation_tokens
+
+    def to_model_usage(self, model: str, provider: str) -> ModelUsage:
+        cost = _estimate_cost(provider, model, self.input_tokens, self.output_tokens)
+        return ModelUsage(
+            model=model,
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_creation_tokens=self.cache_creation_tokens,
+            cost_usd=cost,
+        )
+
+
+class AgentLoopManager:
+    """Drives the multi-turn tool-use loop for API-mode agents.
+
+    The loop:
+    1. Sends the message history + tool schemas to the provider
+    2. If the model requests tool calls, executes them (in parallel) and loops
+    3. If the model calls a submit tool, extracts structured data and returns
+    4. If the model emits plain text, returns it as the final output
+    5. Terminates on timeout, max iterations, or consecutive malformed calls
+    """
+
+    def __init__(
+        self,
+        *,
+        profile: "ModelProfile",
+        provider: str,
+        working_dir: Path,
+        tools: list[ToolDef],
+        provider_adapter: ProviderAdapter,
+        max_iterations: int = _DEFAULT_MAX_ITERATIONS,
+    ) -> None:
+        self._profile = profile
+        self._provider = provider
+        self._working_dir = working_dir
+        self._tools = {t.name: t for t in tools}
+        self._adapter = provider_adapter
+        self._max_iterations = max_iterations
+        self._usage = _UsageAccumulator()
+        self._total_tool_calls = 0
+        self._deadline = time.monotonic() + profile.timeout_seconds
+
+    def _timed_out(self) -> bool:
+        return time.monotonic() > self._deadline
+
+    def _execute_tools(self, calls: list[ToolCallRequest]) -> list[dict]:
+        """Execute tool calls in parallel; always return string results."""
+        max_bytes = self._profile.max_tool_output_bytes
+
+        def _run_one(call: ToolCallRequest) -> dict:
+            t0 = time.monotonic()
+            if self._timed_out():
+                content = "Error: global timeout reached before tool could execute"
+                duration_ms = 0
+            elif call.name in _SUBMIT_TOOL_NAMES:
+                # Submit tools are handled by the loop itself, not dispatched here
+                content = ""
+                duration_ms = 0
+            elif call.name not in self._tools:
+                available = ", ".join(sorted(self._tools.keys()))
+                content = f"Error: unknown tool '{call.name}' — available tools: {available}"
+                duration_ms = int((time.monotonic() - t0) * 1000)
+            else:
+                tool = self._tools[call.name]
+                try:
+                    # Validate required args from schema
+                    required = tool.parameters.get("required", [])
+                    missing = [r for r in required if r not in call.arguments]
+                    if missing:
+                        content = (
+                            f"Error: {call.name} requires {missing!r} but got: {call.arguments}"
+                        )
+                    else:
+                        content = tool.handler(
+                            working_dir=self._working_dir,
+                            max_bytes=max_bytes,
+                            **call.arguments,
+                        )
+                except Exception as exc:
+                    content = f"Error: {type(exc).__name__} — {exc}"
+                duration_ms = int((time.monotonic() - t0) * 1000)
+
+            # Brief summary for logging
+            if call.name == "read_file":
+                summary = call.arguments.get("path", "")
+                sl = call.arguments.get("start_line")
+                el = call.arguments.get("end_line")
+                if sl or el:
+                    summary = f"{summary}:{sl or ''}-{el or ''}"
+            elif call.name == "bash":
+                cmd = call.arguments.get("command", "")
+                summary = cmd[:60] + ("..." if len(cmd) > 60 else "")
+            elif call.name in ("grep", "glob"):
+                summary = call.arguments.get("pattern", "")
+            else:
+                summary = str(call.arguments)[:60]
+
+            _log_verbose(f"  ↳ {call.name}: {summary} ({duration_ms}ms)")
+            return {"id": call.id, "name": call.name, "content": content}
+
+        with ThreadPoolExecutor(max_workers=min(len(calls), 8)) as pool:
+            futures = {pool.submit(_run_one, call): call for call in calls}
+            results = []
+            for future in as_completed(futures):
+                results.append(future.result())
+        # Preserve original call ordering
+        order = {call.id: i for i, call in enumerate(calls)}
+        results.sort(key=lambda r: order.get(r["id"], 0))
+        return results
+
+    def run(
+        self,
+        *,
+        initial_messages: list[dict],
+        tool_schemas: list[dict],
+    ) -> AgentResult:
+        """Run the agent loop. Returns AgentResult with accumulated cost."""
+        messages = list(initial_messages)
+        iterations = 0
+        consecutive_malformed = 0
+
+        while iterations < self._max_iterations:
+            if self._timed_out():
+                return self._timeout_result(iterations)
+
+            try:
+                turn = self._adapter(messages, tool_schemas)
+            except Exception as exc:
+                return self._failure_result(f"Provider API error: {exc}")
+
+            self._usage.add(turn.usage)
+            iterations += 1
+
+            # Check for submit tool call
+            for call in turn.tool_calls:
+                if call.name in _SUBMIT_TOOL_NAMES:
+                    self._total_tool_calls += len(turn.tool_calls)
+                    label = self._profile.name or f"{self._provider}/{self._profile.model}"
+                    _log(
+                        f"  ... {label} done "
+                        f"({iterations} iter, {self._total_tool_calls} tool calls)"
+                    )
+                    return self._success_result(
+                        output=json.dumps(call.arguments, indent=2),
+                        structured_data=call.arguments,
+                    )
+
+            # No tool calls → model is done, return text output
+            if not turn.tool_calls:
+                label = self._profile.name or f"{self._provider}/{self._profile.model}"
+                _log(
+                    f"  ... {label} done ({iterations} iter, {self._total_tool_calls} tool calls)"
+                )
+                return self._success_result(
+                    output=turn.text_output or "",
+                    structured_data=turn.structured_data,
+                )
+
+            # Validate all calls in this turn and collect results for the full set.
+            # We must call _append_tool_results ONCE with all of turn.tool_calls so
+            # that every tool_call/tool_use in the assistant message has a matching
+            # result — all three providers require this.
+            turn_results: list[dict] = []
+            has_malformed = False
+            valid_calls: list[ToolCallRequest] = []
+
+            for call in turn.tool_calls:
+                if not call.name or not isinstance(call.arguments, dict):
+                    has_malformed = True
+                    consecutive_malformed += 1
+                    turn_results.append(
+                        {
+                            "id": call.id,
+                            "name": call.name or "unknown",
+                            "content": (
+                                f"Error: malformed tool call — "
+                                f"name={call.name!r}, arguments={call.arguments!r}"
+                            ),
+                        }
+                    )
+                else:
+                    valid_calls.append(call)
+
+            if has_malformed and consecutive_malformed >= _MAX_MALFORMED:
+                return self._failure_result(
+                    f"Aborted after {_MAX_MALFORMED} consecutive malformed tool calls"
+                )
+
+            # Execute valid calls in parallel and merge results in original order
+            if valid_calls:
+                consecutive_malformed = 0
+                self._total_tool_calls += len(valid_calls)
+                executed = self._execute_tools(valid_calls)
+                # executed is ordered by valid_calls; turn_results holds errors so far;
+                # rebuild in original turn order
+                executed_by_id = {r["id"]: r for r in executed}
+                turn_results = [
+                    executed_by_id[call.id]
+                    if call.id in executed_by_id
+                    else next(r for r in turn_results if r["id"] == call.id)
+                    for call in turn.tool_calls
+                ]
+            elif not has_malformed:
+                # All calls were skipped (shouldn't happen), reset counter
+                consecutive_malformed = 0
+
+            # Append assistant turn + all tool results in a single history entry
+            messages = self._append_tool_results(messages, turn.tool_calls, turn_results)
+
+        return self._timeout_result(iterations, reason="max iterations reached")
+
+    def _append_tool_results(
+        self,
+        messages: list[dict],
+        calls: list[ToolCallRequest],
+        results: list[dict],
+    ) -> list[dict]:
+        """Add assistant tool-call turn + tool result turn to messages."""
+        new_messages = list(messages)
+        new_messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": calls,
+            }
+        )
+        new_messages.append(
+            {
+                "role": "tool_results",
+                "results": results,
+            }
+        )
+        return new_messages
+
+    def _success_result(self, *, output: str, structured_data: dict | None) -> AgentResult:
+        usage = self._usage.to_model_usage(self._profile.model, self._provider)
+        return AgentResult(
+            success=True,
+            output=output,
+            session_id=None,
+            cost_usd=usage.cost_usd,
+            exit_code=0,
+            raw={},
+            profile_name=self._profile.name,
+            model_usage=(usage,),
+            structured_data=structured_data,
+        )
+
+    def _failure_result(self, reason: str) -> AgentResult:
+        usage = self._usage.to_model_usage(self._profile.model, self._provider)
+        return AgentResult(
+            success=False,
+            output=reason,
+            session_id=None,
+            cost_usd=usage.cost_usd,
+            exit_code=1,
+            raw={},
+            profile_name=self._profile.name,
+            model_usage=(usage,),
+        )
+
+    def _timeout_result(self, iterations: int, reason: str = "wall-clock timeout") -> AgentResult:
+        label = self._profile.name or f"{self._provider}/{self._profile.model}"
+        _log(f"  ... {label} FAILED — {reason} after {iterations} iterations")
+        return self._failure_result(
+            f"Agent loop terminated: {reason} after {iterations} iterations. "
+            f"Accumulated cost reported."
+        )
+
+
+# ── OpenAI client helpers ─────────────────────────────────────────────
+
+
+def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = None):  # type: ignore[return]
     """Build an OpenAI client from profile + secrets."""
     import openai
 
@@ -64,7 +508,7 @@ def _openai_client(profile: ModelProfile, secrets: dict[str, str] | None = None)
 
 
 def _openai_result(
-    profile: ModelProfile,
+    profile: "ModelProfile",
     output_text: str,
     input_tokens: int,
     output_tokens: int,
@@ -95,8 +539,11 @@ def _openai_result(
     )
 
 
+# ── Single-shot runners (no tools) ───────────────────────────────────
+
+
 def _run_openai_chat(
-    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
     """Run via OpenAI Chat Completions (/v1/chat/completions)."""
     client = _openai_client(profile, secrets)
@@ -133,7 +580,7 @@ def _run_openai_chat(
 
 
 def _run_openai_responses(
-    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
     """Run via OpenAI Responses API (/v1/responses) — required for Codex models."""
     client = _openai_client(profile, secrets)
@@ -173,7 +620,7 @@ def _run_openai_responses(
 
 
 def _run_openai(
-    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
     """Dispatch to Chat Completions or Responses API based on model."""
     if profile.model in _RESPONSES_API_MODELS:
@@ -182,7 +629,7 @@ def _run_openai(
 
 
 def _run_anthropic(
-    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
     """Run agent via Anthropic API."""
     import anthropic
@@ -258,7 +705,7 @@ def _run_anthropic(
 
 
 def _run_google(
-    prompt: str, profile: ModelProfile, secrets: dict[str, str] | None = None
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
     """Run agent via Google Gemini API."""
     import google.genai as genai
@@ -327,18 +774,507 @@ PROVIDER_RUNNERS: dict[str, Callable[..., AgentResult]] = {
 }
 
 
+# ── Provider adapters for the agent loop ─────────────────────────────
+
+
+def _make_openai_usage(usage: Any, model: str) -> ModelUsage | None:
+    if usage is None:
+        return None
+    return ModelUsage(
+        model=model,
+        input_tokens=getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)),
+        output_tokens=getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)),
+        cache_read_tokens=0,
+        cache_creation_tokens=0,
+        cost_usd=None,
+    )
+
+
+def _translate_messages_openai_chat(messages: list[dict]) -> list[dict]:
+    """Translate loop-internal messages to OpenAI Chat Completions format."""
+    result = []
+    for msg in messages:
+        role = msg["role"]
+        if role in ("user", "system"):
+            result.append({"role": role, "content": msg.get("content", "")})
+        elif role == "assistant":
+            calls = msg.get("tool_calls", [])
+            m: dict[str, Any] = {"role": "assistant", "content": msg.get("content")}
+            if calls:
+                m["tool_calls"] = [
+                    {
+                        "id": c.id,
+                        "type": "function",
+                        "function": {"name": c.name, "arguments": json.dumps(c.arguments)},
+                    }
+                    for c in calls
+                ]
+            result.append(m)
+        elif role == "tool_results":
+            for r in msg.get("results", []):
+                result.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": r["id"],
+                        "content": r["content"],
+                    }
+                )
+    return result
+
+
+def _make_openai_chat_adapter(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> ProviderAdapter:
+    """Build OpenAI Chat Completions adapter for AgentLoopManager."""
+    client = _openai_client(profile, secrets)
+
+    def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
+        oai_messages = _translate_messages_openai_chat(messages)
+        kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "messages": oai_messages,
+            "temperature": 0,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        response = client.chat.completions.create(**kwargs)
+        msg = response.choices[0].message
+        usage = _make_openai_usage(response.usage, profile.model)
+
+        tool_calls: list[ToolCallRequest] = []
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                    if not isinstance(args, dict):
+                        args = {}
+                except (json.JSONDecodeError, AttributeError):
+                    args = {}
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=args,
+                    )
+                )
+
+        text = msg.content or None
+        return LoopTurn(
+            tool_calls=tool_calls,
+            text_output=text,
+            structured_data=None,
+            usage=usage,
+        )
+
+    return adapter
+
+
+def _translate_messages_openai_responses(messages: list[dict]) -> list[Any]:
+    """Translate loop-internal messages to OpenAI Responses API input format."""
+    result: list[Any] = []
+    for msg in messages:
+        role = msg["role"]
+        if role == "user":
+            result.append({"role": "user", "content": msg.get("content", "")})
+        elif role == "assistant":
+            calls = msg.get("tool_calls", [])
+            for c in calls:
+                result.append(
+                    {
+                        "type": "function_call",
+                        "name": c.name,
+                        "arguments": json.dumps(c.arguments),
+                        "call_id": c.id,
+                    }
+                )
+            text = msg.get("content")
+            if text:
+                result.append({"role": "assistant", "content": text})
+        elif role == "tool_results":
+            for r in msg.get("results", []):
+                result.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": r["id"],
+                        "output": r["content"],
+                    }
+                )
+    return result
+
+
+def _make_openai_responses_adapter(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> ProviderAdapter:
+    """Build OpenAI Responses API adapter for AgentLoopManager."""
+    client = _openai_client(profile, secrets)
+
+    def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
+        input_items = _translate_messages_openai_responses(messages)
+        kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "input": input_items,
+        }
+        if tools:
+            kwargs["tools"] = tools
+
+        response = client.responses.create(**kwargs)
+
+        tool_calls: list[ToolCallRequest] = []
+        text_parts: list[str] = []
+        for item in response.output:
+            item_type = getattr(item, "type", None)
+            if item_type == "function_call":
+                try:
+                    args = json.loads(item.arguments)
+                    if not isinstance(args, dict):
+                        args = {}
+                except (json.JSONDecodeError, AttributeError):
+                    args = {}
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=getattr(item, "call_id", getattr(item, "id", str(len(tool_calls)))),
+                        name=item.name,
+                        arguments=args,
+                    )
+                )
+            elif item_type == "message":
+                # message items contain content parts
+                content = getattr(item, "content", [])
+                if isinstance(content, list):
+                    for part in content:
+                        if getattr(part, "type", None) == "output_text":
+                            text_parts.append(getattr(part, "text", ""))
+                elif isinstance(content, str):
+                    text_parts.append(content)
+
+        usage_obj = getattr(response, "usage", None)
+        usage: ModelUsage | None = None
+        if usage_obj:
+            usage = ModelUsage(
+                model=profile.model,
+                input_tokens=getattr(usage_obj, "input_tokens", 0),
+                output_tokens=getattr(usage_obj, "output_tokens", 0),
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=None,
+            )
+
+        text = "\n".join(text_parts) or None
+        return LoopTurn(
+            tool_calls=tool_calls,
+            text_output=text,
+            structured_data=None,
+            usage=usage,
+        )
+
+    return adapter
+
+
+def _translate_messages_anthropic(messages: list[dict]) -> list[dict]:
+    """Translate loop-internal messages to Anthropic API format."""
+    result: list[dict] = []
+    for msg in messages:
+        role = msg["role"]
+        if role == "user":
+            result.append({"role": "user", "content": msg.get("content", "")})
+        elif role == "assistant":
+            calls = msg.get("tool_calls", [])
+            content: list[Any] = []
+            text = msg.get("content")
+            if text:
+                content.append({"type": "text", "text": text})
+            for c in calls:
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": c.id,
+                        "name": c.name,
+                        "input": c.arguments,
+                    }
+                )
+            result.append(
+                {"role": "assistant", "content": content or [{"type": "text", "text": ""}]}
+            )
+        elif role == "tool_results":
+            tool_results = [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": r["id"],
+                    "content": r["content"],
+                }
+                for r in msg.get("results", [])
+            ]
+            result.append({"role": "user", "content": tool_results})
+    return result
+
+
+def _make_anthropic_adapter(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> ProviderAdapter:
+    """Build Anthropic adapter for AgentLoopManager."""
+    import anthropic
+
+    merged = {**os.environ, **(secrets or {})}
+    client = anthropic.Anthropic(api_key=merged.get("ANTHROPIC_API_KEY"))
+
+    def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
+        anth_messages = _translate_messages_anthropic(messages)
+        kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "max_tokens": 8192,
+            "temperature": 0,
+            "messages": anth_messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            # No forced tool_choice — model is free to call any registered tool
+
+        response = client.messages.create(**kwargs)
+
+        tool_calls: list[ToolCallRequest] = []
+        text_parts: list[str] = []
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "tool_use":
+                tool_calls.append(
+                    ToolCallRequest(
+                        id=block.id,
+                        name=block.name,
+                        arguments=block.input if isinstance(block.input, dict) else {},
+                    )
+                )
+
+        usage = ModelUsage(
+            model=profile.model,
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+            cost_usd=None,
+        )
+
+        text = "\n".join(text_parts) or None
+        return LoopTurn(
+            tool_calls=tool_calls,
+            text_output=text,
+            structured_data=None,
+            usage=usage,
+        )
+
+    return adapter
+
+
+def _translate_messages_google(messages: list[dict]) -> list[dict]:
+    """Translate loop-internal messages to Google Gemini contents format."""
+    result: list[dict] = []
+    for msg in messages:
+        role = msg["role"]
+        if role == "user":
+            result.append({"role": "user", "parts": [{"text": msg.get("content", "")}]})
+        elif role == "assistant":
+            calls = msg.get("tool_calls", [])
+            parts: list[dict] = []
+            text = msg.get("content")
+            if text:
+                parts.append({"text": text})
+            for c in calls:
+                parts.append({"function_call": {"name": c.name, "args": c.arguments}})
+            result.append({"role": "model", "parts": parts or [{"text": ""}]})
+        elif role == "tool_results":
+            parts = [
+                {
+                    "function_response": {
+                        "name": r["name"],
+                        "response": {"output": r["content"]},
+                    }
+                }
+                for r in msg.get("results", [])
+            ]
+            result.append({"role": "user", "parts": parts})
+    return result
+
+
+def _make_google_adapter(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+) -> ProviderAdapter:
+    """Build Google Gemini adapter for AgentLoopManager."""
+    import google.genai as genai
+    import google.genai.types as genai_types
+
+    merged = {**os.environ, **(secrets or {})}
+    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
+
+    def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
+        contents = _translate_messages_google(messages)
+        google_tools = None
+        if tools:
+            # tools is a list of function declarations
+            google_tools = [genai_types.Tool(function_declarations=tools)]
+
+        config = genai_types.GenerateContentConfig(
+            temperature=0,
+            tools=google_tools,
+        )
+        response = client.models.generate_content(
+            model=profile.model,
+            contents=contents,
+            config=config,
+        )
+
+        tool_calls: list[ToolCallRequest] = []
+        text_parts: list[str] = []
+
+        for candidate in response.candidates or []:
+            for part in candidate.content.parts if candidate.content else []:
+                if hasattr(part, "function_call") and part.function_call:
+                    fc = part.function_call
+                    args = dict(fc.args) if fc.args else {}
+                    tool_calls.append(
+                        ToolCallRequest(
+                            id=f"call_{len(tool_calls)}",
+                            name=fc.name,
+                            arguments=args,
+                        )
+                    )
+                elif hasattr(part, "text") and part.text:
+                    text_parts.append(part.text)
+
+        usage_meta = response.usage_metadata
+        usage: ModelUsage | None = None
+        if usage_meta:
+            usage = ModelUsage(
+                model=profile.model,
+                input_tokens=usage_meta.prompt_token_count or 0,
+                output_tokens=usage_meta.candidates_token_count or 0,
+                cache_read_tokens=getattr(usage_meta, "cached_content_token_count", 0) or 0,
+                cache_creation_tokens=0,
+                cost_usd=None,
+            )
+
+        text = "\n".join(text_parts) or None
+        return LoopTurn(
+            tool_calls=tool_calls,
+            text_output=text,
+            structured_data=None,
+            usage=usage,
+        )
+
+    return adapter
+
+
+# ── Loop-mode entry points ────────────────────────────────────────────
+
+
+def _build_registry_tools(profile: "ModelProfile") -> list[ToolDef]:
+    """Build the list of ToolDef objects from profile.allowed_tools."""
+    return [TOOL_REGISTRY[name] for name in profile.allowed_tools if name in TOOL_REGISTRY]
+
+
+def _run_loop_openai(
+    prompt: str,
+    profile: "ModelProfile",
+    working_dir: Path,
+    secrets: dict[str, str] | None = None,
+) -> AgentResult:
+    """Run OpenAI provider in agent loop mode."""
+    tools = _build_registry_tools(profile)
+    tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai()
+
+    if profile.model in _RESPONSES_API_MODELS:
+        adapter = _make_openai_responses_adapter(profile, secrets)
+    else:
+        adapter = _make_openai_chat_adapter(profile, secrets)
+
+    manager = AgentLoopManager(
+        profile=profile,
+        provider="openai",
+        working_dir=working_dir,
+        tools=tools,
+        provider_adapter=adapter,
+    )
+    return manager.run(
+        initial_messages=[{"role": "user", "content": prompt}],
+        tool_schemas=tool_schemas,
+    )
+
+
+def _run_loop_anthropic(
+    prompt: str,
+    profile: "ModelProfile",
+    working_dir: Path,
+    secrets: dict[str, str] | None = None,
+) -> AgentResult:
+    """Run Anthropic provider in agent loop mode."""
+    tools = _build_registry_tools(profile)
+    tool_schemas = [t.to_anthropic_tool() for t in tools] + _build_submit_tools_anthropic()
+    adapter = _make_anthropic_adapter(profile, secrets)
+
+    manager = AgentLoopManager(
+        profile=profile,
+        provider="anthropic",
+        working_dir=working_dir,
+        tools=tools,
+        provider_adapter=adapter,
+    )
+    return manager.run(
+        initial_messages=[{"role": "user", "content": prompt}],
+        tool_schemas=tool_schemas,
+    )
+
+
+def _run_loop_google(
+    prompt: str,
+    profile: "ModelProfile",
+    working_dir: Path,
+    secrets: dict[str, str] | None = None,
+) -> AgentResult:
+    """Run Google provider in agent loop mode."""
+    tools = _build_registry_tools(profile)
+    # Google adapter wraps declarations into genai_types.Tool objects internally
+    tool_schemas = [t.to_google_declaration() for t in tools] + _build_submit_tools_google()
+    adapter = _make_google_adapter(profile, secrets)
+
+    manager = AgentLoopManager(
+        profile=profile,
+        provider="google",
+        working_dir=working_dir,
+        tools=tools,
+        provider_adapter=adapter,
+    )
+    return manager.run(
+        initial_messages=[{"role": "user", "content": prompt}],
+        tool_schemas=tool_schemas,
+    )
+
+
+_LOOP_RUNNERS: dict[str, Callable[..., AgentResult]] = {
+    "openai": _run_loop_openai,
+    "anthropic": _run_loop_anthropic,
+    "google": _run_loop_google,
+}
+
+
+# ── Public entry point ────────────────────────────────────────────────
+
+
 def run_api_agent(
     *,
     prompt: str,
-    profile: ModelProfile,
+    profile: "ModelProfile",
+    working_dir: Path,
     quiet: bool = False,
     secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run a text-judgment agent via API.
 
-    Dispatches to the appropriate provider adapter. Signature is minimal —
-    no working_dir, session_id, or is_pool because API calls are stateless
-    and inherently concurrent-safe.
+    When profile.allowed_tools is non-empty, drives an agent loop where the model
+    can call tools. When empty, falls back to a single-shot stateless call.
     """
     if not profile.provider:
         return AgentResult(
@@ -351,23 +1287,38 @@ def run_api_agent(
             profile_name=profile.name,
         )
 
-    runner_fn = PROVIDER_RUNNERS.get(profile.provider)
-    if not runner_fn:
-        return AgentResult(
-            success=False,
-            output=f"Unknown API provider: {profile.provider}",
-            session_id=None,
-            cost_usd=None,
-            exit_code=1,
-            raw={},
-            profile_name=profile.name,
-        )
-
     label = profile.name or f"{profile.provider}/{profile.model}"
     if not quiet:
         _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
-    result = runner_fn(prompt, profile, secrets)
+    if profile.allowed_tools:
+        # Loop mode — tools are available
+        loop_runner = _LOOP_RUNNERS.get(profile.provider)
+        if not loop_runner:
+            return AgentResult(
+                success=False,
+                output=f"Unknown API provider: {profile.provider}",
+                session_id=None,
+                cost_usd=None,
+                exit_code=1,
+                raw={},
+                profile_name=profile.name,
+            )
+        result = loop_runner(prompt, profile, working_dir, secrets)
+    else:
+        # Single-shot stateless mode — existing behavior
+        runner_fn = PROVIDER_RUNNERS.get(profile.provider)
+        if not runner_fn:
+            return AgentResult(
+                success=False,
+                output=f"Unknown API provider: {profile.provider}",
+                session_id=None,
+                cost_usd=None,
+                exit_code=1,
+                raw={},
+                profile_name=profile.name,
+            )
+        result = runner_fn(prompt, profile, secrets)
 
     if not quiet:
         status = "OK" if result.success else "FAIL"

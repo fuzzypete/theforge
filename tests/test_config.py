@@ -86,7 +86,8 @@ class TestHybridRunnerConfig:
         assert config.dev_profile.cli == "claude"
         assert config.dev_profile.provider is None
 
-    def test_allowed_tools_on_api_profile_raises(self, tmp_path):
+    def test_allowed_tools_on_api_profile_now_passes(self, tmp_path):
+        """API profiles with allowed_tools are now valid — surfaced via the agent loop."""
         config_path = _write_config(
             {
                 "profiles": {
@@ -102,8 +103,52 @@ class TestHybridRunnerConfig:
             },
             tmp_path,
         )
-        with pytest.raises(ValueError, match="cannot have 'allowed_tools'"):
-            load_config(config_path)
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        profile = config.review_pool[0]
+        assert profile.provider == "openai"
+        # Normalized at parse time: "Read" → "read_file"
+        assert "read_file" in profile.allowed_tools
+        assert "Read" not in profile.allowed_tools
+
+    def test_allowed_tools_normalized_for_api_profiles(self, tmp_path):
+        """API profiles normalize capitalized tool names to canonical internal names."""
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                            "allowed_tools": ["Read", "Bash", "Grep", "Glob"],
+                        }
+                    ]
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        profile = config.review_pool[0]
+        assert set(profile.allowed_tools) == {"read_file", "bash", "grep", "glob"}
+
+    def test_allowed_tools_not_normalized_for_cli_profiles(self, tmp_path):
+        """CLI profiles keep capitalized tool names so --allowedTools argument stays correct."""
+        config_path = _write_config(
+            {"profiles": {"dev": {"cli": "claude", "model": "sonnet"}}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        # Default CLI dev profile uses capitalized names
+        assert "Read" in config.dev_profile.allowed_tools
+        assert "read_file" not in config.dev_profile.allowed_tools
 
     def test_missing_sdk_raises(self, tmp_path):
         config_path = _write_config(

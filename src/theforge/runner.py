@@ -206,6 +206,7 @@ def run_agent(
         return runner_api.run_api_agent(
             prompt=prompt,
             profile=profile,
+            working_dir=working_dir,
             quiet=quiet,
             secrets=secrets or {},
         )

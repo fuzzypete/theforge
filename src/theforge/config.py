@@ -104,6 +104,7 @@ class ModelProfile:
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
     base_url: str | None = None  # overrides provider's default API endpoint (Ollama etc.)
+    max_tool_output_bytes: int = 51200  # cap for tool output (50KB default)
 
     @property
     def mode(self) -> str:
@@ -457,11 +458,6 @@ def _parse_profile(
                 f"Unsupported provider {provider!r} in profile {name!r}. "
                 f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
             )
-        if "allowed_tools" in data and data["allowed_tools"]:
-            raise ValueError(
-                f"Profile {name!r} is an API-mode profile (provider={provider!r}) "
-                "and cannot have 'allowed_tools'. Tools are only for CLI-mode agents."
-            )
         # Eagerly validate provider readiness
         sdk = PROVIDER_SDK_MAP.get(provider)
         if sdk:
@@ -494,18 +490,18 @@ def _parse_profile(
     timeout_medium_raw = data.get("timeout_medium_seconds")
     timeout_large_raw = data.get("timeout_large_seconds")
 
-    # API-mode profiles must not have tools. If not provided, default to empty for API profiles.
+    # Build allowed_tools tuple. For API profiles, normalize capitalized names to canonical names.
     if tools is not None:
-        allowed_tools_tuple = tuple(tools)
+        if provider:
+            from .tool_runtime import TOOL_NAME_MAP
+
+            allowed_tools_tuple = tuple(TOOL_NAME_MAP.get(t, t) for t in tools)
+        else:
+            allowed_tools_tuple = tuple(tools)
     elif provider:
         allowed_tools_tuple = ()
     else:
         allowed_tools_tuple = default.allowed_tools
-    if provider and allowed_tools_tuple:
-        raise ValueError(
-            f"Profile {name!r} is an API-mode profile (provider={provider!r}) "
-            "and cannot have 'allowed_tools'. Tools are only for CLI-mode agents."
-        )
 
     return ModelProfile(
         name=name,

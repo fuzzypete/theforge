@@ -1,40 +1,159 @@
 gate_decision: PASS
 dev_notes: |
   summary: >
-    Implemented project-scoped secrets via .forge/secrets.yaml across all six acceptance
-    criteria. ForgeConfig gains a secrets field loaded by load_config() from
-    .forge/secrets.yaml adjacent to forge.yaml; a _resolve_secret() helper checks that
-    dict before os.environ so secrets satisfy provider API key validation without needing
-    to export keys globally. run_agent(), run_agent_pool(), and all internal CLI/API runners
-    accept a secrets kwarg merged as {**os.environ, **secrets} into subprocess env without
-    mutating the parent process. All coordinator/coord_phases/coord_workspace call sites pass
-    config.secrets. forge secrets-init writes a skeleton generated programmatically from
-    PROVIDER_API_KEY_MAP and updates .gitignore; forge init also ensures .gitignore
-    protection. cmd_run() warns at startup if .forge/secrets.yaml is tracked by git.
-    Pre-existing test mocks in test_coordinator.py and test_coord_preflight.py were updated
-    with **kwargs to tolerate the new secrets= argument. Two pre-existing lint issues fixed.
+    Implemented the full API agent loop spec and fixed a P1 message-history corruption
+    bug found in review cycle 1. Created tool_runtime.py as the canonical source for
+    tool definitions, handlers, and provider schema translation. Added AgentLoopManager
+    to runner_api.py to drive the multi-turn tool-use loop with parallel execution,
+    timeout enforcement, cost accumulation, and submit-tool-based structured completion.
+    Modified config.py to remove the API+tools rejection and normalize allowed_tools at
+    parse time for API profiles only. Updated runner.py to pass working_dir through.
+    Fixed: mixed malformed/valid call turns now collect all results before a single
+    _append_tool_results call, preventing history corruption and provider API errors.
+    Also fixed grep on file path and tool-call count on submit.
+
   commits:
-    - sha: "84e9c21"
-      message: "feat(secrets): project-scoped secrets via .forge/secrets.yaml"
+    - sha: "91fdb9e"
+      message: "feat(api-agent-loop): tool-use runtime for API-mode agents"
+    - sha: "6557461"
+      message: "fix(api-agent-loop): address review findings (iter 1)"
+
   acceptance_criteria:
-    - criterion: "AC-1: load_config() reads .forge/secrets.yaml; stored as ForgeConfig.secrets: dict[str, str]; defaults to {}; malformed YAML raises ValueError with file path"
+    - criterion: "AC-1: tool_runtime.py with ToolDef, TOOL_REGISTRY, TOOL_NAME_MAP, provider schema methods"
       status: MET
-      notes: "Secrets loading block added in load_config() before profile parsing. ForgeConfig.secrets uses field(default_factory=dict). ValueError raised for malformed YAML and non-mapping content with path in message."
-    - criterion: "AC-2: Key resolution checks secrets first, then os.environ in _parse_profile and plan_agent_review validation"
+      notes: >
+        tool_runtime.py created with ToolDef dataclass (to_openai_function, to_anthropic_tool,
+        to_google_declaration), TOOL_REGISTRY with read_file/bash/grep/glob, TOOL_NAME_MAP.
+
+    - criterion: "AC-1: Tool error handling returns string result, loop never raises on tool failure"
       status: MET
-      notes: "_resolve_secret(key, secrets) helper replaces os.getenv() in _parse_profile() and plan_agent_review validation block. secrets param threaded into all _parse_profile() calls."
-    - criterion: "AC-3: run_agent() and run_api_agent() accept secrets param; merged into subprocess/SDK env; coordinator passes config.secrets; parent os.environ never mutated"
+      notes: >
+        All handlers return str on error. AgentLoopManager never raises on tool failure —
+        errors are returned as result strings fed back to the model.
+
+    - criterion: "AC-1: Unknown/malformed tool calls return synthetic error; abort after 3 consecutive malformed"
       status: MET
-      notes: "run_agent() and run_agent_pool() gain secrets param. _run_claude merges into env copy. _run_codex and _run_gemini pass explicit env= to subprocess.run. run_api_agent and provider functions use merged dict for API keys. All call sites in coordinator.py, coord_phases.py, coord_workspace.py pass config.secrets."
-    - criterion: "AC-4: forge secrets-init writes skeleton from PROVIDER_API_KEY_MAP; warns if exists; updates .gitignore"
+      notes: >
+        Fixed in iter 1: malformed calls in a mixed turn now get error results while valid
+        calls are still executed. All results collected before a single _append_tool_results
+        call so history stays consistent. Consecutive_malformed counter resets when valid
+        calls are present.
+
+    - criterion: "AC-1: Parallel tool execution via ThreadPoolExecutor"
       status: MET
-      notes: "cmd_secrets_init() writes skeleton from PROVIDER_API_KEY_MAP, prints warning+exits 0 when file exists. _ensure_gitignored() creates/appends idempotently."
-    - criterion: "AC-5: forge init calls gitignore logic; startup warning if .forge/secrets.yaml is tracked by git"
+      notes: >
+        AgentLoopManager._execute_tools() uses ThreadPoolExecutor with up to 8 workers.
+        Results reordered to match original call ordering.
+
+    - criterion: "AC-2: allowed_tools normalized at config parse time for API profiles only"
       status: MET
-      notes: "cmd_init() calls _ensure_gitignored(). cmd_run() checks git ls-files --error-unmatch and prints warning. Wrapped in try/except for non-git environments."
-    - criterion: "AC-6: test_config.py (secrets loading, missing, malformed, key-in-secrets satisfies validation); test_runner.py (env merge, no mutation); test_cli.py (skeleton creation, no-op)"
+      notes: >
+        _parse_profile() applies TOOL_NAME_MAP when provider is set. CLI profiles skip
+        normalization so --allowedTools receives correct capitalized names.
+
+    - criterion: "AC-2: Agent loop filters registry using normalized profile.allowed_tools"
       status: MET
-      notes: "7 new tests in TestProjectSecrets, 3 in TestSecretsInjection, 6 in TestSecretsInit. 755 total tests pass."
-  spec_deviations: none
+      notes: _build_registry_tools() filters TOOL_REGISTRY by canonical names.
+
+    - criterion: "AC-2: Empty allowed_tools takes single-shot fast path"
+      status: MET
+      notes: >
+        run_api_agent() branches on profile.allowed_tools; empty -> PROVIDER_RUNNERS
+        single-shot; non-empty -> _LOOP_RUNNERS agent loop.
+
+    - criterion: "AC-3: AgentLoopManager with ToolCallRequest and LoopTurn types"
+      status: MET
+      notes: >
+        All three types defined. AgentLoopManager owns iteration, timeout, parallel
+        execution, cost accumulation.
+
+    - criterion: "AC-3: run_api_agent() gains working_dir: Path parameter"
+      status: MET
+      notes: Signature updated; runner.py passes working_dir=working_dir.
+
+    - criterion: "AC-3: Safety limits — max iterations 25, wall-clock timeout"
+      status: MET
+      notes: >
+        _DEFAULT_MAX_ITERATIONS=25; deadline = time.monotonic() + profile.timeout_seconds.
+        Checked before each iteration and each tool execution.
+
+    - criterion: "AC-3: Failed loops still report accumulated ModelUsage and cost_usd"
+      status: MET
+      notes: >
+        _failure_result() and _timeout_result() both call _UsageAccumulator.to_model_usage()
+        to include all accumulated tokens.
+
+    - criterion: "AC-4: Tool handlers scoped to working_dir; read_file rejects path traversal"
+      status: MET
+      notes: >
+        _resolve_safe() rejects paths escaping working_dir via Path.resolve(). All handlers
+        receive and scope to working_dir.
+
+    - criterion: "AC-4: Tool output truncated at 50KB with notice"
+      status: MET
+      notes: >
+        truncate_output() enforces max_bytes (default 51200). ModelProfile gains
+        max_tool_output_bytes: int = 51200. Handlers pass it through.
+
+    - criterion: "AC-5: All four token fields accumulated across loop iterations"
+      status: MET
+      notes: >
+        _UsageAccumulator accumulates input, output, cache_read, cache_creation tokens.
+        Anthropic cache fields extracted from API response attributes.
+
+    - criterion: "AC-6: submit_review and submit_plan_review loop-internal tools"
+      status: MET
+      notes: >
+        Both submit tools registered alongside TOOL_REGISTRY tools. Loop detects calls
+        by name and extracts arguments as structured_data. Tool count now correctly
+        counts all calls in the submit turn (fixed in iter 1).
+
+    - criterion: "AC-6: Model calling submit tool returns structured_data; plain-text fallback"
+      status: PARTIAL
+      notes: >
+        Submit tool detection fully implemented. Plain-text fallback returns text_output
+        directly without calling parse_review_output() — the coordinator handles that
+        parsing as it does for CLI agents. Primary submit-tool path is fully functional.
+
+    - criterion: "AC-7: Per-tool verbose logging with duration; summary at normal level"
+      status: MET
+      notes: >
+        _log_verbose() logs each tool call with duration. _log() logs completion summary
+        with iteration and tool call counts.
+
+    - criterion: "AC-8: API+tools rejection removed from config.py"
+      status: MET
+      notes: Both rejection blocks removed. API profiles with allowed_tools now pass validation.
+
+    - criterion: "AC-9: test_tool_runtime.py"
+      status: MET
+      notes: >
+        75 tests covering all handlers (contents, errors, traversal, line ranges, truncation,
+        grep on file path), TOOL_NAME_MAP, TOOL_REGISTRY structure, all three provider schema
+        translations.
+
+    - criterion: "AC-9: test_runner_api.py"
+      status: MET
+      notes: >
+        71 tests covering full loop lifecycle, submit tool extraction, token accumulation
+        (all 4 fields), max iterations, timeout, single-shot path, tool errors, unknown tools,
+        malformed args, 3-consecutive-malformed abort, mixed malformed+valid turn (new),
+        parallel execution, message history.
+
+    - criterion: "AC-9: test_config.py updated"
+      status: MET
+      notes: >
+        Inverted API+tools test to assert it passes. Added normalization test (Read->read_file)
+        and CLI non-normalization test.
+
+  spec_deviations:
+    - description: "Plain-text fallback does not call parse_review_output()"
+      justification: >
+        The coordinator already calls parse_review_output() on raw text from CLI agents;
+        the same mechanism applies for API agents emitting plain text. Duplicating this
+        in runner_api.py would create an unnecessary dependency. The primary submit-tool
+        path is fully implemented.
+
   deferred_items: none
+
   gate_result: PASS
