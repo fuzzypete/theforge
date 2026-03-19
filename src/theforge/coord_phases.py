@@ -8,6 +8,8 @@ coordinator's namespace where patches land.
 
 from __future__ import annotations
 
+import logging
+import subprocess
 import time
 from dataclasses import replace as _dc_replace
 from enum import Enum, auto
@@ -50,7 +52,91 @@ from .sessions import save_sessions
 from .task import TaskSpec
 from .traces import write_trace
 
+_pr_log = logging.getLogger(__name__)
+
 # ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _create_pr(
+    config: ForgeConfig,
+    task: TaskSpec,
+    branch_name: str,
+    parsed_review: ReviewResult,
+    state: CoordinatorState,
+) -> dict:
+    """Create a GitHub PR via `gh pr create`. Returns a result dict.
+
+    Best-effort: failure returns success=False with error, never raises.
+    """
+    p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
+    reviewer_names = ", ".join(p.name for p in config.review_pool)
+    p2_findings = [f for f in parsed_review.findings if f.severity == "P2"]
+    findings_md = ""
+    if p2_findings:
+        lines = []
+        for f in p2_findings:
+            loc = f" `{f.file}:{f.line}`" if f.file else ""
+            lines.append(f"- **[P2]{loc}** {f.description}")
+        findings_md = "\n".join(lines)
+    else:
+        findings_md = "_No findings._"
+
+    pr_body = (
+        f"## Summary\n\n"
+        f"{parsed_review.summary}\n\n"
+        f"## Review\n\n"
+        f"- **Verdict:** APPROVE ({p1_count} P1, {p2_count} P2)\n"
+        f"- **Reviewers:** {reviewer_names}\n"
+        f"- **Cost:** ${state.total_cost:.2f}\n"
+        f"- **Dev iterations:** {state.dev_iteration}\n"
+        f"- **Tests:** N/A\n\n"
+        f"## Findings\n\n"
+        f"{findings_md}\n\n"
+        f"## Spec\n\n"
+        f"{task.name} (`{task.spec_path}`)\n\n"
+        f"---\n"
+        f"*Created automatically by [TheForge](https://github.com/fuzzypete/theforge)*"
+    )
+
+    pr_title = f"{task.name}"
+    cmd = [
+        "gh",
+        "pr",
+        "create",
+        "--title",
+        pr_title,
+        "--body",
+        pr_body,
+        "--base",
+        config.workspace.base_branch,
+        "--head",
+        branch_name,
+    ]
+    for label in config.workspace.pr_labels:
+        cmd.extend(["--label", label])
+    if config.workspace.pr_draft:
+        cmd.append("--draft")
+
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=config.project_root,
+            timeout=60,
+        )
+        if proc.returncode == 0:
+            pr_url = proc.stdout.strip()
+            _log(f"  ✓ PR created: {pr_url}")
+            return {"action": "pr", "pr_url": pr_url, "success": True, "error": None}
+        else:
+            err = proc.stderr.strip() or proc.stdout.strip()
+            _pr_log.warning("PR creation failed (gh exited %d): %s", proc.returncode, err)
+            return {"action": "pr", "pr_url": None, "success": False, "error": err}
+    except Exception as exc:
+        _pr_log.warning("PR creation failed: %s", exc)
+        return {"action": "pr", "pr_url": None, "success": False, "error": str(exc)}
 
 
 def _append_cycle_history(state: CoordinatorState, parsed_review: ReviewResult) -> None:
@@ -95,7 +181,11 @@ def _finalize_approve(
     state.phase = Phase.DONE
     merge_info: dict | None = None
     merge_suffix = ""
-    if auto_merge:
+
+    # Resolve effective on_approve: CLI --auto-merge flag forces "merge"
+    effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
+
+    if effective_on_approve == "merge":
         merge_info = _merge_branch(
             config.project_root,
             config.workspace.base_branch,
@@ -106,6 +196,8 @@ def _finalize_approve(
             config=config,
             task_name=task.name,
         )
+        merge_info = dict(merge_info)
+        merge_info["action"] = "merge"
         merge_suffix = (
             " Merged." if merge_info["merged"] else f" Merge failed: {merge_info['error']}"
         )
@@ -128,6 +220,16 @@ def _finalize_approve(
                 "post_merge",
                 logger,
             )
+    elif effective_on_approve == "pr":
+        merge_info = _create_pr(config, task, branch_name, parsed_review, state)
+        if merge_info["success"]:
+            merge_suffix = f" PR: {merge_info['pr_url']}"
+        else:
+            merge_suffix = f" PR creation failed: {merge_info['error']}"
+    else:
+        # "none" — leave branch, log name
+        _log(f"  Branch ready for manual review: {branch_name}")
+        merge_info = {"action": "none", "success": True, "error": None}
     if logger:
         logger._safe_emit(
             "phase_end",

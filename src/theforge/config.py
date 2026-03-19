@@ -129,6 +129,9 @@ class WorkspaceConfig:
     stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
     auto_push: bool = False  # push base_branch to origin after successful auto-merge
     setup_command: str | None = None  # optional command run once after workspace creation
+    on_approve: str = "none"  # "merge" (auto-merge) | "pr" (create GitHub PR) | "none" (skip)
+    pr_labels: tuple[str, ...] = ()  # labels to apply when on_approve="pr"
+    pr_draft: bool = False  # create PR as draft when on_approve="pr"
 
 
 @dataclass(frozen=True)
@@ -612,6 +615,9 @@ def load_config(config_path: Path) -> ForgeConfig:
         ),
         auto_push=bool(ws_data.get("auto_push", DEFAULT_WORKSPACE.auto_push)),
         setup_command=ws_data.get("setup_command", DEFAULT_WORKSPACE.setup_command),
+        on_approve=str(ws_data.get("on_approve", "none")),
+        pr_labels=tuple(ws_data.get("pr_labels", [])),
+        pr_draft=bool(ws_data.get("pr_draft", False)),
     )
 
     # Validation

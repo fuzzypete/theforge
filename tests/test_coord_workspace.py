@@ -146,7 +146,8 @@ class TestCoordinatorAutoMerge:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert result.merge is None
+        assert result.merge is not None
+        assert result.merge["action"] == "none"
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -369,7 +370,8 @@ class TestCoordinatorAutoMerge:
         result = run_task(config, task, auto_merge=False)
         audit = generate_audit_log(config, task, result)
 
-        assert audit["merge"] is None
+        assert audit["merge"] is not None
+        assert audit["merge"]["action"] == "none"
 
 
 # ── Auto-push tests ───────────────────────────────────────────────
