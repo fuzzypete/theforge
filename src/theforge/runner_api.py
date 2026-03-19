@@ -1252,18 +1252,99 @@ def _make_google_adapter(
     profile: "ModelProfile",
     secrets: dict[str, str] | None,
 ) -> ProviderAdapter:
-    """Build Google Gemini adapter for AgentLoopManager."""
+    """Build Google Gemini adapter for AgentLoopManager.
+
+    Gemini struggles to produce valid function calls for complex schemas
+    (nested objects, many required fields) after large context accumulation.
+    When the model stops calling tools or produces a MALFORMED_FUNCTION_CALL,
+    we make a finalization call using response_schema to force valid structured
+    JSON output — the same mechanism used by the single-shot _run_google path.
+    """
     import google.genai as genai
     import google.genai.types as genai_types
 
     merged = {**os.environ, **(secrets or {})}
     client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
 
+    # Pre-build the sanitized schema for finalization calls
+    _finalize_schema = _sanitize_schema_for_google(review_json_schema())
+
+    def _needs_finalization(response: Any) -> bool:
+        """Check if the response indicates the model is done exploring
+        but failed to call submit_review."""
+        for candidate in response.candidates or []:
+            fr = str(getattr(candidate, "finish_reason", ""))
+            if "MALFORMED" in fr:
+                return True
+            parts = (candidate.content.parts if candidate.content else None) or []
+            # Model returned text instead of a tool call — it's trying to
+            # deliver the review as prose instead of via submit_review.
+            has_text = any(hasattr(p, "text") and p.text for p in parts)
+            has_tool = any(hasattr(p, "function_call") and p.function_call for p in parts)
+            if has_text and not has_tool:
+                return True
+        return False
+
+    def _finalize(contents: list[dict], usage_so_far: "ModelUsage | None") -> LoopTurn:
+        """Make a constrained-output call to extract the structured review."""
+        _log_verbose("  ⚠ Gemini finalization — switching to response_schema")
+        # Append instruction to submit
+        finalize_contents = list(contents)
+        finalize_contents.append(
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "text": (
+                            "Now deliver your code review verdict as structured JSON. "
+                            "Include verdict, summary, findings, spec_compliance, "
+                            "and test_coverage."
+                        )
+                    }
+                ],
+            }
+        )
+        config = genai_types.GenerateContentConfig(
+            temperature=0,
+            response_mime_type="application/json",
+            response_schema=_finalize_schema,
+        )
+        response = client.models.generate_content(
+            model=profile.model,
+            contents=finalize_contents,
+            config=config,
+        )
+        output_text = response.text or ""
+        structured_data = None
+        if output_text.strip():
+            try:
+                structured_data = json.loads(output_text)
+            except json.JSONDecodeError:
+                pass
+
+        usage_meta = response.usage_metadata
+        usage: ModelUsage | None = None
+        if usage_meta:
+            usage = ModelUsage(
+                model=profile.model,
+                input_tokens=usage_meta.prompt_token_count or 0,
+                output_tokens=usage_meta.candidates_token_count or 0,
+                cache_read_tokens=getattr(usage_meta, "cached_content_token_count", 0) or 0,
+                cache_creation_tokens=0,
+                cost_usd=None,
+            )
+
+        return LoopTurn(
+            tool_calls=[],
+            text_output=output_text,
+            structured_data=structured_data,
+            usage=usage,
+        )
+
     def adapter(messages: list[dict], tools: list[dict]) -> LoopTurn:
         contents = _translate_messages_google(messages)
         google_tools = None
         if tools:
-            # tools is a list of function declarations
             google_tools = [genai_types.Tool(function_declarations=tools)]
 
         config = genai_types.GenerateContentConfig(
@@ -1275,6 +1356,12 @@ def _make_google_adapter(
             contents=contents,
             config=config,
         )
+
+        # Check if model is done exploring but didn't call submit_review.
+        # If so, make a finalization call with response_schema to force
+        # valid structured output.
+        if _needs_finalization(response):
+            return _finalize(contents, None)
 
         tool_calls: list[ToolCallRequest] = []
         text_parts: list[str] = []
@@ -1297,34 +1384,6 @@ def _make_google_adapter(
                     )
                 elif hasattr(part, "text") and part.text:
                     text_parts.append(part.text)
-
-        # Check for malformed function calls — Gemini returns 0 parts
-        # but sets finish_reason to MALFORMED_FUNCTION_CALL when it tries
-        # to call a tool but produces invalid output.  Synthesize a fake
-        # tool call so the loop can inject an error result and let the
-        # model retry.
-        if not tool_calls and not text_parts:
-            for candidate in response.candidates or []:
-                fr = str(getattr(candidate, "finish_reason", ""))
-                if "MALFORMED" in fr:
-                    _log_verbose(f"  ⚠ Gemini returned {fr} — injecting retry")
-                    # Synthesize a malformed tool call so the loop's
-                    # validation catches it and returns an error result,
-                    # giving the model another iteration to retry.
-                    tool_calls.append(
-                        ToolCallRequest(
-                            id="malformed_retry",
-                            name="",  # empty name triggers malformed handling
-                            arguments={
-                                "_error": (
-                                    "Your function call was malformed. "
-                                    "Call submit_review again with valid arguments. "
-                                    "Keep strings short, avoid special characters."
-                                )
-                            },
-                        )
-                    )
-                    break
 
         if not tool_calls and not text_parts:
             feedback = getattr(response, "prompt_feedback", None)
