@@ -3,14 +3,27 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
+from unittest.mock import patch
 
 from theforge.cli import (
     _build_task,
     _ensure_gitignored,
     _find_config,
     _parse_spec_frontmatter,
+    cmd_check_providers,
     cmd_secrets_init,
 )
+from theforge.config import (
+    DEFAULT_VALIDATION,
+    ForgeConfig,
+    LogConfig,
+    ModelProfile,
+    PlanAgentReviewConfig,
+    RetryPolicy,
+    WorkspaceConfig,
+)
+from theforge.runner import AgentResult
 
 # ── Helpers (kept for TestBuildTask / TestFindConfig) ─────────────────
 
@@ -191,3 +204,248 @@ class TestSecretsInit:
         content = (tmp_path / ".gitignore").read_text(encoding="utf-8")
         assert "*.pyc" in content
         assert ".forge/.env" in content
+
+
+# ── Helpers for check-providers tests ────────────────────────────────
+
+
+def _api_profile(name: str, provider: str = "anthropic", model: str = "claude-opus-4-6") -> ModelProfile:
+    return ModelProfile(
+        name=name,
+        provider=provider,
+        model=model,
+        budget_usd=1.0,
+        timeout_seconds=120,
+        allowed_tools=("Read", "Grep"),
+    )
+
+
+def _make_forge_config(
+    tmp_path: Path,
+    review_pool: list[ModelProfile] | None = None,
+) -> ForgeConfig:
+    if review_pool is None:
+        review_pool = [_api_profile("claude-reviewer"), _api_profile("codex-reviewer", "openai")]
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="feat/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=300,
+            allowed_tools=("Read",),
+        ),
+        preflight_profile=ModelProfile(
+            name="preflight",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.5,
+            timeout_seconds=120,
+            allowed_tools=("Read",),
+        ),
+        review_pool=review_pool,
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+        plan_agent_review=PlanAgentReviewConfig(enabled=False),
+        log=LogConfig(enabled=False),
+    )
+
+
+def _make_pass_result(profile_name: str = "test") -> AgentResult:
+    return AgentResult(
+        success=True,
+        output='{"verdict": "APPROVE", "summary": "ok", "findings": []}',
+        session_id=None,
+        cost_usd=0.003,
+        exit_code=0,
+        raw={},
+        profile_name=profile_name,
+        structured_data={"verdict": "APPROVE", "summary": "ok", "findings": []},
+    )
+
+
+def _make_fail_result(profile_name: str = "test") -> AgentResult:
+    return AgentResult(
+        success=False,
+        output="AuthenticationError: invalid key",
+        session_id=None,
+        cost_usd=None,
+        exit_code=1,
+        raw={},
+        profile_name=profile_name,
+    )
+
+
+def _make_args(profile: str | None = None, config: str | None = None) -> argparse.Namespace:
+    return argparse.Namespace(profile=profile, config=config)
+
+
+class TestCmdCheckProviders:
+    """Tests for cmd_check_providers."""
+
+    def test_all_pass_exits_zero(self, tmp_path, capsys):
+        """All profiles passing → exit code 0, table shows checkmarks."""
+        cfg = _make_forge_config(tmp_path)
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        side_effects = [
+            _make_pass_result("claude-reviewer"),
+            _make_pass_result("codex-reviewer"),
+        ]
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch("theforge.cli.run_api_agent", side_effect=side_effects):
+                rc = cmd_check_providers(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "✓" in captured.out
+        assert "2/2 passed" in captured.out
+
+    def test_partial_fail_exits_one(self, tmp_path, capsys):
+        """One profile failing → exit code 1, failure shown inline."""
+        cfg = _make_forge_config(tmp_path)
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        side_effects = [
+            _make_pass_result("claude-reviewer"),
+            _make_fail_result("codex-reviewer"),
+        ]
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch("theforge.cli.run_api_agent", side_effect=side_effects):
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "✗" in captured.out
+        assert "1/2 passed" in captured.out
+
+    def test_exception_counts_as_failure(self, tmp_path, capsys):
+        """run_api_agent raising an exception → exit code 1, error shown inline."""
+        cfg = _make_forge_config(tmp_path)
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        def _boom(*_, **__):
+            raise RuntimeError("connection refused")
+
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch("theforge.cli.run_api_agent", side_effect=_boom):
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "✗" in captured.out
+        assert "connection refused" in captured.out
+
+    def test_profile_filter(self, tmp_path, capsys):
+        """--profile <name> tests only the named profile."""
+        cfg = _make_forge_config(tmp_path)
+        args = _make_args(profile="claude-reviewer", config=str(tmp_path / "forge.yaml"))
+
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.run_api_agent",
+                return_value=_make_pass_result("claude-reviewer"),
+            ) as mock_api:
+                rc = cmd_check_providers(args)
+
+        assert rc == 0
+        assert mock_api.call_count == 1
+        captured = capsys.readouterr()
+        assert "1/1 passed" in captured.out
+
+    def test_profile_filter_unknown_exits_one(self, tmp_path):
+        """--profile with unknown name → exit code 1, no API calls."""
+        cfg = _make_forge_config(tmp_path)
+        args = _make_args(profile="nonexistent", config=str(tmp_path / "forge.yaml"))
+
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch("theforge.cli.run_api_agent") as mock_api:
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        mock_api.assert_not_called()
+
+    def test_no_verdict_in_structured_data_counts_as_failure(self, tmp_path, capsys):
+        """structured_data without 'verdict' key → failure."""
+        cfg = _make_forge_config(tmp_path)
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        bad_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.001,
+            exit_code=0,
+            raw={},
+            profile_name="claude-reviewer",
+            structured_data={"summary": "no verdict here"},
+        )
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch("theforge.cli.run_api_agent", return_value=bad_result):
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "no valid verdict" in captured.out
+
+    def test_no_forge_yaml_exits_one(self, tmp_path):
+        """No forge.yaml found → exit code 1."""
+        args = _make_args(config=None)
+        with patch("theforge.cli._find_config", return_value=None):
+            rc = cmd_check_providers(args)
+        assert rc == 1
+
+    def test_deduplication(self, tmp_path, capsys):
+        """Same profile name appearing in multiple config slots is tested only once."""
+        shared = _api_profile("shared-reviewer")
+        # Place same profile in review_pool and also as synthesis_profile
+        cfg = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="feat/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=ModelProfile(
+                name="dev",
+                cli="claude",
+                model="sonnet",
+                budget_usd=2.0,
+                timeout_seconds=300,
+                allowed_tools=("Read",),
+            ),
+            preflight_profile=ModelProfile(
+                name="preflight",
+                cli="claude",
+                model="sonnet",
+                budget_usd=0.5,
+                timeout_seconds=120,
+                allowed_tools=("Read",),
+            ),
+            review_pool=[shared],
+            synthesis_profile=shared,  # same object → same name → should be deduped
+            retry=RetryPolicy(),
+            plan_agent_review=PlanAgentReviewConfig(enabled=False),
+            log=LogConfig(enabled=False),
+        )
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        with patch("theforge.cli.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.run_api_agent",
+                return_value=_make_pass_result("shared-reviewer"),
+            ) as mock_api:
+                rc = cmd_check_providers(args)
+
+        assert rc == 0
+        assert mock_api.call_count == 1
