@@ -958,6 +958,169 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── Hooks scaffolding ─────────────────────────────────────────────────
+
+_POST_RUN_SH = """\
+#!/usr/bin/env bash
+# Reference post_run hook: file GitHub Issues for P1/P2 findings
+# Fires after every forge run; creates one issue per finding on ESCALATE or
+# APPROVE-with-findings outcomes.
+#
+# Requires: gh CLI (authenticated), jq
+set -euo pipefail
+
+# Guard: gh not installed → warn and exit cleanly
+if ! command -v gh &> /dev/null; then
+  echo "[forge hook] gh CLI not found — skipping GitHub issue creation" >&2
+  exit 0
+fi
+
+# Guard: jq not installed → warn and exit cleanly
+if ! command -v jq &> /dev/null; then
+  echo "[forge hook] jq not found — skipping GitHub issue creation" >&2
+  exit 0
+fi
+
+payload=$(cat)
+
+verdict=$(echo "$payload" | jq -r '.verdict')
+slug=$(echo "$payload" | jq -r '.slug')
+branch=$(echo "$payload" | jq -r '.branch')
+summary=$(echo "$payload" | jq -r '.summary')
+findings_count=$(echo "$payload" | jq '.findings | length')
+
+# Only act on ESCALATE or APPROVE outcomes (REQUEST_CHANGES = still in review)
+if [ "$verdict" != "ESCALATE" ] && [ "$verdict" != "APPROVE" ]; then
+  exit 0
+fi
+
+# No findings → nothing to do
+[ "$findings_count" -eq 0 ] && exit 0
+
+echo "$payload" | jq -c '.findings[]' | while read -r finding; do
+  sev=$(echo "$finding" | jq -r '.severity')
+  file=$(echo "$finding" | jq -r '.file')
+  line=$(echo "$finding" | jq -r '.line // empty')
+  desc=$(echo "$finding" | jq -r '.description')
+  suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
+
+  # Title: [P1] slug: description (truncated to 72 chars)
+  raw_title="[${sev}] ${slug}: ${desc}"
+  title="${raw_title:0:72}"
+
+  location="\\`${file}\\`"
+  [ -n "$line" ] && location="${location} line ${line}"
+
+  body="**Story:** \\`${slug}\\` (\\`${branch}\\`)
+**Verdict:** ${verdict} — ${summary}
+**Location:** ${location}
+
+**Description:** ${desc}"
+
+  if [ -n "$suggestion" ]; then
+    body="${body}
+
+**Suggestion:** ${suggestion}"
+  fi
+
+  body="${body}
+
+*Filed by theforge post_run hook.*"
+
+  gh issue create \\
+    --title "$title" \\
+    --body "$body" \\
+    --label "forge-finding" \\
+    --label "${sev,,}" || true
+done
+"""
+
+_HOOKS_README = """\
+# .forge/hooks
+
+Lifecycle hook scripts for TheForge. Place executable scripts here and
+reference them in `forge.yaml` under the `hooks:` key.
+
+## post_run.sh — payload schema
+
+The `post_run` hook receives a JSON object on stdin after every `forge run`:
+
+```json
+{
+  "event": "post_run",
+  "verdict": "APPROVE | REQUEST_CHANGES | ESCALATE",
+  "slug": "my-feature",
+  "branch": "feat/my-feature",
+  "summary": "one-line review summary",
+  "findings": [
+    {
+      "severity": "P1 | P2",
+      "file": "src/foo.py",
+      "line": 42,
+      "description": "what is wrong",
+      "suggestion": "how to fix"
+    }
+  ]
+}
+```
+
+## Hook contract
+
+- **stdin**: JSON payload (schema above)
+- **exit 0**: success — forge continues normally
+- **exit non-zero**: hook failure — forge prints a warning but does not abort
+
+## forge.yaml configuration
+
+```yaml
+hooks:
+  post_run: .forge/hooks/post_run.sh
+  # post_merge: .forge/hooks/post_merge.sh
+  # post_sprint: .forge/hooks/post_sprint.sh
+  # pre_run: .forge/hooks/pre_run.sh
+  timeout_seconds: 30
+```
+"""
+
+
+def cmd_init_hooks(args: argparse.Namespace) -> int:
+    """Scaffold .forge/hooks/post_run.sh and .forge/hooks/README.md."""
+    project_root = Path.cwd()
+    hooks_dir = project_root / ".forge" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+
+    sh_path = hooks_dir / "post_run.sh"
+    readme_path = hooks_dir / "README.md"
+    created: list[str] = []
+    skipped: list[str] = []
+
+    if sh_path.exists():
+        skipped.append(str(sh_path))
+    else:
+        sh_path.write_text(_POST_RUN_SH, encoding="utf-8")
+        sh_path.chmod(0o755)
+        created.append(str(sh_path))
+
+    if readme_path.exists():
+        skipped.append(str(readme_path))
+    else:
+        readme_path.write_text(_HOOKS_README, encoding="utf-8")
+        created.append(str(readme_path))
+
+    for path in created:
+        print(f"Created {path}")
+    for path in skipped:
+        print(f"Skipped (already exists): {path}", file=sys.stderr)
+
+    print(
+        "\nAdd a hooks: block to forge.yaml to activate:\n\n"
+        "  hooks:\n"
+        "    post_run: .forge/hooks/post_run.sh\n"
+        "    timeout_seconds: 30\n"
+    )
+    return 0
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 
@@ -975,6 +1138,12 @@ def main() -> None:
     subparsers.add_parser(
         "secrets-init",
         help="Create .forge/secrets.yaml skeleton and update .gitignore",
+    )
+
+    # forge init-hooks
+    subparsers.add_parser(
+        "init-hooks",
+        help="Scaffold .forge/hooks/post_run.sh reference script and README",
     )
 
     # forge run
@@ -1163,6 +1332,7 @@ def main() -> None:
     commands = {
         "init": cmd_init,
         "secrets-init": cmd_secrets_init,
+        "init-hooks": cmd_init_hooks,
         "run": cmd_run,
         "review": cmd_review,
         "sprint": cmd_sprint,

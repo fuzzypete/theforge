@@ -33,3 +33,7 @@ profiles:
 retry:
   max_dev_iterations: 3
   max_review_cycles: 2
+
+# hooks:
+#   post_run: .forge/hooks/post_run.sh   # run: forge init-hooks to scaffold
+#   timeout_seconds: 30
