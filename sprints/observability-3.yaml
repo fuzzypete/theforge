@@ -1,16 +1,12 @@
-name: "Observability 3 — log capture, audit depth, provider health"
-budget_usd: 120.00
+name: "Observability 3 — Project-Local Logs + Lifecycle Hooks"
+budget_usd: 100.00
 auto_merge: true
 
 specs:
-  - slug: run-log-capture
-    spec: specs/backlog/run-log-capture.md
-    budget_usd: 40.00
+  - slug: project-local-logs
+    spec: specs/backlog/project-local-logs.md
+    budget_usd: 50.00
 
-  - slug: audit-improvements
-    spec: specs/backlog/audit-improvements.md
-    budget_usd: 40.00
-
-  - slug: provider-smoke-test
-    spec: specs/backlog/provider-smoke-test.md
-    budget_usd: 40.00
+  - slug: lifecycle-hooks
+    spec: specs/backlog/lifecycle-hooks.md
+    budget_usd: 50.00
