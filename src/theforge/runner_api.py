@@ -1298,6 +1298,34 @@ def _make_google_adapter(
                 elif hasattr(part, "text") and part.text:
                     text_parts.append(part.text)
 
+        # Check for malformed function calls — Gemini returns 0 parts
+        # but sets finish_reason to MALFORMED_FUNCTION_CALL when it tries
+        # to call a tool but produces invalid output.  Synthesize a fake
+        # tool call so the loop can inject an error result and let the
+        # model retry.
+        if not tool_calls and not text_parts:
+            for candidate in response.candidates or []:
+                fr = str(getattr(candidate, "finish_reason", ""))
+                if "MALFORMED" in fr:
+                    _log_verbose(f"  ⚠ Gemini returned {fr} — injecting retry")
+                    # Synthesize a malformed tool call so the loop's
+                    # validation catches it and returns an error result,
+                    # giving the model another iteration to retry.
+                    tool_calls.append(
+                        ToolCallRequest(
+                            id="malformed_retry",
+                            name="",  # empty name triggers malformed handling
+                            arguments={
+                                "_error": (
+                                    "Your function call was malformed. "
+                                    "Call submit_review again with valid arguments. "
+                                    "Keep strings short, avoid special characters."
+                                )
+                            },
+                        )
+                    )
+                    break
+
         if not tool_calls and not text_parts:
             feedback = getattr(response, "prompt_feedback", None)
             if feedback:

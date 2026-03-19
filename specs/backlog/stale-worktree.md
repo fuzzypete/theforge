@@ -1,160 +1,47 @@
 ---
-name: "Stale worktree detection: prevent ALREADY_DONE false positives"
+name: "Worktree resume: detect partial progress and resume from correct phase"
 slug: stale-worktree
-file_scope:
-  - src/theforge/coordinator.py
-  - src/theforge/cli.py
-  - tests/test_coordinator.py
 pytest_target: tests/
 ---
 
-# Stale Worktree Detection
+# Worktree resume
 
-## Problem
+When a forge run is interrupted or escalates, the worktree and branch
+stay behind. On the next run for the same spec, the coordinator reuses
+the worktree — but it doesn't know where the previous run stopped.
 
-When a forge run escalates or is interrupted, the worktree and branch are
-left behind. On the next run for the same spec, the coordinator reuses the
-existing worktree. PREFLIGHT reads the partially-implemented code and
-reports ALREADY_DONE — even when spec-required tests are missing or the
-implementation is broken.
+Two failure modes observed in production:
 
-Real occurrences: `audit-improvements`, `human-in-the-loop`,
-`gate-hardening`, and `reasoning-effort` all false-ALREADY_DONE'd across
-multiple sprints because leftover worktrees from escalated prior runs
-contained partial code.
+1. **False ALREADY_DONE**: Preflight sees committed code and declares
+   all ACs satisfied, skipping review entirely. The code was never
+   reviewed or approved. This just happened with `story-format-guidance` —
+   dev landed 2 commits, review crashed (Gemini parse failures), process
+   died, re-run declared ALREADY_DONE and skipped to DONE.
 
-## Root Cause
+2. **Nuked work**: `forge run` (not sprint) detected a worktree as stale
+   and deleted it, destroying 4 good commits. This happened with
+   `set-focus-superset` in HDP.
 
-`_setup_workspace()` in coordinator.py runs `git worktree add` to create
-the workspace. If the worktree directory already exists, the command is
-skipped (or fails silently). PREFLIGHT then runs against stale code on a
-branch that never merged to main, has no relationship to the current spec
-state, and may be partially or incorrectly implemented.
+The coordinator needs to check what phase actually completed before
+deciding what to do with an existing worktree.
 
-## Fix
+## Resume logic
 
-Before creating the workspace, check whether a worktree already exists
-for this slug. If it does, determine whether it is **safe to reuse**:
+When a worktree exists with commits ahead of base:
 
-A worktree is safe to reuse if and only if:
-- The branch has commits ahead of the base branch (work in progress)
-- AND the last commit is recent (within `stale_worktree_days`, default 1)
+1. Check if a review APPROVE exists in the audit trail for this slug
+2. If yes → ALREADY_DONE is valid (code was reviewed and approved)
+3. If no → resume from REVIEW (dev work exists, needs review)
+4. If no commits ahead → stale, remove and start fresh
 
-Otherwise, treat it as stale: remove the worktree and delete the branch,
-then proceed with a fresh `git worktree add`.
+A worktree is stale only when it has zero commits ahead of base OR
+the branch is gone. Age alone is not a reason to delete work.
 
-## Requirements
+## Acceptance criteria
 
-### R1: Staleness check in `_setup_workspace()`
-
-Before running `workspace.create_command`, check if the worktree path
-already exists:
-
-```python
-worktree_path = config.workspace.path_pattern.format(slug=task.slug)
-if Path(worktree_path).exists():
-    if _is_stale_worktree(worktree_path, base_branch, config):
-        _remove_worktree(worktree_path, branch_name)
-    # else: reuse — fall through to create_command (will be a no-op or error)
-```
-
-### R2: `_is_stale_worktree(path, base_branch, config) -> bool`
-
-Returns `True` (stale, should be removed) when ANY of:
-
-1. **No commits ahead of base**: `git log base..branch --oneline` returns
-   empty — branch has no new work, nothing to preserve
-2. **Last commit is old**: last commit timestamp is older than
-   `config.workspace.stale_worktree_days` (default: 1 day)
-3. **Branch does not exist**: worktree dir exists but the branch is gone
-   (corrupted state from prior interrupted cleanup)
-
-Returns `False` (safe to reuse) only when branch has commits ahead of base
-AND those commits are recent.
-
-### R3: `_remove_worktree(path, branch) -> None`
-
-```python
-subprocess.run(["git", "worktree", "remove", "--force", path], ...)
-subprocess.run(["git", "branch", "-D", branch], ...)
-```
-
-Log a clear warning before removing:
-```
-[forge] ⚠ WORKSPACE  stale worktree detected — removing feat/<slug>
-[forge]   Branch had 0 commits ahead of main (last run escalated or was interrupted)
-```
-
-Both commands are best-effort — log failures but don't raise. The
-subsequent `git worktree add` will fail clearly if cleanup was incomplete.
-
-### R4: `stale_worktree_days` config
-
-Add to `WorkspaceConfig`:
-
-```python
-stale_worktree_days: int = 1
-```
-
-Parse from `forge.yaml`:
-```yaml
-workspace:
-  stale_worktree_days: 1   # remove worktrees older than N days; 0 = always remove
-```
-
-`stale_worktree_days: 0` means always remove any existing worktree (useful
-for CI or automated sprints where you always want a clean slate).
-
-### R5: Log the decision
-
-Always log what was found and what was decided:
-
-```
-[forge] ⚠ WORKSPACE  existing worktree found: .forge/worktrees/audit-improvements
-[forge]   0 commits ahead of main, last commit 3 days ago — removing (stale)
-[forge]   Removed stale worktree and branch feat/audit-improvements
-```
-
-Or if reusing:
-```
-[forge] ↻ WORKSPACE  reusing existing worktree: .forge/worktrees/my-spec
-[forge]   3 commits ahead of main, last commit 12 minutes ago
-```
-
-### R6: Tests
-
-Add to `tests/test_coordinator.py` — `TestStaleWorktree` class:
-
-- `test_no_existing_worktree`: path doesn't exist → `_is_stale_worktree`
-  not called, normal workspace creation proceeds
-- `test_stale_zero_commits_ahead`: branch has 0 commits ahead of base →
-  `_is_stale_worktree` returns True, `_remove_worktree` called
-- `test_stale_old_commit`: branch has commits but last commit is >1 day
-  old → stale, removed
-- `test_fresh_worktree_reused`: branch has commits ahead, last commit
-  recent → `_is_stale_worktree` returns False, `_remove_worktree` not called
-- `test_stale_worktree_days_zero_always_removes`: `stale_worktree_days=0`
-  → always removes even with recent commits
-- `test_remove_worktree_logs_warning`: verify warning is logged before removal
-- `test_remove_failure_does_not_raise`: `git worktree remove` fails →
-  logged, does not raise
-
-## Out of Scope
-
-- Automatically resuming work from a recent non-stale worktree (that is
-  a separate "resume" feature)
-- Prompting the human before removing (silent removal is correct for
-  unattended sprint runs)
-- Cleaning up ALL stale worktrees at once (`forge clean` command — separate spec)
-
-## Acceptance Criteria
-
-- [ ] Escalated or interrupted runs no longer cause ALREADY_DONE false positives
-      on the next run for the same spec
-- [ ] A stale worktree (0 commits ahead or old last commit) is automatically
-      removed and recreated before PREFLIGHT runs
-- [ ] A fresh in-progress worktree (recent commits ahead of main) is reused
-- [ ] `stale_worktree_days: 0` always removes existing worktrees
-- [ ] Clear log output explains the staleness decision
-- [ ] All existing tests pass
-- [ ] New tests cover stale/fresh/zero-days detection and removal
+- Existing worktree with commits but no review APPROVE resumes from REVIEW
+- Existing worktree with commits and a prior APPROVE allows ALREADY_DONE
+- Existing worktree with zero commits ahead is removed and recreated
+- `forge run` supports `--resume` flag (parity with `forge sprint --resume`)
+- Clear log output explains resume decision and which phase is resuming
+- Never deletes a worktree that has commits ahead of base without `--force`
