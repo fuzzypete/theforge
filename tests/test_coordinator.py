@@ -4278,3 +4278,130 @@ class TestPlanAgentReview:
 
 
 # ── Structured logging tests ──────────────────────────────────────────
+
+
+class TestPerRunLogCapture:
+    """Tests for the per-run log file tee (_TeeStderr / _begin_run_log_tee)."""
+
+    def _make_logging_config(self, tmp_path: Path, log_dir: Path) -> ForgeConfig:
+        """Create a config with logging enabled, pointing at a tmp log directory."""
+        return ForgeConfig(
+            project="myproject",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+            log=LogConfig(
+                enabled=True,
+                log_file=str(log_dir / "{project}" / "forge.log"),
+            ),
+        )
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_per_run_log_created(self, mock_shell, mock_agent, tmp_path):
+        """Per-run log file is created at the expected path."""
+        import sys
+
+        log_dir = tmp_path / "logs"
+        config = self._make_logging_config(tmp_path, log_dir)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        original_stderr = sys.stderr
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task, run_id="abc123xyz")
+
+        assert result.success is True
+
+        # Per-run log file exists at expected path
+        per_run_path = log_dir / "myproject" / "test-task-abc123xyz.log"
+        assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
+        content = per_run_path.read_text(encoding="utf-8")
+        assert len(content) > 0, "Per-run log is empty"
+
+        # stderr is restored after run
+        assert sys.stderr is original_stderr
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_per_run_log_absent_when_logging_disabled(self, mock_shell, mock_agent, tmp_path):
+        """No per-run log file is created when log.enabled is False."""
+        log_dir = tmp_path / "logs"
+        config = ForgeConfig(
+            project="myproject",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+            log=LogConfig(enabled=False),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert not log_dir.exists(), "Log dir should not be created when logging disabled"
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_run_from_review_creates_per_run_log(self, mock_shell, mock_agent, tmp_path):
+        """run_from_review() creates a per-run log file."""
+        import sys
+
+        log_dir = tmp_path / "logs"
+        config = self._make_logging_config(tmp_path, log_dir)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        original_stderr = sys.stderr
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_from_review(config, task, workspace, run_id="reviewrun1")
+
+        assert result.success is True
+        per_run_path = log_dir / "myproject" / "test-task-reviewrun1.log"
+        assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
+        assert sys.stderr is original_stderr
