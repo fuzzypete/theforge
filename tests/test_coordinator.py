@@ -1022,6 +1022,110 @@ class TestCoordinatorGateFailRetry:
         assert result.phase == Phase.DONE
         assert result.state.dev_iteration == 2  # needed a retry
 
+    @patch("theforge.coordinator.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_gate_failure_log_contains_tail_not_head(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, tmp_path
+    ):
+        """Gate FAIL: the logged gate output is the tail, not the head."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        head_marker = "HEAD_SENTINEL"
+        tail_marker = "TAIL_SENTINEL"
+        long_output = head_marker + "." * 5000 + tail_marker
+
+        gate_idx = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                gate_idx["n"] += 1
+                if gate_idx["n"] == 1:
+                    return (False, long_output)
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result(), _make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_dev_prompt.return_value = "dev prompt"
+
+        logged_msgs: list[str] = []
+        with patch("theforge.coord_util._log") as mock_log:
+            mock_log.side_effect = lambda msg: logged_msgs.append(str(msg))
+            run_task(config, task)
+
+        gate_fail_logs = [m for m in logged_msgs if "Gate command failed" in m]
+        assert gate_fail_logs, "Expected at least one 'Gate command failed' log"
+        assert any(tail_marker in m for m in gate_fail_logs), "Tail marker should appear in log"
+        assert not any(head_marker in m for m in gate_fail_logs), (
+            "Head marker must NOT appear in log (output[:200] head-slice was used instead of tail)"
+        )
+
+    @patch("theforge.coordinator.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_gate_failure_includes_output_tail_in_dev_feedback(
+        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, tmp_path
+    ):
+        """Gate FAIL: human_feedback passed to dev prompt contains gate output tail."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        head_marker = "HEAD_SENTINEL"
+        tail_marker = "TAIL_SENTINEL"
+        long_output = head_marker + "." * 5000 + tail_marker
+
+        gate_idx = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                gate_idx["n"] += 1
+                if gate_idx["n"] == 1:
+                    return (False, long_output)
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result(), _make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_dev_prompt.return_value = "dev prompt"
+
+        run_task(config, task)
+
+        # Second build_dev_prompt call is the retry after gate FAIL
+        assert mock_dev_prompt.call_count >= 2, "Expected at least two build_dev_prompt calls"
+        second_call = mock_dev_prompt.call_args_list[1]
+        feedback = second_call.kwargs.get("human_feedback", "")
+        assert "Gate output" in feedback, "human_feedback must contain 'Gate output'"
+        assert tail_marker in feedback, "human_feedback must contain the tail of gate output"
+        assert head_marker not in feedback, (
+            "human_feedback must NOT contain the head of gate output ([:200] slice was used)"
+        )
+
 
 class TestCoordinatorReviewRequestChanges:
     """Test that review REQUEST_CHANGES loops back to dev."""
