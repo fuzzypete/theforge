@@ -575,3 +575,128 @@ class TestRunApiAgentLoopIntegration:
         )
         assert not result.success
         assert "not an API profile" in result.output
+
+
+class TestRateLimitRetry:
+    """Tests for AgentLoopManager._call_with_retry."""
+
+    def _make_manager(self, tmp_path, timeout_seconds: int = 300) -> AgentLoopManager:
+        profile = _make_profile(timeout_seconds=timeout_seconds)
+        # Adapter is replaced per-test
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=[],
+            provider_adapter=lambda m, t: (_ for _ in ()).throw(RuntimeError("unreachable")),
+        )
+        return manager
+
+    def test_retry_succeeds_after_one_rate_limit(self, tmp_path):
+        """First call raises 429, second call succeeds."""
+        call_count = [0]
+        good_turn = LoopTurn(tool_calls=[], text_output="ok", structured_data=None, usage=None)
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("429 Rate limit reached")
+            return good_turn
+
+        manager = self._make_manager(tmp_path)
+        manager._adapter = adapter
+
+        with patch("theforge.runner_api.time") as mock_time:
+            # monotonic values: first check not timed out, remaining check, second check
+            mock_time.monotonic.side_effect = [
+                manager._deadline - 200,  # check 1: not timed out
+                manager._deadline - 200,  # remaining check in retry
+                manager._deadline - 150,  # check 2 inside run loop
+            ]
+            mock_time.sleep = MagicMock()
+            result = manager._call_with_retry([{"role": "user", "content": "hi"}], [])
+
+        assert result is good_turn
+        assert call_count[0] == 2
+        mock_time.sleep.assert_called_once_with(30)  # first backoff = 30s
+
+    def test_non_rate_limit_error_propagates_immediately(self, tmp_path):
+        """Non-429 exceptions are re-raised without retry."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            raise ValueError("something else broke")
+
+        manager = self._make_manager(tmp_path)
+        manager._adapter = adapter
+
+        import pytest
+
+        with pytest.raises(ValueError, match="something else broke"):
+            manager._call_with_retry([{"role": "user", "content": "hi"}], [])
+
+        assert call_count[0] == 1  # no retry
+
+    def test_gives_up_when_deadline_too_close(self, tmp_path):
+        """If remaining time < backoff wait, raises immediately without sleeping."""
+        import pytest
+
+        def adapter(messages, tools):
+            raise RuntimeError("429 quota exceeded")
+
+        manager = self._make_manager(tmp_path, timeout_seconds=10)
+        manager._adapter = adapter
+
+        # Make deadline appear very close (5s left, first backoff = 30s)
+        near_deadline = manager._deadline - 5
+
+        with patch("theforge.runner_api.time") as mock_time:
+            mock_time.monotonic.return_value = near_deadline
+            mock_time.sleep = MagicMock()
+            with pytest.raises(RuntimeError, match="429"):
+                manager._call_with_retry([{"role": "user", "content": "hi"}], [])
+
+        mock_time.sleep.assert_not_called()
+
+    def test_exhausts_all_retries_then_raises(self, tmp_path):
+        """After _MAX_RATE_LIMIT_RETRIES retries, raises the last exception."""
+        import pytest
+
+        from theforge.runner_api import _MAX_RATE_LIMIT_RETRIES
+
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            raise RuntimeError("429 rate limit every time")
+
+        manager = self._make_manager(tmp_path, timeout_seconds=9999)
+        manager._adapter = adapter
+
+        with patch("theforge.runner_api.time") as mock_time:
+            mock_time.monotonic.return_value = manager._deadline - 9000
+            mock_time.sleep = MagicMock()
+            with pytest.raises(RuntimeError, match="429"):
+                manager._call_with_retry([{"role": "user", "content": "hi"}], [])
+
+        assert call_count[0] == _MAX_RATE_LIMIT_RETRIES + 1
+
+    def test_run_loop_returns_failure_on_non_retryable_error(self, tmp_path):
+        """run() wraps adapter exceptions as failure results."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            raise ConnectionError("network gone")
+
+        manager = self._make_manager(tmp_path)
+        manager._adapter = adapter
+
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert not result.success
+        assert "Provider API error" in result.output
+        assert call_count[0] == 1

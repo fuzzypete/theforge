@@ -69,6 +69,7 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
     ("google", "gemini-2.5-pro"): (3.50, 10.50),
+    ("google", "gemini-2.5-flash"): (0.15, 0.60),
     ("google", "gemini-2.0-flash"): (0.10, 0.40),
 }
 
@@ -289,6 +290,20 @@ class _UsageAccumulator:
         )
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Return True if *exc* is a provider 429 / quota-exhausted error."""
+    type_name = type(exc).__name__
+    if type_name in ("RateLimitError", "ResourceExhausted", "TooManyRequestsError"):
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "rate limit" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+# Max 429 retries per loop turn; backoff: 30s, 60s, 120s, 240s …
+_MAX_RATE_LIMIT_RETRIES = 4
+_RATE_LIMIT_BACKOFF_BASE = 30  # seconds
+
+
 class AgentLoopManager:
     """Drives the multi-turn tool-use loop for API-mode agents.
 
@@ -322,6 +337,39 @@ class AgentLoopManager:
 
     def _timed_out(self) -> bool:
         return time.monotonic() > self._deadline
+
+    def _call_with_retry(self, messages: list[dict], tool_schemas: list[dict]) -> LoopTurn:
+        """Call the provider adapter, retrying on 429 rate-limit errors.
+
+        Uses exponential backoff starting at _RATE_LIMIT_BACKOFF_BASE seconds.
+        Raises the final exception if all retries are exhausted or the deadline
+        would be exceeded before the next retry sleep completes.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RATE_LIMIT_RETRIES + 1):
+            try:
+                return self._adapter(messages, tool_schemas)
+            except Exception as exc:
+                if not _is_rate_limit_error(exc):
+                    raise  # non-429 errors propagate immediately
+                last_exc = exc
+                if attempt >= _MAX_RATE_LIMIT_RETRIES:
+                    break
+                wait = _RATE_LIMIT_BACKOFF_BASE * (2**attempt)
+                label = self._profile.name or f"{self._provider}/{self._profile.model}"
+                remaining = self._deadline - time.monotonic()
+                if remaining <= wait:
+                    _log(
+                        f"  ⚠ {label} rate-limited; {remaining:.0f}s left < "
+                        f"{wait}s backoff — giving up"
+                    )
+                    break
+                _log(
+                    f"  ⚠ {label} rate-limited (429); retrying in {wait}s "
+                    f"(attempt {attempt + 1}/{_MAX_RATE_LIMIT_RETRIES})"
+                )
+                time.sleep(wait)
+        raise last_exc  # type: ignore[misc]
 
     def _execute_tools(self, calls: list[ToolCallRequest]) -> list[dict]:
         """Execute tool calls in parallel; always return string results."""
@@ -404,7 +452,7 @@ class AgentLoopManager:
                 return self._timeout_result(iterations)
 
             try:
-                turn = self._adapter(messages, tool_schemas)
+                turn = self._call_with_retry(messages, tool_schemas)
             except Exception as exc:
                 return self._failure_result(f"Provider API error: {exc}")
 
@@ -1242,15 +1290,13 @@ def _run_loop_openai(
     is_responses = profile.model in _RESPONSES_API_MODELS
 
     if is_responses:
-        tool_schemas = (
-            [t.to_openai_responses_function() for t in tools]
-            + _build_submit_tools_openai(responses_api=True)
-        )
+        tool_schemas = [
+            t.to_openai_responses_function() for t in tools
+        ] + _build_submit_tools_openai(responses_api=True)
         adapter = _make_openai_responses_adapter(profile, secrets)
     else:
-        tool_schemas = (
-            [t.to_openai_function() for t in tools]
-            + _build_submit_tools_openai(responses_api=False)
+        tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai(
+            responses_api=False
         )
         adapter = _make_openai_chat_adapter(profile, secrets)
 

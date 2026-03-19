@@ -51,10 +51,10 @@ profiles:
         - Grep
     - name: codex-reviewer
       provider: openai
-      model: gpt-5.1-codex-mini
+      model: o4-mini
       review_role: patterns
       budget_usd: 2.00
-      timeout_seconds: 120
+      timeout_seconds: 300
       allowed_tools:
         - Read
         - Bash
@@ -65,7 +65,7 @@ profiles:
       model: gemini-2.5-flash
       review_role: edge-cases
       budget_usd: 1.00
-      timeout_seconds: 120
+      timeout_seconds: 300
       allowed_tools:
         - Read
         - Bash
