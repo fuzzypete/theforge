@@ -1,24 +1,23 @@
 dev_notes: |
   summary: >
-    Added first-class `provider: deepseek` support by wiring DeepSeek into all
-    four extension points. In config.py: added "deepseek" to SUPPORTED_PROVIDERS,
-    PROVIDER_SDK_MAP (value "openai" since the SDK is shared), and
-    PROVIDER_API_KEY_MAP (key "DEEPSEEK_API_KEY"). In runner_api.py: added
-    deepseek-r1 and deepseek-v3 pricing rows; extended _is_reasoning_model to
-    match the "deepseek-r1" prefix; added _deepseek_client which uses the OpenAI
-    SDK with DEEPSEEK_API_KEY and base_url defaulting to https://api.deepseek.com.
-    Refactored _run_openai_chat, _make_openai_chat_adapter, and
-    _make_openai_chat_finalizer to accept an optional pre-built client (and
-    _run_openai_chat also accepts an optional provider name for correct cost
-    estimation). _run_deepseek and _run_loop_deepseek are thin wrappers that
-    inject the deepseek client into those refactored helpers. Both are registered
-    in PROVIDER_RUNNERS and _LOOP_RUNNERS. A new test in test_config.py verifies
-    that a forge.yaml with provider: deepseek / model: deepseek-r1 parses to the
-    correct ModelProfile.
+    Added first-class `provider: deepseek` support across all four extension
+    points (config.py, runner_api.py, tests). Iteration 1 review cycle addressed:
+    (1) reverted default base_url to https://api.deepseek.com per spec AC 4
+    (a /v1 suffix was incorrectly added during an earlier pass based on a
+    contradictory P2 suggestion); (2) extended the cost-skip logic in
+    _openai_result to null cost for any custom base_url, not just openai provider;
+    (3) added TestDeepSeekProvider test class covering _is_reasoning_model
+    (deepseek-r1 prefix variants), _deepseek_client (default base_url, profile
+    override, API key from secrets), _run_deepseek single-shot (temperature
+    present/absent per reasoning model detection), and run_api_agent dispatch
+    for both single-shot and loop paths; (4) added
+    test_deepseek_local_base_url_no_api_key_no_error in test_config.py.
 
   commits:
     - sha: "1bd6270"
       message: "feat(providers): add first-class DeepSeek provider support"
+    - sha: "67ec41c"
+      message: "fix(providers): address review findings (iter 1)"
 
   acceptance_criteria:
     - criterion: "provider: deepseek recognized in forge.yaml profiles"
@@ -27,23 +26,23 @@ dev_notes: |
 
     - criterion: "Pricing table includes deepseek-r1 and deepseek-v3"
       status: MET
-      notes: "Added ('deepseek', 'deepseek-r1'): (0.55, 2.19) and ('deepseek', 'deepseek-v3'): (0.27, 1.10) to PRICING_TABLE in runner_api.py."
+      notes: "Added ('deepseek', 'deepseek-r1'): (0.55, 2.19) and ('deepseek', 'deepseek-v3'): (0.27, 1.10) to PRICING_TABLE."
 
     - criterion: "DEEPSEEK_API_KEY env var / secrets support"
       status: MET
-      notes: "Added 'deepseek': 'DEEPSEEK_API_KEY' to PROVIDER_API_KEY_MAP; _deepseek_client reads DEEPSEEK_API_KEY from merged env+secrets."
+      notes: "Added 'deepseek': 'DEEPSEEK_API_KEY' to PROVIDER_API_KEY_MAP; _deepseek_client reads DEEPSEEK_API_KEY from merged env+secrets. Covered by test_deepseek_client_uses_deepseek_api_key."
 
     - criterion: "Base URL defaults to https://api.deepseek.com when not overridden"
       status: MET
-      notes: "_deepseek_client sets base_url = profile.base_url or 'https://api.deepseek.com'."
+      notes: "_deepseek_client sets base_url = profile.base_url or 'https://api.deepseek.com'. Covered by test_deepseek_client_default_base_url and test_deepseek_client_respects_profile_base_url."
 
     - criterion: "Reasoning model detection covers DeepSeek R1 (no temperature=0)"
       status: MET
-      notes: "_is_reasoning_model extended with 'or model.startswith(\"deepseek-r1\")'; both single-shot and loop paths check this before setting temperature."
+      notes: "_is_reasoning_model extended with 'or model.startswith(\"deepseek-r1\")'. Covered by three _is_reasoning_model tests including prefix variants."
 
     - criterion: "Existing tests pass; new test for deepseek profile parsing"
       status: MET
-      notes: "All 847 tests pass. test_deepseek_profile_parses added to TestHybridRunnerConfig in tests/test_config.py; patches DEEPSEEK_API_KEY and importlib.import_module per plan reviewer recommendation."
+      notes: "847 existing + 12 new = 859 tests pass. New tests: TestDeepSeekProvider (10 tests) in test_runner_api.py and 2 new tests in test_config.py."
 
   spec_deviations: none
 
