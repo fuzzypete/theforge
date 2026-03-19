@@ -491,11 +491,22 @@ class AgentLoopManager:
             # No tool calls → model is done, return text output
             if not turn.tool_calls:
                 label = self._profile.name or f"{self._provider}/{self._profile.model}"
+                output = turn.text_output or ""
+                # If the model stopped without calling a submit tool and produced
+                # no output, treat it as a failure — the review was not delivered.
+                if not output.strip() and turn.structured_data is None:
+                    _log(
+                        f"  ... {label} done ({iterations} iter, "
+                        f"{self._total_tool_calls} tool calls) — empty output"
+                    )
+                    return self._failure_result(
+                        "Agent finished without calling submit tool and produced no output"
+                    )
                 _log(
                     f"  ... {label} done ({iterations} iter, {self._total_tool_calls} tool calls)"
                 )
                 return self._success_result(
-                    output=turn.text_output or "",
+                    output=output,
                     structured_data=turn.structured_data,
                 )
 

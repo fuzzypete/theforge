@@ -283,7 +283,13 @@ def build_plan_review_prompt(
         ```
     """)
     if mode == "api":
-        output_format_section = ""
+        output_format_section = dedent("""\
+            ## Output Format
+
+            You MUST call the `submit_plan_review` tool to deliver your verdict.
+            Do NOT return your review as plain text — it will be ignored.
+            Use the submit_plan_review tool with your structured review data.
+        """)
 
     return dedent(f"""\
         You are a plan reviewer for **{task.name}**.
@@ -1020,7 +1026,13 @@ def build_review_prompt(
         ```
     """)
     if mode == "api":
-        output_format_section = ""
+        output_format_section = dedent("""\
+            ## Output Format
+
+            You MUST call the `submit_review` tool to deliver your verdict.
+            Do NOT return your review as plain text — it will be ignored.
+            Use the submit_review tool with your structured review data.
+        """)
 
     return dedent(f"""\
         You are reviewing an implementation of **{task.name}**.

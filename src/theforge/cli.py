@@ -929,7 +929,20 @@ def main() -> None:
         "audit": cmd_audit,
     }
 
-    sys.exit(commands[args.command](args))
+    try:
+        sys.exit(commands[args.command](args))
+    except KeyboardInterrupt:
+        print("\n[forge] Interrupted by user", file=sys.stderr)
+        sys.exit(130)
+    except Exception:
+        import traceback
+
+        print(
+            f"\n[forge] FATAL — unhandled exception in '{args.command}':\n"
+            f"{traceback.format_exc()}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

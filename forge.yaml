@@ -55,6 +55,7 @@ profiles:
       review_role: patterns
       budget_usd: 2.00
       timeout_seconds: 300
+      max_iterations: 50
       allowed_tools:
         - Read
         - Bash
@@ -90,10 +91,21 @@ plan_review:
 
 plan_agent_review:
   enabled: true
-  cli: claude
-  model: opus
-  budget_usd: 2.00
-  timeout: 600
+  pool:
+    - name: claude-plan-reviewer
+      cli: claude
+      model: opus
+      budget_usd: 2.00
+      timeout_seconds: 600
+    - name: codex-plan-reviewer
+      provider: openai
+      model: o4-mini
+      budget_usd: 1.00
+      timeout_seconds: 300
+      allowed_tools:
+        - Read
+        - Glob
+        - Grep
 
 notifications:
   backend: ntfy
