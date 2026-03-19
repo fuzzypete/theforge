@@ -270,9 +270,15 @@ def _run_review_phase(
         sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
     )
 
-    _log_verbose(f"Review verdict: {parsed_review.verdict}")
-    _log_verbose(f"  Summary: {parsed_review.summary}")
-    _log_verbose(f"  Findings: {len(parsed_review.findings)} ({_p1_count} P1)")
+    _log(f"  Summary: {parsed_review.summary}")
+    # Log findings grouped by severity
+    _findings_by_sev: dict[str, list] = {}
+    for _f in parsed_review.findings:
+        _findings_by_sev.setdefault(_f.severity, []).append(_f)
+    for _sev in sorted(_findings_by_sev):
+        for _f in _findings_by_sev[_sev]:
+            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
+            _log(f"  [{_sev}]{_loc} {_f.description}")
     if logger:
         logger._safe_emit(
             "review_result",
@@ -402,7 +408,7 @@ def _run_review_phase(
 
     _persistent_tag = " (persistent)" if _is_persistent_p1 else ""
     _log(
-        f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1{_persistent_tag}"
+        f"  ✗ REVIEW   REQUEST_CHANGES  {_p1_count} P1  {_p2_count} P2{_persistent_tag}"
         f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
     )
 
