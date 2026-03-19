@@ -1251,7 +1251,7 @@ class TestDeepSeekProvider:
     # ── _deepseek_client base_url ─────────────────────────────────────
 
     def _patch_openai(self):
-        """Return a context manager that stubs the openai and httpx modules for _deepseek_client."""
+        """Return a context manager that stubs the openai and httpx modules for _deepseek_client."""  # noqa: E501
         import sys
 
         mock_openai = MagicMock()
