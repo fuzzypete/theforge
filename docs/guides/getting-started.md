@@ -209,6 +209,54 @@ Adding more reviewers increases review cost proportionally but catches more bugs
 A 4-reviewer pool (Claude + Codex + Gemini + DeepSeek) costs ~$2-4 per review
 but provides excellent cross-model coverage.
 
+## Lifecycle hooks
+
+Hooks let you run arbitrary shell scripts at key forge events. The most useful
+hook is `post_run`, which fires after every `forge run` and receives a JSON
+payload describing the outcome.
+
+### Scaffold the reference hook
+
+```bash
+forge init-hooks
+```
+
+This creates `.forge/hooks/post_run.sh` — a reference script that files GitHub
+Issues for P1/P2 findings on ESCALATE or APPROVE outcomes. It requires the
+`gh` CLI (authenticated) and `jq`.
+
+### Activate the hook in forge.yaml
+
+```yaml
+hooks:
+  post_run: .forge/hooks/post_run.sh
+  timeout_seconds: 30
+```
+
+### Hook payload (stdin JSON)
+
+```json
+{
+  "event": "post_run",
+  "verdict": "APPROVE | REQUEST_CHANGES | ESCALATE",
+  "slug": "my-feature",
+  "branch": "feat/my-feature",
+  "summary": "one-line review summary",
+  "findings": [
+    {
+      "severity": "P1 | P2",
+      "file": "src/foo.py",
+      "line": 42,
+      "description": "what is wrong",
+      "suggestion": "how to fix"
+    }
+  ]
+}
+```
+
+Hooks exit 0 to signal success. A non-zero exit prints a warning but does not
+abort the forge run. See `.forge/hooks/README.md` for full documentation.
+
 ## Next steps
 
 - **Add more reviewers:** See [CLI Reference](cli-reference.md) for multi-model
@@ -219,3 +267,5 @@ but provides excellent cross-model coverage.
   have multiple models collaboratively write a spec
 - **Check provider health:** Run `forge check-providers` to verify all your
   configured models respond correctly
+- **File findings as issues:** Run `forge init-hooks` to scaffold the GitHub
+  Issues hook

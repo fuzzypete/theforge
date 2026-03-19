@@ -12,6 +12,7 @@ from theforge.cli import (
     _find_config,
     _parse_spec_frontmatter,
     cmd_check_providers,
+    cmd_init_hooks,
     cmd_secrets_init,
 )
 from theforge.config import (
@@ -451,3 +452,119 @@ class TestCmdCheckProviders:
 
         assert rc == 0
         assert mock_api.call_count == 1
+
+
+class TestCmdInitHooks:
+    """AC tests for forge init-hooks."""
+
+    def _make_args(self) -> argparse.Namespace:
+        return argparse.Namespace()
+
+    def test_creates_post_run_sh(self, tmp_path, monkeypatch):
+        """forge init-hooks creates .forge/hooks/post_run.sh."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        rc = cmd_init_hooks(args)
+        assert rc == 0
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        assert sh_path.exists()
+        content = sh_path.read_text(encoding="utf-8")
+        assert "#!/usr/bin/env bash" in content
+
+    def test_creates_readme(self, tmp_path, monkeypatch):
+        """forge init-hooks creates .forge/hooks/README.md."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        rc = cmd_init_hooks(args)
+        assert rc == 0
+        readme_path = tmp_path / ".forge" / "hooks" / "README.md"
+        assert readme_path.exists()
+        content = readme_path.read_text(encoding="utf-8")
+        assert "post_run" in content
+
+    def test_post_run_sh_is_executable(self, tmp_path, monkeypatch):
+        """forge init-hooks sets executable permissions on post_run.sh."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        import stat
+
+        mode = sh_path.stat().st_mode
+        assert mode & stat.S_IXUSR, "post_run.sh must be owner-executable"
+
+    def test_idempotent_skips_existing_sh(self, tmp_path, monkeypatch, capsys):
+        """forge init-hooks does not overwrite existing post_run.sh."""
+        monkeypatch.chdir(tmp_path)
+        hooks_dir = tmp_path / ".forge" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        sh_path = hooks_dir / "post_run.sh"
+        sh_path.write_text("# custom script\n", encoding="utf-8")
+
+        args = self._make_args()
+        rc = cmd_init_hooks(args)
+        assert rc == 0
+        assert sh_path.read_text(encoding="utf-8") == "# custom script\n"
+        captured = capsys.readouterr()
+        assert "post_run.sh" in captured.err
+
+    def test_idempotent_skips_existing_readme(self, tmp_path, monkeypatch, capsys):
+        """forge init-hooks does not overwrite existing README.md."""
+        monkeypatch.chdir(tmp_path)
+        hooks_dir = tmp_path / ".forge" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        readme_path = hooks_dir / "README.md"
+        readme_path.write_text("# my readme\n", encoding="utf-8")
+
+        args = self._make_args()
+        rc = cmd_init_hooks(args)
+        assert rc == 0
+        assert readme_path.read_text(encoding="utf-8") == "# my readme\n"
+        captured = capsys.readouterr()
+        assert "README.md" in captured.err
+
+    def test_prints_hooks_guidance(self, tmp_path, monkeypatch, capsys):
+        """forge init-hooks prints forge.yaml hooks: block guidance."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        captured = capsys.readouterr()
+        assert "hooks:" in captured.out
+        assert "post_run" in captured.out
+
+    def test_script_contains_gh_guard(self, tmp_path, monkeypatch):
+        """Reference script warns and exits 0 when gh is not installed."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        content = sh_path.read_text(encoding="utf-8")
+        assert "command -v gh" in content
+
+    def test_script_contains_zero_findings_guard(self, tmp_path, monkeypatch):
+        """Reference script exits 0 when findings count is zero."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        content = sh_path.read_text(encoding="utf-8")
+        assert "findings_count" in content
+        assert "exit 0" in content
+
+    def test_script_includes_suggestion_in_body(self, tmp_path, monkeypatch):
+        """Reference script includes suggestion field in the issue body."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        content = sh_path.read_text(encoding="utf-8")
+        assert "suggestion" in content
+
+    def test_script_uses_forge_finding_label(self, tmp_path, monkeypatch):
+        """Reference script adds forge-finding label to issues."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        content = sh_path.read_text(encoding="utf-8")
+        assert "forge-finding" in content
