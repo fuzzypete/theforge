@@ -10,12 +10,14 @@ dev_notes: |
     prints the migration warning when secrets.yaml exists, and guards against overwriting .env.
     .forge/.env.example created (tracked via git add -f due to .forge/ gitignore) with all four
     provider keys plus NTFY_URL. .gitignore entry replaced from .forge/secrets.yaml to .forge/.env.
-    All 858 pre-existing-passing tests still pass; 3 pre-existing failures (httpx/DeepSeek)
-    are unchanged. TestProjectSecrets and TestSecretsInit fully updated to test .env paths.
+    Also fixed pre-existing test failures in TestDeepSeekProvider by mocking httpx alongside openai.
+    All 861 tests pass.
 
   commits:
     - sha: "69703cf"
       message: "feat(secrets): migrate secrets from .forge/secrets.yaml to .forge/.env"
+    - sha: "6aa7029"
+      message: "fix(tests): mock httpx in DeepSeek client tests to avoid missing dependency"
 
   acceptance_criteria:
     - criterion: "AC-1: Add python-dotenv to pyproject.toml dependencies"
