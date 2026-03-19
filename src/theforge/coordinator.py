@@ -112,6 +112,7 @@ from .devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_hand
 from .review import (  # noqa: F401
     PlanReviewResult,
     ReviewResult,
+    _try_parse_review,
     merge_plan_review_results,
     merge_review_results,
     parse_plan_review_output,
@@ -494,16 +495,28 @@ def _run_review_pool(
     review_prompts: str | list[str] | None = None,
     enforce_budgets: bool = True,
     pool_attempt: int = 0,
-) -> tuple[list, list, ReviewResult | None]:
-    """Run the review pool and merge results.  Returns (successful, failed, merged_result).
+    max_review_parse_retries: int = 0,
+) -> tuple[list, list, ReviewResult | None, list[ReviewResult]]:
+    """Run the review pool and merge results.
 
-    Updates *meta* in-place (successful, failed, failed_detail).
+    Returns (successful, failed, merged_result, individual_parsed).
+
+    Updates *meta* in-place (successful, failed, failed_detail, parse_retries).
     merged_result is None when all reviewers failed or budget exceeded;
     in that case state.phase and state.error are already set — caller
     just needs to call _escalate_notify and return a CoordinatorResult.
 
+    individual_parsed contains per-reviewer ReviewResult objects that passed
+    schema validation (after per-reviewer retries).  Callers use this for
+    best-individual fallback when the merged result has parse errors.
+
     When multiple reviewers succeed, results are merged deterministically:
     strictest verdict wins, findings are unioned. No LLM synthesis call.
+
+    Per-reviewer parse retries: for each reviewer whose initial output has parse
+    errors, up to max_review_parse_retries corrective prompts are sent via
+    run_agent (all modes — API and CLI).  meta.parse_retries accumulates the
+    sum of all per-reviewer retries attempted.
 
     Args:
         review_prompts: Pre-built prompts. If None, builds them (with role-aware
@@ -511,6 +524,7 @@ def _run_review_pool(
             prompt construction (e.g. run_review_only always uses generic prompts).
         enforce_budgets: When True (default), enforces per-profile budgets.
             When False (run_review_only), skips budget checks.
+        max_review_parse_retries: Per-reviewer parse retry budget.
     """
     pool_size = len(config.review_pool)
 
@@ -596,7 +610,7 @@ def _run_review_pool(
                     f"Review budget exceeded for {profile.name}: "
                     f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
                 )
-                return [], [], None
+                return [], [], None, []
 
     successful = [r for r in pool_results if r.success]
     failed_results = [r for r in pool_results if not r.success]
@@ -617,95 +631,117 @@ def _run_review_pool(
         state.phase = Phase.ESCALATE
         failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
         state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
-        return successful, failed_results, None
+        return successful, failed_results, None, []
 
-    # Merge all successful reviewer outputs — no synthesis LLM call.
-    # If only one succeeded, parse directly. If multiple, merge (strictest verdict,
-    # union of findings) so the dev agent sees every finding from every reviewer.
     _synthesis_path = (
         workspace_path / ".forge/traces" / f"{_cycle_num}-{pool_attempt}-synthesis.txt"
     )
-    if len(successful) == 1:
-        result = successful[0]
-        write_trace(_synthesis_path, result.output)
-        if result.structured_data:
-            return successful, failed_results, parse_review_json(result.structured_data)
-        return successful, failed_results, parse_review_output(result.output)
 
-    _log_verbose(
-        f"Merging {len(successful)} review outputs (+{len(failed_results)} failed excluded)"
-    )
-    parsed_results = [
-        parse_review_json(r.structured_data)
-        if r.structured_data
-        else parse_review_output(r.output)
-        for r in successful
-    ]
+    # ── Parse initial outputs ─────────────────────────────────────────
+    parsed_results: list[ReviewResult] = []
+    for r in successful:
+        if r.structured_data:
+            parsed_results.append(parse_review_json(r.structured_data))
+        else:
+            parsed_results.append(parse_review_output(r.output))
     names = [r.profile_name for r in successful]
 
-    # ── Per-reviewer parse retry (API-mode only) ─────────────────────
-    # If a reviewer's output has parse errors and it's an API agent, re-ask
-    # once with a corrective prompt. CLI agents can't cheaply retry.
+    # ── Per-reviewer parse retry (all modes) ─────────────────────────
+    # For each reviewer whose initial output has parse errors, send a corrective
+    # prompt via run_agent up to max_review_parse_retries times.
+    # meta.parse_retries accumulates the sum of per-reviewer retries attempted.
     _profile_by_name = {p.name: p for p in config.review_pool}
+    _corrective_prompt_template = (
+        "Your previous review output had schema/parse errors:\n{errors}\n\n"
+        "Please produce valid review YAML with this exact structure:\n"
+        "verdict: APPROVE | REQUEST_CHANGES\n"
+        'summary: "one-line summary"\n'
+        "findings:\n"
+        "  - severity: P1 | P2\n"
+        '    file: "path"\n'
+        "    line: <number or null>\n"
+        '    description: "what is wrong"\n'
+        '    suggestion: "how to fix"\n'
+        "spec_compliance:\n"
+        "  matches_spec: true | false\n"
+        "  mismatches: []\n"
+        "test_coverage:\n"
+        "  adequate: true | false\n"
+        "  gaps: []\n\n"
+        "Reproduce your review findings in this format."
+    )
     for i, (name, parsed) in enumerate(zip(names, parsed_results)):
         if not parsed.parse_errors:
             continue
         _prof = _profile_by_name.get(name)
-        if _prof is None or _prof.mode != "api":
-            continue  # CLI agent — can't retry cheaply
-        _error_desc = "; ".join(parsed.parse_errors)
-        _log(f"  ⚠ {name} produced invalid YAML, retrying: {_error_desc[:120]}")
-        _retry_prompt = (
-            f"Your previous review output had schema/parse errors:\n{_error_desc}\n\n"
-            "Please produce valid review YAML with this exact structure:\n"
-            "verdict: APPROVE | REQUEST_CHANGES\n"
-            'summary: "one-line summary"\n'
-            "findings:\n"
-            "  - severity: P1 | P2\n"
-            '    file: "path"\n'
-            "    line: <number or null>\n"
-            '    description: "what is wrong"\n'
-            '    suggestion: "how to fix"\n'
-            "spec_compliance:\n"
-            "  matches_spec: true | false\n"
-            "  mismatches: []\n"
-            "test_coverage:\n"
-            "  adequate: true | false\n"
-            "  gaps: []\n\n"
-            "Reproduce your review findings in this format."
-        )
-        _retry_result = run_agent(
-            prompt=_retry_prompt,
-            profile=_prof,
-            working_dir=workspace_path,
-            quiet=True,
-            secrets=config.secrets,
-        )
-        if _retry_result.success:
-            _retried = (
-                parse_review_json(_retry_result.structured_data)
-                if _retry_result.structured_data
-                else parse_review_output(_retry_result.output)
+        if _prof is None:
+            continue
+        for _retry_num in range(1, max_review_parse_retries + 1):
+            _error_desc = "; ".join(parsed.parse_errors)
+            _log(
+                f"  ↻ {name} parse failed (retry {_retry_num}/{max_review_parse_retries}): "
+                f"{_error_desc[:120]}"
             )
-            if not _retried.parse_errors:
-                _log(f"  ✓ {name} retry succeeded")
+            _retry_prompt = _corrective_prompt_template.format(errors=_error_desc)
+            _retry_result = run_agent(
+                prompt=_retry_prompt,
+                profile=_prof,
+                working_dir=workspace_path,
+                quiet=True,
+                secrets=config.secrets,
+            )
+            meta.parse_retries += 1
+            if not _retry_result.success:
+                _log_verbose(
+                    f"  {name} retry {_retry_num} agent failed (exit={_retry_result.exit_code})"
+                )
+                break
+            _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data)
+            if _retried is not None:
+                _log(f"  ✓ {name} retry {_retry_num} succeeded")
                 parsed_results[i] = _retried
                 state.review_agent_results.append(_retry_result)
                 write_trace(
                     workspace_path
                     / ".forge/traces"
-                    / f"{_cycle_num}-{pool_attempt}-review-{name}-retry.txt",
+                    / f"{_cycle_num}-{pool_attempt}-review-{name}-retry{_retry_num}.txt",
                     _retry_result.output,
                 )
+                break
             else:
-                _log_verbose(f"  {name} retry still has parse errors: {_retried.parse_errors}")
+                _log_verbose(
+                    f"  {name} retry {_retry_num} still has parse errors: "
+                    f"{parse_review_output(_retry_result.output).parse_errors}"
+                )
+                parsed = ReviewResult(
+                    verdict="REQUEST_CHANGES",
+                    summary="",
+                    findings=[],
+                    spec_matches=False,
+                    spec_mismatches=[],
+                    test_adequate=False,
+                    test_gaps=[],
+                    parse_errors=[_error_desc],
+                    raw_yaml={},
+                )
 
-    merged = merge_review_results(parsed_results, names)
+    # Individual parsed results (no parse errors) — used by caller for fallback
+    individual_parsed: list[ReviewResult] = [p for p in parsed_results if not p.parse_errors]
+
+    # ── Merge ─────────────────────────────────────────────────────────
+    if len(successful) == 1:
+        merged = parsed_results[0]
+    else:
+        _log_verbose(
+            f"Merging {len(successful)} review outputs (+{len(failed_results)} failed excluded)"
+        )
+        merged = merge_review_results(parsed_results, names)
+
     write_trace(
         _synthesis_path,
         yaml.dump(dataclasses.asdict(merged), default_flow_style=False, allow_unicode=True),
     )
-    return successful, failed_results, merged
+    return successful, failed_results, merged, individual_parsed
 
 
 def _setup_resume_entry(
@@ -1983,7 +2019,7 @@ def run_review_only(
     state.review_cycle_metadata.append(meta)
 
     _pool_start = time.monotonic()
-    successful, failed_results, parsed_review = _run_review_pool(
+    successful, failed_results, parsed_review, _individual = _run_review_pool(
         state,
         config,
         task,

@@ -44,7 +44,7 @@ from .coord_state import (
 )
 from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 from .coord_workspace import _merge_branch
-from .review import ReviewResult, review_to_dev_handoff
+from .review import ReviewFinding, ReviewResult, _best_individual_result, review_to_dev_handoff
 from .runner import log_agent_result
 from .sessions import save_sessions
 from .task import TaskSpec
@@ -197,70 +197,22 @@ def _run_review_phase(
     state.review_cycle_metadata.append(meta)
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
-    parsed_review = None
-    last_parse_error: str | None = None
+    successful, failed_results, _candidate, _individual_results = mod._run_review_pool(
+        state,
+        config,
+        task,
+        spec_content,
+        workspace_path,
+        branch_name,
+        meta,
+        notify=notify,
+        pool_attempt=0,
+        max_review_parse_retries=max_parse_retries,
+    )
 
-    for _parse_attempt in range(max_parse_retries + 1):
-        if _parse_attempt > 0:
-            _log_verbose(
-                f"Parse retry {_parse_attempt}/{max_parse_retries} "
-                f"for review cycle {state.review_cycle + 1}"
-            )
-
-        successful, failed_results, _candidate = mod._run_review_pool(
-            state,
-            config,
-            task,
-            spec_content,
-            workspace_path,
-            branch_name,
-            meta,
-            notify=notify,
-            pool_attempt=_parse_attempt,
-        )
-
-        if _candidate is None:
-            # All reviewers failed or budget exceeded —
-            # state.error already set by _run_review_pool
-            _escalate_notify(task, state, notify, config)
-            return (
-                _ReviewOutcome.ESCALATE,
-                CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
-                ),
-                config,
-            )
-
-        if _candidate.parse_errors:
-            last_parse_error = str(_candidate.parse_errors)
-            _log_verbose(
-                f"Review parse errors (attempt {_parse_attempt + 1}): {_candidate.parse_errors}"
-            )
-            if _parse_attempt < max_parse_retries:
-                meta.parse_retries += 1
-                _log_verbose(
-                    f"Retrying reviewer ({meta.parse_retries}/{max_parse_retries} retries "
-                    f"used) — parse error does NOT increment review cycle"
-                )
-                continue
-            break
-
-        parsed_review = _candidate
-        break
-
-    if parsed_review is None:
-        state.phase = Phase.ESCALATE
-        state.error = (
-            f"Review pool unreliable: all reviewers failed to produce valid output "
-            f"after {meta.parse_retries} retries. Last error: {last_parse_error}"
-        )
-        _log(f"✗ ESCALATE   {state.error}")
-        if logger:
-            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
-            logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+    if _candidate is None:
+        # All reviewers failed or budget exceeded —
+        # state.error already set by _run_review_pool
         _escalate_notify(task, state, notify, config)
         return (
             _ReviewOutcome.ESCALATE,
@@ -272,6 +224,46 @@ def _run_review_phase(
             ),
             config,
         )
+
+    parsed_review = _candidate
+
+    # ── Graceful empty-merge fallback ─────────────────────────────────
+    if parsed_review.parse_errors:
+        _log(
+            f"  ⚠ review merge produced parse errors — falling back to best individual result "
+            f"({len(_individual_results)} reviewer(s) with valid output)"
+        )
+        _fallback = _best_individual_result(_individual_results)
+        if _fallback is not None:
+            _log(f"  ↩ using best individual result: {_fallback.verdict}")
+            parsed_review = _fallback
+        else:
+            _log(
+                "  ⚠ all reviewers failed to produce usable output — "
+                "injecting synthetic P1, returning REQUEST_CHANGES"
+            )
+            parsed_review = ReviewResult(
+                verdict="REQUEST_CHANGES",
+                summary="Review pool failed to produce a usable verdict",
+                findings=[
+                    ReviewFinding(
+                        severity="P1",
+                        file="",
+                        line=None,
+                        description=(
+                            "All reviewers failed to produce parseable output. "
+                            "Manual review required."
+                        ),
+                        suggestion="Check reviewer logs for details.",
+                    )
+                ],
+                spec_matches=False,
+                spec_mismatches=[],
+                test_adequate=False,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
 
     # Valid verdict — increment review cycle counter
     state.review_cycle += 1

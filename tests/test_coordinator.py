@@ -1768,7 +1768,6 @@ class TestCoordinatorSchemaErrorOverride:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
         # Review YAML that says APPROVE but is missing required fields
         malformed_approve = """\
@@ -1778,19 +1777,14 @@ summary: "Looks good."
 findings: []
 ```
 """
-        call_count = {"pool": 0}
-
-        def pool_side_effect(**kwargs):
-            call_count["pool"] += 1
-            if call_count["pool"] <= 1:
-                return [
-                    _make_agent_result(
-                        success=True, output=malformed_approve, profile_name="review"
-                    )
-                ]
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
+        # Pool always returns malformed; per-reviewer retry via run_agent returns valid APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=malformed_approve, profile_name="review")
+        ]
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev call
+            _make_agent_result(output=APPROVE_REVIEW),  # per-reviewer retry
+        )
 
         result = run_task(config, task)
 
@@ -2012,7 +2006,6 @@ class TestCoordinatorSchemaErrorOnRequestChanges:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
 
         # Malformed REQUEST_CHANGES: has P1 finding but spec_compliance missing fields
         malformed_review = """\
@@ -2028,19 +2021,14 @@ test_coverage:
   adequate: false
 ```
 """
-        call_count = {"pool": 0}
-
-        def pool_side_effect(**kwargs):
-            call_count["pool"] += 1
-            if call_count["pool"] <= 1:
-                return [
-                    _make_agent_result(
-                        success=True, output=malformed_review, profile_name="review"
-                    )
-                ]
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
+        # Pool always returns malformed; per-reviewer retry via run_agent returns valid APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=malformed_review, profile_name="review")
+        ]
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Done."),  # dev call
+            _make_agent_result(output=APPROVE_REVIEW),  # per-reviewer retry
+        )
 
         result = run_task(config, task)
 
@@ -2110,7 +2098,7 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_pool_of_2_request_changes(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Pool of 2 reviews → synthesis → REQUEST_CHANGES → ESCALATE after max cycles."""
+        """Pool of 2 reviews → REQUEST_CHANGES (merged) → ESCALATE after max cycles."""
         profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
         config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
         task = _make_task(tmp_path)
@@ -2118,21 +2106,15 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # run_agent calls: DEV (cycle 1), SYNTHESIS (cycle 1), DEV (cycle 2), SYNTHESIS (cycle 2)
-        mock_agent.side_effect = [
-            _PREFLIGHT_RESULT,
+        # run_agent calls: preflight, DEV (cycle 1), DEV (cycle 2)
+        mock_agent.side_effect = _preflight_then(
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
-            _make_agent_result(
-                success=True, output=REQUEST_CHANGES_REVIEW, profile_name="synthesis"
-            ),
             _make_agent_result(success=True, output="Fixed.", profile_name="dev"),
-            _make_agent_result(
-                success=True, output=REQUEST_CHANGES_REVIEW, profile_name="synthesis"
-            ),
-        ]
+        )
+        # Both reviewers return valid REQUEST_CHANGES — no parse retries needed
         mock_pool.return_value = [
-            _make_agent_result(success=True, output="R1 out", profile_name="r1"),
-            _make_agent_result(success=True, output="R2 out", profile_name="r2"),
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="r1"),
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="r2"),
         ]
 
         result = run_task(config, task)
@@ -2712,21 +2694,15 @@ class TestReviewParseRetry:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
-        call_count = {"pool": 0}
-
-        def pool_side_effect(**kwargs):
-            call_count["pool"] += 1
-            if call_count["pool"] == 1:
-                return [
-                    _make_agent_result(
-                        success=True, output=PARSE_ERROR_OUTPUT, profile_name="review"
-                    )
-                ]
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
+        # Pool always returns parse error; per-reviewer retry via run_agent returns valid APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="review")
+        ]
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev call
+            _make_agent_result(output=APPROVE_REVIEW),  # per-reviewer retry
+        )
 
         result = run_task(config, task)
 
@@ -2746,31 +2722,18 @@ class TestReviewParseRetry:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(),  # dev cycle 1
-            _make_agent_result(),  # dev cycle 2 (after REQUEST_CHANGES)
-        )
 
+        # Pool call 1: PARSE_ERROR_OUTPUT; per-reviewer retry returns REQUEST_CHANGES
+        # Pool call 2: APPROVE (cycle 2)
         call_count = {"pool": 0}
 
         def pool_side_effect(**kwargs):
             call_count["pool"] += 1
             if call_count["pool"] == 1:
-                # Parse error — triggers retry, NOT a cycle
                 return [
                     _make_agent_result(
                         success=True,
                         output=PARSE_ERROR_OUTPUT,
-                        profile_name="review",
-                        cost_usd=0.1,
-                    )
-                ]
-            if call_count["pool"] == 2:
-                # Real REQUEST_CHANGES — increments cycle to 1, DEV reruns
-                return [
-                    _make_agent_result(
-                        success=True,
-                        output=REQUEST_CHANGES_REVIEW,
                         profile_name="review",
                         cost_usd=0.1,
                     )
@@ -2783,6 +2746,11 @@ class TestReviewParseRetry:
             ]
 
         mock_pool.side_effect = pool_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev cycle 1
+            _make_agent_result(output=REQUEST_CHANGES_REVIEW),  # per-reviewer retry → RC
+            _make_agent_result(),  # dev cycle 2 (after REQUEST_CHANGES)
+        )
 
         result = run_task(config, task)
 
@@ -2795,17 +2763,18 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_all_parse_retries_exhausted(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """All parse retries exhausted → ESCALATE with 'unreliable' in message."""
+        """All per-reviewer parse retries exhausted → synthetic P1 → cycles exhaust → ESCALATE."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        # run_agent returns: preflight, then dev results (output="Done." fails review parsing)
         mock_agent.side_effect = _preflight_then(_make_agent_result())
 
-        # Always return parse errors (default max_parse_retries=2 → 3 total attempts)
-        # Use low cost_usd to avoid hitting the review budget before exhausting retries
+        # Pool always returns unparseable output; run_agent retries also return "Done." (fails)
+        # Synthetic P1 injected → REQUEST_CHANGES → review cycles exhaust → ESCALATE
         mock_pool.return_value = [
             _make_agent_result(
                 success=True, output=PARSE_ERROR_OUTPUT, profile_name="review", cost_usd=0.1
@@ -2816,13 +2785,14 @@ class TestReviewParseRetry:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "unreliable" in result.message.lower()
+        # Escalation is due to review cycles being exhausted, not "unreliable" pool
+        assert "cycles" in result.message.lower() or "exhausted" in result.message.lower()
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_parse_retry_count_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Audit log records parse_retries: 1 when one retry occurred."""
+        """Audit log records parse_retries: 1 when one per-reviewer retry occurred."""
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -2830,21 +2800,15 @@ class TestReviewParseRetry:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
-        call_count = {"pool": 0}
-
-        def pool_side_effect(**kwargs):
-            call_count["pool"] += 1
-            if call_count["pool"] == 1:
-                return [
-                    _make_agent_result(
-                        success=True, output=PARSE_ERROR_OUTPUT, profile_name="review"
-                    )
-                ]
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
+        # Pool always returns parse error; per-reviewer retry via run_agent returns valid APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="review")
+        ]
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev call
+            _make_agent_result(output=APPROVE_REVIEW),  # per-reviewer retry
+        )
 
         result = run_task(config, task)
         audit = generate_audit_log(config, task, result)
@@ -2857,29 +2821,22 @@ class TestReviewParseRetry:
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_schema_error_also_retried(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Schema validation error (not just YAML parse error) also triggers retry."""
+        """Schema validation error (not just YAML parse error) also triggers per-reviewer retry."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
 
-        call_count = {"pool": 0}
-
-        def pool_side_effect(**kwargs):
-            call_count["pool"] += 1
-            if call_count["pool"] == 1:
-                # Valid YAML but invalid schema (missing spec_compliance, test_coverage)
-                return [
-                    _make_agent_result(
-                        success=True, output=SCHEMA_ERROR_OUTPUT, profile_name="review"
-                    )
-                ]
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
+        # Pool always returns schema error; per-reviewer retry via run_agent returns valid APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=SCHEMA_ERROR_OUTPUT, profile_name="review")
+        ]
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev call
+            _make_agent_result(output=APPROVE_REVIEW),  # per-reviewer retry
+        )
 
         result = run_task(config, task)
 
@@ -2889,6 +2846,191 @@ class TestReviewParseRetry:
         assert result.state.review_cycle == 1
         # parse_retries tracked in metadata
         assert result.state.review_cycle_metadata[0].parse_retries == 1
+
+
+# ── Tests: review pool resilience ────────────────────────────────────
+
+
+class TestReviewPoolResilience:
+    """Integration tests for per-reviewer retry and graceful empty-pool handling."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_per_reviewer_retry_only_affects_failing_reviewer(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Parse failure retries that reviewer only; other reviewers are unaffected."""
+        pool_config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                _make_review_profile("reviewer-a"),
+                _make_review_profile("reviewer-b"),
+            ],
+            synthesis=None,
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        # Pool: reviewer-a returns bad YAML, reviewer-b returns valid APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="reviewer-a"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="reviewer-b"),
+        ]
+        # run_agent: preflight, dev, then reviewer-a retry returning APPROVE
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(),  # dev
+            _make_agent_result(output=APPROVE_REVIEW),  # reviewer-a retry
+        )
+
+        result = run_task(pool_config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.review_cycle == 1
+        # reviewer-a retry counted; parse_retries == 1
+        assert result.state.review_cycle_metadata[0].parse_retries == 1
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_max_review_parse_retries_zero_disables_retry(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """max_review_parse_retries=0 → no per-reviewer retry; synthetic P1 injected."""
+        from dataclasses import replace as _dc_replace
+
+        from theforge.config import RetryPolicy
+
+        base_config = _make_config(tmp_path)
+        config = _dc_replace(
+            base_config, retry=RetryPolicy(max_dev_iterations=2, max_review_parse_retries=0)
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=PARSE_ERROR_OUTPUT, profile_name="review", cost_usd=0.1
+            )
+        ]
+
+        result = run_task(config, task)
+
+        # No retries → synthetic P1 → REQUEST_CHANGES → cycles exhaust → ESCALATE
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        # parse_retries == 0 (none attempted)
+        assert result.state.review_cycle_metadata[0].parse_retries == 0
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_empty_merge_falls_back_to_best_individual(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Merged result has parse errors but individual results exist → use best individual."""
+        pool_config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                _make_review_profile("reviewer-a"),
+                _make_review_profile("reviewer-b"),
+            ],
+            synthesis=None,
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        # reviewer-a: valid APPROVE; reviewer-b: schema error (causes merge parse errors)
+        # After reviewer-b's retries fail (agent returns "Done."), merge excludes reviewer-b
+        # but reviewer-a's valid result is in individual_results → fallback returns APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="reviewer-a"),
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="reviewer-b"),
+        ]
+
+        result = run_task(pool_config, task)
+
+        # reviewer-a's APPROVE used as fallback → success
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_synthetic_p1_when_all_reviewers_fail(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """When all reviewers fail to parse and retries fail, synthetic P1 is injected."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        # Pool always returns parse error; run_agent retries return "Done." (fails parse)
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True, output=PARSE_ERROR_OUTPUT, profile_name="review", cost_usd=0.1
+            )
+        ]
+
+        result = run_task(config, task)
+
+        # Synthetic P1 → REQUEST_CHANGES → cycles exhaust → ESCALATE
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        # At least one review cycle was recorded
+        assert result.state.review_cycle >= 1
+        # The recorded review should have P1 findings (synthetic)
+        last_review = result.state.review_results[-1]
+        assert last_review.verdict == "REQUEST_CHANGES"
+        assert any(f.severity == "P1" for f in last_review.findings)
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_best_individual_p1_over_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """When merge fails, best-individual prefers REQUEST_CHANGES with P1 over APPROVE."""
+        pool_config = _make_pool_config(
+            tmp_path,
+            profiles=[
+                _make_review_profile("reviewer-a"),
+                _make_review_profile("reviewer-b"),
+            ],
+            synthesis=None,
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(_make_agent_result())
+
+        # reviewer-a: APPROVE (valid); reviewer-b: parse error, retries fail
+        # merge_review_results returns result with parse_errors (since reviewer-b fails)
+        # But reviewer-a's APPROVE is in individual_results → best_individual returns APPROVE
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="reviewer-a"),
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="reviewer-b"),
+        ]
+
+        result = run_task(pool_config, task)
+
+        # Best individual is reviewer-a's APPROVE → task succeeds
+        assert result.success is True
+        assert result.phase == Phase.DONE
 
 
 # ── Tests: run_review_only ────────────────────────────────────────────
