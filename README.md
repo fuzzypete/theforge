@@ -2,208 +2,222 @@
 
 Deterministic multi-LLM development orchestrator.
 
-TheForge runs a strict software development loop with **mechanical process control**:
+TheForge runs a strict software development pipeline — plan, implement, test,
+review — with **mechanical process control**:
 
-- Coordinator (pure Python) makes all process decisions
-- Agents write code and reviews — nothing else
-- Validation and schema checks enforce boundaries
-- Human can approve, reject, or escalate in interactive mode
+- The coordinator (pure Python) makes all process decisions
+- AI agents write code and write reviews — nothing else
+- Validation gates and schema checks enforce boundaries
+- No LLM decides retries, escalation, or control flow
+
+```
+INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE
+```
 
 ## Why TheForge
 
 Manual multi-agent development is high-friction: repeated copy/paste, inconsistent
 handoffs, skipped process steps, and no audit trail.
 
-TheForge replaces that with a deterministic state machine:
-
-```
-INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → HUMAN_REVIEW → DONE/ESCALATE
-```
-
-No LLM decides retries, escalation, or control flow. If an agent can't pass the gate
-after N attempts, the coordinator escalates to you — it doesn't guess.
+TheForge replaces that with a deterministic state machine. Write a spec, run
+`forge run`, and the coordinator handles the rest — planning, implementation,
+testing, and multi-model code review. Every decision is logged. Every transition
+is mechanical.
 
 ## Quickstart
 
 ### 1. Install
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
 pip install -e .
+
+# Optional: install provider SDKs for API-mode reviewers
+pip install openai        # for OpenAI/Codex API reviewers
+pip install anthropic     # for Anthropic API reviewers
+pip install google-genai  # for Google Gemini API reviewers
 ```
 
-### 2. Create config
+### 2. Initialize
 
-Create `forge.yaml` at your project root:
+```bash
+cd your-project
+forge init
+```
+
+This creates a starter `forge.yaml`. You'll also need at least one AI CLI
+installed:
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`)
+- [Codex CLI](https://github.com/openai/codex) (`codex`)
+- [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`)
+
+### 3. Configure API keys (optional)
+
+For API-mode reviewers, set up project-scoped secrets:
+
+```bash
+forge secrets-init
+```
+
+This creates `.forge/secrets.yaml` (gitignored). Uncomment and fill in the keys
+you need:
 
 ```yaml
-project: my-project
-
-workspace:
-  create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
-  path_pattern: ".forge/worktrees/{slug}"
-  branch_pattern: "feat/{slug}"
-
-validation:
-  gate_command: "make gate"
-  handoff_file: "handoff.yaml"
-  gate_decision_key: "gate_decision"
-
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 2.00
-    timeout_seconds: 1800
-
-  review:
-    cli: claude
-    model: opus
-    budget_usd: 1.00
-    timeout_seconds: 600
-
-retry:
-  max_dev_iterations: 3
-  max_review_cycles: 2
+# ANTHROPIC_API_KEY: sk-ant-...
+# OPENAI_API_KEY: sk-proj-...
+# GOOGLE_API_KEY: AIza...
 ```
 
-### 3. Write a spec
+### 4. Write a spec
 
-Create `specs/my-task.md`:
+Create `specs/my-feature.md`:
 
-```md
+```markdown
 ---
-name: "Add X feature"
-slug: add-x-feature
-file_scope:
-  - src/myproject/
-  - tests/
-pytest_target: tests/test_x.py
+name: "Add user authentication"
+slug: add-auth
+pytest_target: tests/
 ---
 
-# Add X Feature
+# Add User Authentication
 
 ## Problem
-...
+The app has no authentication...
 
 ## Acceptance Criteria
-1. ...
-2. ...
+1. Users can register with email/password
+2. Users can log in and receive a session token
+3. Protected routes return 401 without a valid token
+4. All auth endpoints have tests
 ```
 
-### 4. Run
+### 5. Run
 
 ```bash
-# Interactive (default) — pauses for human review before merge
-forge run specs/my-task.md
+# Full pipeline with verbose logging
+forge run specs/my-feature.md --verbose
 
-# Unattended — auto-approves if review passes
-forge run specs/my-task.md --auto
-
-# Auto-merge after approval
-forge run specs/my-task.md --auto --auto-merge
+# Review-only (skip plan/dev, review existing worktree)
+forge review specs/my-feature.md --worktree .forge/worktrees/add-auth
 ```
 
-### 5. Read the audit
+## Configuration (`forge.yaml`)
 
-```bash
-cat forge_audit.yaml
-```
+### Profiles
 
----
+Profiles define which AI models handle each role. Two transport modes:
 
-## Core Commands
-
-```bash
-# Run a single spec through the full pipeline
-forge run <spec-file> [--config forge.yaml] [--auto] [--auto-merge]
-
-# Run multiple specs sequentially from a campaign manifest
-forge campaign <campaign.yaml> [--auto] [--auto-merge]
-```
-
----
-
-## Config Reference (`forge.yaml`)
-
-### Gate modes
-
-**Handoff-based** (default): gate_command writes a handoff file; coordinator reads
-the decision key.
-
+**CLI mode** — agent runs as a subprocess with its own tool runtime:
 ```yaml
-validation:
-  gate_command: "make gate"
-  handoff_file: "handoff.yaml"
-  gate_decision_key: "gate_decision"
-  gate_timeout: 300   # optional, seconds
+profiles:
+  dev:
+    cli: claude          # "claude", "codex", or "gemini"
+    model: sonnet
+    budget_usd: 50.00
+    timeout_seconds: 1800
+    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
 ```
 
-**Exit-code-based**: gate passes if the command exits 0. Set `handoff_file: ""`
-to use this mode. Supports `{pytest_target}` and `{slug}` substitution.
-
+**API mode** — agent runs via HTTP with TheForge providing the tool runtime:
 ```yaml
-validation:
-  gate_command: "make fmt && make lint && pytest {pytest_target} -q"
-  handoff_file: ""
-  gate_decision_key: ""
-  gate_timeout: 600
+  review_pool:
+    - name: codex-reviewer
+      provider: openai     # "openai", "anthropic", or "google"
+      model: gpt-5.1-codex-mini
+      review_role: patterns
+      budget_usd: 2.00
+      timeout_seconds: 120
+      allowed_tools: [Read, Bash, Glob, Grep]
 ```
+
+API-mode agents with `allowed_tools` get a full tool-use loop — TheForge
+executes tool calls locally in the worktree and feeds results back to the
+model. Agents without `allowed_tools` run as stateless text-judgment calls.
 
 ### Multi-model review pool
 
-```yaml
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 2.00
-    timeout_seconds: 1800
+Different models catch different things. Configure multiple reviewers and
+their findings are merged deterministically:
 
+```yaml
   review_pool:
-    - name: opus
+    - name: claude-reviewer
       cli: claude
       model: opus
-      budget_usd: 1.00
-      timeout_seconds: 600
-    - name: codex
-      cli: codex
-      model: o4-mini
-      reasoning_effort: high   # low | medium | high
-      budget_usd: 1.00
-      timeout_seconds: 600
+      review_role: correctness
+      budget_usd: 5.00
+      timeout_seconds: 300
+      allowed_tools: [Read, Bash, Glob, Grep]
 
-  synthesis:
-    cli: claude
-    model: opus
-    budget_usd: 0.50
-    timeout_seconds: 300
+    - name: codex-reviewer
+      provider: openai
+      model: gpt-5.1-codex-mini
+      review_role: patterns
+      budget_usd: 2.00
+      timeout_seconds: 120
+      allowed_tools: [Read, Bash, Glob, Grep]
+
+    - name: gemini-reviewer
+      provider: google
+      model: gemini-2.5-pro
+      review_role: edge-cases
+      budget_usd: 1.00
+      timeout_seconds: 120
+      allowed_tools: [Read, Bash, Glob, Grep]
 ```
 
-When multiple reviewers are configured, each reviews independently and a synthesis
-agent reconciles the findings. A single P1 from any reviewer triggers REQUEST_CHANGES.
+A single P1 from any reviewer triggers REQUEST_CHANGES. P2s are advisory.
 
-### Campaign manifest (`campaign.yaml`)
+### Plan review
+
+An agent reviews the implementation plan before dev starts:
 
 ```yaml
-name: "Q1 backlog sprint"
-budget_usd: 25.00
-specs:
-  - specs/feature-a.md
-  - specs/feature-b.md
-  - specs/feature-c.md
+plan:
+  enabled: true
+  model: claude
+  model_name: sonnet
+  budget_usd: 1.00
+  timeout: 600
+
+plan_agent_review:
+  enabled: true
+  cli: claude
+  model: sonnet
+  budget_usd: 0.50
+  timeout: 600
 ```
 
-```bash
-forge campaign campaign.yaml --auto --auto-merge
+### Validation gate
+
+```yaml
+validation:
+  gate_command: "python -m pytest tests/ -q"
+  handoff_file: "handoff.yaml"
+  gate_decision_key: "gate_decision"
 ```
 
----
+The gate runs after each dev iteration. If it fails, the dev agent gets
+another attempt (up to `max_dev_iterations`).
+
+### Local models
+
+API-mode profiles support `base_url` for local model servers (Ollama,
+LM Studio, vLLM):
+
+```yaml
+  review_pool:
+    - name: local-reviewer
+      provider: openai
+      model: codellama
+      base_url: http://localhost:11434/v1
+      budget_usd: 0.00
+      timeout_seconds: 60
+      allowed_tools: [Read, Glob, Grep]
+```
 
 ## Review Protocol
 
-Review agents must return structured YAML inside a fenced block:
+Review agents return structured YAML:
 
 ```yaml
 verdict: APPROVE | REQUEST_CHANGES
@@ -223,37 +237,42 @@ test_coverage:
 ```
 
 Schema rules (enforced mechanically):
-- `APPROVE` with any P1 finding → overridden to `REQUEST_CHANGES`
-- `REQUEST_CHANGES` with no P1 finding → schema error → treated as `REQUEST_CHANGES`
+- `APPROVE` with any P1 → overridden to `REQUEST_CHANGES`
+- `REQUEST_CHANGES` with no P1 → schema error → treated as `REQUEST_CHANGES`
 - Invalid YAML → treated as `REQUEST_CHANGES`
-
----
-
-## Development
-
-```bash
-make fmt        # ruff format + ruff check --fix
-make lint       # ruff check + ruff format --check (no auto-fix)
-make test       # pytest tests/ -v
-make gate       # run tests + write handoff.yaml
-```
-
----
 
 ## Architecture
 
 ```
 src/theforge/
-├── coordinator.py   Deterministic state machine — the heart of the system
-├── runner.py        Subprocess invocation of agent CLIs (claude/codex/gemini)
-├── config.py        forge.yaml parsing and model profiles
-├── task.py          Prompt builders (dev + preflight + review + synthesis)
-├── review.py        YAML review output parsing and normalization
-├── schemas.py       Review schema validation and cross-validation rules
-├── campaign.py      Multi-spec sequential execution with aggregate budget
-└── cli.py           `forge` CLI entry point
+├── coordinator.py     Deterministic state machine — the heart of the system
+├── runner.py          CLI agent subprocess invocation
+├── runner_api.py      API agent runner with tool-use loop
+├── tool_runtime.py    Tool registry and handlers for API agents
+├── config.py          forge.yaml parsing and model profiles
+├── task.py            Prompt builders (dev, preflight, review, plan review)
+├── review.py          Review output parsing and normalization
+├── schemas.py         Review schema validation
+├── coord_state.py     Coordinator state management
+├── coord_phases.py    Phase implementations (dev, review, validate)
+├── coord_util.py      Logging, formatting, run ID generation
+├── sessions.py        Agent session ID persistence (for --resume)
+└── cli.py             `forge` CLI entry point
 ```
 
 **Key invariant:** The coordinator is not an LLM. Every state transition is
 deterministic Python. If an LLM is deciding whether to retry or escalate,
 the architecture is wrong.
+
+## Development
+
+```bash
+make fmt        # ruff format + ruff check --fix
+make lint       # ruff check + ruff format --check
+make test       # pytest tests/ -v
+make gate       # run tests + write handoff.yaml
+```
+
+## License
+
+[MIT](LICENSE)
