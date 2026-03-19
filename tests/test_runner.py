@@ -84,7 +84,9 @@ class TestHybridRunner:
         with patch("theforge.runner_api.run_api_agent", return_value=mock_result) as mock_api_run:
             result = run_agent(prompt="test", profile=api_profile, working_dir=tmp_path)
 
-        mock_api_run.assert_called_once_with(prompt="test", profile=api_profile, quiet=False)
+        mock_api_run.assert_called_once_with(
+            prompt="test", profile=api_profile, quiet=False, secrets={}
+        )
         assert result == mock_result
 
     def test_run_agent_cli_dispatch(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
@@ -230,7 +232,7 @@ class TestRunAgentClaude:
         assert result.success is True
         assert result.output == "plain text output"
         assert result.session_id is None
-        assert result.cost_usd == None
+        assert result.cost_usd is None
 
     def test_empty_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([], returncode=1, stderr="some error")
@@ -1536,6 +1538,75 @@ class TestRunGemini:
 
         assert result_seq.session_id is None
         assert result_pool.session_id is None
+
+
+class TestSecretsInjection:
+    """AC-3: secrets are merged into subprocess env; os.environ is never mutated."""
+
+    def test_run_agent_merges_secrets_into_claude_env(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """Secrets passed to run_agent() reach the claude subprocess env."""
+        captured_env: dict | None = None
+
+        def fake_popen(cmd, **kwargs):
+            nonlocal captured_env
+            captured_env = kwargs.get("env")
+            mock = _make_stream_mock(
+                [_result_line(result="done", session_id="s1", total_cost_usd=0.0)]
+            )
+            mock.poll.return_value = 0
+            return mock
+
+        secrets = {"MY_SECRET_KEY": "secret-value"}
+        with patch("subprocess.Popen", side_effect=fake_popen):
+            run_agent(
+                prompt="test",
+                profile=dev_profile,
+                working_dir=tmp_path,
+                secrets=secrets,
+            )
+
+        assert captured_env is not None
+        assert captured_env.get("MY_SECRET_KEY") == "secret-value"
+
+    def test_run_agent_does_not_mutate_os_environ(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """run_agent() never mutates the parent os.environ dict."""
+        secrets = {"INJECTED_KEY": "injected-value"}
+        original_env = dict(os.environ)
+
+        def fake_popen(cmd, **kwargs):
+            return _make_stream_mock(
+                [_result_line(result="done", session_id="s1", total_cost_usd=0.0)]
+            )
+
+        with patch("subprocess.Popen", side_effect=fake_popen):
+            run_agent(
+                prompt="test",
+                profile=dev_profile,
+                working_dir=tmp_path,
+                secrets=secrets,
+            )
+
+        assert "INJECTED_KEY" not in os.environ
+        assert dict(os.environ) == original_env
+
+    def test_run_agent_no_secrets_does_not_break(
+        self, dev_profile: ModelProfile, tmp_path: Path
+    ) -> None:
+        """run_agent() works correctly when secrets is not provided."""
+
+        def fake_popen(cmd, **kwargs):
+            return _make_stream_mock(
+                [_result_line(result="done", session_id="s1", total_cost_usd=0.0)]
+            )
+
+        with patch("subprocess.Popen", side_effect=fake_popen):
+            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+
+        assert result.success
 
 
 class TestLogAgentResult:

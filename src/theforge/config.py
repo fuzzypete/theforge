@@ -222,6 +222,7 @@ class ForgeConfig:
     plan_review: PlanReviewConfig = field(default_factory=PlanReviewConfig)
     plan_agent_review: PlanAgentReviewConfig = field(default_factory=PlanAgentReviewConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    secrets: dict[str, str] = field(default_factory=dict)
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -286,6 +287,11 @@ PROVIDER_API_KEY_MAP = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
 }
+
+
+def _resolve_secret(key: str, secrets: dict[str, str]) -> str | None:
+    """Check secrets dict first, then fall back to os.environ."""
+    return secrets.get(key) or os.getenv(key)
 
 
 # ── Smart config helpers ───────────────────────────────────────────────
@@ -417,7 +423,13 @@ def _auto_assign_models(
 # ── Loader ────────────────────────────────────────────────────────────
 
 
-def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> ModelProfile:
+def _parse_profile(
+    name: str,
+    data: dict[str, Any],
+    *,
+    role: str = "review",
+    secrets: dict[str, str] | None = None,
+) -> ModelProfile:
     """Parse a model profile from forge.yaml data.
 
     role controls which defaults to apply: "dev" uses DEFAULT_DEV_PROFILE,
@@ -462,11 +474,10 @@ def _parse_profile(name: str, data: dict[str, Any], *, role: str = "review") -> 
                 )
         base_url_early = data.get("base_url")
         _is_local = base_url_early and any(
-            base_url_early.startswith(p)
-            for p in ("http://localhost", "http://127.0.0.1")
+            base_url_early.startswith(p) for p in ("http://localhost", "http://127.0.0.1")
         )
         api_key_var = PROVIDER_API_KEY_MAP.get(provider)
-        if api_key_var and not os.getenv(api_key_var) and not _is_local:
+        if api_key_var and not _resolve_secret(api_key_var, secrets or {}) and not _is_local:
             raise ValueError(
                 f"Profile {name!r} uses provider '{provider}' but the required "
                 f"environment variable ${api_key_var} is not set."
@@ -522,6 +533,18 @@ def load_config(config_path: Path) -> ForgeConfig:
     unsupported CLI, missing synthesis profile when pool size > 1).
     """
     project_root = config_path.parent.resolve()
+
+    # Load project-scoped secrets before profile validation so _resolve_secret() works.
+    secrets_path = project_root / ".forge" / "secrets.yaml"
+    secrets: dict[str, str] = {}
+    if secrets_path.exists():
+        try:
+            raw_secrets = yaml.safe_load(secrets_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(raw_secrets, dict):
+                raise ValueError(f"{secrets_path}: secrets file must be a YAML mapping")
+            secrets = {str(k): str(v) for k, v in raw_secrets.items()}
+        except yaml.YAMLError as exc:
+            raise ValueError(f"{secrets_path}: malformed YAML — {exc}") from exc
 
     with open(config_path, encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
@@ -610,12 +633,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         # ── Classic config: profiles key ──────────────────────────────────
         profiles = raw.get("profiles", {})
         dev_profile = (
-            _parse_profile("dev", profiles["dev"], role="dev")
+            _parse_profile("dev", profiles["dev"], role="dev", secrets=secrets)
             if "dev" in profiles
             else DEFAULT_DEV_PROFILE
         )
         preflight_profile = (
-            _parse_profile("preflight", profiles["preflight"], role="review")
+            _parse_profile("preflight", profiles["preflight"], role="review", secrets=secrets)
             if "preflight" in profiles
             else DEFAULT_PREFLIGHT_PROFILE
         )
@@ -630,12 +653,14 @@ def load_config(config_path: Path) -> ForgeConfig:
                 raise ValueError("Each profiles.review_pool entry must have a 'name' field")
             if len(names) != len(set(names)):
                 raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
-            review_pool = [_parse_profile(e["name"], e, role="review") for e in pool_data]
+            review_pool = [
+                _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
+            ]
             # synthesis is optional — multiple reviewers are merged deterministically
             if "synthesis" in profiles:
                 synth_data = profiles["synthesis"]
                 synthesis_profile: ModelProfile | None = _parse_profile(
-                    "synthesis", synth_data, role="review"
+                    "synthesis", synth_data, role="review", secrets=secrets
                 )
             else:
                 synthesis_profile = None
@@ -643,7 +668,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         elif "review" in profiles:
             # Backward compat: single review dict wrapped into a pool of one.
             review_data = profiles["review"]
-            review_pool = [_parse_profile("review", review_data, role="review")]
+            review_pool = [_parse_profile("review", review_data, role="review", secrets=secrets)]
             synthesis_profile = None
 
         else:
@@ -746,7 +771,7 @@ def load_config(config_path: Path) -> ForgeConfig:
                         f"SDK '{sdk}' is not installed. Please install it."
                     )
             api_key_var = PROVIDER_API_KEY_MAP.get(par_provider)
-            if api_key_var and not os.getenv(api_key_var):
+            if api_key_var and not _resolve_secret(api_key_var, secrets):
                 raise ValueError(
                     f"plan_agent_review uses provider '{par_provider}' but the required "
                     f"environment variable ${api_key_var} is not set."
@@ -784,6 +809,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         plan_review=plan_review_cfg,
         plan_agent_review=plan_agent_review_cfg,
         log=log_cfg,
+        secrets=secrets,
     )
 
 

@@ -187,6 +187,7 @@ def run_agent(
     fallback_to_file: bool = True,
     quiet: bool = False,
     is_pool: bool = False,
+    secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run an agent using the transport specified in its profile.
 
@@ -206,6 +207,7 @@ def run_agent(
             prompt=prompt,
             profile=profile,
             quiet=quiet,
+            secrets=secrets or {},
         )
 
     runners = {
@@ -232,6 +234,7 @@ def run_agent(
         "working_dir": working_dir,
         "session_id": session_id,
         "quiet": quiet,
+        "secrets": secrets or {},
     }
     if profile.cli == "claude":
         runner_kwargs["fallback_to_file"] = fallback_to_file
@@ -246,6 +249,7 @@ def run_agent_pool(
     profiles: list[ModelProfile],
     working_dir: Path,
     session_ids: list[str | None] | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> list[AgentResult]:
     """Run multiple agents concurrently, each with its own prompt or a shared prompt.
 
@@ -270,6 +274,7 @@ def run_agent_pool(
                 working_dir=working_dir,
                 session_id=sid,
                 fallback_to_file=False,
+                secrets=secrets,
             )
         ]
 
@@ -292,6 +297,7 @@ def run_agent_pool(
                 fallback_to_file=False,
                 quiet=True,
                 is_pool=True,
+                secrets=secrets,
             )
         finally:
             agent_durations[idx] = time.monotonic() - t0
@@ -426,6 +432,7 @@ def _run_claude(
     session_id: str | None = None,
     fallback_to_file: bool = True,
     quiet: bool = False,
+    secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
     cmd: list[str] = [
@@ -445,7 +452,7 @@ def _run_claude(
         cmd.extend(["--resume", session_id])
 
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
-    env = os.environ.copy()
+    env = {**os.environ, **(secrets or {})}
     env.pop("CLAUDECODE", None)
 
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
@@ -635,6 +642,7 @@ def _run_codex(
     session_id: str | None = None,
     quiet: bool = False,
     is_pool: bool = False,
+    secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Invoke `npx @openai/codex exec --full-auto` as a subprocess.
 
@@ -683,6 +691,7 @@ def _run_codex(
 
     start_wall = time.time()
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
+    _codex_env = {**os.environ, **(secrets or {})}
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
             cmd,
@@ -690,6 +699,7 @@ def _run_codex(
             capture_output=True,
             text=True,
             timeout=profile.timeout_seconds,
+            env=_codex_env,
         ),
         label=label,
         profile=profile,
@@ -772,6 +782,7 @@ def _run_gemini(
     session_id: str | None = None,
     quiet: bool = False,
     is_pool: bool = False,
+    secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess.
 
@@ -800,6 +811,7 @@ def _run_gemini(
     # The model uses its default thinking level.
 
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
+    _gemini_env = {**os.environ, **(secrets or {})}
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
             cmd,
@@ -807,6 +819,7 @@ def _run_gemini(
             text=True,
             cwd=str(working_dir),
             timeout=profile.timeout_seconds,
+            env=_gemini_env,
         ),
         label=label,
         profile=profile,
@@ -865,7 +878,8 @@ def log_agent_result(result: AgentResult, role: str) -> None:
     status = "OK" if result.success else "FAIL"
     _log_verbose(
         f"  [{role}] {status} | exit={result.exit_code} | "
-        f"cost={'${:.3f}'.format(result.cost_usd) if result.cost_usd is not None else 'unknown'} | "
+        f"cost={'${:.3f}'.format(result.cost_usd) if result.cost_usd is not None else 'unknown'} |"
+        f" "
         f"output={len(result.output)} chars"
     )
     if not result.success and result.output:

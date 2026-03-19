@@ -266,7 +266,9 @@ def _run_review_phase(
     _review_elapsed = time.monotonic() - _review_pool_start
     _p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
     _p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
-    _review_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
+    _review_cost = (
+        sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
+    )
 
     _log_verbose(f"Review verdict: {parsed_review.verdict}")
     _log_verbose(f"  Summary: {parsed_review.summary}")
@@ -862,6 +864,7 @@ def _run_dev_phase(
         profile=_dev_profile,
         working_dir=workspace_path,
         session_id=state.dev_session_id,
+        secrets=config.secrets,
     )
     _dev_elapsed = time.monotonic() - _dev_start
     write_trace(
@@ -873,7 +876,9 @@ def _run_dev_phase(
     state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
-    _dev_cost_str = "${:.2f}".format(dev_result.cost_usd) if dev_result.cost_usd is not None else "unknown"
+    _dev_cost_str = (
+        "${:.2f}".format(dev_result.cost_usd) if dev_result.cost_usd is not None else "unknown"
+    )
     _log(f"  ✓ DEV   {_dev_cost_str}  {_fmt_duration(_dev_elapsed)}")
     if logger:
         logger._safe_emit(
