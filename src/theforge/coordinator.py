@@ -147,13 +147,19 @@ class _TeeStderr:
 
     def write(self, s: str) -> int:
         self._orig.write(s)
-        self._fh.write(s)
-        self._fh.flush()
+        try:
+            self._fh.write(s)
+            self._fh.flush()
+        except Exception:
+            pass  # best-effort; never crash the coordinator
         return len(s)
 
     def flush(self) -> None:
         self._orig.flush()
-        self._fh.flush()
+        try:
+            self._fh.flush()
+        except Exception:
+            pass
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._orig, name)
