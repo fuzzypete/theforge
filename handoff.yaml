@@ -1,19 +1,18 @@
 dev_notes: |
-  summary: "Added per-run verbose log capture. Every run_task(), run_from_review(),
-    and run_from_dev() call now tees sys.stderr to ~/.forge/logs/<project>/<slug>-<run_id>.log
+  summary: "Added per-run verbose log capture. Every run_task(), run_from_review(), and
+    run_from_dev() call now tees sys.stderr to ~/.forge/logs/<project>/<slug>-<run_id>.log
     alongside the existing forge.log. Three module-level helpers handle the lifecycle:
     _begin_run_log_tee() opens the file and installs the _TeeStderr wrapper;
     _end_run_log_tee() restores sys.stderr and closes the file; _make_sigterm_handler()
-    returns a handler that emits run_end:crashed to forge.log before closing the tee
-    and re-raising. Each entry point (run_task, run_from_review, run_from_dev) uses
-    try/finally to guarantee cleanup on normal exit and KeyboardInterrupt. The feature
-    gates on config.log.enabled so all existing tests with LogConfig(enabled=False)
-    are unaffected. Log path is derived from logger._log_path (same resolved parent
-    directory as forge.log) per the P2 reviewer suggestion. A pre-existing E501 in
-    test_runner_api.py was suppressed with noqa."
+    returns a SIGTERM handler that emits run_end:crashed to forge.log before closing
+    the tee and re-raising. Each entry point wraps its body in try/finally to guarantee
+    cleanup on normal exit and KeyboardInterrupt. Feature gates on config.log.enabled
+    so all existing tests with LogConfig(enabled=False) are unaffected."
   commits:
     - sha: "08a366f"
       message: "feat(coordinator): add per-run verbose log capture"
+    - sha: "34db264"
+      message: "chore(run-log-capture): write handoff.yaml with dev notes"
   acceptance_criteria:
     - criterion: "Every forge run and forge sprint creates ~/.forge/logs/<project>/<slug>-<run_id>.log"
       status: MET
@@ -22,7 +21,7 @@ dev_notes: |
     - criterion: "The file contains the full stderr stream — both _log and _log_verbose lines"
       status: MET
       notes: "_TeeStderr wraps sys.stderr and copies every write to the log file.
-        Both _log and _log_verbose write to sys.stderr, so all output is captured."
+        Both _log and _log_verbose write to sys.stderr so all output is captured."
     - criterion: "The file is written incrementally (not buffered to end of run)"
       status: MET
       notes: "_TeeStderr.write() calls self._fh.flush() on every write."
@@ -40,17 +39,17 @@ dev_notes: |
         mirroring coord_logging.py:49."
     - criterion: "forge.log already captures run_id — the per-run filename uses the same run_id"
       status: MET
-      notes: "Both use the same _run_id variable. Per-run path is derived as
-        logger._log_path.parent / f'{task_slug}-{logger._run_id}.log'."
+      notes: "Per-run path derived as logger._log_path.parent / f'{task_slug}-{logger._run_id}.log'
+        using the same _run_id passed to StructuredLogger."
     - criterion: "Existing tests pass unchanged"
       status: MET
-      notes: "All 876 pre-existing tests pass. Feature gates on config.log.enabled;
-        all test fixtures use LogConfig(enabled=False)."
+      notes: "All 879 tests pass. Feature gates on config.log.enabled; all test fixtures
+        use LogConfig(enabled=False)."
   spec_deviations:
-    - "Spec suggested implementing in cli.py but the plan (and implementation) places it
-      in coordinator.py to cover forge sprint without requiring per-spec lifecycle hooks
-      in cli.py. The plan reviewers confirmed run_from_review() also needed coverage,
-      which is implemented."
+    - description: "Tee implemented in coordinator.py rather than cli.py as the spec suggested"
+      justification: "Placing it in cli.py cannot cover forge sprint without per-spec lifecycle
+        hooks. coordinator.py's three entry points (run_task, run_from_review, run_from_dev)
+        are the natural boundary — each gets its own slug and run_id."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
