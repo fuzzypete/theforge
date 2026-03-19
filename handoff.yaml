@@ -1,54 +1,52 @@
 dev_notes: |
   summary: >
-    Implemented four targeted changes. (1) Inserted a static preamble into
-    build_dev_prompt() immediately before {spec_content} — it tells the dev agent
-    that ACs are the definitive checklist, context sections are not requirements,
-    and ambiguity should be flagged in dev_notes. The preamble is a blockquote
-    inside the ## Spec section so it is visually co-located with the content it
-    describes. (2) Extended cmd_init() to create specs/TEMPLATE.md alongside
-    forge.yaml, guarded by an existence check to avoid silently overwriting a
-    user-customized template. The template constant (_STORY_TEMPLATE) lives near
-    the other top-level constants in cli.py. (3) Updated docs/vision.md with a
-    new "Upstream Workflow" section (brief → story → plan → dev), updated the
-    pipeline diagram block with --until flag examples, and rewrote Principle 4
-    from "Specs are the contract" to "Stories are the contract" with the AC-is-
-    normative framing. (4) Added test_preamble_appears_before_spec_content to
-    TestBuildDevPrompt; it asserts that the preamble text ("acceptance criteria
-    are the definitive checklist") appears in the prompt at an index strictly
-    before the injected spec content.
+    Added first-class `provider: deepseek` support by wiring DeepSeek into all
+    four extension points. In config.py: added "deepseek" to SUPPORTED_PROVIDERS,
+    PROVIDER_SDK_MAP (value "openai" since the SDK is shared), and
+    PROVIDER_API_KEY_MAP (key "DEEPSEEK_API_KEY"). In runner_api.py: added
+    deepseek-r1 and deepseek-v3 pricing rows; extended _is_reasoning_model to
+    match the "deepseek-r1" prefix; added _deepseek_client which uses the OpenAI
+    SDK with DEEPSEEK_API_KEY and base_url defaulting to https://api.deepseek.com.
+    Refactored _run_openai_chat, _make_openai_chat_adapter, and
+    _make_openai_chat_finalizer to accept an optional pre-built client (and
+    _run_openai_chat also accepts an optional provider name for correct cost
+    estimation). _run_deepseek and _run_loop_deepseek are thin wrappers that
+    inject the deepseek client into those refactored helpers. Both are registered
+    in PROVIDER_RUNNERS and _LOOP_RUNNERS. A new test in test_config.py verifies
+    that a forge.yaml with provider: deepseek / model: deepseek-r1 parses to the
+    correct ModelProfile.
 
   commits:
-    - sha: "20e1e11"
-      message: "feat(dev-prompt): add AC preamble to build_dev_prompt and story template to forge init"
+    - sha: "1bd6270"
+      message: "feat(providers): add first-class DeepSeek provider support"
 
   acceptance_criteria:
-    - criterion: "build_dev_prompt() includes a preamble before spec content that identifies acceptance criteria as the definitive checklist"
+    - criterion: "provider: deepseek recognized in forge.yaml profiles"
       status: MET
-      notes: "Preamble inserted as a blockquote inside the ## Spec section of the prompt template in task.py, immediately before {spec_content}."
+      notes: "Added 'deepseek' to SUPPORTED_PROVIDERS in config.py; profile validation accepts it."
 
-    - criterion: "Preamble tells the agent: context sections are not requirements, ACs are the checklist, flag ambiguity in handoff notes"
+    - criterion: "Pricing table includes deepseek-r1 and deepseek-v3"
       status: MET
-      notes: "Preamble text explicitly states: ACs are definitive checklist, context sections are informational not requirements, flag ambiguity in dev_notes."
+      notes: "Added ('deepseek', 'deepseek-r1'): (0.55, 2.19) and ('deepseek', 'deepseek-v3'): (0.27, 1.10) to PRICING_TABLE in runner_api.py."
 
-    - criterion: "forge init creates specs/TEMPLATE.md alongside forge.yaml with annotated story structure (frontmatter, problem, ACs)"
+    - criterion: "DEEPSEEK_API_KEY env var / secrets support"
       status: MET
-      notes: "cmd_init() creates specs/ dir (exist_ok=True) and writes TEMPLATE.md if it does not already exist. Template has frontmatter, Problem/context, Acceptance criteria, and Notes sections with inline comments."
+      notes: "Added 'deepseek': 'DEEPSEEK_API_KEY' to PROVIDER_API_KEY_MAP; _deepseek_client reads DEEPSEEK_API_KEY from merged env+secrets."
 
-    - criterion: "docs/vision.md updated: pipeline diagram shows --until, upstream workflow section (brief → story → plan → dev), story vs spec terminology clarified"
+    - criterion: "Base URL defaults to https://api.deepseek.com when not overridden"
       status: MET
-      notes: "Added 'Upstream Workflow' section with brief→story→plan→dev table. Updated pipeline diagram block with --until examples. Principle 4 rewritten to 'Stories are the contract' with AC-normative framing."
+      notes: "_deepseek_client sets base_url = profile.base_url or 'https://api.deepseek.com'."
 
-    - criterion: "New test verifies the preamble appears in dev prompt output"
+    - criterion: "Reasoning model detection covers DeepSeek R1 (no temperature=0)"
       status: MET
-      notes: "test_preamble_appears_before_spec_content in TestBuildDevPrompt asserts checklist text present, dev_notes reference present, and preamble index < spec content index."
+      notes: "_is_reasoning_model extended with 'or model.startswith(\"deepseek-r1\")'; both single-shot and loop paths check this before setting temperature."
 
-    - criterion: "Existing tests pass"
+    - criterion: "Existing tests pass; new test for deepseek profile parsing"
       status: MET
-      notes: "840 tests passed (pytest -q). Preamble is purely additive; no signature changes."
+      notes: "All 847 tests pass. test_deepseek_profile_parses added to TestHybridRunnerConfig in tests/test_config.py; patches DEEPSEEK_API_KEY and importlib.import_module per plan reviewer recommendation."
 
   spec_deviations: none
 
   deferred_items: none
 
   gate_result: PASS
-gate_decision: PASS
