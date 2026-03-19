@@ -11,26 +11,16 @@ dev_notes: |
   acceptance_criteria:
     - criterion: "Existing worktree with commits but no review APPROVE resumes from REVIEW"
       status: MET
-      notes: "coordinator.py ALREADY_DONE guard checks git log (commits ahead) and has_review_approve(); if commits exist but no APPROVE, redirects to _coordinator_loop with skip_dev_first_iter=True. Tested by TestAlreadyDoneOverride::test_already_done_with_commits_no_approve_resumes_review."
     - criterion: "Existing worktree with commits and a prior APPROVE allows ALREADY_DONE"
       status: MET
-      notes: "coordinator.py ALREADY_DONE guard honours ALREADY_DONE when has_review_approve() returns True. sprint._triage_spec returns skip action when APPROVE found in audit trail, and run_sprint skips without calling run_task. Tested by TestAlreadyDoneOverride and TestResumeSprintSkipApproved."
     - criterion: "Existing worktree with zero commits ahead is removed and recreated"
       status: MET
-      notes: "Already satisfied per preflight. Age-based deletion removed, but 0-commits-ahead path still returns is_stale=True. test_stale_zero_commits_ahead passes."
     - criterion: "forge run supports --resume flag (parity with forge sprint --resume)"
       status: MET
-      notes: "Added --resume argument to run_parser in cli.py. cmd_run calls _triage_spec when resume=True and dispatches to run_from_review, run_from_dev, or run_task based on triage action."
     - criterion: "Clear log output explains resume decision and which phase is resuming"
       status: MET
-      notes: "_triage_spec logs each action with reason during sprint --resume triage. coordinator.py ALREADY_DONE override logs commit count and reason. cli.py cmd_run --resume prints triage action and reason to stderr."
     - criterion: "Never deletes a worktree that has commits ahead of base without --force"
       status: MET
-      notes: "Removed age-based staleness check from _is_stale_worktree. Worktrees with commits ahead are never stale regardless of age. Only 0-commits-ahead, missing branch, or stale_worktree_days=0 trigger deletion. Tested by test_old_commit_not_stale."
-  spec_deviations:
-    - description: "Added new skip action to SpecTriage rather than reusing skip_merged"
-      justification: "skip_merged means branch merged to base; skip means approved-not-yet-merged. Keeping them distinct avoids adding approved-but-unmerged branches to merged_slugs which would incorrectly unblock dependencies."
-    - description: "Preserved gate check as secondary signal for no-APPROVE worktrees (gate-pass -> review, gate-fail -> dev)"
-      justification: "Plan reviewer P2 note suggested this to avoid sending broken code straight to review. Spec AC says resume from REVIEW but does not prohibit routing gate-fail worktrees to DEV first."
   deferred_items: none
   gate_result: PASS
+gate_decision: PASS

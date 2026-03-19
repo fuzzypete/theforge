@@ -1280,10 +1280,10 @@ class TestProjectSecrets:
         return forge_dir
 
     def test_secrets_loaded_into_config(self, tmp_path):
-        """AC-1: secrets file is loaded and stored on ForgeConfig.secrets."""
+        """AC-1: .env file is loaded and stored on ForgeConfig.secrets."""
         forge_dir = self._make_forge_dir(tmp_path)
-        (forge_dir / "secrets.yaml").write_text(
-            "ANTHROPIC_API_KEY: sk-ant-test\nOPENAI_API_KEY: sk-openai-test\n",
+        (forge_dir / ".env").write_text(
+            "ANTHROPIC_API_KEY=sk-ant-test\nOPENAI_API_KEY=sk-openai-test\n",
             encoding="utf-8",
         )
         config_path = _write_config({"project": "test"}, tmp_path)
@@ -1294,43 +1294,48 @@ class TestProjectSecrets:
         }
 
     def test_missing_secrets_file_defaults_to_empty(self, tmp_path):
-        """AC-1: absent .forge/secrets.yaml → secrets defaults to {}."""
+        """AC-2: absent .forge/.env → secrets defaults to {}."""
         config_path = _write_config({"project": "test"}, tmp_path)
         config = load_config(config_path)
         assert config.secrets == {}
 
     def test_empty_secrets_file_defaults_to_empty(self, tmp_path):
-        """AC-1: empty .forge/secrets.yaml → secrets defaults to {}."""
+        """AC-2: empty .forge/.env → secrets defaults to {}."""
         forge_dir = self._make_forge_dir(tmp_path)
-        (forge_dir / "secrets.yaml").write_text("", encoding="utf-8")
+        (forge_dir / ".env").write_text("", encoding="utf-8")
         config_path = _write_config({"project": "test"}, tmp_path)
         config = load_config(config_path)
         assert config.secrets == {}
 
     def test_malformed_secrets_raises_value_error(self, tmp_path):
-        """AC-1: malformed YAML in secrets file raises ValueError with file path."""
+        """AC-2: malformed .env raises ValueError with file path."""
         forge_dir = self._make_forge_dir(tmp_path)
-        secrets_path = forge_dir / "secrets.yaml"
-        secrets_path.write_text("key: [unclosed\n", encoding="utf-8")
+        env_path = forge_dir / ".env"
+        # dotenv_values produces None value when a key has no value (bare key with no =)
+        env_path.write_text("BARE_KEY_NO_EQUALS\n", encoding="utf-8")
         config_path = _write_config({"project": "test"}, tmp_path)
-        with pytest.raises(ValueError, match=str(secrets_path)):
+        with pytest.raises(ValueError, match=r"malformed \.env"):
             load_config(config_path)
 
-    def test_non_mapping_secrets_raises_value_error(self, tmp_path):
-        """AC-1: secrets file containing a list raises ValueError."""
-        forge_dir = self._make_forge_dir(tmp_path)
-        secrets_path = forge_dir / "secrets.yaml"
-        secrets_path.write_text("- item1\n- item2\n", encoding="utf-8")
-        config_path = _write_config({"project": "test"}, tmp_path)
-        with pytest.raises(ValueError, match="must be a YAML mapping"):
-            load_config(config_path)
-
-    def test_secret_satisfies_provider_api_key_validation(self, tmp_path):
-        """AC-2: key in secrets satisfies provider API key check even when not in os.environ."""
+    def test_secrets_yaml_triggers_migration_warning(self, tmp_path, caplog):
+        """AC-7: .forge/secrets.yaml present without .env triggers a warning."""
         forge_dir = self._make_forge_dir(tmp_path)
         (forge_dir / "secrets.yaml").write_text(
-            "OPENAI_API_KEY: sk-from-secrets\n", encoding="utf-8"
+            "ANTHROPIC_API_KEY: sk-ant-test\n", encoding="utf-8"
         )
+        config_path = _write_config({"project": "test"}, tmp_path)
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="theforge.config"):
+            config = load_config(config_path)
+        assert any("secrets.yaml" in r.message for r in caplog.records)
+        # secrets.yaml is NOT loaded — secrets defaults to {}
+        assert config.secrets == {}
+
+    def test_secret_satisfies_provider_api_key_validation(self, tmp_path):
+        """AC-2: key in .env satisfies provider API key check even when not in os.environ."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        (forge_dir / ".env").write_text("OPENAI_API_KEY=sk-from-secrets\n", encoding="utf-8")
         config_path = _write_config(
             {
                 "profiles": {
@@ -1350,10 +1355,10 @@ class TestProjectSecrets:
         assert config.review_pool[0].provider == "openai"
 
     def test_plan_agent_review_secret_satisfies_validation(self, tmp_path):
-        """AC-2: plan_agent_review provider key in secrets satisfies validation."""
+        """AC-2: plan_agent_review provider key in .env satisfies validation."""
         forge_dir = self._make_forge_dir(tmp_path)
-        (forge_dir / "secrets.yaml").write_text(
-            "ANTHROPIC_API_KEY: sk-ant-from-secrets\n", encoding="utf-8"
+        (forge_dir / ".env").write_text(
+            "ANTHROPIC_API_KEY=sk-ant-from-secrets\n", encoding="utf-8"
         )
         config_path = _write_config(
             {
@@ -1371,3 +1376,39 @@ class TestProjectSecrets:
         ):
             config = load_config(config_path)
         assert config.plan_agent_review.provider == "anthropic"
+
+    def test_ntfy_url_from_env_when_forge_yaml_omits_url(self, tmp_path):
+        """AC-4: NTFY_URL in .forge/.env is used when forge.yaml ntfy block has no url."""
+        forge_dir = self._make_forge_dir(tmp_path)
+        (forge_dir / ".env").write_text("NTFY_URL=https://ntfy.sh/my-topic\n", encoding="utf-8")
+        config_path = _write_config(
+            {
+                "project": "test",
+                "notifications": {"backend": "ntfy", "ntfy": {"priority": "default"}},
+            },
+            tmp_path,
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            config = load_config(config_path)
+        assert config.notifications.ntfy is not None
+        assert config.notifications.ntfy.url == "https://ntfy.sh/my-topic"
+
+    def test_ntfy_url_missing_warns_and_disables(self, tmp_path, caplog):
+        """AC-4: ntfy backend with no URL in forge.yaml, .env, or os.environ warns and disables."""
+        self._make_forge_dir(tmp_path)
+        config_path = _write_config(
+            {
+                "project": "test",
+                "notifications": {"backend": "ntfy", "ntfy": {"priority": "high"}},
+            },
+            tmp_path,
+        )
+        import logging
+
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            caplog.at_level(logging.WARNING, logger="theforge.config"),
+        ):
+            config = load_config(config_path)
+        assert config.notifications.ntfy is None
+        assert any("no URL" in r.message for r in caplog.records)

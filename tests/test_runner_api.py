@@ -1251,12 +1251,13 @@ class TestDeepSeekProvider:
     # ── _deepseek_client base_url ─────────────────────────────────────
 
     def _patch_openai(self):
-        """Return a context manager that stubs the openai module for _deepseek_client."""
+        """Return a context manager that stubs the openai and httpx modules for _deepseek_client."""
         import sys
 
-        mock_module = MagicMock()
-        mock_module.OpenAI = MagicMock()
-        return patch.dict(sys.modules, {"openai": mock_module}), mock_module
+        mock_openai = MagicMock()
+        mock_openai.OpenAI = MagicMock()
+        mock_httpx = MagicMock()
+        return patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}), mock_openai
 
     def test_deepseek_client_default_base_url(self):
         profile = self._make_deepseek_profile()

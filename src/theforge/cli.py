@@ -187,8 +187,8 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
 
 # ── Commands ─────────────────────────────────────────────────────────
 
-_SECRETS_FILE = ".forge/secrets.yaml"
-_GITIGNORE_ENTRY = ".forge/secrets.yaml"
+_SECRETS_FILE = ".forge/.env"
+_GITIGNORE_ENTRY = ".forge/.env"
 
 _STORY_TEMPLATE = """\
 ---
@@ -227,7 +227,7 @@ read this as context, not as requirements.
 
 
 def _ensure_gitignored(project_root: Path) -> None:
-    """Append .forge/secrets.yaml to .gitignore if not already present."""
+    """Append .forge/.env to .gitignore if not already present."""
     gitignore = project_root / ".gitignore"
     if gitignore.exists():
         content = gitignore.read_text(encoding="utf-8")
@@ -240,36 +240,42 @@ def _ensure_gitignored(project_root: Path) -> None:
 
 
 def _generate_secrets_skeleton() -> str:
-    """Generate secrets.yaml skeleton from PROVIDER_API_KEY_MAP."""
+    """Generate .env skeleton from PROVIDER_API_KEY_MAP."""
     lines = [
-        "# .forge/secrets.yaml",
-        "# Project-scoped API keys for TheForge.",
-        "# This file is gitignored. Do not commit it.",
-        "#",
-        "# Uncomment and fill in the keys needed for your forge.yaml profiles.",
+        "# .forge/.env — project-scoped secrets for TheForge",
+        "# Copy this file to .forge/.env and fill in the values you need.",
+        "# This file (.env.example) is tracked; .env is gitignored.",
         "",
     ]
     for _provider, key in PROVIDER_API_KEY_MAP.items():
-        lines.append(f"# {key}: <your-key-here>")
+        lines.append(f"# {key}=")
+    lines.append("# NTFY_URL=https://ntfy.sh/your-topic-here")
     lines.append("")
     return "\n".join(lines)
 
 
 def cmd_secrets_init(args: argparse.Namespace) -> int:
-    """Create .forge/secrets.yaml skeleton and update .gitignore."""
+    """Create .forge/.env skeleton and update .gitignore."""
     project_root = Path.cwd()
-    secrets_path = project_root / ".forge" / "secrets.yaml"
+    env_path = project_root / ".forge" / ".env"
+    secrets_yaml_path = project_root / ".forge" / "secrets.yaml"
 
-    if secrets_path.exists():
+    if secrets_yaml_path.exists() and not env_path.exists():
         print(
-            f"Warning: {secrets_path} already exists. Not overwriting.",
+            "⚠ .forge/secrets.yaml detected — migrate to .forge/.env (see .forge/.env.example)",
+            file=sys.stderr,
+        )
+
+    if env_path.exists():
+        print(
+            f"Warning: {env_path} already exists. Not overwriting.",
             file=sys.stderr,
         )
         return 0
 
-    secrets_path.parent.mkdir(parents=True, exist_ok=True)
-    secrets_path.write_text(_generate_secrets_skeleton(), encoding="utf-8")
-    print(f"Created {secrets_path}")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(_generate_secrets_skeleton(), encoding="utf-8")
+    print(f"Created {env_path}")
 
     _ensure_gitignored(project_root)
     print(f"Updated .gitignore to exclude {_GITIGNORE_ENTRY}")
