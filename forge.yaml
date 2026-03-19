@@ -136,5 +136,5 @@ plan_agent_review:
 notifications:
   backend: ntfy
   ntfy:
-    url: https://ntfy.sh/theforge-pwickersham
+    # url omitted — resolved from NTFY_URL in .forge/.env
     priority: high
