@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +85,16 @@ _RESPONSES_API_MODELS: set[str] = {
     "gpt-5.2-codex",
     "gpt-5.3-codex",
 }
+
+# OpenAI reasoning models that do not support temperature=0.
+# These models only accept temperature=1 (the default).
+_REASONING_MODEL_RE = re.compile(r"^o\d")
+
+
+def _is_reasoning_model(model: str) -> bool:
+    """Return True for OpenAI reasoning models (o1, o3, o4-mini, etc.)."""
+    return bool(_REASONING_MODEL_RE.match(model))
+
 
 # Submit tool names — loop-internal, not in TOOL_REGISTRY
 SUBMIT_REVIEW = "submit_review"
@@ -330,10 +342,12 @@ class AgentLoopManager:
         self._working_dir = working_dir
         self._tools = {t.name: t for t in tools}
         self._adapter = provider_adapter
-        self._max_iterations = max_iterations
+        # Per-profile max_iterations takes precedence over the constructor default
+        self._max_iterations = profile.max_iterations or max_iterations
         self._usage = _UsageAccumulator()
         self._total_tool_calls = 0
         self._deadline = time.monotonic() + profile.timeout_seconds
+        self._nudge_sent = False
 
     def _timed_out(self) -> bool:
         return time.monotonic() > self._deadline
@@ -454,6 +468,7 @@ class AgentLoopManager:
             try:
                 turn = self._call_with_retry(messages, tool_schemas)
             except Exception as exc:
+                _log_verbose(traceback.format_exc())
                 return self._failure_result(f"Provider API error: {exc}")
 
             self._usage.add(turn.usage)
@@ -534,6 +549,22 @@ class AgentLoopManager:
 
             # Append assistant turn + all tool results in a single history entry
             messages = self._append_tool_results(messages, turn.tool_calls, turn_results)
+
+            # Nudge: when approaching the iteration limit, tell the model to wrap up
+            if not self._nudge_sent:
+                nudge_threshold = int(self._max_iterations * 0.8)
+                remaining = self._max_iterations - iterations
+                if iterations >= nudge_threshold and remaining > 0:
+                    self._nudge_sent = True
+                    nudge_msg = (
+                        f"[SYSTEM] You have {remaining} iterations remaining before "
+                        f"this session terminates. Finish your analysis and submit "
+                        f"your response now using the submit tool."
+                    )
+                    messages = list(messages)
+                    messages.append({"role": "user", "content": nudge_msg})
+                    label = self._profile.name or f"{self._provider}/{self._profile.model}"
+                    _log_verbose(f"  ⚠ {label} nudge sent ({remaining} iterations remaining)")
 
         return self._timeout_result(iterations, reason="max iterations reached")
 
@@ -652,15 +683,17 @@ def _run_openai_chat(
     client = _openai_client(profile, secrets)
     schema = review_json_schema()
     try:
-        response = client.chat.completions.create(
-            model=profile.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            response_format={
+        create_kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {
                 "type": "json_schema",
                 "json_schema": {"name": "review_output", "schema": schema, "strict": True},
             },
-        )
+        }
+        if not _is_reasoning_model(profile.model):
+            create_kwargs["temperature"] = 0
+        response = client.chat.completions.create(**create_kwargs)
         output_text = response.choices[0].message.content or ""
         usage = response.usage
         return _openai_result(
@@ -937,8 +970,9 @@ def _make_openai_chat_adapter(
         kwargs: dict[str, Any] = {
             "model": profile.model,
             "messages": oai_messages,
-            "temperature": 0,
         }
+        if not _is_reasoning_model(profile.model):
+            kwargs["temperature"] = 0
         if tools:
             kwargs["tools"] = tools
 
@@ -1198,7 +1232,8 @@ def _translate_messages_google(messages: list[dict]) -> list[dict]:
                 }
                 for r in msg.get("results", [])
             ]
-            result.append({"role": "user", "parts": parts})
+            if parts:
+                result.append({"role": "user", "parts": parts})
     return result
 
 
@@ -1234,10 +1269,14 @@ def _make_google_adapter(
         text_parts: list[str] = []
 
         for candidate in response.candidates or []:
-            for part in candidate.content.parts if candidate.content else []:
+            parts = (candidate.content.parts if candidate.content else None) or []
+            for part in parts:
                 if hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
-                    args = dict(fc.args) if fc.args else {}
+                    try:
+                        args = dict(fc.args) if fc.args is not None else {}
+                    except (TypeError, AttributeError):
+                        args = {}
                     tool_calls.append(
                         ToolCallRequest(
                             id=f"call_{len(tool_calls)}",
@@ -1247,6 +1286,13 @@ def _make_google_adapter(
                     )
                 elif hasattr(part, "text") and part.text:
                     text_parts.append(part.text)
+
+        if not tool_calls and not text_parts:
+            feedback = getattr(response, "prompt_feedback", None)
+            if feedback:
+                block_reason = getattr(feedback, "block_reason", None)
+                if block_reason:
+                    text_parts.append(f"[Blocked: {block_reason}]")
 
         usage_meta = response.usage_metadata
         usage: ModelUsage | None = None

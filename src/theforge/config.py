@@ -105,6 +105,9 @@ class ModelProfile:
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
     base_url: str | None = None  # overrides provider's default API endpoint (Ollama etc.)
     max_tool_output_bytes: int = 51200  # cap for tool output (50KB default)
+    max_iterations: int | None = (
+        None  # override default agent loop iterations (None = use default)
+    )
 
     @property
     def mode(self) -> str:
@@ -332,6 +335,9 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         allowed_tools=tuple(tools) if tools is not None else base.allowed_tools,
         reasoning_effort=reasoning_effort,
         base_url=data.get("base_url", base.base_url),
+        max_iterations=int(max_iter_raw)
+        if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
+        else None,
     )
 
 
@@ -516,6 +522,9 @@ def _parse_profile(
         reasoning_effort=reasoning_effort,
         review_role=data.get("review_role"),
         base_url=data.get("base_url"),
+        max_iterations=int(max_iter_raw)
+        if (max_iter_raw := data.get("max_iterations")) is not None
+        else None,
     )
 
 

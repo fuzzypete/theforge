@@ -42,15 +42,20 @@ class ReviewResult:
 
 
 def _sanitize_yaml_text(yaml_text: str) -> str:
-    """Replace backslash-escaped quotes that break YAML double-quoted strings.
+    """Sanitize reviewer output text to survive YAML parsing.
 
-    In YAML, \" inside a double-quoted string is a valid escape for a literal
-    quote character — NOT a string terminator. Reviewers sometimes write
-    descriptions ending with r\" thinking it closes the string, causing the
-    parser to scan past the intended end and hit EOF. Replacing \" with an
-    apostrophe preserves readability without breaking the YAML structure.
+    Fixes:
+    1. Backslash-escaped quotes (\\") → apostrophe. Reviewers sometimes write
+       descriptions ending with r\\" thinking it closes the string.
+    2. Inline backtick code (`` `foo.bar` ``) → plain text. Backtick-wrapped
+       code containing colons (e.g., `candidate.content.parts`) causes YAML
+       to interpret the colon as a mapping separator.
     """
-    return yaml_text.replace('\\"', "'")
+    text = yaml_text.replace('\\"', "'")
+    # Strip inline backticks — they're markdown formatting, not meaningful in YAML.
+    # This prevents `foo: bar` from being parsed as a YAML mapping key.
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    return text
 
 
 def parse_review_json(data: dict) -> ReviewResult:

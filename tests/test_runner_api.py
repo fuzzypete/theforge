@@ -14,6 +14,7 @@ from theforge.runner_api import (
     AgentLoopManager,
     LoopTurn,
     ToolCallRequest,
+    _make_google_adapter,
     run_api_agent,
 )
 from theforge.tool_runtime import TOOL_REGISTRY
@@ -261,6 +262,148 @@ class TestAgentLoopLifecycle:
         assert "max iterations" in result.output
         assert result.model_usage  # cost still reported
         assert call_count[0] == 3
+
+    def test_profile_max_iterations_overrides_default(self, tmp_path):
+        """ModelProfile.max_iterations takes precedence over constructor default."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"c{call_count[0]}", name="glob", arguments={"pattern": "*.py"}
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=300)
+        # Override max_iterations on the profile itself
+        profile = ModelProfile(
+            name=profile.name,
+            provider=profile.provider,
+            cli=profile.cli,
+            model=profile.model,
+            budget_usd=profile.budget_usd,
+            timeout_seconds=profile.timeout_seconds,
+            allowed_tools=profile.allowed_tools,
+            max_iterations=5,
+        )
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            max_iterations=3,  # would be 3 without profile override
+        )
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert not result.success
+        # Profile's max_iterations=5 should win over constructor's max_iterations=3
+        assert call_count[0] == 5
+
+    def test_nudge_injected_near_iteration_limit(self, tmp_path):
+        """A wrap-up nudge message is injected at ~80% of the iteration budget."""
+        messages_seen: list[list[dict]] = []
+
+        def adapter(messages, tools):
+            messages_seen.append(list(messages))
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"c{len(messages_seen)}", name="glob", arguments={"pattern": "*.py"}
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=300)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            max_iterations=5,  # nudge at iteration 4 (80% of 5)
+        )
+        manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        # After iteration 4, a nudge user message should be injected
+        # The 5th call's messages should contain the nudge
+        last_messages = messages_seen[-1]
+        nudge_msgs = [
+            m
+            for m in last_messages
+            if m.get("role") == "user" and "iterations remaining" in m.get("content", "")
+        ]
+        assert len(nudge_msgs) == 1, f"Expected exactly 1 nudge, got {len(nudge_msgs)}"
+        assert "submit" in nudge_msgs[0]["content"].lower()
+
+    def test_nudge_not_sent_when_submit_before_threshold(self, tmp_path):
+        """No nudge if the model submits before reaching 80% of iterations."""
+        messages_seen: list[list[dict]] = []
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            messages_seen.append(list(messages))
+            if call_count[0] == 2:
+                # Submit on second iteration (well before 80% of 10)
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="submit1",
+                            name=SUBMIT_REVIEW,
+                            arguments={"verdict": "APPROVE", "summary": "lgtm"},
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"c{call_count[0]}", name="glob", arguments={"pattern": "*.py"}
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        profile = _make_profile(timeout_seconds=300)
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            max_iterations=10,
+        )
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert result.success
+        # No nudge should have been sent
+        for msgs in messages_seen:
+            nudge_msgs = [
+                m
+                for m in msgs
+                if m.get("role") == "user" and "iterations remaining" in m.get("content", "")
+            ]
+            assert len(nudge_msgs) == 0
 
     def test_timeout_terminates_loop_with_accumulated_cost(self, tmp_path):
         """Wall-clock timeout terminates loop, cost is still reported."""
@@ -532,6 +675,106 @@ class TestAgentLoopLifecycle:
         # Tool result should contain the file contents
         tool_result_msg = second_call_msgs[2]
         assert "answer = 42" in tool_result_msg["results"][0]["content"]
+
+    def test_adapter_type_error_returns_provider_api_error(self, tmp_path):
+        """Adapter raising TypeError('NoneType' object is not iterable) → failure result."""
+
+        def adapter(messages, tools):
+            raise TypeError("'NoneType' object is not iterable")
+
+        manager = self._make_manager(tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert not result.success
+        assert "Provider API error" in result.output
+        assert "'NoneType' object is not iterable" in result.output
+
+    def _make_google_modules(self, fake_client):
+        """Build sys.modules mocks for google.genai, wiring attributes correctly.
+
+        `import google.genai as genai` resolves via attribute access on the google
+        module object, not directly from sys.modules["google.genai"], so we must set
+        mock_google.genai = mock_genai and mock_genai.types = mock_genai_types.
+        """
+        import sys
+
+        mock_genai_types = MagicMock()
+        mock_genai = MagicMock()
+        mock_genai.Client.return_value = fake_client
+        mock_genai.types = mock_genai_types
+
+        mock_google = MagicMock()
+        mock_google.genai = mock_genai
+
+        modules = {
+            "google": mock_google,
+            "google.genai": mock_genai,
+            "google.genai.types": mock_genai_types,
+        }
+        return sys.modules, modules, mock_genai, mock_genai_types
+
+    def test_google_adapter_fc_args_none_parsed_as_empty_dict(self, tmp_path):
+        """Google adapter with fc.args = None should produce arguments={}."""
+        # Build a fake response where a function_call part has args=None
+        fake_fc = MagicMock()
+        fake_fc.name = "submit_review"
+        fake_fc.args = None
+
+        fake_part = MagicMock()
+        fake_part.function_call = fake_fc
+        fake_part.text = None
+
+        fake_candidate = MagicMock()
+        fake_candidate.content = MagicMock()
+        fake_candidate.content.parts = [fake_part]
+
+        fake_response = MagicMock()
+        fake_response.candidates = [fake_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        import sys
+
+        _, modules, _, _ = self._make_google_modules(fake_client)
+        profile = _make_profile(provider="google", model="gemini-2.5-flash")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "hi"}], [])
+
+        assert len(turn.tool_calls) == 1
+        assert turn.tool_calls[0].arguments == {}
+
+    def test_google_adapter_content_parts_none_yields_empty(self, tmp_path):
+        """Google adapter with candidate.content.parts = None → no tool_calls, no text."""
+        fake_candidate = MagicMock()
+        fake_candidate.content = MagicMock()
+        fake_candidate.content.parts = None  # parts is None, not []
+
+        fake_response = MagicMock()
+        fake_response.candidates = [fake_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        import sys
+
+        _, modules, _, _ = self._make_google_modules(fake_client)
+        profile = _make_profile(provider="google", model="gemini-2.5-flash")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "hi"}], [])
+
+        assert turn.tool_calls == []
+        assert turn.text_output is None
 
 
 class TestRunApiAgentLoopIntegration:
