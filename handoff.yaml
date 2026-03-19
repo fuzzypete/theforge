@@ -1,18 +1,22 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented lifecycle hooks: HooksConfig dataclass in config.py with post_run,
-    post_merge, post_sprint, pre_run fields; new coord_hooks.py with run_hook() (subprocess
-    executor, best-effort, never raises, emits structured log event) and four payload builders;
-    pre_run fires before WORKSPACE in run_task (non-zero aborts); post_run fires after the
-    coordinator loop in all three entry points; post_merge fires after successful auto-merge
-    in _finalize_approve (run_id threaded through _run_review_phase); post_sprint fires after
-    _write_sprint_audit in sprint.py; two reference shell scripts under .forge/hooks/;
-    16 unit tests; 921 tests pass."
+  summary: "Implemented lifecycle hooks: HooksConfig dataclass in config.py; new coord_hooks.py
+    with run_hook() (subprocess executor, best-effort, never raises, emits structured log event)
+    and four payload builders; pre_run fires before WORKSPACE (non-zero aborts); post_run fires
+    after the coordinator loop via _fire_post_run_hook() helper; post_merge after successful
+    auto-merge; post_sprint after _write_sprint_audit. Iter 1 review: fixed P1 (malformed
+    command strings now silently skipped via shlex.split ValueError catch), extracted
+    _fire_post_run_hook() to eliminate post_run duplication, simplified verdict fallback.
+    17 unit tests; 921 tests pass."
   commits:
     - sha: "c3c5c66"
       message: "feat(hooks): add lifecycle hooks — post_run, post_merge, post_sprint, pre_run"
     - sha: "46e8e37"
       message: "chore: write handoff.yaml for lifecycle-hooks story"
+    - sha: "aca92cd"
+      message: "fix(lifecycle-hooks): rewrite dev handoff to match schema"
+    - sha: "7f2b2ea"
+      message: "fix(hooks): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "forge.yaml hooks block parsed into ForgeConfig.hooks"
       status: MET
@@ -40,7 +44,7 @@ dev_notes: |
       notes: "run_hook() returns HookResult on non-zero exit, logs warning. Only pre_run call site checks exit_code != 0 to abort."
     - criterion: "run_hook() unit-tested with mocked subprocess"
       status: MET
-      notes: "tests/test_coord_hooks.py: 10 run_hook tests (success, non-zero, timeout, exception, missing file, non-executable, system command, log events, stdin payload) + 6 payload builder tests."
+      notes: "tests/test_coord_hooks.py: 11 run_hook tests (success, non-zero, timeout, exception, missing file, non-executable, malformed command, system command, log events, stdin payload) + 6 payload builder tests."
     - criterion: "Reference scripts committed under .forge/hooks/"
       status: MET
       notes: ".forge/hooks/post-run-gh-issues.sh and .forge/hooks/post-run-backlog-sync.sh committed verbatim from spec with executable bit set."
@@ -49,7 +53,7 @@ dev_notes: |
       notes: "run_hook() calls logger._safe_emit('hook', hook=label, success=..., exit_code=..., duration_s=...) unconditionally when logger is not None."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "921 tests pass (905 existing + 16 new)."
+      notes: "921 tests pass (904 existing + 17 new)."
   spec_deviations:
     - description: "post_run fires inside coordinator entry points before returning, not after generate_audit_log in cli.py. The plan assumed generate_audit_log would run inside the coordinator, but it is called by cli.py and sprint.py after the coordinator returns."
       justification: "Plan reviewer P1 note flagged this exact issue and identified this as the cleaner alternative. All spec-required payload fields are available from CoordinatorState and CoordinatorResult without needing the audit dict."
