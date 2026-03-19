@@ -352,6 +352,151 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.plan_agent_review.enabled is False
 
+    def test_plan_agent_review_pool_format_loads(self, tmp_path):
+        """AC-1: pool format loads all entries as ModelProfile objects."""
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {
+                            "name": "opus-plan-reviewer",
+                            "cli": "claude",
+                            "model": "opus",
+                            "budget_usd": 2.00,
+                            "timeout_seconds": 600,
+                            "allowed_tools": ["Read", "Bash", "Glob", "Grep"],
+                        },
+                        {
+                            "name": "sonnet-plan-reviewer",
+                            "cli": "claude",
+                            "model": "sonnet",
+                            "budget_usd": 1.00,
+                            "timeout_seconds": 300,
+                            "allowed_tools": ["Read", "Glob", "Grep"],
+                        },
+                    ],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        par = config.plan_agent_review
+        assert par.enabled is True
+        assert len(par.pool) == 2
+        assert par.pool[0].name == "opus-plan-reviewer"
+        assert par.pool[0].model == "opus"
+        assert par.pool[0].budget_usd == pytest.approx(2.00)
+        assert par.pool[1].name == "sonnet-plan-reviewer"
+        assert par.pool[1].model == "sonnet"
+
+    def test_plan_agent_review_pool_profiles_property(self, tmp_path):
+        """AC-7: profiles property returns pool list when pool is non-empty."""
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {
+                            "name": "reviewer-a",
+                            "cli": "claude",
+                            "model": "opus",
+                            "budget_usd": 2.00,
+                            "timeout_seconds": 600,
+                        },
+                    ],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        profiles = config.plan_agent_review.profiles
+        assert len(profiles) == 1
+        assert profiles[0].name == "reviewer-a"
+        assert profiles[0].model == "opus"
+
+    def test_plan_agent_review_legacy_format_profiles_property(self, tmp_path):
+        """AC-1/AC-7: legacy single-profile format converts to pool of one via profiles."""
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "cli": "claude",
+                    "model": "opus",
+                    "budget_usd": 2.00,
+                    "timeout": 600,
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        par = config.plan_agent_review
+        assert par.pool == []  # legacy: no pool entries
+        profiles = par.profiles
+        assert len(profiles) == 1
+        assert profiles[0].model == "opus"
+        assert profiles[0].budget_usd == pytest.approx(2.00)
+
+    def test_plan_agent_review_pool_provider_entry(self, tmp_path):
+        """AC-1: pool entries with provider are accepted."""
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {
+                            "name": "openai-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                            "budget_usd": 1.00,
+                            "timeout_seconds": 120,
+                        },
+                    ],
+                }
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        par = config.plan_agent_review
+        assert len(par.pool) == 1
+        assert par.pool[0].provider == "openai"
+        assert par.pool[0].cli is None
+
+    def test_plan_agent_review_pool_empty_list_raises(self, tmp_path):
+        """pool: [] (empty) is rejected."""
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [],
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="plan_agent_review.pool must be a non-empty list"):
+            load_config(config_path)
+
+    def test_plan_agent_review_pool_duplicate_names_raises(self, tmp_path):
+        """Duplicate names in pool entries raises ValueError."""
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "dup", "cli": "claude", "model": "sonnet"},
+                        {"name": "dup", "cli": "claude", "model": "opus"},
+                    ],
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="Duplicate names in plan_agent_review.pool"):
+            load_config(config_path)
+
 
 class TestAllowedToolsConfig:
     def test_empty_allowed_tools_is_empty(self, tmp_path):

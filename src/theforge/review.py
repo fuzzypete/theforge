@@ -296,6 +296,66 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
     )
 
 
+def merge_plan_review_results(
+    results: list[PlanReviewResult], names: list[str]
+) -> PlanReviewResult:
+    """Merge multiple PlanReviewResults into one without an LLM call.
+
+    Expects per-reviewer advisory downgrade to have already been applied
+    (REJECT with no P0 and no parse_errors → APPROVE) before calling this.
+
+    Rules:
+    - Reviewers with parse_errors are excluded (caller should log a warning).
+    - If no valid reviewers remain → REJECT with combined parse errors.
+    - If any remaining reviewer has a P0 finding → REJECT.
+    - Else → APPROVE (P1s are advisory; included in merged findings).
+    - All findings are prefixed with ``[name]`` for attribution.
+    """
+    import logging as _logging
+
+    valid: list[tuple[str, PlanReviewResult]] = []
+    parse_error_parts: list[str] = []
+    for name, result in zip(names, results):
+        if result.parse_errors:
+            _logging.getLogger(__name__).warning(
+                "PLAN_REVIEW: excluding %s due to parse errors: %s",
+                name,
+                "; ".join(result.parse_errors),
+            )
+            for e in result.parse_errors:
+                parse_error_parts.append(f"[{name}] {e}")
+        else:
+            valid.append((name, result))
+
+    if not valid:
+        return PlanReviewResult(
+            verdict="REJECT",
+            findings=[],
+            parse_errors=parse_error_parts
+            or ["All plan reviewers failed or produced parse errors"],
+        )
+
+    has_p0 = any(f.severity == "P0" for name, r in valid for f in r.findings)
+    verdict = "REJECT" if has_p0 else "APPROVE"
+
+    all_findings: list[PlanReviewFinding] = []
+    for name, r in valid:
+        for f in r.findings:
+            all_findings.append(
+                PlanReviewFinding(
+                    severity=f.severity,
+                    description=f"[{name}] {f.description}",
+                    suggestion=f.suggestion,
+                )
+            )
+
+    return PlanReviewResult(
+        verdict=verdict,
+        findings=all_findings,
+        parse_errors=[],
+    )
+
+
 def plan_review_findings_to_text(result: PlanReviewResult) -> str:
     """Convert plan review findings to text for feeding back into plan regeneration."""
     if not result.findings:

@@ -18,6 +18,7 @@ def save_sessions(
     workspace_path: Path,
     dev_session_id: str | None,
     reviewer_session_ids: dict[str, str],
+    plan_review_session_ids: dict[str, str] | None = None,
 ) -> None:
     """Persist session IDs to <workspace_path>/.forge/sessions.json.
 
@@ -32,6 +33,8 @@ def save_sessions(
             data["dev_session_id"] = dev_session_id
         if reviewer_session_ids:
             data["reviewer_session_ids"] = reviewer_session_ids
+        if plan_review_session_ids:
+            data["plan_review_session_ids"] = plan_review_session_ids
         target.write_text(json.dumps(data, indent=2))
     except OSError as exc:
         _cu._log(f"Warning: could not save session state to {_SESSIONS_FILE}: {exc}")
