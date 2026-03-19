@@ -1,63 +1,120 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented lifecycle hooks: HooksConfig dataclass in config.py; new coord_hooks.py
-    with run_hook() (subprocess executor, best-effort, never raises, emits structured log event)
-    and four payload builders; pre_run fires before WORKSPACE (non-zero aborts); post_run fires
-    after the coordinator loop via _fire_post_run_hook() helper; post_merge after successful
-    auto-merge; post_sprint after _write_sprint_audit. Iter 1 review: fixed P1 (malformed
-    command strings now silently skipped via shlex.split ValueError catch), extracted
-    _fire_post_run_hook() to eliminate post_run duplication, simplified verdict fallback.
-    17 unit tests; 921 tests pass."
+  summary: >
+    Implemented project-local log directory with per-story trace artifacts.
+    All log and trace artifacts now land under <project_root>/.forge/logs/
+    with a per-story directory structure that survives worktree cleanup.
+    forge.log moves from ~/.forge/logs/<project>/ to <project>/.forge/logs/.
+    A story log dir is created early in run_task before the tee is installed.
+    Per-run tee writes run-<id>.log, dev iterations write
+    dev-iter-N-<profile>.log, review cycles write review-cycle-N/<profile>.yaml
+    + synthesized.yaml, preflight writes preflight.yaml, approved plan
+    snapshots are copied as plan.md, plan-review/<profile>.yaml per reviewer,
+    and the final audit is copied as audit.yaml. Sprint runs nest under the
+    sprint name: .forge/logs/<sprint-name>/<slug>/. Sprint completion writes
+    sprint-summary.yaml alongside the existing sprint-audit.yaml.
+
   commits:
-    - sha: "c3c5c66"
-      message: "feat(hooks): add lifecycle hooks — post_run, post_merge, post_sprint, pre_run"
-    - sha: "46e8e37"
-      message: "chore: write handoff.yaml for lifecycle-hooks story"
-    - sha: "aca92cd"
-      message: "fix(lifecycle-hooks): rewrite dev handoff to match schema"
-    - sha: "7f2b2ea"
-      message: "fix(hooks): address review findings (iter 1)"
+    - sha: "f9d470b"
+      message: "feat(logs): project-local log directory with per-story trace artifacts"
+
   acceptance_criteria:
-    - criterion: "forge.yaml hooks block parsed into ForgeConfig.hooks"
+    - criterion: "All log and trace artifacts land under <project_root>/.forge/logs/"
       status: MET
-      notes: "HooksConfig dataclass added; ForgeConfig.hooks field added; load_config() parses the hooks key."
-    - criterion: "post_run fires after every completed run with full payload"
+      notes: >
+        forge.log goes to .forge/logs/forge.log (config.py default changed).
+        Per-run tee, dev iteration logs, review cycle artifacts, preflight.yaml,
+        plan.md, plan-review/, and audit.yaml all go to .forge/logs/<slug>/.
+
+    - criterion: "forge.log moves from ~/.forge/logs/<project>/ to <project>/.forge/logs/"
       status: MET
-      notes: "Called at end of run_task, run_from_dev, run_from_review before logger run_end emit. Payload built from CoordinatorState/CoordinatorResult directly."
-    - criterion: "post_merge fires after successful auto-merge"
+      notes: >
+        config.py default changed from ~/.forge/logs/{project}/forge.log to
+        .forge/logs/forge.log. coord_logging.py resolves relative paths against
+        project_root. Best-effort migration: if old path exists and new doesn't,
+        moves it and creates a symlink from old to new.
+
+    - criterion: "Per-story directory created with slug name (or sprint/slug for sprint runs)"
       status: MET
-      notes: "_finalize_approve fires post_merge after merge_info[merged] is True. run_id threaded from _coordinator_loop through _run_review_phase to _finalize_approve."
-    - criterion: "post_sprint fires after sprint audit is written"
+      notes: >
+        _make_story_log_dir() creates .forge/logs/<slug>/ for standalone runs
+        and .forge/logs/<sprint-name>/<slug>/ for sprint runs. Created early
+        in run_task before the tee is installed.
+
+    - criterion: "Raw reviewer YAML outputs stored per cycle, per reviewer profile"
       status: MET
-      notes: "sprint.py fires post_sprint after _write_sprint_audit returns, using _sprint_run_id."
-    - criterion: "pre_run fires before WORKSPACE; non-zero exit aborts run"
+      notes: >
+        _run_review_pool() writes review-cycle-N/<profile>.yaml per reviewer
+        using _write_log_artifact(). Existing .forge/traces/ writes preserved.
+
+    - criterion: "Plan reviewer outputs stored in plan-review/ subdirectory"
       status: MET
-      notes: "Fires in run_task only before WORKSPACE phase. Non-zero exit returns ESCALATE CoordinatorResult immediately."
-    - criterion: "All hook payloads include project, slug, run_id at minimum"
+      notes: >
+        After agent plan review approval, per-reviewer outputs written to
+        plan-review/<profile>.yaml in story log dir.
+
+    - criterion: "Approved plan snapshot stored as plan.md"
       status: MET
-      notes: "All four payload builders include event, project, slug/sprint, and run_id."
-    - criterion: "Hook timeout enforced (default 30s); exceeded = warning, not failure"
+      notes: >
+        After each plan review approval (both agent and human paths), the
+        approved plan text is written to plan.md in story log dir.
+
+    - criterion: "Preflight verdict stored as preflight.yaml"
       status: MET
-      notes: "subprocess.TimeoutExpired caught in run_hook(); logs warning, returns HookResult(success=False, exit_code=-1). Never raises."
-    - criterion: "Hook exit non-zero (except pre_run): warning logged, run unaffected"
+      notes: >
+        After PREFLIGHT completes, writes preflight.yaml with verdict, reason,
+        complexity, cost_usd, and duration_s.
+
+    - criterion: "audit.yaml copied to per-story log dir at run completion"
       status: MET
-      notes: "run_hook() returns HookResult on non-zero exit, logs warning. Only pre_run call site checks exit_code != 0 to abort."
-    - criterion: "run_hook() unit-tested with mocked subprocess"
+      notes: >
+        cli.py _write_audit() copies audit to result.state.log_dir/audit.yaml.
+        sprint.py also copies per-spec audit to story log dir.
+
+    - criterion: "Dev agent stdout/stderr captured per iteration"
       status: MET
-      notes: "tests/test_coord_hooks.py: 11 run_hook tests (success, non-zero, timeout, exception, missing file, non-executable, malformed command, system command, log events, stdin payload) + 6 payload builder tests."
-    - criterion: "Reference scripts committed under .forge/hooks/"
+      notes: >
+        coord_phases.py _run_dev_phase() writes dev-iter-N-<profile>.log
+        using write_trace() to state.log_dir after each dev invocation.
+
+    - criterion: "Sprint runs nest stories under sprint name directory"
       status: MET
-      notes: ".forge/hooks/post-run-gh-issues.sh and .forge/hooks/post-run-backlog-sync.sh committed verbatim from spec with executable bit set."
-    - criterion: "Structured log event emitted for each hook invocation"
+      notes: >
+        sprint_name parameter added to run_task, run_from_review, run_from_dev.
+        sprint.py passes manifest.name as sprint_name to all three entry points.
+
+    - criterion: "sprint-summary.yaml written at sprint completion"
       status: MET
-      notes: "run_hook() calls logger._safe_emit('hook', hook=label, success=..., exit_code=..., duration_s=...) unconditionally when logger is not None."
+      notes: >
+        _write_sprint_summary() added to sprint.py; writes to
+        .forge/logs/<sprint-name>/sprint-summary.yaml. Existing sprint-audit.yaml
+        in .forge/audits/ is preserved for backward compatibility.
+
+    - criterion: "Worktree cleanup does NOT remove .forge/logs/ artifacts"
+      status: MET
+      notes: >
+        .forge/logs/ is at project root, not inside .forge/worktrees/.
+        Worktree cleanup touches only the worktree directory.
+
     - criterion: "All existing tests pass"
       status: MET
-      notes: "921 tests pass (904 existing + 17 new)."
+      notes: "943 tests pass (939 original + 4 new). make lint clean."
+
+    - criterion: ".gitignore updated: .forge/logs/ ignored"
+      status: MET
+      notes: >
+        .gitignore already ignores .forge/ entirely (line 26), covering
+        .forge/logs/. No change needed.
+
   spec_deviations:
-    - description: "post_run fires inside coordinator entry points before returning, not after generate_audit_log in cli.py. The plan assumed generate_audit_log would run inside the coordinator, but it is called by cli.py and sprint.py after the coordinator returns."
-      justification: "Plan reviewer P1 note flagged this exact issue and identified this as the cleaner alternative. All spec-required payload fields are available from CoordinatorState and CoordinatorResult without needing the audit dict."
-    - description: "pre_run fires only in run_task, not in run_from_dev or run_from_review."
-      justification: "Consistent with plan guidance that pre_run only fires on the full path. Resume entry points skip WORKSPACE entirely, so pre_run as a runnable-state gate is not applicable."
+    - deviation: >
+        Plan suggested plan-review artifacts in coord_phases.py but plan review
+        logic is in coordinator.py. Wrote artifacts in coordinator.py instead
+        (confirmed by plan reviewer P2 note).
+    - deviation: >
+        For the human plan review path, only plan.md is saved (no plan-review/
+        subdirectory artifacts since there are no agent results to capture for
+        human review decisions).
+
   deferred_items: none
   gate_result: PASS
