@@ -129,6 +129,15 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
         worktree_audit_path = result.state.workspace_path / "forge_audit.yaml"
         with open(worktree_audit_path, "w", encoding="utf-8") as f:
             yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+    # Copy to durable per-story log dir (survives worktree cleanup)
+    if result.state.log_dir is not None:
+        try:
+            log_audit_path = result.state.log_dir / "audit.yaml"
+            log_audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_audit_path, "w", encoding="utf-8") as f:
+                yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+        except Exception:
+            pass  # best-effort
     return audit_path
 
 

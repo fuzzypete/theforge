@@ -233,7 +233,7 @@ class PlanAgentReviewConfig:
 class LogConfig:
     """Configuration for persistent structured logging."""
 
-    log_file: str = "~/.forge/logs/{project}/forge.log"
+    log_file: str = ".forge/logs/forge.log"
     enabled: bool = True
 
 

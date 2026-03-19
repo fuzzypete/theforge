@@ -4473,8 +4473,8 @@ class TestPerRunLogCapture:
 
         assert result.success is True
 
-        # Per-run log file exists at expected path
-        per_run_path = log_dir / "myproject" / "test-task-abc123xyz.log"
+        # Per-run log file exists at expected path (project-local: .forge/logs/<slug>/run-<id>.log)
+        per_run_path = tmp_path / ".forge" / "logs" / "test-task" / "run-abc123xyz.log"
         assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
         content = per_run_path.read_text(encoding="utf-8")
         assert len(content) > 0, "Per-run log is empty"
@@ -4544,6 +4544,166 @@ class TestPerRunLogCapture:
             result = run_from_review(config, task, workspace, run_id="reviewrun1")
 
         assert result.success is True
-        per_run_path = log_dir / "myproject" / "test-task-reviewrun1.log"
+        per_run_path = tmp_path / ".forge" / "logs" / "test-task" / "run-reviewrun1.log"
         assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
         assert sys.stderr is original_stderr
+
+
+# ── Project-local log directory tests ───────────────────────────────
+
+
+class TestProjectLocalLogDir:
+    """Tests for per-story log directory creation and artifact writes."""
+
+    def _make_config(self, tmp_path: Path) -> ForgeConfig:
+        return ForgeConfig(
+            project="testproj",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+            log=LogConfig(enabled=True),
+        )
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_story_log_dir_created(self, mock_shell, mock_agent, tmp_path):
+        """Per-story log directory created under <project_root>/.forge/logs/<slug>/."""
+        config = self._make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        story_log_dir = tmp_path / ".forge" / "logs" / "test-task"
+        assert story_log_dir.is_dir(), f"Story log dir not created: {story_log_dir}"
+        assert result.state.log_dir == story_log_dir
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_preflight_yaml_written(self, mock_shell, mock_agent, tmp_path):
+        """preflight.yaml written to story log dir after PREFLIGHT phase."""
+        config = self._make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        import yaml as _yaml
+
+        preflight_path = tmp_path / ".forge" / "logs" / "test-task" / "preflight.yaml"
+        assert preflight_path.exists(), "preflight.yaml not written"
+        data = _yaml.safe_load(preflight_path.read_text())
+        assert "verdict" in data
+
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_review_cycle_artifacts_written(self, mock_shell, mock_agent, tmp_path):
+        """Review cycle artifacts written per reviewer and synthesized."""
+        config = self._make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(
+                    success=True, output=APPROVE_REVIEW, profile_name="claude-reviewer"
+                )
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        cycle_dir = tmp_path / ".forge" / "logs" / "test-task" / "review-cycle-1"
+        assert cycle_dir.is_dir(), f"review-cycle-1 dir not created: {cycle_dir}"
+        synthesized = cycle_dir / "synthesized.yaml"
+        assert synthesized.exists(), "synthesized.yaml not written"
+
+    def test_sprint_nesting(self, tmp_path):
+        """Sprint passes sprint_name and creates sprint-level log dir + sprint-summary.yaml."""
+        import yaml as _yaml
+
+        from theforge.coord_state import CoordinatorState, Phase
+        from theforge.sprint import run_sprint
+
+        spec = tmp_path / "story.md"
+        spec.write_text("---\nslug: my-story\n---\n# Story", encoding="utf-8")
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.write_text(
+            _yaml.dump({"name": "my-sprint", "budget_usd": 10.0, "specs": ["story.md"]}),
+            encoding="utf-8",
+        )
+
+        config = self._make_config(tmp_path)
+
+        # Mock run_task to return a successful result with a log_dir
+        _state = CoordinatorState()
+        _state.log_dir = tmp_path / ".forge" / "logs" / "my-sprint" / "my-story"
+        _state.log_dir.mkdir(parents=True, exist_ok=True)
+
+        class _FakeResult:
+            success = True
+            phase = Phase.DONE
+            state = _state
+            merge = None
+            message = "done"
+
+        captured_kwargs: dict = {}
+
+        def _fake_run_task(cfg, tsk, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeResult()
+
+        with (
+            patch("theforge.sprint.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.generate_audit_log", return_value={"task": {}}),
+        ):
+            run_sprint(config, manifest_path)
+
+        # run_task called with sprint_name="my-sprint"
+        assert captured_kwargs.get("sprint_name") == "my-sprint"
+
+        # Sprint-level log dir exists
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "my-sprint"
+        assert sprint_log_dir.is_dir(), f"Sprint log dir not created: {sprint_log_dir}"
+
+        # sprint-summary.yaml written
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        assert summary_path.exists(), "sprint-summary.yaml not written"
+        data = _yaml.safe_load(summary_path.read_text())
+        assert data["sprint"]["name"] == "my-sprint"

@@ -136,6 +136,44 @@ from .task import (  # noqa: F401
 )
 from .traces import write_trace
 
+# ── Story log directory helpers ───────────────────────────────────────
+
+
+def _make_story_log_dir(
+    config: "ForgeConfig",
+    task_slug: str,
+    sprint_name: "str | None" = None,
+) -> "Path | None":
+    """Create and return the per-story log directory under <project_root>/.forge/logs/.
+
+    For sprint runs: <project_root>/.forge/logs/<sprint-name>/<slug>/
+    For standalone runs: <project_root>/.forge/logs/<slug>/
+
+    Returns the created Path on success, or None on failure (best-effort).
+    """
+    try:
+        if sprint_name:
+            log_dir = config.project_root / ".forge" / "logs" / sprint_name / task_slug
+        else:
+            log_dir = config.project_root / ".forge" / "logs" / task_slug
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir
+    except Exception:
+        return None
+
+
+def _write_log_artifact(log_dir: "Path | None", relative_path: str, content: str) -> None:
+    """Write content to <log_dir>/<relative_path>. Best-effort; never raises."""
+    if log_dir is None:
+        return
+    try:
+        dest = log_dir / relative_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(content, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        _cu._log(f"Warning: log artifact write failed for {relative_path}: {exc}")
+
+
 # ── Per-run log tee ──────────────────────────────────────────────────
 
 
@@ -170,6 +208,7 @@ def _begin_run_log_tee(
     config: "ForgeConfig",
     logger: "StructuredLogger",
     task_slug: str,
+    log_dir: "Path | None" = None,
 ) -> "tuple[object, object] | None":
     """Open per-run log file and install tee on sys.stderr.
 
@@ -179,7 +218,10 @@ def _begin_run_log_tee(
     if not config.log.enabled:
         return None
     try:
-        per_run_path = logger._log_path.parent / f"{task_slug}-{logger._run_id}.log"
+        if log_dir is not None:
+            per_run_path = log_dir / f"run-{logger._run_id}.log"
+        else:
+            per_run_path = logger._log_path.parent / f"{task_slug}-{logger._run_id}.log"
         per_run_path.parent.mkdir(parents=True, exist_ok=True)
         fh = open(per_run_path, "a", encoding="utf-8")  # noqa: SIM115
         orig = _sys.stderr
@@ -595,6 +637,12 @@ def _run_review_pool(
             / f"{_cycle_num}-{pool_attempt}-review-{r.profile_name}.txt",
             r.output,
         )
+        # Write raw reviewer output to durable story log dir
+        _write_log_artifact(
+            state.log_dir,
+            f"review-cycle-{_cycle_num}/{r.profile_name}.yaml",
+            r.output or "",
+        )
 
     # Per-profile budget enforcement BEFORE synthesis (original ordering)
     if enforce_budgets:
@@ -737,9 +785,15 @@ def _run_review_pool(
         )
         merged = merge_review_results(parsed_results, names)
 
-    write_trace(
-        _synthesis_path,
-        yaml.dump(dataclasses.asdict(merged), default_flow_style=False, allow_unicode=True),
+    _synthesis_content = yaml.dump(
+        dataclasses.asdict(merged), default_flow_style=False, allow_unicode=True
+    )
+    write_trace(_synthesis_path, _synthesis_content)
+    # Write synthesized result to durable story log dir
+    _write_log_artifact(
+        state.log_dir,
+        f"review-cycle-{_cycle_num}/synthesized.yaml",
+        _synthesis_content,
     )
     return successful, failed_results, merged, individual_parsed
 
@@ -774,6 +828,7 @@ def _setup_resume_entry(
         task=task.slug,
         log_file=config.log.log_file,
         enabled=config.log.enabled,
+        project_root=config.project_root,
     )
     logger._safe_emit(
         "run_start",
@@ -978,6 +1033,7 @@ def run_task(
     notify: bool = False,
     run_id: str | None = None,
     plan_path: Path | None = None,
+    sprint_name: str | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -999,6 +1055,7 @@ def run_task(
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
     spec_content = load_spec(task.spec_path)
+    _sprint_name = sprint_name  # passed to _make_story_log_dir for sprint nesting
 
     # ── Structured logger ──────────────────────────────────────────
     _run_id = run_id or _generate_run_id()
@@ -1008,6 +1065,7 @@ def run_task(
         task=task.slug,
         log_file=config.log.log_file,
         enabled=config.log.enabled,
+        project_root=config.project_root,
     )
     logger._safe_emit(
         "run_start",
@@ -1016,10 +1074,14 @@ def run_task(
         resume=False,
     )
 
+    # ── Per-story log directory ───────────────────────────────────
+    # Create early (before WORKSPACE) so the tee can write run-<id>.log from start.
+    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=_sprint_name)
+
     # ── Per-run log tee ───────────────────────────────────────────
     _tee: tuple[object, object] | None = None
     _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug)
+    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     if _tee is not None:
         _prev_sigterm = signal.signal(
             signal.SIGTERM,
@@ -1175,6 +1237,19 @@ def run_task(
             outcome=verdict.lower(),
             cost_usd=preflight_result.cost_usd,
             duration_s=round(_preflight_elapsed, 2),
+        )
+        # Write preflight.yaml artifact
+        _preflight_artifact = {
+            "verdict": verdict,
+            "reason": reason,
+            "complexity": state.preflight_complexity,
+            "cost_usd": preflight_result.cost_usd,
+            "duration_s": round(_preflight_elapsed, 2),
+        }
+        _write_log_artifact(
+            state.log_dir,
+            "preflight.yaml",
+            yaml.dump(_preflight_artifact, default_flow_style=False, allow_unicode=True),
         )
 
         if verdict == "ALREADY_DONE":
@@ -1478,6 +1553,12 @@ def run_task(
                                 _log("  ✓ PLAN   committed forge_plan.md")
                             except Exception as _commit_err:
                                 _log(f"  ⚠ PLAN   could not commit forge_plan.md: {_commit_err}")
+                            # Save approved plan snapshot to story log dir
+                            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+                            # Write plan-review artifacts per reviewer
+                            for _pr_prof, _pr_res in zip(par_profiles, pr_results):
+                                _pr_fname = f"plan-review/{_pr_prof.name}.yaml"
+                                _write_log_artifact(state.log_dir, _pr_fname, _pr_res.output or "")
                             break
 
                         # REJECT path
@@ -1653,6 +1734,8 @@ def run_task(
                                 _log("  ✓ PLAN   committed forge_plan.md")
                             except Exception as _commit_err:
                                 _log(f"  ⚠ PLAN   could not commit forge_plan.md: {_commit_err}")
+                            # Save approved plan snapshot to story log dir
+                            _write_log_artifact(state.log_dir, "plan.md", plan_text)
                             break
 
                         if plan_review_decision == "regenerate":
@@ -1788,6 +1871,7 @@ def run_from_review(
     auto_merge: bool = False,
     notify: bool = False,
     run_id: str | None = None,
+    sprint_name: str | None = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1815,10 +1899,11 @@ def run_from_review(
     if isinstance(setup, CoordinatorResult):
         return setup
     state, logger, branch_name, spec_content, _task_start = setup
+    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
 
     _tee: tuple[object, object] | None = None
     _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug)
+    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     if _tee is not None:
         _prev_sigterm = signal.signal(
             signal.SIGTERM,
@@ -1868,6 +1953,7 @@ def run_from_dev(
     auto_merge: bool = False,
     notify: bool = False,
     run_id: str | None = None,
+    sprint_name: str | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -1892,10 +1978,11 @@ def run_from_dev(
     if isinstance(setup, CoordinatorResult):
         return setup
     state, logger, branch_name, spec_content, _task_start = setup
+    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
 
     _tee: tuple[object, object] | None = None
     _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug)
+    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     if _tee is not None:
         _prev_sigterm = signal.signal(
             signal.SIGTERM,
@@ -1959,6 +2046,7 @@ def run_review_only(
         task=task.slug,
         log_file=config.log.log_file,
         enabled=config.log.enabled,
+        project_root=config.project_root,
     )
     logger._safe_emit(
         "run_start",

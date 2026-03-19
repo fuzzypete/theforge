@@ -187,7 +187,7 @@ class TestLogConfigParsing:
             encoding="utf-8",
         )
         config = load_config(forge_yaml)
-        assert config.log.log_file == "~/.forge/logs/{project}/forge.log"
+        assert config.log.log_file == ".forge/logs/forge.log"
         assert config.log.enabled is True
 
 
