@@ -1,10 +1,6 @@
 ---
 name: Audit log and display improvements
 slug: audit-improvements
-file_scope:
-  - src/theforge/coordinator.py
-  - src/theforge/cli.py
-  - tests/test_coordinator.py
 pytest_target: tests/
 ---
 

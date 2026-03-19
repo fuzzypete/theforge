@@ -1,0 +1,16 @@
+name: "Observability 3 — log capture, audit depth, provider health"
+budget_usd: 120.00
+auto_merge: true
+
+specs:
+  - slug: run-log-capture
+    spec: specs/backlog/run-log-capture.md
+    budget_usd: 40.00
+
+  - slug: audit-improvements
+    spec: specs/backlog/audit-improvements.md
+    budget_usd: 40.00
+
+  - slug: provider-smoke-test
+    spec: specs/backlog/provider-smoke-test.md
+    budget_usd: 40.00
