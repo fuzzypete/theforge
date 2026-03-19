@@ -238,6 +238,17 @@ class LogConfig:
 
 
 @dataclass(frozen=True)
+class HooksConfig:
+    """Lifecycle hook commands fired at key forge events."""
+
+    post_run: str | None = None
+    post_merge: str | None = None
+    post_sprint: str | None = None
+    pre_run: str | None = None
+    timeout_seconds: int = 30
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -256,6 +267,7 @@ class ForgeConfig:
     plan_review: PlanReviewConfig = field(default_factory=PlanReviewConfig)
     plan_agent_review: PlanAgentReviewConfig = field(default_factory=PlanAgentReviewConfig)
     log: LogConfig = field(default_factory=LogConfig)
+    hooks: HooksConfig | None = None
     secrets: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -856,6 +868,18 @@ def load_config(config_path: Path) -> ForgeConfig:
         enabled=bool(log_data.get("enabled", True)),
     )
 
+    # Hooks
+    hooks_data = raw.get("hooks")
+    hooks_cfg: HooksConfig | None = None
+    if hooks_data:
+        hooks_cfg = HooksConfig(
+            post_run=hooks_data.get("post_run"),
+            post_merge=hooks_data.get("post_merge"),
+            post_sprint=hooks_data.get("post_sprint"),
+            pre_run=hooks_data.get("pre_run"),
+            timeout_seconds=int(hooks_data.get("timeout_seconds", 30)),
+        )
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -872,6 +896,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         plan_review=plan_review_cfg,
         plan_agent_review=plan_agent_review_cfg,
         log=log_cfg,
+        hooks=hooks_cfg,
         secrets=secrets,
     )
 

@@ -416,6 +416,7 @@ def _run_review_phase(
     auto_merge: bool,
     notify: bool,
     logger: StructuredLogger | None,
+    run_id: str = "",
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     return _run_review_phase_impl(
         state,
@@ -430,6 +431,7 @@ def _run_review_phase(
         notify=notify,
         logger=logger,
         mod=_sys.modules[__name__],
+        run_id=run_id,
     )
 
 
@@ -841,6 +843,7 @@ def _coordinator_loop(
             auto_merge=auto_merge,
             notify=notify,
             logger=logger,
+            run_id=logger._run_id if logger else "",
         )
         if _rev_outcome in (_ReviewOutcome.DONE, _ReviewOutcome.ESCALATE):
             return _rev_result  # type: ignore[return-value]
@@ -938,6 +941,33 @@ def run_task(
                     phase=Phase.INIT,
                     state=state,
                     message=msg,
+                )
+
+        # ── PRE_RUN hook ──────────────────────────────────────────────
+        if config.hooks and config.hooks.pre_run:
+            from .coord_hooks import build_pre_run_payload
+            from .coord_hooks import run_hook as _run_hook
+
+            _pre_payload = build_pre_run_payload(task, _run_id, config)
+            _pre_result = _run_hook(
+                config.hooks.pre_run,
+                _pre_payload,
+                config.hooks.timeout_seconds,
+                "pre_run",
+                logger,
+            )
+            if _pre_result.exit_code != 0:
+                state.phase = Phase.ESCALATE
+                state.error = f"pre_run hook aborted run (exit {_pre_result.exit_code})"
+                _log(f"✗ ESCALATE   {state.error}")
+                logger._safe_emit(
+                    "run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0
+                )
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
                 )
 
         # ── WORKSPACE ─────────────────────────────────────────────────
@@ -1611,6 +1641,21 @@ def run_task(
             logger=logger,
         )
         _total_elapsed = time.monotonic() - _task_start
+        # ── POST_RUN hook ─────────────────────────────────────────────
+        if config.hooks and config.hooks.post_run:
+            from .coord_hooks import build_post_run_payload
+            from .coord_hooks import run_hook as _run_hook
+
+            _post_payload = build_post_run_payload(
+                state, config, task, result, _run_id, _total_elapsed
+            )
+            _run_hook(
+                config.hooks.post_run,
+                _post_payload,
+                config.hooks.timeout_seconds,
+                "post_run",
+                logger,
+            )
         logger._safe_emit(
             "run_end",
             outcome="done" if result.success else "escalate",
@@ -1689,11 +1734,27 @@ def run_from_review(
             notify=notify,
             logger=logger,
         )
+        _total_elapsed = time.monotonic() - _task_start
+        # ── POST_RUN hook ─────────────────────────────────────────────
+        if config.hooks and config.hooks.post_run:
+            from .coord_hooks import build_post_run_payload
+            from .coord_hooks import run_hook as _run_hook
+
+            _post_payload = build_post_run_payload(
+                state, config, task, result, logger._run_id, _total_elapsed
+            )
+            _run_hook(
+                config.hooks.post_run,
+                _post_payload,
+                config.hooks.timeout_seconds,
+                "post_run",
+                logger,
+            )
         logger._safe_emit(
             "run_end",
             outcome="done" if result.success else "escalate",
             total_cost_usd=round(state.total_cost, 6),
-            total_duration_s=round(time.monotonic() - _task_start, 2),
+            total_duration_s=round(_total_elapsed, 2),
         )
         return result
     finally:
@@ -1763,11 +1824,27 @@ def run_from_dev(
             notify=notify,
             logger=logger,
         )
+        _total_elapsed = time.monotonic() - _task_start
+        # ── POST_RUN hook ─────────────────────────────────────────────
+        if config.hooks and config.hooks.post_run:
+            from .coord_hooks import build_post_run_payload
+            from .coord_hooks import run_hook as _run_hook
+
+            _post_payload = build_post_run_payload(
+                state, config, task, result, logger._run_id, _total_elapsed
+            )
+            _run_hook(
+                config.hooks.post_run,
+                _post_payload,
+                config.hooks.timeout_seconds,
+                "post_run",
+                logger,
+            )
         logger._safe_emit(
             "run_end",
             outcome="done" if result.success else "escalate",
             total_cost_usd=round(state.total_cost, 6),
-            total_duration_s=round(time.monotonic() - _task_start, 2),
+            total_duration_s=round(_total_elapsed, 2),
         )
         return result
     finally:
