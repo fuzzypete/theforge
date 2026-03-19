@@ -1,64 +1,53 @@
+dev_notes: "summary: >\n  Mirrored the review_pool pattern onto plan_agent_review.\
+  \ PlanAgentReviewConfig\n  gained a pool field (list[ModelProfile]) and a profiles\
+  \ property that returns the\n  pool when non-empty or constructs a single-profile\
+  \ pool from legacy scalar fields.\n  The config parser detects the pool key in plan_agent_review\
+  \ YAML and parses each\n  entry via _parse_profile(). In review.py, merge_plan_review_results()\
+  \ was added\n  with per-reviewer advisory downgrade applied before merging (any\
+  \ P0 -> REJECT, no\n  P0 -> APPROVE, parse errors excluded with warning, all fail\
+  \ -> REJECT). The\n  coordinator replaces its single run_agent() call with run_agent_pool(),\
+  \ tracks\n  session IDs in state.plan_review_session_ids (dict, replacing the singular\
+  \ field),\n  saves them via an updated save_sessions() signature, and merges results\n\
+  \  deterministically. All 828 tests pass.\n\ncommits:\n  - sha: \"41e8ff1\"\n  \
+  \  message: \"feat(plan-review): add multi-model plan review pool\"\n\nacceptance_criteria:\n\
+  \  - criterion: \"AC-1: forge.yaml supports pool format and legacy single-profile\
+  \ format; legacy auto-converts to pool of one\"\n    status: MET\n    notes: >\n\
+  \      PlanAgentReviewConfig.pool field added; profiles property returns pool when\n\
+  \      non-empty, else constructs ModelProfile from legacy scalars. load_forge_yaml\n\
+  \      parses pool entries via _parse_profile(). 6 new test_config.py tests cover\n\
+  \      both paths and edge cases (empty list, duplicate names, provider entries).\n\
+  \n  - criterion: \"AC-2: Coordinator dispatches plan reviewers via run_agent_pool()\
+  \ concurrently\"\n    status: MET\n    notes: >\n      coordinator.py plan review\
+  \ block replaced: builds profiles from\n      config.plan_agent_review.profiles,\
+  \ calls run_agent_pool() with session_ids\n      from state.plan_review_session_ids.\n\
+  \n  - criterion: \"AC-3: Deterministic verdict merging — P0 from any -> REJECT,\
+  \ no P0 -> APPROVE, parse errors excluded, all fail -> REJECT\"\n    status: MET\n\
+  \    notes: >\n      merge_plan_review_results() in review.py implements all four\
+  \ rules.\n      Per-reviewer advisory downgrade applied before merge so only P0-bearing\n\
+  \      results remain as REJECT when passed to the merger.\n\n  - criterion: \"\
+  AC-4: Plan review findings from all reviewers concatenated with reviewer-name attribution\"\
+  \n    status: MET\n    notes: >\n      merge_plan_review_results() prefixes each\
+  \ finding description with [name].\n      Coordinator stores merged findings in\
+  \ state.plan_agent_review_findings.\n      Validated by test_plan_review_pool_advisory_p1s_concatenated.\n\
+  \n  - criterion: \"AC-5: state.plan_review_session_ids is a dict mapping reviewer\
+  \ name -> session_id\"\n    status: MET\n    notes: >\n      coord_state.py: plan_review_session_id\
+  \ (str|None) replaced with\n      plan_review_session_ids (dict[str,str]). sessions.py\
+  \ persists it under\n      plan_review_session_ids key. coordinator.py restores\
+  \ on load and updates\n      per pool result.\n\n  - criterion: \"AC-6: Per-reviewer\
+  \ cost tracking and budget enforcement escalates\"\n    status: MET\n    notes:\
+  \ >\n      state.plan_review_results.extend(pr_results) accumulates all pool results;\n\
+  \      total_plan_review_cost sums them. Budget enforcement delegated to runner\n\
+  \      (budget_usd on each ModelProfile). Coordinator logs total pool cost.\n\n\
+  \  - criterion: \"AC-7: PlanAgentReviewConfig gains pool field; existing fields\
+  \ become optional; profiles property returns pool regardless of format\"\n    status:\
+  \ MET\n    notes: >\n      pool: list[ModelProfile] field added with field(default_factory=list).\n\
+  \      Legacy fields retain their defaults (backward compat). profiles property\n\
+  \      returns pool or constructs single-profile from legacy fields.\n\n  - criterion:\
+  \ \"AC-8: Tests — pool format loads correctly, legacy converts to pool of one, concurrent\
+  \ pool, P0 merging, all-fail REJECT, advisory P1 concatenation\"\n    status: MET\n\
+  \    notes: >\n      6 new tests in test_config.py; 3 new tests in test_coordinator.py\n\
+  \      (pool_p0_from_one_reviewer_rejects, pool_all_fail_rejects,\n      pool_advisory_p1s_concatenated).\
+  \ All existing TestPlanAgentReview tests\n      updated to route plan review through\
+  \ mock_pool instead of mock_agent.\n      828 total tests pass.\n\nspec_deviations:\
+  \ none\n\ndeferred_items: none\n\ngate_result: PASS\n"
 gate_decision: PASS
-dev_notes: |
-  summary: >
-    Implemented gate output tail surfacing: replaced output[:200] head-slices with
-    output[-tail_chars:] tail-slices in gate failure log and dev feedback paths.
-    Added gate_output_tail_chars: int = 2000 to ValidationConfig with forge.yaml
-    parsing. The coordinator now includes the last 2000 chars of gate output in
-    human_feedback when gate returns FAIL, giving the dev agent the actual error
-    (failing test, tsc error, lint violation) instead of unrelated preamble.
-    All source changes (config.py, coord_gate.py, coord_phases.py) were already
-    committed on the branch; this commit adds the two required new tests.
-
-  commits:
-    - sha: "b6a972a"
-      message: "feat(gate): surface gate output tail in failure logs and dev feedback"
-
-  acceptance_criteria:
-    - criterion: "output[:200] replaced with output[-{tail_chars}:] in both gate failure log sites"
-      status: MET
-      notes: >
-        coord_gate.py _run_gate_full: computes output_tail = output[-tail_chars:] and logs
-        it via _cu._log on non-zero exit. Unified into a single log path.
-
-    - criterion: "Gate output tail included in human_feedback when gate returns FAIL and dev is retried"
-      status: MET
-      notes: >
-        coord_phases.py _run_validate_phase: on FAIL/BLOCKED branch, human_feedback is set
-        to include "Gate output (last N chars):\n{gate_output_tail}" followed by gate
-        decision and current handoff content.
-
-    - criterion: "gate_output_tail_chars config field in ValidationConfig (default 2000, backward compatible)"
-      status: MET
-      notes: >
-        ValidationConfig dataclass has gate_output_tail_chars: int = 2000. Backward
-        compatible — existing forge.yaml files without this key get 2000.
-
-    - criterion: "forge.yaml parsing reads gate_output_tail_chars"
-      status: MET
-      notes: >
-        load_config() val_data block parses gate_output_tail_chars via int(val_data.get(...)).
-
-    - criterion: "Existing tests pass without modification"
-      status: MET
-      notes: "819 tests pass. No existing tests were modified."
-
-    - criterion: "New test verifies gate failure log contains tail not head of output"
-      status: MET
-      notes: >
-        test_gate_failure_log_contains_tail_not_head: 5112-char gate output with
-        HEAD_SENTINEL at start and TAIL_SENTINEL at end; patches coord_util._log;
-        asserts Gate command failed log contains TAIL_SENTINEL and not HEAD_SENTINEL.
-
-    - criterion: "New test verifies dev feedback includes gate output tail on FAIL"
-      status: MET
-      notes: >
-        test_gate_failure_includes_output_tail_in_dev_feedback: same long output, patches
-        build_dev_prompt, asserts second call's human_feedback kwarg contains 'Gate output',
-        TAIL_SENTINEL, and not HEAD_SENTINEL.
-
-  spec_deviations: none
-
-  deferred_items: none
-
-  gate_result: PASS

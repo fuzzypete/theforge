@@ -189,14 +189,40 @@ class PlanAgentReviewConfig:
 
     When enabled, takes precedence over PlanReviewConfig (human review).
     They are mutually exclusive — agent review replaces human review.
+
+    Supports both legacy single-profile format (scalar fields) and a new
+    pool format (list of ModelProfile objects). Use the ``profiles`` property
+    to get the canonical pool regardless of which format was used.
     """
 
     enabled: bool = False
+    # Legacy single-profile fields — present only when pool is empty.
     cli: str | None = "claude"
     provider: str | None = None
     model: str = "sonnet"
     budget_usd: float = 0.50
     timeout: int = 300
+    # Pool format — populated by load_forge_yaml when pool: key is present.
+    pool: list[ModelProfile] = field(default_factory=list)
+
+    @property
+    def profiles(self) -> list[ModelProfile]:
+        """Return pool list, or a single-profile pool from legacy scalar fields."""
+        if self.pool:
+            return self.pool
+        # Legacy single-profile: construct from scalar fields.
+        # Use DEFAULT_PREFLIGHT_PROFILE.allowed_tools as the standard plan-review tool set.
+        return [
+            ModelProfile(
+                name="plan-review",
+                cli=self.cli,
+                provider=self.provider,
+                model=self.model or "sonnet",
+                budget_usd=self.budget_usd,
+                timeout_seconds=self.timeout,
+                allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+            )
+        ]
 
 
 @dataclass(frozen=True)
@@ -782,6 +808,21 @@ def load_config(config_path: Path) -> ForgeConfig:
                     f"environment variable ${api_key_var} is not set."
                 )
 
+    # Parse pool entries if present (new format)
+    par_pool: list[ModelProfile] = []
+    if "pool" in par_data:
+        pool_data = par_data["pool"]
+        if not isinstance(pool_data, list) or len(pool_data) == 0:
+            raise ValueError("plan_agent_review.pool must be a non-empty list")
+        pool_names = [e.get("name") for e in pool_data]
+        if any(n is None for n in pool_names):
+            raise ValueError("Each plan_agent_review.pool entry must have a 'name' field")
+        if len(pool_names) != len(set(pool_names)):
+            raise ValueError(f"Duplicate names in plan_agent_review.pool: {pool_names}")
+        par_pool = [
+            _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
+        ]
+
     plan_agent_review_cfg = PlanAgentReviewConfig(
         enabled=par_enabled,
         cli=par_cli,
@@ -789,6 +830,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         model=str(par_data.get("model", "sonnet")),
         budget_usd=float(par_data.get("budget_usd", 0.50)),
         timeout=int(par_data.get("timeout", 300)),
+        pool=par_pool,
     )
 
     # Logging

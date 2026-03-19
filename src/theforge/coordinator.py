@@ -109,6 +109,7 @@ from .devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_hand
 from .review import (  # noqa: F401
     PlanReviewResult,
     ReviewResult,
+    merge_plan_review_results,
     merge_review_results,
     parse_plan_review_output,
     parse_review_json,
@@ -449,7 +450,12 @@ def _run_review_pool(
     for profile, result in zip(config.review_pool, pool_results):
         if result.session_id:
             state.reviewer_session_ids[profile.name] = result.session_id
-    save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
+    save_sessions(
+        workspace_path,
+        state.dev_session_id,
+        state.reviewer_session_ids,
+        state.plan_review_session_ids,
+    )
     _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
     _cycle_num = state.review_cycle + 1
     for r in pool_results:
@@ -590,6 +596,8 @@ def _setup_resume_entry(
         state.dev_session_id = _sessions["dev_session_id"]
     if _sessions.get("reviewer_session_ids"):
         state.reviewer_session_ids = _sessions["reviewer_session_ids"]
+    if _sessions.get("plan_review_session_ids"):
+        state.plan_review_session_ids = _sessions["plan_review_session_ids"]
 
     # Resolve branch name from actual worktree HEAD
     _ok_branch, _branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", workspace_path)
@@ -719,7 +727,12 @@ def _coordinator_loop(
                 )
                 state.dev_results.append(_hf_result)
                 state.dev_session_id = _hf_result.session_id or state.dev_session_id
-                save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
+                save_sessions(
+                    workspace_path,
+                    state.dev_session_id,
+                    state.reviewer_session_ids,
+                    state.plan_review_session_ids,
+                )
                 log_agent_result(_hf_result, "DEV/handoff-fix")
                 _handoff = _parse_dev_handoff(config, workspace_path)
                 if _handoff is None or not _handoff.parse_errors:
@@ -1012,19 +1025,12 @@ def run_task(
             _log(f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}")
 
             if config.plan_agent_review.enabled:
-                # ── Agent plan review ──────────────────────────────
+                # ── Agent plan review (pool) ───────────────────────
                 state.phase = Phase.PLAN_REVIEW
                 state.plan_review_mode = "agent"
-                par_cfg = config.plan_agent_review
-                par_profile = ModelProfile(
-                    name="plan-review",
-                    cli=par_cfg.cli,
-                    provider=par_cfg.provider,
-                    model=par_cfg.model,
-                    budget_usd=par_cfg.budget_usd,
-                    timeout_seconds=par_cfg.timeout,
-                    allowed_tools=config.preflight_profile.allowed_tools,
-                )
+                par_profiles = config.plan_agent_review.profiles
+                _pool_names = [p.name for p in par_profiles]
+                _pool_label = "+".join(_pool_names)
                 if config.plan_review.enabled:
                     _log(
                         "  ⚠ Both plan_agent_review and plan_review enabled — "
@@ -1033,14 +1039,17 @@ def run_task(
 
                 _max = config.retry.max_plan_regen_attempts
                 for _attempt in range(_max + 1):
-                    _log_phase(state.phase, f"agent review (model={par_profile.model})")
+                    _log_phase(
+                        state.phase,
+                        f"agent review ({_pool_label}, {len(par_profiles)} reviewer(s))",
+                    )
 
                     pr_prompt = build_plan_review_prompt(
                         task,
                         story_content=spec_content,
                         plan_content=plan_text,
                         file_contents=file_contents,
-                        mode=par_profile.mode,
+                        mode=par_profiles[0].mode,
                         preflight_output=(
                             preflight_result.output if preflight_result.success else None
                         ),
@@ -1048,66 +1057,88 @@ def run_task(
                     )
 
                     _pr_start = time.monotonic()
-                    pr_result = run_agent(
+                    _pool_session_ids = [
+                        state.plan_review_session_ids.get(p.name) for p in par_profiles
+                    ]
+                    pr_results = run_agent_pool(
                         prompt=pr_prompt,
-                        profile=par_profile,
+                        profiles=par_profiles,
                         working_dir=workspace_path,
-                        session_id=state.plan_review_session_id,
+                        session_ids=_pool_session_ids,
                         secrets=config.secrets,
                     )
                     _pr_elapsed = time.monotonic() - _pr_start
-                    state.plan_review_session_id = (
-                        pr_result.session_id or state.plan_review_session_id
+
+                    # Update session IDs and accumulate results
+                    for _prof, _res in zip(par_profiles, pr_results):
+                        if _res.session_id:
+                            state.plan_review_session_ids[_prof.name] = _res.session_id
+                    state.plan_review_results.extend(pr_results)
+                    save_sessions(
+                        workspace_path,
+                        state.dev_session_id,
+                        state.reviewer_session_ids,
+                        state.plan_review_session_ids,
                     )
-                    state.plan_review_results.append(pr_result)
 
-                    if not pr_result.success:
-                        # Agent failure → treat as REJECT
-                        _log(
-                            f"  ✗ PLAN_REVIEW   agent failed (exit={pr_result.exit_code}) "
-                            f"— treating as REJECT"
-                        )
-                        parsed_pr = parse_plan_review_output("")  # force parse error → REJECT
-                    else:
-                        parsed_pr = parse_plan_review_output(pr_result.output)
+                    # Parse each result and apply per-reviewer advisory downgrade
+                    _parsed_prs: list[PlanReviewResult] = []
+                    for _prof, _res in zip(par_profiles, pr_results):
+                        if not _res.success:
+                            _log(
+                                f"  ✗ PLAN_REVIEW   {_prof.name} failed "
+                                f"(exit={_res.exit_code}) — treating as REJECT"
+                            )
+                            _parsed = parse_plan_review_output("")  # force parse error → REJECT
+                        else:
+                            _parsed = parse_plan_review_output(_res.output)
 
-                    if parsed_pr.parse_errors:
-                        _log(
-                            f"  ⚠ PLAN_REVIEW   parse issues: {'; '.join(parsed_pr.parse_errors)}"
-                        )
+                        if _parsed.parse_errors:
+                            _log(
+                                f"  ⚠ PLAN_REVIEW   {_prof.name} parse issues: "
+                                f"{'; '.join(_parsed.parse_errors)}"
+                            )
 
-                    # Check if REJECT has only P1/P2 findings (no P0) —
-                    # treat as advisory approve, log findings for dev context.
-                    # Guard: never downgrade when parse_errors is non-empty —
-                    # a malformed response must not silently pass.
-                    _has_p0 = any(f.severity == "P0" for f in parsed_pr.findings)
-                    if (
-                        parsed_pr.verdict == "REJECT"
-                        and not _has_p0
-                        and parsed_pr.findings
-                        and not parsed_pr.parse_errors
-                    ):
-                        # Downgrade to APPROVE — P1/P2 are advisory in plan review
-                        findings_text = plan_review_findings_to_text(parsed_pr)
-                        state.plan_agent_review_findings = findings_text
-                        _log(
-                            f"  ✓ PLAN_REVIEW   approve (agent, {len(parsed_pr.findings)} "
-                            f"advisory)  "
-                            f"{_fmt_cost(pr_result.cost_usd)}  {_fmt_duration(_pr_elapsed)}"
-                        )
-                        _log(f"  Advisory findings (passed to dev):\n{findings_text}")
-                        parsed_pr = PlanReviewResult(
-                            verdict="APPROVE",
-                            findings=parsed_pr.findings,
-                            parse_errors=parsed_pr.parse_errors,
-                        )
+                        # Advisory downgrade: REJECT with only P1/P2 (no P0, no parse_errors)
+                        # → APPROVE. Guard: never downgrade when parse_errors is non-empty.
+                        _has_p0 = any(f.severity == "P0" for f in _parsed.findings)
+                        if (
+                            _parsed.verdict == "REJECT"
+                            and not _has_p0
+                            and _parsed.findings
+                            and not _parsed.parse_errors
+                        ):
+                            _log(
+                                f"  ✓ PLAN_REVIEW   {_prof.name} approve "
+                                f"(advisory {len(_parsed.findings)} findings)"
+                            )
+                            _parsed = PlanReviewResult(
+                                verdict="APPROVE",
+                                findings=_parsed.findings,
+                                parse_errors=[],
+                            )
+                        _parsed_prs.append(_parsed)
 
-                    if parsed_pr.verdict == "APPROVE":
+                    # Merge all per-reviewer results into one verdict
+                    merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
+                    _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
+
+                    if merged_pr.verdict == "APPROVE":
                         state.plan_review_decision = "approve"
-                        _log(
-                            f"  ✓ PLAN_REVIEW   approve (agent)  "
-                            f"{_fmt_cost(pr_result.cost_usd)}  {_fmt_duration(_pr_elapsed)}"
-                        )
+                        if merged_pr.findings:
+                            findings_text = plan_review_findings_to_text(merged_pr)
+                            state.plan_agent_review_findings = findings_text
+                            _log(
+                                f"  ✓ PLAN_REVIEW   approve (merged, "
+                                f"{len(merged_pr.findings)} advisory)  "
+                                f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+                            )
+                            _log(f"  Advisory findings (passed to dev):\n{findings_text}")
+                        else:
+                            _log(
+                                f"  ✓ PLAN_REVIEW   approve (merged)  "
+                                f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+                            )
                         # Commit the approved plan so it's preserved in git history
                         try:
                             _cu._run_shell(
@@ -1129,11 +1160,11 @@ def run_task(
                         break
 
                     # REJECT path
-                    findings_text = plan_review_findings_to_text(parsed_pr)
+                    findings_text = plan_review_findings_to_text(merged_pr)
                     state.plan_agent_review_findings = findings_text
                     _log(
-                        f"  ✗ PLAN_REVIEW   reject (agent)  "
-                        f"{_fmt_cost(pr_result.cost_usd)}  {_fmt_duration(_pr_elapsed)}"
+                        f"  ✗ PLAN_REVIEW   reject (merged)  "
+                        f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
                     )
 
                     state.plan_regen_count += 1
