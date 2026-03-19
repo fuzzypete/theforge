@@ -363,6 +363,16 @@ def run_sprint(
     stopped_reason: str | None = None
     merged_slugs: set[str] = set()
 
+    # Pre-scan: collect all slugs that appear in any depends_on across the manifest.
+    # These specs must be merged before dependents start, so we force auto_merge for them
+    # regardless of the global auto_merge setting (spec: "eager merge only fires when a
+    # downstream dependent exists"). We collect all dependents regardless of ordering —
+    # merging earlier is safe and simpler than strict look-ahead filtering.
+    dependent_slugs: set[str] = set()
+    for _sp in spec_paths:
+        _t = _build_task_from_spec(_sp)
+        dependent_slugs.update(_t.depends_on)
+
     # Resume mode: triage all specs and carry forward prior costs
     triages: dict[str, SpecTriage] = {}
     if resume:
@@ -408,22 +418,23 @@ def run_sprint(
                 specs_skipped += 1
             break
 
-        # Dependency check: all depends_on slugs must have merged
+        # Dependency check: all depends_on slugs must have merged.
+        # Only this spec is skipped — independent specs continue.
         missing_deps = [dep for dep in task.depends_on if dep not in merged_slugs]
         if missing_deps:
             dep_list = ", ".join(missing_deps)
             _log(f"[{idx}/{total}] SKIPPED {task.slug} (dependency failed: {dep_list})")
             specs_skipped += 1
-            stopped_reason = f"Dependency failed for {task.slug}: {dep_list} did not merge"
-            for remaining_idx in range(idx + 1, total + 1):
-                _log(f"[{remaining_idx}/{total}] SKIPPED (sprint halted)")
-                specs_skipped += 1
-            break
+            continue
 
         # Emit spec header banner
         print(_spec_header(idx, total, task.slug), file=sys.stderr, flush=True)
 
         _spec_start = datetime.datetime.now(datetime.timezone.utc)
+
+        # Eager merge: if any later spec declares this slug as a dependency, force
+        # auto_merge so the merged code is on main before the dependent starts.
+        effective_auto_merge = auto_merge or (task.slug in dependent_slugs)
 
         # Choose entry point based on triage
         if resume:
@@ -434,7 +445,7 @@ def run_sprint(
                     task,
                     triage.worktree_path,
                     interactive=interactive,
-                    auto_merge=auto_merge,
+                    auto_merge=effective_auto_merge,
                     notify=notify,
                     run_id=_sprint_run_id,
                     sprint_name=manifest.name,
@@ -445,7 +456,7 @@ def run_sprint(
                     task,
                     triage.worktree_path,
                     interactive=interactive,
-                    auto_merge=auto_merge,
+                    auto_merge=effective_auto_merge,
                     notify=notify,
                     run_id=_sprint_run_id,
                     sprint_name=manifest.name,
@@ -455,7 +466,7 @@ def run_sprint(
                     config,
                     task,
                     interactive=interactive,
-                    auto_merge=auto_merge,
+                    auto_merge=effective_auto_merge,
                     notify=notify,
                     run_id=_sprint_run_id,
                     sprint_name=manifest.name,
@@ -465,7 +476,7 @@ def run_sprint(
                 config,
                 task,
                 interactive=interactive,
-                auto_merge=auto_merge,
+                auto_merge=effective_auto_merge,
                 notify=notify,
                 run_id=_sprint_run_id,
                 sprint_name=manifest.name,
