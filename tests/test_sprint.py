@@ -1074,6 +1074,43 @@ class TestSprintDependencies:
         assert result.specs_succeeded == 2
         assert result.stopped_reason is None
 
+    def test_resume_approved_satisfies_dependency(self, tmp_path: Path) -> None:
+        """Resume mode: spec triaged as 'skip' (prior APPROVE) satisfies downstream deps."""
+        _make_spec_file(tmp_path, "Spec A", "spec-a")
+        _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
+        manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
+        config = _make_config(tmp_path)
+
+        approved_triage = SpecTriage(
+            spec_path="spec-a.md",
+            action="skip",
+            reason="already approved",
+            worktree_path=None,
+            slug="spec-a",
+        )
+        full_triage = SpecTriage(
+            spec_path="spec-b.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+            slug="spec-b",
+        )
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
+
+        def triage_side_effect(spec_path, config, project_root):
+            if "spec-a" in spec_path:
+                return approved_triage
+            return full_triage
+
+        with patch("theforge.sprint._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.run_task", return_value=result_b) as mock_run:
+                result = run_sprint(config, manifest_path, resume=True)
+
+        # spec-a was skip (prior APPROVE) — should satisfy dep so spec-b runs
+        mock_run.assert_called_once()
+        assert result.specs_succeeded == 2
+        assert result.stopped_reason is None
+
     def test_skips_dependent_continues_independent(self, tmp_path: Path) -> None:
         """Three specs: A, B (depends on spec-a), C. A doesn't merge → B skipped, C still runs."""
         _make_spec_file(tmp_path, "Spec A", "spec-a")

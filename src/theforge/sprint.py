@@ -363,15 +363,14 @@ def run_sprint(
     stopped_reason: str | None = None
     merged_slugs: set[str] = set()
 
-    # Pre-scan: collect all slugs that appear in any depends_on across the manifest.
-    # These specs must be merged before dependents start, so we force auto_merge for them
-    # regardless of the global auto_merge setting (spec: "eager merge only fires when a
-    # downstream dependent exists"). We collect all dependents regardless of ordering —
-    # merging earlier is safe and simpler than strict look-ahead filtering.
+    # Pre-scan: parse all TaskSpecs once and build dependent_slugs.
+    # Caching avoids re-reading spec files in the main loop.
+    # We collect all dependents regardless of manifest ordering — merging earlier
+    # is safe and simpler than strict look-ahead filtering.
+    _parsed_tasks: dict[Path, object] = {_sp: _build_task_from_spec(_sp) for _sp in spec_paths}
     dependent_slugs: set[str] = set()
-    for _sp in spec_paths:
-        _t = _build_task_from_spec(_sp)
-        dependent_slugs.update(_t.depends_on)
+    for _t in _parsed_tasks.values():
+        dependent_slugs.update(_t.depends_on)  # type: ignore[union-attr]
 
     # Resume mode: triage all specs and carry forward prior costs
     triages: dict[str, SpecTriage] = {}
@@ -388,7 +387,7 @@ def run_sprint(
 
     for idx, spec_path in enumerate(spec_paths, start=1):
         spec_str = manifest.specs[idx - 1]
-        task = _build_task_from_spec(spec_path)
+        task = _parsed_tasks[spec_path]  # type: ignore[assignment]
 
         # Resume mode: skip already-merged or already-approved specs before budget check.
         # These represent completed work; not subject to budget enforcement.
@@ -402,6 +401,9 @@ def run_sprint(
             if triage and triage.action == "skip":
                 _log(f"[{idx}/{total}] SKIP {task.slug} — already approved ({triage.reason})")
                 specs_succeeded += 1
+                # A prior APPROVE means the work is done and satisfies downstream deps,
+                # even if it was never merged to main (e.g. auto_merge=False previously).
+                merged_slugs.add(task.slug)
                 continue
 
         # Budget check before starting (cumulative: prior + current run)
