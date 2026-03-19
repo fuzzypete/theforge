@@ -1030,7 +1030,7 @@ def run_task(
                 state.plan_review_mode = "agent"
                 par_profiles = config.plan_agent_review.profiles
                 _pool_names = [p.name for p in par_profiles]
-                _pool_label = "+".join(_pool_names)
+                _pool_label = "+".join(p.model for p in par_profiles)
                 if config.plan_review.enabled:
                     _log(
                         "  ⚠ Both plan_agent_review and plan_review enabled — "

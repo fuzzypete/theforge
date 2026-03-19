@@ -102,6 +102,7 @@ plan_agent_review:
       model: o4-mini
       budget_usd: 1.00
       timeout_seconds: 300
+      max_iterations: 50
       allowed_tools:
         - Read
         - Glob
