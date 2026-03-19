@@ -1,26 +1,44 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented full worktree resume logic: (1) added has_review_approve() to coord_audit.py that reads history.jsonl to check for a prior APPROVE for a given slug; (2) removed age-based staleness check from _is_stale_worktree — commits ahead of base = not stale regardless of age; (3) added ALREADY_DONE guard in coordinator.py that checks commits-ahead + no-prior-APPROVE and redirects to REVIEW via _coordinator_loop(skip_dev_first_iter=True); (4) added audit-trail APPROVE check to sprint._triage_spec with a new skip action explicitly handled in run_sprint dispatch; (5) added --resume flag to forge run in cli.py with triage dispatch to review/dev/full entry points; fixed pre-existing E501 lint violation and installed openai/httpx to resolve 3 pre-existing test failures."
+  summary: "All five functional ACs were already implemented in the codebase (confirmed by
+  preflight). The only gap was AC-7: new tests covering the added audit fields. I added
+  tests/test_generate_audit_log.py with 18 tests covering generate_audit_log() timing
+  (started_at propagation, finished_at presence, duration_seconds computation, and None
+  when started_at is absent), cost.agents per-invocation entries (role, profile, cost_usd,
+  duration_seconds, ordering of dev-before-review, None duration when list is shorter), and
+  reviews[].findings (findings list with severity/file/line/description, p1/p2 counts still
+  present, empty findings, null line, multiple review cycles). Also fixed a pre-existing
+  E501 lint error in tests/test_runner_api.py that was blocking make fmt/lint."
+
   commits:
-    - sha: "07d80a1"
-      message: "chore(stale-worktree): gate PASS — install openai/httpx, all 873 tests pass"
-    - sha: "b4f1304"
-      message: "chore(stale-worktree): update handoff.yaml with dev notes"
-    - sha: "fad7001"
-      message: "feat(stale-worktree): detect partial progress and resume from correct phase"
+    - sha: "2f8086b"
+      message: "test(audit): add tests for generate_audit_log timing, cost.agents, and reviews findings"
+
   acceptance_criteria:
-    - criterion: "Existing worktree with commits but no review APPROVE resumes from REVIEW"
+    - criterion: "CoordinatorState has a started_at: str | None field set during INIT"
       status: MET
-    - criterion: "Existing worktree with commits and a prior APPROVE allows ALREADY_DONE"
+      notes: "Already implemented: coord_state.py:67 declares the field; coordinator.py:561 sets it during INIT."
+    - criterion: "generate_audit_log() includes started_at, finished_at, duration_seconds"
       status: MET
-    - criterion: "Existing worktree with zero commits ahead is removed and recreated"
+      notes: "Already implemented: coord_audit.py:54-60 computes values; :155-160 emits them under 'timing' key."
+    - criterion: "Audit YAML cost.agents list has per-invocation entries with role, profile, cost, duration"
       status: MET
-    - criterion: "forge run supports --resume flag (parity with forge sprint --resume)"
+      notes: "Already implemented: coord_audit.py:65-108 builds agents list with role/profile/cost_usd/duration_seconds."
+    - criterion: "Audit YAML reviews[].findings includes the actual findings (not just counts; counts stay too)"
       status: MET
-    - criterion: "Clear log output explains resume decision and which phase is resuming"
+      notes: "Already implemented: coord_audit.py:124-141 builds findings_list and includes both 'findings' and counts."
+    - criterion: "cmd_audit displays timing, per-agent costs, and finding details"
       status: MET
-    - criterion: "Never deletes a worktree that has commits ahead of base without --force"
+      notes: "Already implemented: cli.py:758-770 prints timing; :789-800 per-agent table; :814-822 finding detail."
+    - criterion: "All existing tests continue to pass"
       status: MET
+      notes: "894 tests pass after the changes."
+    - criterion: "New tests cover the added audit fields"
+      status: MET
+      notes: "Added tests/test_generate_audit_log.py with 18 tests covering timing, cost.agents, and reviews[].findings."
+
+  spec_deviations: none
+
   deferred_items: none
+
   gate_result: PASS
-gate_decision: PASS
