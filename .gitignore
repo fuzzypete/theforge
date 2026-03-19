@@ -37,4 +37,4 @@ campaign-audit.yaml
 
 # OS
 .DS_Store
-.forge/secrets.yaml
+.forge/.env

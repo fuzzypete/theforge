@@ -7,12 +7,16 @@ validation commands, model selection) live in forge.yaml in the consuming projec
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import dotenv_values
+
+log = logging.getLogger(__name__)
 
 # ── Model registry ────────────────────────────────────────────────────
 
@@ -568,16 +572,18 @@ def load_config(config_path: Path) -> ForgeConfig:
     project_root = config_path.parent.resolve()
 
     # Load project-scoped secrets before profile validation so _resolve_secret() works.
-    secrets_path = project_root / ".forge" / "secrets.yaml"
+    env_path = project_root / ".forge" / ".env"
+    secrets_yaml_path = project_root / ".forge" / "secrets.yaml"
     secrets: dict[str, str] = {}
-    if secrets_path.exists():
-        try:
-            raw_secrets = yaml.safe_load(secrets_path.read_text(encoding="utf-8")) or {}
-            if not isinstance(raw_secrets, dict):
-                raise ValueError(f"{secrets_path}: secrets file must be a YAML mapping")
-            secrets = {str(k): str(v) for k, v in raw_secrets.items()}
-        except yaml.YAMLError as exc:
-            raise ValueError(f"{secrets_path}: malformed YAML — {exc}") from exc
+    if env_path.exists():
+        raw = dotenv_values(env_path)
+        if any(v is None for v in raw.values()):
+            raise ValueError(f"{env_path}: malformed .env")
+        secrets = {k: v for k, v in raw.items() if v is not None}
+    elif secrets_yaml_path.exists():
+        log.warning(
+            "⚠ .forge/secrets.yaml detected — migrate to .forge/.env (see .forge/.env.example)"
+        )
 
     with open(config_path, encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
@@ -730,12 +736,20 @@ def load_config(config_path: Path) -> ForgeConfig:
     ntfy_config: NtfyConfig | None = None
     if "ntfy" in notif_data:
         ntfy_data = notif_data["ntfy"]
-        ntfy_url = ntfy_data.get("url", "")
+        ntfy_url = ntfy_data.get("url") or secrets.get("NTFY_URL") or os.getenv("NTFY_URL") or ""
         if ntfy_url:
             ntfy_config = NtfyConfig(
                 url=ntfy_url,
                 priority=ntfy_data.get("priority", "high"),
             )
+        elif notif_backend == "ntfy":
+            log.warning("ntfy backend enabled but no URL configured — notifications disabled")
+    elif notif_backend == "ntfy":
+        ntfy_url = secrets.get("NTFY_URL") or os.getenv("NTFY_URL") or ""
+        if ntfy_url:
+            ntfy_config = NtfyConfig(url=ntfy_url, priority="high")
+        else:
+            log.warning("ntfy backend enabled but no URL configured — notifications disabled")
     notifications = NotificationConfig(
         backend=notif_backend,
         ntfy=ntfy_config,
