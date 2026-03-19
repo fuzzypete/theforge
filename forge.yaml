@@ -49,11 +49,28 @@ profiles:
         - Bash
         - Glob
         - Grep
-    - name: gemini-reviewer
-      cli: gemini
+    - name: codex-reviewer
+      provider: openai
+      model: gpt-5.1-codex-mini
       review_role: patterns
+      budget_usd: 2.00
+      timeout_seconds: 120
+      allowed_tools:
+        - Read
+        - Bash
+        - Glob
+        - Grep
+    - name: gemini-reviewer
+      provider: google
+      model: gemini-2.5-flash
+      review_role: edge-cases
       budget_usd: 1.00
-      timeout_seconds: 300
+      timeout_seconds: 120
+      allowed_tools:
+        - Read
+        - Bash
+        - Glob
+        - Grep
 
 retry:
   max_dev_iterations: 3
@@ -74,8 +91,8 @@ plan_review:
 plan_agent_review:
   enabled: true
   cli: claude
-  model: sonnet
-  budget_usd: 0.50
+  model: opus
+  budget_usd: 2.00
   timeout: 600
 
 notifications:

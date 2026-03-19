@@ -8,27 +8,47 @@ pytest_target: tests/
 
 ## Problem
 
-`plan_agent_review` currently supports a single reviewer. Code review already
-supports a pool of reviewers with deterministic verdict merging. Plan review —
-the gate that catches bad plans before burning dev iterations — deserves the
-same multi-model treatment.
+Plan review (`plan_agent_review`) currently supports only a single reviewer. Code
+review (`review_pool`) already supports multiple concurrent reviewers with deterministic
+verdict merging. Plan review deserves the same treatment — it's the most important
+quality gate because a bad plan burns expensive dev iterations.
 
-The coordinator already has the merging infrastructure (`merge_review_results`
-for code review, `PlanReviewResult` for plan review). The gap is that
-`plan_agent_review` in config accepts a single profile, not a list, and the
-coordinator calls `run_agent()` once instead of running a pool.
+The coordinator already half-expresses this intent: it constructs `par_profile` with
+`allowed_tools` from the preflight profile, and the plan review prompt assumes tool
+access. But the config only accepts a single profile.
 
 ## Goal
 
-`plan_agent_review` accepts either a single profile (backward compatible) or a
-pool of reviewers. When multiple reviewers are configured, they run in parallel
-and their verdicts are merged deterministically — same pattern as code review.
+Extend `plan_agent_review` to support a pool of reviewers (same pattern as
+`review_pool`), with deterministic verdict merging. A single reviewer remains valid
+as a pool of one.
 
-## Config
+## Acceptance Criteria
 
-### Single reviewer (current, still works):
+### AC-1: Config — plan_agent_review accepts a pool
+
+`forge.yaml` supports both the existing single-profile format (backward compat) and
+a new pool format:
 
 ```yaml
+# New pool format:
+plan_agent_review:
+  enabled: true
+  pool:
+    - name: opus-plan-reviewer
+      cli: claude
+      model: opus
+      budget_usd: 2.00
+      timeout: 600
+      allowed_tools: [Read, Bash, Glob, Grep]
+    - name: codex-plan-reviewer
+      provider: openai
+      model: gpt-5.1-codex-mini
+      budget_usd: 1.00
+      timeout: 120
+      allowed_tools: [Read, Glob, Grep]
+
+# Legacy single format still works:
 plan_agent_review:
   enabled: true
   cli: claude
@@ -37,100 +57,84 @@ plan_agent_review:
   timeout: 600
 ```
 
-### Pool (new):
+When the legacy format is detected (no `pool` key), it is internally converted to
+a pool of one.
 
-```yaml
-plan_agent_review:
-  enabled: true
-  pool:
-    - name: opus-plan-reviewer
-      cli: claude
-      model: opus
-      budget_usd: 2.00
-      timeout_seconds: 300
-      allowed_tools: [Read, Bash, Glob, Grep]
-    - name: codex-plan-reviewer
-      provider: openai
-      model: gpt-5.1-codex-mini
-      budget_usd: 1.00
-      timeout_seconds: 120
-      allowed_tools: [Read, Glob, Grep]
-```
+### AC-2: Coordinator runs plan reviewers concurrently
 
-When `pool` is present, the top-level cli/model/budget/timeout fields are
-ignored. When `pool` is absent, the top-level fields define a single-reviewer
-pool of size 1 (backward compatible).
+The coordinator dispatches plan review via `run_agent_pool()` (same as code review),
+passing the plan review prompt to all pool profiles. Results are collected in parallel.
 
-## Acceptance Criteria
+### AC-3: Deterministic verdict merging for plan review
 
-### AC-1: Config parsing
+Plan review verdicts are merged mechanically:
+- Any P0 finding from any reviewer → merged verdict is `REJECT`
+- No P0 findings → merged verdict is `APPROVE` (P1s are advisory, passed to dev)
+- Parse errors from any reviewer → that reviewer's result is excluded (with warning)
+- All reviewers failed → merged verdict is `REJECT` with parse error
 
-- `PlanAgentReviewConfig` gains a `pool: list[ModelProfile]` field
-- When `pool` key is present in YAML, parse each entry as a `ModelProfile`
-  using `_parse_profile()` (same as code review pool)
-- When `pool` key is absent, construct a single-element pool from the existing
-  top-level fields (cli, model, budget_usd, timeout)
-- Validation: pool must be non-empty when enabled
+This matches the existing plan review semantics in the coordinator (P0 blocks,
+P1 is advisory downgrade).
 
-### AC-2: Parallel plan review execution
+### AC-4: Plan review findings merged across reviewers
 
-- The coordinator runs all plan reviewers in parallel using `run_agent_pool()`
-  (for CLI profiles) and `run_api_agent()` (for API profiles), same dispatch
-  as code review
-- Each reviewer gets the same plan review prompt
-- Results are collected and failures (exit != 0) are logged but excluded from
-  merging, same as code review
+When the merged verdict is APPROVE with advisory findings (P1s), findings from all
+reviewers are concatenated and passed to the dev agent via
+`state.plan_agent_review_findings`. Each finding is prefixed with the reviewer name
+for attribution.
 
-### AC-3: Verdict merging
+### AC-5: Session resume per pool reviewer
 
-- Plan review verdicts are merged deterministically:
-  - Any P0 finding from any reviewer → REJECT (blocks plan)
-  - All APPROVE with only P1 findings → advisory downgrade (existing behavior),
-    findings passed to dev
-  - All APPROVE with no findings → APPROVE
-- Parse errors from individual reviewers do not auto-reject — only reviewers
-  that produced parseable output participate in the merge
-- If all reviewers fail to parse, the merged result is REJECT with parse errors
+Each plan reviewer gets its own session ID tracked in `state.plan_review_session_ids`
+(a dict mapping reviewer name → session_id), following the same pattern as
+`state.reviewer_session_ids` for code review.
 
-### AC-4: Session resume
+### AC-6: Cost tracking
 
-- Each plan reviewer in the pool gets its own session ID tracking, same pattern
-  as code review pool (`reviewer_session_ids` dict)
-- `plan_review_session_id` (singular) is deprecated in favor of
-  `plan_review_session_ids` (dict keyed by reviewer name)
+Per-reviewer cost is tracked and enforced. Budget exceeded on any reviewer escalates
+(same as code review budget enforcement).
 
-### AC-5: Logging
+### AC-7: PlanAgentReviewConfig changes
 
-- Log format matches code review pool:
-  ```
-  [forge] ▸ PLAN_REVIEW   opus+codex-mini  cycle=1
-  [forge] Running 2 plan reviewer(s): ['opus-plan-reviewer', 'codex-plan-reviewer']
-  ```
-- Individual reviewer results logged with name, status, cost
+`PlanAgentReviewConfig` gains a `pool: list[ModelProfile]` field. The existing fields
+(`cli`, `model`, `budget_usd`, `timeout`) become optional — present only for legacy
+single-profile configs. A `profiles` property returns the pool list regardless of
+format.
 
-### AC-6: Audit trail
+### AC-8: Tests
 
-- Plan review audit entry includes per-reviewer results (same structure as
-  code review audit)
-
-### AC-7: Tests
-
-- `test_config.py`: pool config parsed correctly, backward compat with single
-  reviewer config
-- `test_coordinator.py`: plan review pool runs in parallel, verdicts merged,
-  P0 from any reviewer blocks, advisory downgrade works with merged findings
-- `test_coordinator.py`: single-reviewer config still works (regression)
+- `test_config.py`: pool format loads correctly, legacy format converts to pool of one
+- `test_coordinator.py`: plan review pool runs concurrently, verdicts merged correctly
+- `test_coordinator.py`: P0 from one reviewer + APPROVE from another → REJECT
+- `test_coordinator.py`: all reviewers fail → REJECT with parse errors
+- `test_coordinator.py`: advisory P1s from multiple reviewers concatenated in dev prompt
 
 ## Implementation Notes
 
-The code review pool logic in `coordinator.py` (`_run_review_pool`, verdict
-merging) should be extracted or generalized so plan review can reuse it rather
-than duplicating. The prompt builder is different (`build_plan_review_prompt`
-vs `build_review_prompt`) but the pool execution and merging mechanics are
-identical.
+### Merge function
+
+Create `merge_plan_review_results()` in `review.py`, analogous to
+`merge_review_results()`. Simpler because plan review has fewer fields (verdict,
+findings — no spec_compliance or test_coverage).
+
+### Coordinator changes
+
+The plan review section in `coordinator.py` currently constructs a single `par_profile`
+and calls `run_agent()`. Replace with:
+1. Build profiles from `config.plan_agent_review.profiles`
+2. Call `run_agent_pool()` with all profiles
+3. Parse results, merge verdicts
+4. Apply advisory downgrade logic on merged result
+
+### Logging
+
+```
+[forge] ▸ PLAN_REVIEW   opus+codex-mini  (2 reviewers)
+[forge]   ✓ PLAN_REVIEW   approve (merged, 3 advisory)  $1.45  35s
+```
 
 ## Out of Scope
 
-- Plan review synthesis (merging via LLM) — deterministic merge is sufficient
-  for plan review where findings are simpler than code review
-- Weighted verdicts (one reviewer's opinion counts more) — all reviewers equal
+- Review role specialization for plan review (future)
+- Synthesis agent for plan review (deterministic merge is sufficient)
+- Changing the plan generation phase (stays single-agent)
