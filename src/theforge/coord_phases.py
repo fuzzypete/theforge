@@ -85,6 +85,7 @@ def _finalize_approve(
     review_cost: float,
     review_elapsed: float,
     message: str,
+    run_id: str = "",
 ) -> CoordinatorResult:
     """Set DONE, optionally merge, log, notify, return CoordinatorResult.
 
@@ -114,6 +115,18 @@ def _finalize_approve(
                 success=merge_info["merged"],
                 branch=branch_name,
                 error=merge_info.get("error"),
+            )
+        if merge_info["merged"] and config.hooks and config.hooks.post_merge:
+            from .coord_hooks import build_post_merge_payload
+            from .coord_hooks import run_hook as _run_hook
+
+            _pm_payload = build_post_merge_payload(task.slug, branch_name, run_id, config)
+            _run_hook(
+                config.hooks.post_merge,
+                _pm_payload,
+                config.hooks.timeout_seconds,
+                "post_merge",
+                logger,
             )
     if logger:
         logger._safe_emit(
@@ -157,6 +170,7 @@ def _run_review_phase(
     notify: bool,
     logger: StructuredLogger | None,
     mod: ModuleType,
+    run_id: str = "",
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     """Run the full REVIEW phase: pool+synthesis, parse retries, verdict handling.
 
@@ -329,6 +343,7 @@ def _run_review_phase(
                             f"Human approved after {state.review_cycle} cycle(s), "
                             f"{state.dev_iteration} dev iteration(s). "
                         ),
+                        run_id=run_id,
                     ),
                     config,
                 )
@@ -396,6 +411,7 @@ def _run_review_phase(
                         f"Review approved after {state.review_cycle} cycle(s), "
                         f"{state.dev_iteration} dev iteration(s). "
                     ),
+                    run_id=run_id,
                 ),
                 config,
             )
@@ -483,6 +499,7 @@ def _run_review_phase(
                             f"Task '{task.name}' completed. "
                             f"Human approved after {state.review_cycle} cycle(s). "
                         ),
+                        run_id=run_id,
                     ),
                     config,
                 )

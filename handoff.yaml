@@ -1,54 +1,63 @@
+gate_decision: PASS
 dev_notes: |
-  summary: "Added `forge check-providers` subcommand to cli.py. The command collects all
-    API-mode profiles (mode == 'api', i.e. provider is set) from all config slots —
-    dev_profile, preflight_profile, review_pool, synthesis_profile, and
-    plan_agent_review.profiles (when enabled) — deduplicates by name, then fans out
-    parallel run_api_agent calls via ThreadPoolExecutor. Each call uses
-    dataclasses.replace(profile, allowed_tools=()) to force single-shot mode (no tool
-    loop). A hardcoded minimal review prompt is used (~100 tokens). Results are printed
-    in a table with pass/fail, latency, and cost. Exit code 1 if any profile fails.
-    --profile <name> filters to a single profile. Tests mock theforge.cli.run_api_agent
-    and theforge.cli.load_config to avoid SDK validation and real API calls."
+  summary: "Implemented lifecycle hooks: HooksConfig dataclass in config.py; new coord_hooks.py
+    with run_hook() (subprocess executor, best-effort, never raises, emits structured log event)
+    and four payload builders; pre_run fires before WORKSPACE (non-zero aborts); post_run fires
+    after the coordinator loop via _fire_post_run_hook() helper; post_merge after successful
+    auto-merge; post_sprint after _write_sprint_audit. Iter 1 review: fixed P1 (malformed
+    command strings now silently skipped via shlex.split ValueError catch), extracted
+    _fire_post_run_hook() to eliminate post_run duplication, simplified verdict fallback.
+    17 unit tests; 921 tests pass."
   commits:
-    - sha: "c988072"
-      message: "feat(cli): add forge check-providers smoke-test command"
+    - sha: "c3c5c66"
+      message: "feat(hooks): add lifecycle hooks — post_run, post_merge, post_sprint, pre_run"
+    - sha: "46e8e37"
+      message: "chore: write handoff.yaml for lifecycle-hooks story"
+    - sha: "aca92cd"
+      message: "fix(lifecycle-hooks): rewrite dev handoff to match schema"
+    - sha: "7f2b2ea"
+      message: "fix(hooks): address review findings (iter 1)"
   acceptance_criteria:
-    - criterion: "forge check-providers reads all API profiles from forge.yaml"
+    - criterion: "forge.yaml hooks block parsed into ForgeConfig.hooks"
       status: MET
-      notes: "Collects from dev_profile, preflight_profile, review_pool, synthesis_profile,
-        and plan_agent_review.profiles; filters on profile.mode == 'api'; deduplicates
-        by name."
-    - criterion: "Each profile is tested in parallel with a minimal prompt"
+      notes: "HooksConfig dataclass added; ForgeConfig.hooks field added; load_config() parses the hooks key."
+    - criterion: "post_run fires after every completed run with full payload"
       status: MET
-      notes: "ThreadPoolExecutor fans out run_api_agent calls; hardcoded minimal prompt
-        is a one-line diff review that exercises the structured output path."
-    - criterion: "Pass: structured output received with valid verdict field"
+      notes: "Called at end of run_task, run_from_dev, run_from_review before logger run_end emit. Payload built from CoordinatorState/CoordinatorResult directly."
+    - criterion: "post_merge fires after successful auto-merge"
       status: MET
-      notes: "Checks result.structured_data is not None and 'verdict' in result.structured_data."
-    - criterion: "Fail: error message shown inline, exit code 1"
+      notes: "_finalize_approve fires post_merge after merge_info[merged] is True. run_id threaded from _coordinator_loop through _run_review_phase to _finalize_approve."
+    - criterion: "post_sprint fires after sprint audit is written"
       status: MET
-      notes: "Exceptions caught in worker, AgentResult.success=False, and missing verdict
-        all produce a row with checkmark=✗ and short error message; return 1 if any_failed."
-    - criterion: "Latency and cost reported per provider"
+      notes: "sprint.py fires post_sprint after _write_sprint_audit returns, using _sprint_run_id."
+    - criterion: "pre_run fires before WORKSPACE; non-zero exit aborts run"
       status: MET
-      notes: "time.perf_counter() wraps each run_api_agent call; result.cost_usd rendered
-        as $X.XXX in the table."
-    - criterion: "--profile <name> tests a single profile"
+      notes: "Fires in run_task only before WORKSPACE phase. Non-zero exit returns ESCALATE CoordinatorResult immediately."
+    - criterion: "All hook payloads include project, slug, run_id at minimum"
       status: MET
-      notes: "argparse --profile arg filters api_profiles list before ThreadPoolExecutor
-        dispatch; unknown name returns 1 without making any API calls."
-    - criterion: "No token cost beyond the minimal test prompts (~100 tokens each)"
+      notes: "All four payload builders include event, project, slug/sprint, and run_id."
+    - criterion: "Hook timeout enforced (default 30s); exceeded = warning, not failure"
       status: MET
-      notes: "dataclasses.replace(profile, allowed_tools=()) ensures single-shot mode in
-        run_api_agent (profile.allowed_tools empty → PROVIDER_RUNNERS path, no agent loop)."
-    - criterion: "New tests mock the API calls — no real provider hits in CI"
+      notes: "subprocess.TimeoutExpired caught in run_hook(); logs warning, returns HookResult(success=False, exit_code=-1). Never raises."
+    - criterion: "Hook exit non-zero (except pre_run): warning logged, run unaffected"
       status: MET
-      notes: "8 tests in TestCmdCheckProviders patch theforge.cli.run_api_agent and
-        theforge.cli.load_config; no real forge.yaml is parsed with provider SDKs."
-  spec_deviations: none
+      notes: "run_hook() returns HookResult on non-zero exit, logs warning. Only pre_run call site checks exit_code != 0 to abort."
+    - criterion: "run_hook() unit-tested with mocked subprocess"
+      status: MET
+      notes: "tests/test_coord_hooks.py: 11 run_hook tests (success, non-zero, timeout, exception, missing file, non-executable, malformed command, system command, log events, stdin payload) + 6 payload builder tests."
+    - criterion: "Reference scripts committed under .forge/hooks/"
+      status: MET
+      notes: ".forge/hooks/post-run-gh-issues.sh and .forge/hooks/post-run-backlog-sync.sh committed verbatim from spec with executable bit set."
+    - criterion: "Structured log event emitted for each hook invocation"
+      status: MET
+      notes: "run_hook() calls logger._safe_emit('hook', hook=label, success=..., exit_code=..., duration_s=...) unconditionally when logger is not None."
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "921 tests pass (904 existing + 17 new)."
+  spec_deviations:
+    - description: "post_run fires inside coordinator entry points before returning, not after generate_audit_log in cli.py. The plan assumed generate_audit_log would run inside the coordinator, but it is called by cli.py and sprint.py after the coordinator returns."
+      justification: "Plan reviewer P1 note flagged this exact issue and identified this as the cleaner alternative. All spec-required payload fields are available from CoordinatorState and CoordinatorResult without needing the audit dict."
+    - description: "pre_run fires only in run_task, not in run_from_dev or run_from_review."
+      justification: "Consistent with plan guidance that pre_run only fires on the full path. Resume entry points skip WORKSPACE entirely, so pre_run as a runnable-state gate is not applicable."
   deferred_items: none
   gate_result: PASS
-  gate_notes: "Full suite: 883 passed, 1 flaky failure (test_already_done_publishes_ntfy,
-    exit=-9/SIGKILL under load). The flaky test passes in isolation with and without my
-    changes; it is a pre-existing subprocess timing issue unrelated to this story."
-gate_decision: PASS

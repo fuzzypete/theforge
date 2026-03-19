@@ -209,7 +209,9 @@ class TestSecretsInit:
 # ── Helpers for check-providers tests ────────────────────────────────
 
 
-def _api_profile(name: str, provider: str = "anthropic", model: str = "claude-opus-4-6") -> ModelProfile:
+def _api_profile(
+    name: str, provider: str = "anthropic", model: str = "claude-opus-4-6"
+) -> ModelProfile:
     return ModelProfile(
         name=name,
         provider=provider,

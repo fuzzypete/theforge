@@ -570,6 +570,48 @@ def run_sprint(
         project_root=config.project_root,
     )
 
+    # ── POST_SPRINT hook ──────────────────────────────────────────────
+    if config.hooks and config.hooks.post_sprint:
+        from .coord_hooks import build_post_sprint_payload
+        from .coord_hooks import run_hook as _run_hook
+
+        _stories = []
+        for spec_str, res in results:
+            # Derive slug: use workspace_path leaf (set during WORKSPACE phase) or spec stem
+            _ws = res.state.workspace_path
+            if _ws is not None:
+                _slug = _ws.name
+            else:
+                _slug = Path(spec_str).stem
+            _verdict = ""
+            if res.state.review_results:
+                _verdict = res.state.review_results[-1].verdict
+            elif res.success:
+                _verdict = "APPROVE"
+            _stories.append(
+                {
+                    "slug": _slug,
+                    "outcome": "done" if res.success else "escalate",
+                    "verdict": _verdict,
+                    "merged": res.merge is not None and res.merge.get("merged", False),
+                }
+            )
+        _ps_payload = build_post_sprint_payload(
+            sprint_name=manifest.name,
+            stories=_stories,
+            run_id=_sprint_run_id,
+            config=config,
+            total_cost_usd=final_cost,
+            duration_seconds=_sprint_elapsed,
+        )
+        _run_hook(
+            config.hooks.post_sprint,
+            _ps_payload,
+            config.hooks.timeout_seconds,
+            "post_sprint",
+            _sprint_logger,
+        )
+
     return sprint_result
 
 
