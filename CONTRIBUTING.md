@@ -1,0 +1,73 @@
+# Contributing to TheForge
+
+Thanks for your interest in contributing! TheForge is a deterministic multi-LLM
+development orchestrator, and we welcome contributions that improve the platform.
+
+## Getting Started
+
+```bash
+git clone https://github.com/pwickersham/theforge.git
+cd theforge
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+make test   # 900+ tests, should all pass
+```
+
+## Development Workflow
+
+1. **Fork and branch** — create a feature branch from `main`
+2. **Write tests** — all new behavior needs tests. Mock subprocess and HTTP; never invoke real agent CLIs in tests.
+3. **Run the gate** — `make fmt && make test` must pass before submitting
+4. **Open a PR** — describe what changed and why
+
+### Commands
+
+```bash
+make fmt        # auto-format with ruff
+make lint       # check formatting + lint (no auto-fix)
+make test       # pytest tests/ -v
+make gate       # full gate: test + write handoff.yaml
+```
+
+## Code Conventions
+
+- **The coordinator is not an LLM.** Every state transition is deterministic
+  Python. If you're writing code where an LLM decides whether to retry or
+  escalate, that decision belongs in the coordinator.
+- **Schema enforcement is mandatory.** The review output schema in `schemas.py`
+  is the integrity boundary. Don't relax cross-validation rules.
+- **Mock everything external.** Tests must never call real APIs or spawn real
+  CLI processes.
+- **Run `make fmt` before committing.** CI will reject unformatted code.
+
+## What to Contribute
+
+**High-value areas:**
+- New provider adapters (see `runner_api.py` for the pattern)
+- Gate command integrations for different ecosystems (npm, cargo, go test)
+- Bug fixes with reproducing test cases
+- Documentation improvements
+
+**Please discuss first** (open an issue):
+- Changes to the coordinator state machine
+- New CLI commands
+- Changes to the review schema
+- Architectural changes
+
+## Reporting Bugs
+
+Open an issue with:
+- What you expected to happen
+- What actually happened
+- The forge.yaml config (redact API keys)
+- The relevant section of `forge_audit.yaml` if available
+
+## Code of Conduct
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be
+respectful and constructive.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the
+[MIT License](LICENSE).

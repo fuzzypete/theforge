@@ -1,5 +1,10 @@
 # TheForge
 
+[![CI](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml/badge.svg)](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.0-orange)](CHANGELOG.md)
+
 Deterministic multi-LLM development orchestrator.
 
 TheForge runs a strict software development pipeline — plan, implement, test,
@@ -29,7 +34,15 @@ is mechanical.
 ### 1. Install
 
 ```bash
-pip install -e .
+pip install git+https://github.com/fuzzypete/theforge.git
+```
+
+Or for development:
+
+```bash
+git clone https://github.com/fuzzypete/theforge.git
+cd theforge
+pip install -e ".[dev]"
 ```
 
 You'll need at least one AI CLI installed:
@@ -39,6 +52,9 @@ You'll need at least one AI CLI installed:
 
 > **You don't need all providers.** A single Claude CLI handles both dev and
 > review. Add more models later for cross-model coverage.
+
+**Supported:** Python 3.11+ · macOS, Linux · See [CHANGELOG](CHANGELOG.md) for
+provider/model matrix.
 
 ### 2. Initialize your project
 
