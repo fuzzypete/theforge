@@ -598,6 +598,15 @@ def build_dev_prompt(
         Touch other files if needed — keep out-of-scope changes minimal.
         {plan_section}
         ## Spec
+
+        > **How to read this spec**
+        > A story says WHAT and WHY — it is not a list of implementation tasks.
+        > **Acceptance criteria are the definitive checklist.** Every other section
+        > (background, context, motivation) is informational — do not treat it as a
+        > requirement unless it appears in an AC.
+        > If an AC is ambiguous or contradicts another section, implement the
+        > most reasonable interpretation and flag the ambiguity in `dev_notes`.
+
         {spec_content}
         {feedback_section}{preflight_section}
         ## Workflow

@@ -72,6 +72,24 @@ class TestBuildDevPrompt:
         assert "no scope restriction" in prompt
         assert "SCOPE_BLOCKED" not in prompt
 
+    def test_preamble_appears_before_spec_content(self, tmp_path):
+        task = _make_task(tmp_path)
+        spec_text = "## Acceptance criteria\n\n- Do the thing."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            spec_content=spec_text,
+            gate_command="make gate",
+        )
+        assert "acceptance criteria" in prompt.lower()
+        assert "checklist" in prompt.lower()
+        assert "dev_notes" in prompt
+        # preamble must appear before the spec content itself
+        preamble_idx = prompt.lower().index("acceptance criteria are the definitive checklist")
+        spec_idx = prompt.index(spec_text)
+        assert preamble_idx < spec_idx
+
 
 class TestBuildFixPrompt:
     """Tests for the minimal fix prompt used on iteration 2+."""
