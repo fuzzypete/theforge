@@ -1,0 +1,5 @@
+name: "Hello Sprint — greeting + farewell"
+budget_usd: 15
+specs:
+  - specs/add-greeting.md
+  - specs/add-farewell.md

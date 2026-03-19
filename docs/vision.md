@@ -51,35 +51,43 @@ looks like.
 
 ---
 
-## Current State (v0.2)
+## Current State (v0.3)
 
 ```
-INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → HUMAN_REVIEW → DONE/ESCALATE
-                                 ↑                  ↓              ↓
-                                 └──── (REQUEST_CHANGES) ◄─── (reject)
-
-forge run --until <state>  stops the pipeline after reaching that state
-  e.g. --until preflight   run spec classification only, no dev cycles
-       --until dev          run through DEV+gate, skip review
-       --until review        run through review, skip HUMAN_REVIEW
+INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE
+                                                       ↑                  ↓
+                                                       └──── (REQUEST_CHANGES)
 ```
 
-**Implemented:**
-- Multi-CLI support: Claude, Codex (OpenAI), and Gemini runners
-- Multi-model review pool with fan-out + synthesis reconciliation
+**Core pipeline:**
+- Multi-CLI support: Claude Code, Codex CLI, and Gemini CLI as subprocess agents
+- API-mode agents: OpenAI, Anthropic, Google, and DeepSeek via HTTP with
+  TheForge providing the tool runtime (Read, Edit, Write, Bash, Glob, Grep)
+- Plan phase: planning agent produces implementation plan before dev starts;
+  multi-model plan review pool catches structural issues early
+- Multi-model review pool with deterministic fan-out + synthesis reconciliation
 - Preflight phase: one-shot spec classification (PROCEED/ALREADY_DONE/BLOCKED)
-  before expensive dev+review cycles; fail-open design
-- Human-in-the-loop: `forge run --interactive` pauses at HUMAN_REVIEW for
-  approve/reject/escalate decisions; non-interactive mode skips to auto-behavior
-- Live activity stream: real-time tool-use visibility via stream-json Popen
-  (Claude); progress heartbeat for all CLIs (30s)
-- Budget enforcement: per-profile cumulative cost ceilings (dev + per-reviewer);
-  Claude-only for now (Codex/Gemini report cost_usd=0.0)
-- Per-agent cost breakdown in audit logs with model usage detail
-- Schema-enforced review output with cross-validation (APPROVE+P1 and
-  REQUEST_CHANGES+no-P1 are always errors)
-- Dirty-worktree detection between gate and review
-- Stale handoff deletion before re-running gate
+- Budget enforcement: per-profile cumulative cost ceilings with token-level
+  cost tracking for API-mode agents
+- Schema-enforced review output with cross-validation
+- Stale worktree detection: `forge run --resume` triages existing worktrees
+  and resumes from the correct phase
+
+**Agent loop (API mode):**
+- Full tool-use agent loop with iteration and time-based nudges
+- Forced finalization on timeout (provider-specific constrained output)
+- Per-profile `max_iterations` with nudge at 80%
+- Time-based nudge at 80% of wall-clock deadline
+- Connection-level HTTP timeout enforcement
+
+**Operational:**
+- Sprint mode: `forge sprint` runs multiple stories sequentially with shared budget
+- Multi-LLM ideation: `forge ideate` for collaborative spec generation
+- Provider smoke test: `forge check-providers` verifies connectivity
+- Per-run verbose log capture (stderr tee to `.forge/logs/`)
+- Per-agent cost breakdown with model usage detail in audit YAML
+- Structured event logging (JSONL) with phase-level timing
+- ntfy/osascript notifications on completion
 
 ---
 
@@ -357,11 +365,11 @@ only the ideation agents are LLMs.
 3. **Multi-model review:** `forge.yaml` configures Claude + Codex + Gemini
    review pools. Tested with real cross-CLI reviews.
 
-4. **Unit tests:** 175+ tests across `test_coordinator.py` and
-   `test_campaign.py` covering all state transitions, budget enforcement,
-   preflight verdicts, pool degradation, synthesis, human review, auto-merge,
-   campaign execution, and edge cases. All tests mock subprocess — no real
-   CLI invocations.
+4. **Unit tests:** 900+ tests across 29 test files covering all state
+   transitions, budget enforcement, preflight verdicts, pool degradation,
+   synthesis, human review, auto-merge, sprint execution, API agent loops,
+   provider adapters, tool runtime, and edge cases. All tests mock
+   subprocess and HTTP — no real CLI or API invocations.
 
 ---
 

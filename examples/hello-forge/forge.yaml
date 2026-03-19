@@ -1,0 +1,35 @@
+# forge.yaml — Minimal single-model configuration
+# This is the simplest possible config: one dev model, one reviewer.
+# Start here, then add models as you grow confident.
+
+project: hello-forge
+
+workspace:
+  create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
+  setup_command: "pip install -e . pytest -q"
+  path_pattern: ".forge/worktrees/{slug}"
+  branch_pattern: "forge/{slug}"
+
+validation:
+  gate_command: "python -m pytest tests/ -q"
+  handoff_file: "handoff.yaml"
+  gate_decision_key: "gate_decision"
+
+profiles:
+  dev:
+    cli: claude
+    model: sonnet
+    budget_usd: 5.00
+    timeout_seconds: 600
+    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
+  review_pool:
+    - name: claude-reviewer
+      cli: claude
+      model: opus
+      budget_usd: 2.00
+      timeout_seconds: 300
+      allowed_tools: [Read, Bash, Glob, Grep]
+
+retry:
+  max_dev_iterations: 3
+  max_review_cycles: 2
