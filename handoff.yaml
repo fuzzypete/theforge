@@ -1,52 +1,34 @@
 dev_notes: |
-  summary: "Added _handle_write_file() and _handle_edit_file() handler functions to tool_runtime.py and registered them in TOOL_REGISTRY with full JSON Schema definitions. write_file creates or overwrites files (creating parent dirs automatically); edit_file performs exact-string replacement and enforces a strict uniqueness contract — it returns an error if old_string appears zero times (not found) or more than once (ambiguous). TOOL_NAME_MAP already had Write/Edit entries (the P1 plan-review finding was incorrect). No changes to runner.py, runner_api.py, coord_phases.py, or config.py were needed — the routing infrastructure was already complete. Added 13 new tests covering isolated handlers, a full AgentLoopManager dev-loop integration test, and a dispatch test for dev+provider profiles."
+  summary: "Fixed the P1 line-number cross-validation rule in schemas.py and added three new tests. The old code unconditionally required a non-null line on all P1 findings, even when file was null (an architectural finding with no specific location). The fix narrows the line check: it only fires when file is explicitly set (non-null, non-empty). A P1 with file: null is treated as an architectural finding and is valid without a line. A P1 with file set to a non-empty string still requires a line. Empty-string file (file: '') still triggers the file-must-be-non-empty error, preserving the existing test. Three new tests were added: P1+file+null-line→error, P1+null-file+null-line→valid, P2+file+null-line→valid."
   commits:
-    - sha: "2e71812"
-      message: "feat(tool_runtime): add write_file and edit_file handlers for API dev agent"
-    - sha: "a36b279"
-      message: "chore(handoff): write dev_notes for api-mode-dev"
+    - sha: "40e7a55"
+      message: "fix(schemas): enforce line numbers on P1 findings only when file is set"
   acceptance_criteria:
-    - criterion: "Dev profile with `provider: openai` routes through API agent loop"
+    - criterion: "P1 finding with `file` set and `line: null` → schema validation error"
       status: MET
-      notes: "Already implemented before this sprint. runner.py checks profile.mode == api and dispatches to run_api_agent. Verified by existing test + new test_run_agent_api_dev_dispatch in test_runner.py."
-    - criterion: "Dev profile with `provider: deepseek` routes through API agent loop"
+      notes: "schemas.py: when file_val is truthy and line is falsy, error is appended. Covered by test_p1_with_file_and_null_line_is_error."
+    - criterion: "P1 finding with `file: null` and `line: null` → valid (architectural finding)"
       status: MET
-      notes: "Already implemented before this sprint via _run_loop_deepseek. No code change needed; verified by existing TestDeepSeekProvider tests."
-    - criterion: "API dev agent receives full tool set (Read, Edit, Write, Bash, Glob, Grep)"
+      notes: "schemas.py: when file_val is None, both the file check and line check are skipped. Covered by test_p1_with_null_file_and_null_line_is_valid."
+    - criterion: "P1 finding with `file` set and `line` set → valid (normal case)"
       status: MET
-      notes: "TOOL_REGISTRY now has all six canonical entries: read_file, bash, grep, glob, write_file, edit_file. TOOL_NAME_MAP (already had all six entries) normalizes capitalized forge.yaml names to canonical names at config parse time."
-    - criterion: "API dev agent can create files, edit files, and run commands in worktree"
+      notes: "Pre-existing behavior; test_valid_request_changes confirms this case."
+    - criterion: "P2 findings are NOT affected by this rule (line remains optional)"
       status: MET
-      notes: "write_file handler creates/overwrites files with parent dir creation. edit_file handler does exact-string replacement. bash handler (pre-existing) runs shell commands. All use _resolve_safe() for path security."
-    - criterion: "Handoff YAML is extracted from the agent's final response"
+      notes: "Line and file checks are inside `if severity == 'P1':` block; P2s are never checked. Covered by test_p2_with_file_and_null_line_is_valid."
+    - criterion: "New test: P1 + file + null line → error"
       status: MET
-      notes: "The spec's implementation note about parsing the final message is a misnomer. In theforge, the dev agent runs make gate via the bash tool which writes handoff.yaml to disk; the coordinator reads it via _get_handoff_content(). Identical to CLI mode. No text-parsing code exists or is needed."
-    - criterion: "Cost tracking works for API dev (token-level breakdown in audit)"
+      notes: "test_p1_with_file_and_null_line_is_error added to test_schemas.py."
+    - criterion: "New test: P1 + null file + null line → no error"
       status: MET
-      notes: "AgentLoopManager accumulates token counts across turns into AgentResult.model_usage. Already implemented for review agents and unchanged."
-    - criterion: "Iteration nudge fires at 80% of max_iterations"
+      notes: "test_p1_with_null_file_and_null_line_is_valid added to test_schemas.py."
+    - criterion: "New test: P2 + file + null line → no error"
       status: MET
-      notes: "Already implemented in AgentLoopManager.run(); covered by existing tests."
-    - criterion: "Time nudge fires at 80% of wall-clock timeout"
+      notes: "test_p2_with_file_and_null_line_is_valid added to test_schemas.py."
+    - criterion: "Existing tests pass unchanged"
       status: MET
-      notes: "Already implemented in AgentLoopManager.run(); covered by existing tests."
-    - criterion: "CLI dev profiles continue to work unchanged (backward compatible)"
-      status: MET
-      notes: "runner.py routing is additive — CLI path (profile.mode == cli) is untouched. All existing CLI runner tests pass unchanged."
-    - criterion: "`base_url` works for local model servers (Ollama, vLLM)"
-      status: MET
-      notes: "ModelProfile.base_url is passed through to the OpenAI client in _run_loop_openai. Already implemented; no changes needed."
-    - criterion: "Unit tests mock the API call and verify tool dispatch"
-      status: MET
-      notes: "Added TestWriteFileHandler (4 tests), TestEditFileHandler (5 tests), TestDevAgentApiLoop (2 tests), and test_run_agent_api_dev_dispatch in test_runner.py. All mock the provider adapter and verify tool dispatch, file effects, and error contracts."
-    - criterion: "All existing tests pass"
-      status: MET
-      notes: "968 passed in 10.52s — zero failures."
-  spec_deviations:
-    - description: "Handoff YAML extraction not implemented as text-parsing of agent final message"
-      justification: "The spec's implementation note says to parse the agent's final message for a structured handoff YAML block, but this is a spec misnomer. In theforge, the dev agent runs make gate via the bash tool which writes handoff.yaml to disk; the coordinator reads it via _get_handoff_content(). This is identical to CLI mode and no text-parsing code exists in either path."
-  deferred_items:
-    - description: "Bash tool timeout hardcoded at 30s may be exceeded by make gate"
-      reason: "Running make gate (pytest + ruff) may exceed 30s as the test suite grows. The API dev agent will need to run make fmt, make lint, and make test in separate bash calls. This is a pre-existing constraint not introduced by this spec."
+      notes: "986 passed in 10.98s — zero failures. test_finding_missing_file (file='') still errors as before."
+  spec_deviations: none
+  deferred_items: none
   gate_result: PASS
 gate_decision: PASS

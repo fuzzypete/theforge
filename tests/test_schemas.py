@@ -90,3 +90,58 @@ class TestValidateReviewYaml:
         errors = validate_review_yaml("just a string")
         assert len(errors) == 1
         assert "mapping" in errors[0]
+
+    def test_p1_with_file_and_null_line_is_error(self):
+        """P1 finding with file set and line: null must be a validation error."""
+        data = _valid_review()
+        data["verdict"] = "REQUEST_CHANGES"
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "src/foo.py",
+                "line": None,
+                "description": "Bug here",
+                "suggestion": "Fix it",
+            }
+        ]
+        errors = validate_review_yaml(data)
+        assert any("line" in e for e in errors)
+
+    def test_p1_with_null_file_and_null_line_is_valid(self):
+        """P1 finding with file: null and line: null is valid (architectural finding)."""
+        data = _valid_review()
+        data["verdict"] = "REQUEST_CHANGES"
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": None,
+                "line": None,
+                "description": "Architecture violates separation of concerns",
+                "suggestion": "Restructure the module boundaries",
+            }
+        ]
+        errors = validate_review_yaml(data)
+        assert errors == []
+
+    def test_p2_with_file_and_null_line_is_valid(self):
+        """P2 findings are not subject to the line-enforcement rule."""
+        data = _valid_review()
+        data["verdict"] = "REQUEST_CHANGES"
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "src/foo.py",
+                "line": 10,
+                "description": "Blocking bug",
+                "suggestion": "Fix it",
+            },
+            {
+                "severity": "P2",
+                "file": "src/foo.py",
+                "line": None,
+                "description": "Style nit",
+                "suggestion": "Clean it up",
+            },
+        ]
+        errors = validate_review_yaml(data)
+        assert errors == []
