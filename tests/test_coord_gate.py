@@ -95,7 +95,6 @@ def _make_task(tmp_path: Path) -> TaskSpec:
         name="Test Task",
         spec_path=spec,
         slug="test-task",
-        file_scope=["src/"],
     )
 
 
@@ -107,7 +106,6 @@ def _make_task_with_gate_override(tmp_path: Path, gate_override: str | None) -> 
         name="Test Task",
         spec_path=spec,
         slug="test-task",
-        file_scope=["src/"],
         gate_override=gate_override,
     )
 
@@ -314,8 +312,8 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_out_of_scope_files_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """All dirty files outside file_scope → auto-commit, proceed to REVIEW without retry."""
+    def test_dirty_files_trigger_dev_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Dirty files after gate → DEV retry."""
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
@@ -323,55 +321,6 @@ class TestCoordinatorDirtyWorktree:
             name="Test Task",
             spec_path=spec,
             slug="test-task",
-            file_scope=["src/theforge/coordinator.py"],
-        )
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        auto_commit_cmds: list[str] = []
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
-                return (True, "OK")
-            if "git status --porcelain" in cmd:
-                # ideate.py is outside file_scope
-                return (True, " M src/theforge/ideate.py")
-            if "git add" in cmd or "git commit" in cmd:
-                auto_commit_cmds.append(cmd)
-                return (True, "OK")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        # Auto-committed → no DEV retry → DONE
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        # PREFLIGHT + 1 DEV call only (no retry)
-        assert mock_agent.call_count == 2
-        # git add and git commit were called
-        assert any("git add" in c for c in auto_commit_cmds)
-        assert any("git commit" in c for c in auto_commit_cmds)
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_in_scope_dirty_file_retries_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """One dirty file inside file_scope → DEV retry (unchanged behavior)."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-        task = TaskSpec(
-            name="Test Task",
-            spec_path=spec,
-            slug="test-task",
-            file_scope=["src/theforge/coordinator.py"],
         )
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -384,9 +333,8 @@ class TestCoordinatorDirtyWorktree:
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
-                # coordinator.py is in-scope — triggers DEV retry on first gate
                 if call_count["gate"] == 1:
-                    return (True, " M src/theforge/coordinator.py")
+                    return (True, " M src/theforge/ideate.py")
                 return (True, "")
             return (True, "OK")
 
@@ -398,7 +346,7 @@ class TestCoordinatorDirtyWorktree:
 
         result = run_task(config, task)
 
-        # In-scope dirty → DEV retry → clean on second pass → DONE
+        # Dirty → DEV retry → clean on second pass → DONE
         assert result.success is True
         assert result.phase == Phase.DONE
         # PREFLIGHT + 2 DEV calls (retry once for dirty)
@@ -407,10 +355,8 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_empty_file_scope_all_dirty_treated_as_in_scope(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """Empty file_scope → all dirty files treated as in-scope → DEV retry (unchanged)."""
+    def test_untracked_file_retries_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Tracked file + untracked file → DEV retry."""
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
@@ -418,7 +364,6 @@ class TestCoordinatorDirtyWorktree:
             name="Test Task",
             spec_path=spec,
             slug="test-task",
-            file_scope=[],  # empty — no scope restriction
         )
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -431,61 +376,9 @@ class TestCoordinatorDirtyWorktree:
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
-                # dirty on first pass, clean on second
                 if call_count["gate"] == 1:
-                    return (True, " M src/theforge/ideate.py")
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        # Empty scope → no auto-commit → DEV retry → clean → DONE
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        # PREFLIGHT + 2 DEV calls (retry once)
-        assert mock_agent.call_count == 3
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_mixed_tracked_and_untracked_retries_dev(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """Out-of-scope tracked file + untracked file → DEV retry, not auto-commit."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-        task = TaskSpec(
-            name="Test Task",
-            spec_path=spec,
-            slug="test-task",
-            file_scope=["src/theforge/coordinator.py"],
-        )
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        auto_commit_called = {"n": 0}
-        call_count = {"gate": 0}
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                call_count["gate"] += 1
-                _write_handoff(Path(cwd), "PASS")
-                return (True, "OK")
-            if "git status --porcelain" in cmd:
-                if call_count["gate"] == 1:
-                    # Tracked out-of-scope file AND an untracked file
                     return (True, " M src/theforge/ideate.py\n?? new_scratch.py")
                 return (True, "")
-            if "git add" in cmd or "git commit" in cmd:
-                auto_commit_called["n"] += 1
-                return (True, "OK")
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
@@ -496,109 +389,10 @@ class TestCoordinatorDirtyWorktree:
 
         result = run_task(config, task)
 
-        # Untracked file prevents auto-commit → DEV retry → clean → DONE
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert auto_commit_called["n"] == 0  # no auto-commit attempted
-        assert mock_agent.call_count == 3  # PREFLIGHT + 2 DEV
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_auto_commit_git_failure_falls_back_to_dev_retry(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """Auto-commit git failure (add or commit) falls back to DEV retry."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-        task = TaskSpec(
-            name="Test Task",
-            spec_path=spec,
-            slug="test-task",
-            file_scope=["src/theforge/coordinator.py"],
-        )
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        call_count = {"gate": 0}
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                call_count["gate"] += 1
-                _write_handoff(Path(cwd), "PASS")
-                return (True, "OK")
-            if "git status --porcelain" in cmd:
-                if call_count["gate"] == 1:
-                    return (True, " M src/theforge/ideate.py")
-                return (True, "")
-            if "git add" in cmd:
-                return (False, "error: unable to stage file")  # git add fails
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        # Auto-commit failed → DEV retry → clean → DONE
+        # Dirty → DEV retry → clean → DONE
         assert result.success is True
         assert result.phase == Phase.DONE
         assert mock_agent.call_count == 3  # PREFLIGHT + 2 DEV
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_rename_status_uses_destination_filename(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
-    ):
-        """Renamed file (R status) → destination filename used, treated as out-of-scope."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-        task = TaskSpec(
-            name="Test Task",
-            spec_path=spec,
-            slug="test-task",
-            file_scope=["src/theforge/coordinator.py"],
-        )
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        committed_files: list[str] = []
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
-                return (True, "OK")
-            if "git status --porcelain" in cmd:
-                # Rename: old name was ideate_old.py, new name is ideate.py
-                return (True, "R  src/theforge/ideate_old.py -> src/theforge/ideate.py")
-            if "git add" in cmd:
-                committed_files.append(cmd)
-                return (True, "OK")
-            if "git commit" in cmd:
-                return (True, "OK")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        # Renamed file treated as out-of-scope → auto-commit → DONE
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert mock_agent.call_count == 2  # PREFLIGHT + 1 DEV only
-        # git add used the destination filename
-        assert any("src/theforge/ideate.py" in cmd for cmd in committed_files)
-        assert not any("ideate_old.py" in cmd for cmd in committed_files)
 
 
 # ── Exit-code gate mode tests ────────────────────────────────────────
@@ -856,7 +650,6 @@ class TestPytestTargetSubstitution:
             name="Test",
             spec_path=spec,
             slug="test-task",
-            file_scope=[],
             pytest_target="tests/test_specific.py",
         )
         workspace = tmp_path / "test-task"
@@ -1098,7 +891,6 @@ class TestGateOverride:
             name=fm.get("name", "My Spec"),
             spec_path=spec,
             slug=fm.get("slug", "my-spec"),
-            file_scope=fm.get("file_scope", []),
             gate_override=fm.get("gate"),
         )
         assert task.gate_override == "none"
@@ -1594,7 +1386,6 @@ class TestCreatePR:
             name="Test Task",
             slug="test-task",
             spec_path=spec,
-            file_scope=["src/"],
         )
         state = CoordinatorState()
 
@@ -1635,7 +1426,6 @@ class TestCreatePR:
             name="Test Task",
             slug="test-task",
             spec_path=spec,
-            file_scope=["src/"],
         )
         state = CoordinatorState()
 

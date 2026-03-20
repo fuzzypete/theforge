@@ -123,7 +123,6 @@ _VALID_SPEC = """\
 ---
 name: "Test Feature"
 slug: test-feature
-file_scope: []
 pytest_target: tests/
 ---
 
@@ -282,7 +281,6 @@ def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
         name=fm.get("name", "test"),
         spec_path=output_path,
         slug=fm.get("slug", "test"),
-        file_scope=fm.get("file_scope") or [],
         pytest_target=fm.get("pytest_target", "tests/"),
     )
     spec_content = output_path.read_text(encoding="utf-8")
@@ -307,7 +305,6 @@ def _make_long_spec(line_count: int = 160) -> str:
 ---
 name: "Test Feature"
 slug: test-feature
-file_scope: []
 pytest_target: tests/
 ---
 
@@ -996,7 +993,6 @@ SPEC:
 ---
 name: "Test"
 slug: test
-file_scope: []
 pytest_target: tests/
 ---
 # Test
@@ -1022,7 +1018,6 @@ _VALID_SPEC = """\
 ---
 name: "Test Feature"
 slug: test-feature
-file_scope: []
 pytest_target: tests/
 ---
 

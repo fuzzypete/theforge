@@ -75,7 +75,6 @@ from .coord_preflight import (  # noqa: F401
     _find_registry_info_for_profile,
     _find_registry_key_for_profile,
     _has_persistent_p1,
-    _load_file_scope_contents,
     _parse_preflight_complexity,
     _parse_preflight_verdict,
     _persistent_p1_descriptions,
@@ -1203,10 +1202,7 @@ def run_task(
         _log_phase(state.phase, preflight_profile.model)
         logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
 
-        file_contents = _load_file_scope_contents(task, config.project_root)
-        preflight_prompt = build_preflight_prompt(
-            task, spec_content=spec_content, file_contents=file_contents
-        )
+        preflight_prompt = build_preflight_prompt(task, spec_content=spec_content)
 
         _preflight_start = time.monotonic()
         preflight_result = run_agent(
@@ -1388,7 +1384,6 @@ def run_task(
             plan_prompt = build_plan_prompt(
                 task,
                 spec_content=spec_content,
-                file_contents=file_contents,
                 preflight_output=(preflight_result.output if preflight_result.success else None),
             )
 
@@ -1444,7 +1439,6 @@ def run_task(
                             task,
                             story_content=spec_content,
                             plan_content=plan_text,
-                            file_contents=file_contents,
                             mode=par_profiles[0].mode,
                             preflight_output=(
                                 preflight_result.output if preflight_result.success else None
@@ -1621,7 +1615,6 @@ def run_task(
                         regen_prompt = build_plan_prompt(
                             task,
                             spec_content=spec_content,
-                            file_contents=file_contents,
                             preflight_output=(
                                 preflight_result.output if preflight_result.success else None
                             ),

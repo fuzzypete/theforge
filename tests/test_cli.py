@@ -36,8 +36,6 @@ class TestParseFrontmatter:
             "---\n"
             "name: Phase 6H\n"
             "slug: export-svc\n"
-            "file_scope:\n"
-            "  - src/export/\n"
             "pytest_target: tests/test_export.py\n"
             "---\n\n"
             "# Spec content\n",
@@ -46,7 +44,6 @@ class TestParseFrontmatter:
         fm = _parse_spec_frontmatter(spec)
         assert fm["name"] == "Phase 6H"
         assert fm["slug"] == "export-svc"
-        assert fm["file_scope"] == ["src/export/"]
 
     def test_without_frontmatter(self, tmp_path):
         spec = tmp_path / "plain.md"
@@ -78,13 +75,12 @@ class TestBuildTask:
     def test_from_frontmatter(self, tmp_path):
         spec = tmp_path / "task.md"
         spec.write_text(
-            "---\nname: My Task\nslug: my-task\nfile_scope:\n  - src/\n---\nSpec here\n",
+            "---\nname: My Task\nslug: my-task\n---\nSpec here\n",
             encoding="utf-8",
         )
         task = _build_task(spec)
         assert task.name == "My Task"
         assert task.slug == "my-task"
-        assert task.file_scope == ["src/"]
 
     def test_slug_override(self, tmp_path):
         spec = tmp_path / "task.md"

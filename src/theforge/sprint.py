@@ -140,7 +140,6 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
         name=name,
         spec_path=spec_path,
         slug=slug,
-        file_scope=fm.get("file_scope", []),
         pytest_target=fm.get("pytest_target"),
         gate_override=fm.get("gate"),
         depends_on=depends_on,

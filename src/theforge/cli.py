@@ -55,9 +55,6 @@ def _parse_spec_frontmatter(spec_path: Path) -> dict:
         ---
         name: Phase 6H: per-user export
         slug: export-service
-        file_scope:
-          - src/export/
-          - tests/test_export.py
         pytest_target: tests/test_export.py
         ---
 
@@ -96,7 +93,6 @@ def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:
         name=fm.get("name", spec_path.stem.replace("_", " ").replace("-", " ").title()),
         spec_path=spec_path.resolve(),
         slug=resolved_slug,
-        file_scope=fm.get("file_scope", []),
         pytest_target=fm.get("pytest_target"),
         gate_override=fm.get("gate"),
     )
@@ -208,7 +204,6 @@ _STORY_TEMPLATE = """\
 name: "Short human-readable title"
 slug: my-feature-slug        # used for branch and worktree names
 pytest_target: tests/        # path passed to pytest for gate
-# file_scope: []             # optional: restrict dev agent to these files
 ---
 
 # Story title

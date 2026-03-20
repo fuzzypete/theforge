@@ -43,7 +43,6 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.review import ReviewFinding
-from theforge.task import TaskSpec
 
 # ── Preflight phase tests ─────────────────────────────────────────────
 
@@ -203,38 +202,6 @@ class TestCoordinatorPreflight:
         assert audit["preflight"]["verdict"] == "ALREADY_DONE"
         assert audit["preflight"]["cost_usd"] == 0.08
         assert "already" in audit["preflight"]["reason"].lower()
-
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
-    def test_preflight_reads_file_scope(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Preflight prompt includes current file contents from file_scope."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text("# Test\n\nDo the thing.", encoding="utf-8")
-        task = TaskSpec(
-            name="Scoped Task",
-            spec_path=spec,
-            slug="test-task",
-            file_scope=["src/foo.py"],
-        )
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        (tmp_path / "src").mkdir(exist_ok=True)
-        (tmp_path / "src" / "foo.py").write_text("def foo(): pass\n", encoding="utf-8")
-
-        mock_shell.return_value = (True, "OK")
-        mock_agent.return_value = _make_agent_result(
-            success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.05
-        )
-
-        run_task(config, task)
-
-        preflight_call = mock_agent.call_args_list[0]
-        prompt = preflight_call.kwargs["prompt"]
-        assert "def foo(): pass" in prompt
-        assert "src/foo.py" in prompt
 
 
 # ── Complexity parsing tests ──────────────────────────────────────────

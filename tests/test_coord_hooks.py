@@ -73,7 +73,6 @@ def _make_task(slug="my-feature", spec_path=None):
         name="My Feature",
         spec_path=spec_path or Path("/tmp/specs/my-feature.md"),
         slug=slug,
-        file_scope=[],
     )
 
 
