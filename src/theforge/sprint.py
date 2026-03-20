@@ -262,7 +262,7 @@ def _triage_spec(
         )
 
     # 4. Check audit trail for a prior review APPROVE
-    if has_review_approve(project_root, slug):
+    if has_review_approve(project_root, slug, base_branch, branch):
         return SpecTriage(
             spec_path=spec_path,
             action="skip",
