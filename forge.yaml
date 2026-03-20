@@ -3,11 +3,11 @@ project: theforge
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
-  setup_command: "python -m venv .venv && .venv/bin/pip install -e . pytest -q"
+  setup_command: "test -d .venv || (python -m venv .venv && .venv/bin/pip install -e . pytest -q)"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
-  on_approve: pr       # create GitHub PR on APPROVE instead of auto-merging
-  pr_draft: false
+  on_approve: merge
+  auto_push: true
 
 validation:
   gate_command: ".venv/bin/python -m pytest tests/ -q"
@@ -57,7 +57,7 @@ profiles:
       review_role: patterns
       budget_usd: 2.00
       timeout_seconds: 300
-      max_iterations: 50
+      max_iterations: 20
       allowed_tools:
         - Read
         - Bash
@@ -80,7 +80,7 @@ profiles:
       review_role: patterns
       budget_usd: 1.00
       timeout_seconds: 300
-      max_iterations: 50
+      max_iterations: 15
       allowed_tools:
         - Read
         - Bash
@@ -93,15 +93,12 @@ retry:
 
 plan:
   enabled: true
-  model: claude      # CLI binary name
-  model_name: sonnet # sonnet is sufficient; opus is overkill for focused specs
+  model: claude
+  model_name: sonnet
   budget_usd: 1.00
   timeout: 600
   timeout_medium: 900
   timeout_large: 1800
-
-plan_review:
-  enabled: false  # human gate disabled — agent review replaces it
 
 plan_agent_review:
   enabled: true
@@ -120,7 +117,7 @@ plan_agent_review:
       model: o4-mini
       budget_usd: 1.00
       timeout_seconds: 300
-      max_iterations: 50
+      max_iterations: 20
       allowed_tools:
         - Read
         - Glob
@@ -130,7 +127,7 @@ plan_agent_review:
       model: deepseek-chat
       budget_usd: 0.50
       timeout_seconds: 300
-      max_iterations: 50
+      max_iterations: 15
       allowed_tools:
         - Read
         - Glob
