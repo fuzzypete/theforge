@@ -33,20 +33,31 @@ def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> 
         return False
 
 
-def has_review_approve(project_root: Path, slug: str, base_branch: str = "main") -> bool:
+def has_review_approve(
+    project_root: Path,
+    slug: str,
+    base_branch: str = "main",
+    branch: str | None = None,
+) -> bool:
     """Return True if any prior run for slug produced a review APPROVE.
 
     Reads .forge/audits/history.jsonl line-by-line. Returns False on missing
     file, parse errors, or if no matching APPROVE record exists (safe default:
     assume no APPROVE so review is never skipped incorrectly).
 
-    An APPROVE record is skipped if the feature branch (feat/<slug>) still has
-    unmerged commits ahead of base_branch — that indicates an abandoned run.
+    An APPROVE record is skipped if the feature branch still has unmerged
+    commits ahead of base_branch — that indicates an abandoned run.
+
+    Args:
+        branch: The feature branch name (e.g. config.workspace.branch_pattern
+            formatted with slug). If None, defaults to 'feat/<slug>'.
     """
     history_path = project_root / ".forge" / "audits" / "history.jsonl"
     if not history_path.exists():
         return False
-    branch = f"feat/{slug}"
+    feature_branch = branch if branch is not None else f"feat/{slug}"
+    # Cache the branch state check — it does not change mid-loop.
+    branch_is_stale: bool | None = None
     try:
         with open(history_path, encoding="utf-8") as f:
             for raw in f:
@@ -62,7 +73,11 @@ def has_review_approve(project_root: Path, slug: str, base_branch: str = "main")
                     continue
                 for review in record.get("reviews", []):
                     if review.get("verdict") == "APPROVE":
-                        if _branch_has_unmerged_commits(project_root, branch, base_branch):
+                        if branch_is_stale is None:
+                            branch_is_stale = _branch_has_unmerged_commits(
+                                project_root, feature_branch, base_branch
+                            )
+                        if branch_is_stale:
                             continue  # stale APPROVE from abandoned run
                         return True
     except OSError:
