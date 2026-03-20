@@ -538,10 +538,10 @@ def _run_review_pool(
     enforce_budgets: bool = True,
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
-) -> tuple[list, list, ReviewResult | None, list[ReviewResult]]:
+) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 
-    Returns (successful, failed, merged_result, individual_parsed).
+    Returns (successful, failed, merged_result, individual_parsed, named_parsed).
 
     Updates *meta* in-place (successful, failed, failed_detail, parse_retries).
     merged_result is None when all reviewers failed or budget exceeded;
@@ -551,6 +551,10 @@ def _run_review_pool(
     individual_parsed contains per-reviewer ReviewResult objects that passed
     schema validation (after per-reviewer retries).  Callers use this for
     best-individual fallback when the merged result has parse errors.
+
+    named_parsed contains (profile_name, ReviewResult) pairs aligned 1:1 with
+    successful agents (before parse-error filtering).  Used for PR review
+    attribution in build_post_run_payload().
 
     When multiple reviewers succeed, results are merged deterministically:
     strictest verdict wins, findings are unioned. No LLM synthesis call.
@@ -658,7 +662,7 @@ def _run_review_pool(
                     f"Review budget exceeded for {profile.name}: "
                     f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
                 )
-                return [], [], None, []
+                return [], [], None, [], []
 
     successful = [r for r in pool_results if r.success]
     failed_results = [r for r in pool_results if not r.success]
@@ -679,7 +683,7 @@ def _run_review_pool(
         state.phase = Phase.ESCALATE
         failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
         state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
-        return successful, failed_results, None, []
+        return successful, failed_results, None, [], []
 
     _synthesis_path = (
         workspace_path / ".forge/traces" / f"{_cycle_num}-{pool_attempt}-synthesis.txt"
@@ -776,6 +780,12 @@ def _run_review_pool(
     # Individual parsed results (no parse errors) — used by caller for fallback
     individual_parsed: list[ReviewResult] = [p for p in parsed_results if not p.parse_errors]
 
+    # Named pairs aligned 1:1 with successful agents (before parse filtering).
+    # Reviewers with persistent parse errors are included with whatever partial
+    # data was extracted; callers that use this for PR review attribution will
+    # post a COMMENT with potentially empty findings/summary for those reviewers.
+    named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
+
     # ── Merge ─────────────────────────────────────────────────────────
     if len(successful) == 1:
         merged = parsed_results[0]
@@ -795,7 +805,7 @@ def _run_review_pool(
         f"review-cycle-{_cycle_num}/synthesized.yaml",
         _synthesis_content,
     )
-    return successful, failed_results, merged, individual_parsed
+    return successful, failed_results, merged, individual_parsed, named_parsed
 
 
 def _setup_resume_entry(
@@ -2107,7 +2117,7 @@ def run_review_only(
     state.review_cycle_metadata.append(meta)
 
     _pool_start = time.monotonic()
-    successful, failed_results, parsed_review, _individual = _run_review_pool(
+    successful, failed_results, parsed_review, _individual, _named_parsed = _run_review_pool(
         state,
         config,
         task,
@@ -2119,6 +2129,7 @@ def run_review_only(
         review_prompts=review_prompt,
         enforce_budgets=False,
     )
+    state.last_cycle_reviewer_results = _named_parsed
     _pool_elapsed = time.monotonic() - _pool_start
 
     if parsed_review is None:

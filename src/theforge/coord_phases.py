@@ -388,18 +388,21 @@ def _run_review_phase(
     state.review_cycle_metadata.append(meta)
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
-    successful, failed_results, _candidate, _individual_results = mod._run_review_pool(
-        state,
-        config,
-        task,
-        spec_content,
-        workspace_path,
-        branch_name,
-        meta,
-        notify=notify,
-        pool_attempt=0,
-        max_review_parse_retries=max_parse_retries,
+    successful, failed_results, _candidate, _individual_results, _named_parsed = (
+        mod._run_review_pool(
+            state,
+            config,
+            task,
+            spec_content,
+            workspace_path,
+            branch_name,
+            meta,
+            notify=notify,
+            pool_attempt=0,
+            max_review_parse_retries=max_parse_retries,
+        )
     )
+    state.last_cycle_reviewer_results = _named_parsed
 
     if _candidate is None:
         # All reviewers failed or budget exceeded —

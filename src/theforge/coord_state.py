@@ -116,6 +116,9 @@ class CoordinatorState:
         # "review_changes" | "gate_fail" | "dirty_worktree" | "extend"
         # | "reject" | "timeout_resume" | None
     )
+    last_cycle_reviewer_results: list[tuple[str, ReviewResult]] = field(
+        default_factory=list
+    )  # (profile_name, ReviewResult) pairs from the most recent pool run
 
     @property
     def total_dev_cost(self) -> float:

@@ -313,6 +313,164 @@ class TestBuildPostRunPayload:
         assert payload["findings"][0]["severity"] == "P2"
 
 
+class TestBuildPostRunPayloadPrNumber:
+    def test_pr_number_extracted_from_url(self):
+        from theforge.coord_state import CoordinatorResult, Phase
+
+        config = _make_config()
+        task = _make_task()
+        state = _make_state()
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="ok",
+            merge={"action": "pr", "pr_url": "https://github.com/org/repo/pull/123"},
+        )
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert payload["pr_number"] == 123
+
+    def test_pr_number_null_when_no_merge(self):
+        config = _make_config()
+        task = _make_task()
+        state = _make_state()
+        result = _make_result(state=state)
+        # result.merge is None by default
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert payload["pr_number"] is None
+
+    def test_pr_number_null_when_action_not_pr(self):
+        from theforge.coord_state import CoordinatorResult, Phase
+
+        config = _make_config()
+        task = _make_task()
+        state = _make_state()
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="ok",
+            merge={"action": "local", "pr_url": None},
+        )
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert payload["pr_number"] is None
+
+    def test_pr_number_null_when_pr_url_missing(self):
+        from theforge.coord_state import CoordinatorResult, Phase
+
+        config = _make_config()
+        task = _make_task()
+        state = _make_state()
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="ok",
+            merge={"action": "pr", "pr_url": None},
+        )
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert payload["pr_number"] is None
+
+
+class TestBuildPostRunPayloadReviewers:
+    def _make_reviewer_result(self, name="reviewer-a", verdict="APPROVE", summary="Looks good"):
+        from theforge.review import ReviewFinding, ReviewResult
+
+        return (
+            name,
+            ReviewResult(
+                verdict=verdict,
+                summary=summary,
+                findings=[
+                    ReviewFinding(
+                        severity="P2",
+                        file="src/foo.py",
+                        line=10,
+                        description="minor issue",
+                        suggestion="fix it",
+                    )
+                ],
+                spec_matches=True,
+                spec_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            ),
+        )
+
+    def test_reviewers_serialised_with_all_fields(self):
+        from theforge.config import DEFAULT_REVIEW_PROFILE, ModelProfile
+
+        config = _make_config()
+        # Add a named reviewer profile matching the result
+        config.review_pool[0] = ModelProfile(
+            name="reviewer-a",
+            model="claude-sonnet-4-6",
+            budget_usd=5.0,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+        task = _make_task()
+        state = _make_state()
+        state.last_cycle_reviewer_results = [self._make_reviewer_result("reviewer-a")]
+        result = _make_result(state=state)
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert len(payload["reviewers"]) == 1
+        r = payload["reviewers"][0]
+        assert r["name"] == "reviewer-a"
+        assert r["model"] == "claude-sonnet-4-6"
+        assert r["verdict"] == "APPROVE"
+        assert r["summary"] == "Looks good"
+        assert len(r["findings"]) == 1
+        assert r["findings"][0]["severity"] == "P2"
+        assert r["findings"][0]["file"] == "src/foo.py"
+
+    def test_reviewers_empty_when_no_results(self):
+        config = _make_config()
+        task = _make_task()
+        state = _make_state()
+        # last_cycle_reviewer_results defaults to []
+        result = _make_result(state=state)
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert payload["reviewers"] == []
+
+    def test_reviewers_model_defaults_to_empty_string_when_profile_missing(self):
+        task = _make_task()
+        state = _make_state()
+        # profile name "unknown" not in review_pool
+        state.last_cycle_reviewer_results = [self._make_reviewer_result("unknown")]
+        config = _make_config()
+        result = _make_result(state=state)
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert payload["reviewers"][0]["model"] == ""
+
+    def test_multiple_reviewers_serialised(self):
+        task = _make_task()
+        state = _make_state()
+        state.last_cycle_reviewer_results = [
+            self._make_reviewer_result("reviewer-a", verdict="APPROVE"),
+            self._make_reviewer_result(
+                "reviewer-b", verdict="REQUEST_CHANGES", summary="Needs work"
+            ),
+        ]
+        config = _make_config()
+        result = _make_result(state=state)
+        payload = build_post_run_payload(state, config, task, result, "r1", 10.0)
+
+        assert len(payload["reviewers"]) == 2
+        assert payload["reviewers"][0]["name"] == "reviewer-a"
+        assert payload["reviewers"][1]["name"] == "reviewer-b"
+        assert payload["reviewers"][1]["verdict"] == "REQUEST_CHANGES"
+
+
 class TestBuildPostMergePayload:
     def test_contains_required_fields(self):
         config = _make_config()

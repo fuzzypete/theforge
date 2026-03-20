@@ -994,45 +994,131 @@ if [ "$verdict" != "ESCALATE" ] && [ "$verdict" != "APPROVE" ]; then
   exit 0
 fi
 
-# No findings → nothing to do
-[ "$findings_count" -eq 0 ] && exit 0
+# File one GitHub Issue per finding (only when findings exist)
+if [ "$findings_count" -gt 0 ]; then
+  echo "$payload" | jq -c '.findings[]' | while read -r finding; do
+    sev=$(echo "$finding" | jq -r '.severity')
+    file=$(echo "$finding" | jq -r '.file')
+    line=$(echo "$finding" | jq -r '.line // empty')
+    desc=$(echo "$finding" | jq -r '.description')
+    suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
 
-echo "$payload" | jq -c '.findings[]' | while read -r finding; do
-  sev=$(echo "$finding" | jq -r '.severity')
-  file=$(echo "$finding" | jq -r '.file')
-  line=$(echo "$finding" | jq -r '.line // empty')
-  desc=$(echo "$finding" | jq -r '.description')
-  suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
+    # Title: [P1] slug: description (truncated to 72 chars)
+    raw_title="[${sev}] ${slug}: ${desc}"
+    title="${raw_title:0:72}"
 
-  # Title: [P1] slug: description (truncated to 72 chars)
-  raw_title="[${sev}] ${slug}: ${desc}"
-  title="${raw_title:0:72}"
+    location="\\`${file}\\`"
+    [ -n "$line" ] && location="${location} line ${line}"
 
-  location="\\`${file}\\`"
-  [ -n "$line" ] && location="${location} line ${line}"
-
-  body="**Story:** \\`${slug}\\` (\\`${branch}\\`)
+    body="**Story:** \\`${slug}\\` (\\`${branch}\\`)
 **Verdict:** ${verdict} — ${summary}
 **Location:** ${location}
 
 **Description:** ${desc}"
 
-  if [ -n "$suggestion" ]; then
-    body="${body}
+    if [ -n "$suggestion" ]; then
+      body="${body}
 
 **Suggestion:** ${suggestion}"
-  fi
+    fi
 
-  body="${body}
+    body="${body}
 
 *Filed by theforge post_run hook.*"
 
-  gh issue create \\
-    --title "$title" \\
-    --body "$body" \\
-    --label "forge-finding" \\
-    --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
-done
+    gh issue create \\
+      --title "$title" \\
+      --body "$body" \\
+      --label "forge-finding" \\
+      --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
+  done
+fi
+
+# ── PR Review Attribution ─────────────────────────────────────────────
+# Opt-in: set FORGE_GH_PR_REVIEWS=1 to enable posting per-reviewer GitHub reviews.
+# The gh api calls below use `repos/{owner}/{repo}` — gh CLI resolves these
+# automatically to the current repository when run from within the repo.
+# See: https://cli.github.com/manual/gh_api (the {owner}/{repo} tokens are
+# expanded by gh from the remote origin URL automatically).
+[ -z "${FORGE_GH_PR_REVIEWS:-}" ] && exit 0
+
+# Only post reviews on APPROVE
+[ "$verdict" != "APPROVE" ] && exit 0
+
+pr_number=$(echo "$payload" | jq -r '.pr_number // "null"')
+[ "$pr_number" = "null" ] && exit 0
+
+reviewers_count=$(echo "$payload" | jq '(.reviewers // []) | length')
+
+if [ "$reviewers_count" -le 1 ]; then
+  # Single-reviewer (or absent): post one APPROVE with that reviewer's findings
+  reviewer_body=$(echo "$payload" | jq -r '
+    (.reviewers // []) | if length == 0 then
+      "Approved by theforge review pool.\\n\\n*Posted by theforge post_run hook.*"
+    else
+      .[0] as $r |
+      "**Reviewer:** \\($r.name) (`\\($r.model)`)\\n\\n**Summary:** \\($r.summary)\\n\\n" +
+      (if ($r.findings | length) > 0 then
+        "**Findings:**\\n" +
+        ($r.findings | map(
+          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.description)"
+        ) | join("\\n")) + "\\n\\n"
+      else "" end) +
+      "*Posted by theforge post_run hook.*"
+    end
+  ')
+  jq -n --arg body "$reviewer_body" --arg event "APPROVE" \\
+    '{body: $body, event: $event}' | \\
+    gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \\
+      --method POST \\
+      --input - || true
+else
+  # Multi-reviewer: post one COMMENT per reviewer, then one final APPROVE
+  echo "$payload" | jq -c '.reviewers[]' | while read -r reviewer; do
+    r_name=$(echo "$reviewer" | jq -r '.name')
+    r_model=$(echo "$reviewer" | jq -r '.model')
+    r_verdict=$(echo "$reviewer" | jq -r '.verdict')
+    r_summary=$(echo "$reviewer" | jq -r '.summary')
+    r_findings_count=$(echo "$reviewer" | jq '.findings | length')
+
+    comment_body="**Reviewer:** ${r_name} (\\`${r_model}\\`)
+**Verdict:** ${r_verdict}
+**Summary:** ${r_summary}"
+
+    if [ "$r_findings_count" -gt 0 ]; then
+      findings_text=$(echo "$reviewer" | jq -r '
+        .findings | map(
+          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.description)"
+        ) | join("\\n")
+      ')
+      comment_body="${comment_body}
+
+**Findings:**
+${findings_text}"
+    fi
+
+    comment_body="${comment_body}
+
+*Posted by theforge post_run hook.*"
+
+    jq -n --arg body "$comment_body" --arg event "COMMENT" \\
+      '{body: $body, event: $event}' | \\
+      gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \\
+        --method POST \\
+        --input - || true
+  done
+
+  # Final APPROVE with merged summary
+  approve_body="**theforge review pool APPROVED** — ${summary}
+
+*Posted by theforge post_run hook.*"
+
+  jq -n --arg body "$approve_body" --arg event "APPROVE" \\
+    '{body: $body, event: $event}' | \\
+    gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \\
+      --method POST \\
+      --input - || true
+fi
 """
 
 _HOOKS_README = """\
@@ -1052,6 +1138,7 @@ The `post_run` hook receives a JSON object on stdin after every `forge run`:
   "slug": "my-feature",
   "branch": "feat/my-feature",
   "summary": "one-line review summary",
+  "pr_number": 42,
   "findings": [
     {
       "severity": "P1 | P2",
@@ -1060,9 +1147,28 @@ The `post_run` hook receives a JSON object on stdin after every `forge run`:
       "description": "what is wrong",
       "suggestion": "how to fix"
     }
+  ],
+  "reviewers": [
+    {
+      "name": "reviewer-profile-name",
+      "model": "claude-sonnet-4-6",
+      "verdict": "APPROVE | REQUEST_CHANGES",
+      "summary": "one-line summary from this reviewer",
+      "findings": [...]
+    }
   ]
 }
 ```
+
+`pr_number` is an integer extracted from the merge PR URL, or `null` if the run
+did not result in a PR merge. `reviewers` contains per-reviewer attribution from
+the last review cycle; empty list if no reviewers ran.
+
+## PR Review Attribution
+
+Set `FORGE_GH_PR_REVIEWS=1` to enable automatic posting of GitHub PR reviews
+after an APPROVE outcome. Requires `gh` CLI authenticated and `pr_number` to be
+non-null.
 
 ## Hook contract
 

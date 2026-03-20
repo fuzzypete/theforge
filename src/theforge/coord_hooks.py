@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -222,6 +223,37 @@ def build_post_run_payload(
     outcome = "done" if result.success else "escalate"
     branch = state.branch_name or config.workspace.branch_pattern.format(slug=task.slug)
 
+    # Extract pr_number from merge payload if available
+    pr_number = None
+    if result.merge and result.merge.get("action") == "pr":
+        pr_url = result.merge.get("pr_url")
+        if pr_url:
+            m = re.search(r"/pull/(\d+)", pr_url)
+            if m:
+                pr_number = int(m.group(1))
+
+    # Build per-reviewer attribution from last cycle results
+    model_by_name = {p.name: p.model for p in config.review_pool}
+    reviewers = [
+        {
+            "name": name,
+            "model": model_by_name.get(name, ""),
+            "verdict": rr.verdict,
+            "summary": rr.summary,
+            "findings": [
+                {
+                    "severity": f.severity,
+                    "file": f.file,
+                    "line": f.line,
+                    "description": f.description,
+                    "suggestion": f.suggestion,
+                }
+                for f in rr.findings
+            ],
+        }
+        for name, rr in state.last_cycle_reviewer_results
+    ]
+
     return {
         "event": "post_run",
         "project": config.project,
@@ -240,6 +272,8 @@ def build_post_run_payload(
         "gate_decisions": list(state.gate_decisions),
         "review_pool": review_pool,
         "review_pool_failed": review_pool_failed,
+        "pr_number": pr_number,
+        "reviewers": reviewers,
     }
 
 
