@@ -56,7 +56,6 @@ def _make_task(tmp_path: Path) -> TaskSpec:
         name="Test Task",
         slug="test-task",
         spec_path=spec_path,
-        file_scope=[],
     )
 
 

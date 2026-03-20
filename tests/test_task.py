@@ -24,14 +24,13 @@ def _make_task(tmp_path: Path) -> TaskSpec:
         name="Test Task",
         spec_path=spec,
         slug="test-task",
-        file_scope=["src/foo.py", "tests/test_foo.py"],
     )
 
 
 class TestBuildDevPrompt:
-    """Tests for build_dev_prompt() file_scope advisory language."""
+    """Tests for build_dev_prompt()."""
 
-    def test_non_empty_scope_uses_focus_language(self, tmp_path):
+    def test_no_scope_blocked_sentinel(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_dev_prompt(
             task,
@@ -40,36 +39,6 @@ class TestBuildDevPrompt:
             spec_content="# Spec\n\nDo the thing.",
             gate_command="make gate",
         )
-        assert "Touch other files if needed" in prompt
-
-    def test_non_empty_scope_does_not_contain_scope_blocked(self, tmp_path):
-        task = _make_task(tmp_path)
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test-task",
-            spec_content="# Spec\n\nDo the thing.",
-            gate_command="make gate",
-        )
-        assert "SCOPE_BLOCKED" not in prompt
-
-    def test_empty_scope_still_works(self, tmp_path):
-        spec = tmp_path / "spec.md"
-        spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
-        task = TaskSpec(
-            name="No Scope Task",
-            spec_path=spec,
-            slug="no-scope",
-            file_scope=[],
-        )
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/no-scope",
-            spec_content="# Spec\n\nDo the thing.",
-            gate_command="make gate",
-        )
-        assert "no scope restriction" in prompt
         assert "SCOPE_BLOCKED" not in prompt
 
     def test_preamble_appears_before_spec_content(self, tmp_path):
@@ -436,22 +405,11 @@ class TestBuildDevPromptEscalation:
 class TestBuildPlanPrompt:
     """Tests for build_plan_prompt()."""
 
-    def test_contains_file_contents(self, tmp_path):
-        task = _make_task(tmp_path)
-        prompt = build_plan_prompt(
-            task,
-            spec_content="# Spec\n\nDo the thing.",
-            file_contents={"src/foo.py": "def foo(): pass"},
-        )
-        assert "src/foo.py" in prompt
-        assert "def foo(): pass" in prompt
-
     def test_contains_spec_content(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
             spec_content="# Spec\n\nDo the unique thing.",
-            file_contents={},
         )
         assert "Do the unique thing." in prompt
 
@@ -460,7 +418,6 @@ class TestBuildPlanPrompt:
         prompt = build_plan_prompt(
             task,
             spec_content="# Spec",
-            file_contents={},
         )
         assert "Do NOT write code" in prompt
 
@@ -469,7 +426,6 @@ class TestBuildPlanPrompt:
         prompt = build_plan_prompt(
             task,
             spec_content="# Spec",
-            file_contents={},
         )
         assert "# Implementation Plan" in prompt
 
@@ -478,7 +434,6 @@ class TestBuildPlanPrompt:
         prompt = build_plan_prompt(
             task,
             spec_content="# Spec",
-            file_contents={},
             preflight_output="verdict: PROCEED\ncomplexity: medium",
         )
         assert "verdict: PROCEED" in prompt
@@ -488,19 +443,9 @@ class TestBuildPlanPrompt:
         prompt = build_plan_prompt(
             task,
             spec_content="# Spec",
-            file_contents={},
             preflight_output=None,
         )
         assert "Preflight Analysis" not in prompt
-
-    def test_empty_file_scope_shows_placeholder(self, tmp_path):
-        task = _make_task(tmp_path)
-        prompt = build_plan_prompt(
-            task,
-            spec_content="# Spec",
-            file_contents={},
-        )
-        assert "no file_scope defined" in prompt
 
 
 class TestBuildDevPromptPlanOutput:
@@ -550,8 +495,6 @@ class TestBuildDevPromptPlanOutput:
 # ── build_review_prompt role specialization ───────────────────────────
 
 
-_REVIEW_TASK_SCOPE = ["src/"]
-
 _REVIEW_COMMON_KWARGS = dict(
     spec_content="# Spec",
     commit_log="abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests",
@@ -569,7 +512,6 @@ def review_task(tmp_path: Path) -> TaskSpec:
         name="Test Task",
         spec_path=spec,
         slug="test-task",
-        file_scope=_REVIEW_TASK_SCOPE,
     )
 
 
@@ -673,16 +615,14 @@ class TestTaskSpecDependsOn:
         """TaskSpec without depends_on argument defaults to []."""
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec, slug="test")
         assert task.depends_on == []
 
     def test_depends_on_list(self, tmp_path: Path) -> None:
         """TaskSpec accepts depends_on as a list of strings."""
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(
-            name="Test", spec_path=spec, slug="test", file_scope=[], depends_on=["a", "b"]
-        )
+        task = TaskSpec(name="Test", spec_path=spec, slug="test", depends_on=["a", "b"])
         assert task.depends_on == ["a", "b"]
 
 
@@ -843,7 +783,7 @@ class TestBuildDevPromptDevNotesInstruction:
     def test_gate_not_skipped_includes_dev_notes(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec, slug="test")
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
@@ -858,7 +798,7 @@ class TestBuildDevPromptDevNotesInstruction:
     def test_gate_skipped_excludes_gate_command(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec, slug="test")
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
@@ -881,7 +821,6 @@ class TestBuildPlanReviewPrompt:
             task,
             story_content="# Story\n\nDo the unique thing.",
             plan_content="# Plan\n\nStep 1: implement X.",
-            file_contents={},
         )
         assert "Do the unique thing." in prompt
         assert "Step 1: implement X." in prompt
@@ -892,22 +831,10 @@ class TestBuildPlanReviewPrompt:
             task,
             story_content="# Story",
             plan_content="# Plan",
-            file_contents={},
         )
         assert "APPROVE" in prompt
         assert "REJECT" in prompt
         assert "Acceptance criteria coverage" in prompt
-
-    def test_includes_file_contents(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        prompt = build_plan_review_prompt(
-            task,
-            story_content="# Story",
-            plan_content="# Plan",
-            file_contents={"src/foo.py": "def foo(): pass"},
-        )
-        assert "src/foo.py" in prompt
-        assert "def foo(): pass" in prompt
 
     def test_includes_rejection_findings(self, tmp_path: Path) -> None:
         task = _make_task(tmp_path)
@@ -915,7 +842,6 @@ class TestBuildPlanReviewPrompt:
             task,
             story_content="# Story",
             plan_content="# Plan",
-            file_contents={},
             rejection_findings="- [P1] Bad API reference",
         )
         assert "Previous Rejection Findings" in prompt
@@ -927,7 +853,6 @@ class TestBuildPlanReviewPrompt:
             task,
             story_content="# Story",
             plan_content="# Plan",
-            file_contents={},
             rejection_findings=None,
         )
         assert "Previous Rejection Findings" not in prompt
@@ -995,7 +920,7 @@ class TestBuildDevPromptStructuredHandoff:
     def test_gate_not_skipped_includes_structured_format(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec, slug="test")
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",

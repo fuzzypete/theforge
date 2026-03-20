@@ -24,7 +24,6 @@ class TaskSpec:
     name: str  # human-readable, e.g. "Phase 6H: per-user export"
     spec_path: Path  # path to the spec file
     slug: str  # workspace slug, e.g. "export-service"
-    file_scope: list[str]  # paths the agent may modify
     pytest_target: str | None = None  # specific test target, or None for all
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
@@ -44,8 +43,6 @@ def parse_spec_frontmatter(spec_path: Path) -> dict:
         name: Phase 6H: per-user export
         slug: export-service
         gate: none
-        file_scope:
-          - src/export/
         ---
 
         # Spec content starts here...
@@ -84,41 +81,15 @@ def build_preflight_prompt(
     task: TaskSpec,
     *,
     spec_content: str,
-    file_contents: dict[str, str],
 ) -> str:
     """Build the preflight check prompt.
 
-    The preflight agent receives the spec and current file contents for the
-    file_scope. It determines whether the spec is already implemented, valid
-    and ready for implementation, or blocked/stale.
+    The preflight agent receives the spec and determines whether it is already
+    implemented, valid and ready for implementation, or blocked/stale.
 
     This is a one-shot classification call — the agent outputs a structured
     YAML verdict, not code.
     """
-    if file_contents:
-        files_block = "\n\n".join(
-            f"### `{path}`\n```\n{content}\n```" for path, content in file_contents.items()
-        )
-    else:
-        files_block = "(no file_scope defined — spec applies to entire project)"
-
-    if task.file_scope:
-        scope_feasibility_section = dedent("""\
-            ## Scope Feasibility Check
-
-            If file_scope is non-empty, scan the spec body for files explicitly named
-            as requiring modification (look for file paths, function signatures tied to
-            specific files, "in X.py change Y", acceptance criteria referencing specific
-            files). For each such file, note whether it appears in the file_scope list below.
-            If required files are absent from file_scope, include a warning in your reason
-            but still return PROCEED — the dev agent will receive guidance about the scope
-            mismatch and can work around it.
-
-            This check is advisory when file_scope is non-empty.
-        """)
-    else:
-        scope_feasibility_section = ""
-
     return dedent(f"""\
         You are a preflight validator for **{task.name}**.
 
@@ -131,14 +102,6 @@ def build_preflight_prompt(
         ## Spec
 
         {spec_content}
-
-        {scope_feasibility_section}
-        ## Current File Contents (file_scope)
-
-        These are the files the spec targets, as they exist RIGHT NOW on the
-        main branch:
-
-        {files_block}
 
         ## Classification
 
@@ -225,7 +188,6 @@ def build_plan_review_prompt(
     *,
     story_content: str,
     plan_content: str,
-    file_contents: dict[str, str],
     mode: str = "cli",
     preflight_output: str | None = None,
     rejection_findings: str | None = None,
@@ -233,16 +195,8 @@ def build_plan_review_prompt(
     """Build the plan review agent prompt.
 
     The plan review agent reads the story + generated plan (and optionally
-    the file_scope contents and preflight output) and produces a structured
-    APPROVE/REJECT verdict.
+    the preflight output) and produces a structured APPROVE/REJECT verdict.
     """
-    if file_contents:
-        files_block = "\n\n".join(
-            f"### `{path}`\n```\n{content}\n```" for path, content in file_contents.items()
-        )
-    else:
-        files_block = "(no file_scope defined — spec applies to entire project)"
-
     preflight_section = ""
     if preflight_output:
         preflight_section = dedent(f"""\
@@ -309,10 +263,6 @@ def build_plan_review_prompt(
         ## Generated Plan
 
         {plan_content}
-
-        ## Current Codebase (file_scope)
-
-        {files_block}
         {preflight_section}{rejection_section}
         ## Evaluation Process
 
@@ -361,23 +311,15 @@ def build_plan_prompt(
     task: TaskSpec,
     *,
     spec_content: str,
-    file_contents: dict[str, str],
     preflight_output: str | None = None,
 ) -> str:
     """Build the planning agent prompt.
 
-    The planning agent reads the spec and file_scope contents, then produces
-    a structured forge_plan.md document. It does NOT write code.
+    The planning agent reads the spec and produces a structured forge_plan.md
+    document. It does NOT write code.
 
     Output is ONLY the plan document, starting with '# Implementation Plan'.
     """
-    if file_contents:
-        files_block = "\n\n".join(
-            f"### `{path}`\n```\n{content}\n```" for path, content in file_contents.items()
-        )
-    else:
-        files_block = "(no file_scope defined — spec applies to entire project)"
-
     preflight_section = ""
     if preflight_output:
         preflight_section = dedent(f"""\
@@ -401,12 +343,6 @@ def build_plan_prompt(
         ## Spec
 
         {spec_content}
-
-        ## Current File Contents (file_scope)
-
-        These are the files the spec will modify, as they exist right now:
-
-        {files_block}
         {preflight_section}
         ## Output Format
 
@@ -485,11 +421,6 @@ def build_dev_prompt(
 
     The orchestrator fills ALL placeholders. The agent makes zero process decisions.
     """
-    if task.file_scope:
-        file_scope_str = "\n".join(f"- `{p}`" for p in task.file_scope)
-    else:
-        file_scope_str = "- (no scope restriction — all project files)"
-
     feedback_section = ""
     if escalation_note:
         feedback_section += dedent(f"""\
@@ -596,12 +527,6 @@ def build_dev_prompt(
 
         You are already in the correct workspace. Do NOT create a new worktree
         or switch branches.
-
-        ## File Scope
-
-        {file_scope_str}
-
-        Touch other files if needed — keep out-of-scope changes minimal.
         {plan_section}
         ## Spec
 

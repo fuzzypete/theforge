@@ -19,9 +19,7 @@ from types import ModuleType
 from . import coord_util as _cu
 from .config import MODEL_REGISTRY, ForgeConfig
 from .coord_gate import (
-    _auto_commit_side_effects,
     _is_gate_skip,
-    _parse_dirty_files,
     _run_gate_full,
 )
 from .coord_logging import StructuredLogger
@@ -881,16 +879,6 @@ def _run_validate_phase(
             else:
                 dirty_lines = [line for line in dirty_out.splitlines() if line.strip()]
             if dirty_lines:
-                parsed_files = _parse_dirty_files("\n".join(dirty_lines))
-
-                def _in_scope(f: str) -> bool:
-                    for s in task.file_scope:
-                        if f == s:
-                            return True
-                        prefix = s if s.endswith("/") else f"{s}/"
-                        if f.startswith(prefix):
-                            return True
-                    return False
 
                 def _dirty_dev_retry(
                     dirty_files: str,
@@ -913,22 +901,8 @@ def _run_validate_phase(
                     state.retry_reason = "dirty_worktree"
                     return _ValidateOutcome.RETRY_DEV, None
 
-                all_tracked = len(parsed_files) == len(dirty_lines)
-                if task.file_scope and parsed_files and all_tracked:
-                    in_scope = [f for f in parsed_files if _in_scope(f)]
-                    out_of_scope = [f for f in parsed_files if not _in_scope(f)]
-                    if not in_scope:
-                        if _auto_commit_side_effects(workspace_path, out_of_scope):
-                            pass  # fall through to PASS
-                        else:
-                            return _dirty_dev_retry(", ".join(out_of_scope))
-                    else:
-                        return _dirty_dev_retry(", ".join(parsed_files))
-                else:
-                    raw_names = ", ".join(
-                        line.strip().split(maxsplit=1)[-1] for line in dirty_lines
-                    )
-                    return _dirty_dev_retry(raw_names)
+                raw_names = ", ".join(line.strip().split(maxsplit=1)[-1] for line in dirty_lines)
+                return _dirty_dev_retry(raw_names)
 
     elif gate_decision in ("FAIL", "BLOCKED"):
         if dev_calls_this_cycle >= config.retry.max_dev_iterations:

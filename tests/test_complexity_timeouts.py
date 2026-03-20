@@ -197,7 +197,7 @@ def _make_config(
 def _make_task(tmp_path: Path) -> TaskSpec:
     spec = tmp_path / "spec.md"
     spec.write_text("# Test Spec\n\nDo the thing.", encoding="utf-8")
-    return TaskSpec(name="Test Task", spec_path=spec, slug="test-task", file_scope=[])
+    return TaskSpec(name="Test Task", spec_path=spec, slug="test-task")
 
 
 def _get_call_profile(mock_agent, call_idx: int) -> ModelProfile:

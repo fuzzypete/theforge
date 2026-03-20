@@ -138,8 +138,6 @@ SPEC:
 ---
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
-file_scope:
-  - <primary files this change touches>
 pytest_target: {pytest_target}
 ---
 
@@ -255,7 +253,6 @@ Keep the spec body under 150 lines.
 ---
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
-file_scope: []
 pytest_target: {pytest_target}
 ---
 

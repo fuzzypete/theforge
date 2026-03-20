@@ -472,7 +472,7 @@ class TestEscalationNotifications:
 
         from theforge.task import TaskSpec
 
-        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug")
 
         with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(
@@ -497,7 +497,7 @@ class TestEscalationNotifications:
 
         from theforge.task import TaskSpec
 
-        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug")
         long_error = "x" * 200
 
         with patch("theforge.coord_notify._notify") as mock_notify:
@@ -520,7 +520,7 @@ class TestEscalationNotifications:
 
         from theforge.task import TaskSpec
 
-        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug", file_scope=[])
+        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug")
 
         with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(

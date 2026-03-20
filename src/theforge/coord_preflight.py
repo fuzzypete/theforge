@@ -3,32 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace as _dc_replace
-from pathlib import Path
 
 import yaml
 
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from .review import ReviewFinding
-from .task import TaskSpec
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
-
-
-def _load_file_scope_contents(task: TaskSpec, project_root: Path) -> dict[str, str]:
-    """Read current contents of files in task.file_scope.
-
-    Returns a dict of {relative_path: content}. Missing files are
-    silently skipped (the preflight agent will note their absence).
-    """
-    contents: dict[str, str] = {}
-    for rel_path in task.file_scope:
-        full_path = project_root / rel_path
-        if full_path.is_file():
-            try:
-                contents[rel_path] = full_path.read_text(encoding="utf-8")
-            except OSError:
-                pass
-    return contents
 
 
 def _parse_preflight_verdict(output: str) -> tuple[str, str]:
