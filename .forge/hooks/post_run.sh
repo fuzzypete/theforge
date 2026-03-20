@@ -31,45 +31,45 @@ if [ "$verdict" != "ESCALATE" ] && [ "$verdict" != "APPROVE" ]; then
   exit 0
 fi
 
-# No findings → nothing to do
-[ "$findings_count" -eq 0 ] && exit 0
+# File one GitHub Issue per finding (only when findings exist)
+if [ "$findings_count" -gt 0 ]; then
+  echo "$payload" | jq -c '.findings[]' | while read -r finding; do
+    sev=$(echo "$finding" | jq -r '.severity')
+    file=$(echo "$finding" | jq -r '.file')
+    line=$(echo "$finding" | jq -r '.line // empty')
+    desc=$(echo "$finding" | jq -r '.description')
+    suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
 
-echo "$payload" | jq -c '.findings[]' | while read -r finding; do
-  sev=$(echo "$finding" | jq -r '.severity')
-  file=$(echo "$finding" | jq -r '.file')
-  line=$(echo "$finding" | jq -r '.line // empty')
-  desc=$(echo "$finding" | jq -r '.description')
-  suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
+    # Title: [P1] slug: description (truncated to 72 chars)
+    raw_title="[${sev}] ${slug}: ${desc}"
+    title="${raw_title:0:72}"
 
-  # Title: [P1] slug: description (truncated to 72 chars)
-  raw_title="[${sev}] ${slug}: ${desc}"
-  title="${raw_title:0:72}"
+    location="\`${file}\`"
+    [ -n "$line" ] && location="${location} line ${line}"
 
-  location="\`${file}\`"
-  [ -n "$line" ] && location="${location} line ${line}"
-
-  body="**Story:** \`${slug}\` (\`${branch}\`)
+    body="**Story:** \`${slug}\` (\`${branch}\`)
 **Verdict:** ${verdict} — ${summary}
 **Location:** ${location}
 
 **Description:** ${desc}"
 
-  if [ -n "$suggestion" ]; then
-    body="${body}
+    if [ -n "$suggestion" ]; then
+      body="${body}
 
 **Suggestion:** ${suggestion}"
-  fi
+    fi
 
-  body="${body}
+    body="${body}
 
 *Filed by theforge post_run hook.*"
 
-  gh issue create \
-    --title "$title" \
-    --body "$body" \
-    --label "forge-finding" \
-    --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
-done
+    gh issue create \
+      --title "$title" \
+      --body "$body" \
+      --label "forge-finding" \
+      --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
+  done
+fi
 
 # ── PR Review Attribution ─────────────────────────────────────────────
 # Opt-in: set FORGE_GH_PR_REVIEWS=1 to enable posting per-reviewer GitHub reviews.
@@ -104,10 +104,11 @@ if [ "$reviewers_count" -le 1 ]; then
       "*Posted by theforge post_run hook.*"
     end
   ')
-  gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
-    --method POST \
-    --field body="$reviewer_body" \
-    --field event="APPROVE" || true
+  jq -n --arg body "$reviewer_body" --arg event "APPROVE" \
+    '{body: $body, event: $event}' | \
+    gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
+      --method POST \
+      --input - || true
 else
   # Multi-reviewer: post one COMMENT per reviewer, then one final APPROVE
   echo "$payload" | jq -c '.reviewers[]' | while read -r reviewer; do
@@ -137,10 +138,11 @@ ${findings_text}"
 
 *Posted by theforge post_run hook.*"
 
-    gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
-      --method POST \
-      --field body="$comment_body" \
-      --field event="COMMENT" || true
+    jq -n --arg body "$comment_body" --arg event "COMMENT" \
+      '{body: $body, event: $event}' | \
+      gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
+        --method POST \
+        --input - || true
   done
 
   # Final APPROVE with merged summary
@@ -148,8 +150,9 @@ ${findings_text}"
 
 *Posted by theforge post_run hook.*"
 
-  gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
-    --method POST \
-    --field body="$approve_body" \
-    --field event="APPROVE" || true
+  jq -n --arg body "$approve_body" --arg event "APPROVE" \
+    '{body: $body, event: $event}' | \
+    gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
+      --method POST \
+      --input - || true
 fi
