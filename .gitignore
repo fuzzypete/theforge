@@ -22,8 +22,11 @@ venv/
 .coverage
 htmlcov/
 
-# TheForge runtime (worktrees, audits, handoffs all live here)
+# TheForge runtime (worktrees, logs, audits all live here)
 .forge/
+# But hooks are project config — track them
+!.forge/hooks/
+!.forge/hooks/**
 # Legacy root-level artifacts (ignore if leftover)
 forge_plan.md
 forge_audit.yaml

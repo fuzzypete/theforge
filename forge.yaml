@@ -6,6 +6,8 @@ workspace:
   setup_command: "python -m venv .venv && .venv/bin/pip install -e . pytest -q"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
+  on_approve: pr       # create GitHub PR on APPROVE instead of auto-merging
+  pr_draft: false
 
 validation:
   gate_command: ".venv/bin/python -m pytest tests/ -q"
@@ -133,6 +135,10 @@ plan_agent_review:
         - Read
         - Glob
         - Grep
+
+hooks:
+  post_run: .forge/hooks/post_run.sh
+  timeout_seconds: 30
 
 notifications:
   backend: ntfy
