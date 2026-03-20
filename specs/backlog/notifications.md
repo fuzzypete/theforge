@@ -1,23 +1,23 @@
 ---
-name: "Campaign and run notifications"
+name: "Sprint and run notifications"
 slug: notifications
 file_scope:
-  - src/theforge/campaign.py
+  - src/theforge/sprint.py
   - src/theforge/coordinator.py
   - src/theforge/config.py
   - src/theforge/cli.py
-  - tests/test_campaign.py
+  - tests/test_sprint.py
   - tests/test_coordinator.py
   - tests/test_config.py
 pytest_target: tests/
 ---
 
-# Campaign and Run Notifications
+# Sprint and Run Notifications
 
 ## Problem
 
-Long-running campaigns take 30–90 minutes. The operator is often away from
-the machine and has no way to know when a campaign finishes or escalates.
+Long-running sprints take 30–90 minutes. The operator is often away from
+the machine and has no way to know when a sprint finishes or escalates.
 A local macOS notification is useless when you're not at your desk. The
 operator needs a signal that reaches their phone.
 
@@ -160,10 +160,10 @@ All three helpers must be called only from within `_notify()`'s try/except.
 
 ### R3: Notification events
 
-**Campaign completion** — called in `run_campaign()` immediately after
-the "Campaign complete: ..." log line:
+**Sprint completion** — called in `run_sprint()` immediately after
+the "Sprint complete: ..." log line:
 
-- Title: `TheForge: <campaign name>`
+- Title: `TheForge: <sprint name>`
 - Body: `✓ N passed, ✗ M failed — $X.XX  <duration>`
 
 **Spec escalation** — called at every terminal `Phase.ESCALATE`
@@ -182,9 +182,9 @@ accidental notifications during iterative testing even when forge.yaml
 has a backend configured.
 
 Add `--notify` (`store_true`, default `False`) to `forge run`,
-`forge campaign`, and `forge review` subparsers.
+`forge sprint`, and `forge review` subparsers.
 
-Add `notify: bool = False` to `run_task()`, `run_campaign()`, and
+Add `notify: bool = False` to `run_task()`, `run_sprint()`, and
 `run_from_review()` signatures. Guard every `_notify()` call: `if notify:`.
 
 ### R5: Duration formatting
@@ -203,7 +203,7 @@ def _fmt_duration(seconds: float) -> str:
     return f"{sec}s"
 ```
 
-Use it everywhere duration is currently printed as raw seconds — campaign
+Use it everywhere duration is currently printed as raw seconds — sprint
 per-spec lines, DONE summary, per-agent timing lines.
 
 ### R6: Tests
@@ -222,23 +222,23 @@ per-spec lines, DONE summary, per-agent timing lines.
 - `test_fmt_duration_minutes`: `_fmt_duration(125)` → `"2m 05s"`
 - `test_fmt_duration_seconds`: `_fmt_duration(45)` → `"45s"`
 
-`tests/test_campaign.py`:
-- `test_campaign_notification_sent`: mock `_notify`, complete campaign, verify called once with campaign name in title
-- `test_campaign_notification_not_sent_without_flag`: notify=False → `_notify` never called
+`tests/test_sprint.py`:
+- `test_sprint_notification_sent`: mock `_notify`, complete sprint, verify called once with sprint name in title
+- `test_sprint_notification_not_sent_without_flag`: notify=False → `_notify` never called
 
 ## Out of scope
 
 - Slack / webhook backends
-- Per-spec success notifications in campaigns (too noisy)
-- Campaign progress notifications ("3/7 done")
+- Per-spec success notifications in sprints (too noisy)
+- Sprint progress notifications ("3/7 done")
 - macOS `osascript` local notifications
 - SMTP authentication
 
 ## Acceptance criteria
 
-1. `forge campaign campaigns/hardening.yaml --notify` sends one push notification
+1. `forge sprint sprints/hardening.yaml --notify` sends one push notification
    on completion, visible on iPhone via ntfy app
-2. Terminal escalation sends notification from both `forge run --notify` and within campaign
+2. Terminal escalation sends notification from both `forge run --notify` and within sprint
 3. Without `--notify`, nothing fires regardless of forge.yaml config
 4. `_notify()` never raises; all errors silently swallowed
 5. All existing tests pass unchanged

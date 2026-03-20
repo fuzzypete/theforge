@@ -158,16 +158,16 @@ audit log.
 
 ---
 
-### Phase 7: Campaign Mode ✓
+### Phase 7: Sprint Mode ✓
 
-**Status: Done.** `forge sprint campaign.yaml` runs specs sequentially
-through the full pipeline. `campaign.yaml` manifest defines ordered spec
+**Status: Done.** `forge sprint sprint.yaml` runs specs sequentially
+through the full pipeline. `sprint.yaml` manifest defines ordered spec
 list and aggregate budget ceiling. Budget enforcement is Claude-only
 (Codex/Gemini report $0.00) — warning logged at start. Continues after
 individual spec failures. ALREADY_DONE specs counted as skipped.
 Writes `sprint-audit.yaml` with per-spec outcomes and costs.
 
-**Spec:** `specs/archive/campaign-mode.md`
+**Spec:** `specs/backlog/archive/campaign-mode.md`
 
 ---
 
@@ -189,14 +189,14 @@ it work for other projects proves generality.
 
 ---
 
-### Phase 9: Spec Dependency Analysis
+### Phase 9: Story Dependency Analysis
 
 **Why before parallel:** Parallel execution is unsafe without knowing
 which specs conflict. This phase adds static analysis of `file_scope`
-across a campaign manifest to build a dependency graph.
+across a sprint manifest to build a dependency graph.
 
 **What it means:**
-- Compare `file_scope` across all specs in a campaign manifest
+- Compare `file_scope` across all specs in a sprint manifest
 - Identify independent specs (disjoint file scopes) vs conflicting ones
 - Build an execution graph: independent specs can be grouped into
   parallel batches, overlapping specs must be serialized
@@ -206,21 +206,21 @@ across a campaign manifest to build a dependency graph.
 
 ---
 
-### Phase 10: Parallel Campaign Execution
+### Phase 10: Parallel Sprint Execution
 
-**Depends on:** Phase 9 (Spec Dependency Analysis)
+**Depends on:** Phase 9 (Story Dependency Analysis)
 
 **Why after dependency analysis:** Running concurrent worktrees without
 conflict detection produces merge failures. With the dependency graph
-from Phase 9, the campaign runner can safely parallelize independent
+from Phase 9, the sprint runner can safely parallelize independent
 specs while serializing conflicting ones.
 
 **What it means:**
-- Campaign runner groups independent specs into parallel batches
+- Sprint runner groups independent specs into parallel batches
 - Each batch runs specs concurrently in separate worktrees
 - Batches execute sequentially (batch 1 merges before batch 2 starts)
 - Aggregate budget enforcement across parallel specs
-- Per-spec audit still works; campaign audit shows batch structure
+- Per-spec audit still works; sprint audit shows batch structure
 
 ---
 
@@ -354,12 +354,12 @@ These are independent of the phased roadmap and can be picked up anytime.
   block at interactive-approve, non-interactive-approve, and
   human-approve-after-exhausted-cycles. Extract to shared helper.
 - **Frontmatter parsing duplication:** `_build_task_from_spec()` in
-  `campaign.py` duplicates `_parse_spec_frontmatter()` in `cli.py`.
+  `sprint.py` duplicates `_parse_spec_frontmatter()` in `cli.py`.
   Consolidate into a shared function.
 - **Double manifest load:** `cli.py` `cmd_sprint` loads the manifest,
   then `run_sprint()` loads it again. Pass it through instead.
-- **Missing failed-merge campaign test:** No test for what happens when
-  auto-merge fails mid-campaign.
+- **Missing failed-merge sprint test:** No test for what happens when
+  auto-merge fails mid-sprint.
 
 ### Cross-Project Learnings (from HDP)
 

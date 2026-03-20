@@ -1,9 +1,9 @@
 ---
-name: "Spec dependency analysis for campaign parallelization"
+name: "Spec dependency analysis for sprint parallelization"
 slug: dependency-analysis
 file_scope:
   - src/theforge/deps.py
-  - src/theforge/campaign.py
+  - src/theforge/sprint.py
   - tests/test_deps.py
 pytest_target: tests/
 ---
@@ -12,7 +12,7 @@ pytest_target: tests/
 
 ## Problem
 
-Campaign mode runs specs sequentially. Parallel execution would cut wall-clock
+Sprint mode runs specs sequentially. Parallel execution would cut wall-clock
 time dramatically, but running specs with overlapping `file_scope` concurrently
 produces merge conflicts. Before we can parallelize, we need a static analysis
 step that determines which specs are independent.
@@ -21,10 +21,10 @@ step that determines which specs are independent.
 
 ### What exists
 
-- `campaign.yaml` manifests list specs to run in order
+- `sprint.yaml` manifests list specs to run in order
 - Each spec has `file_scope` in its frontmatter (list of file paths the agent
   may modify). Empty list = unrestricted (may touch anything).
-- `_build_task_from_spec()` in `campaign.py` already parses frontmatter and
+- `_build_task_from_spec()` in `sprint.py` already parses frontmatter and
   extracts `file_scope`
 - `TaskSpec.file_scope` is `list[str]` — relative paths like
   `src/theforge/coordinator.py`
@@ -32,7 +32,7 @@ step that determines which specs are independent.
 ### What's missing
 
 No mechanism to compare `file_scope` across specs and determine which can
-safely run concurrently. The campaign runner has no concept of batching.
+safely run concurrently. The sprint runner has no concept of batching.
 
 ## Design
 
@@ -74,7 +74,7 @@ class ExecutionPlan:
 
 #### `analyze_manifest(manifest_path: Path, project_root: Path) -> ExecutionPlan`
 
-Convenience function: loads a campaign manifest, resolves spec paths,
+Convenience function: loads a sprint manifest, resolves spec paths,
 calls `build_dependency_graph()`.
 
 #### Directory-level conflict detection
@@ -89,12 +89,12 @@ For simplicity in this phase: normalize all paths and use startswith checks.
 `src/theforge/coordinator.py` conflicts with `src/theforge/` but not with
 `src/theforge/cli.py`.
 
-### Integration with campaign.py
+### Integration with sprint.py
 
-Add an `analyze` step to `run_campaign()`:
+Add an `analyze` step to `run_sprint()`:
 
 ```python
-def run_campaign(config, manifest_path, *, auto_merge=False, interactive=False):
+def run_sprint(config, manifest_path, *, auto_merge=False, interactive=False):
     manifest = load_manifest(manifest_path)
     spec_paths = _validate_spec_paths(manifest, config.project_root)
 
@@ -110,10 +110,10 @@ def run_campaign(config, manifest_path, *, auto_merge=False, interactive=False):
 The execution plan is logged but not acted on yet — Phase 10 will use it
 to actually parallelize. This phase is purely analysis + reporting.
 
-Add execution plan to campaign-audit.yaml:
+Add execution plan to sprint-audit.yaml:
 
 ```yaml
-campaign:
+sprint:
   execution_plan:
     batches:
       - batch: 1
@@ -142,8 +142,8 @@ campaign:
 3. Specs with empty `file_scope` conflict with everything
 4. Directory-level prefixes are detected as conflicts
 5. `ExecutionPlan` is deterministic given the same inputs
-6. Campaign audit includes the execution plan
-7. Campaign log output shows batch structure
+6. Sprint audit includes the execution plan
+7. Sprint log output shows batch structure
 8. No change to actual execution order (still sequential) — this is
    analysis only
 
@@ -160,10 +160,10 @@ In `tests/test_deps.py`:
 - **No specs**: empty list → empty execution plan
 - **Single spec**: always 1 batch of 1
 
-In `tests/test_campaign.py`:
+In `tests/test_sprint.py`:
 
-- Campaign audit includes `execution_plan` section
-- Campaign log output includes batch summary
+- Sprint audit includes `execution_plan` section
+- Sprint log output includes batch summary
 
 ## Out of Scope
 
