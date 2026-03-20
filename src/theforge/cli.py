@@ -1031,7 +1031,7 @@ echo "$payload" | jq -c '.findings[]' | while read -r finding; do
     --title "$title" \\
     --body "$body" \\
     --label "forge-finding" \\
-    --label "${sev,,}" || true
+    --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
 done
 """
 

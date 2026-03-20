@@ -98,8 +98,7 @@ def run_hook(
     payload_json = json.dumps(payload)
     try:
         proc = subprocess.run(
-            command,
-            shell=True,
+            shlex.split(command),
             input=payload_json,
             capture_output=True,
             text=True,
