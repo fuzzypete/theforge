@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from theforge.coord_audit import has_review_approve
 
@@ -96,3 +98,55 @@ class TestHasReviewApprove:
         record = {"task": {"slug": "my-spec"}, "reviews": []}
         (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         assert has_review_approve(tmp_path, "my-spec") is False
+
+    def test_stale_approve_branch_ahead(self, tmp_path: Path) -> None:
+        """Returns False when APPROVE exists but branch has unmerged commits (abandoned run)."""
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        record = {
+            "task": {"slug": "my-spec"},
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"3\n", stderr=b"")
+        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+            assert has_review_approve(tmp_path, "my-spec", "main") is False
+
+    def test_valid_approve_branch_merged(self, tmp_path: Path) -> None:
+        """Returns True when APPROVE exists and branch is merged (0 commits ahead)."""
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        record = {
+            "task": {"slug": "my-spec"},
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"0\n", stderr=b"")
+        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+            assert has_review_approve(tmp_path, "my-spec", "main") is True
+
+    def test_valid_approve_branch_absent(self, tmp_path: Path) -> None:
+        """Returns True when APPROVE exists and branch is absent (non-zero git exit)."""
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        record = {
+            "task": {"slug": "my-spec"},
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        mock_result = subprocess.CompletedProcess(
+            args=[], returncode=128, stdout=b"", stderr=b"unknown revision"
+        )
+        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+            assert has_review_approve(tmp_path, "my-spec", "main") is True
+
+    def test_no_approve_record_with_base_branch(self, tmp_path: Path) -> None:
+        """Returns False when no APPROVE record exists (baseline for new signature)."""
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True)
+        record = {
+            "task": {"slug": "my-spec"},
+            "reviews": [{"verdict": "REQUEST_CHANGES"}],
+        }
+        (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+        assert has_review_approve(tmp_path, "my-spec", "main") is False

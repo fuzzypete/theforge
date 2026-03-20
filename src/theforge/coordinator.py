@@ -1269,7 +1269,9 @@ def run_task(
             commits_ahead = (
                 [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
             )
-            if commits_ahead and not has_review_approve(config.project_root, task.slug):
+            if commits_ahead and not has_review_approve(
+                config.project_root, task.slug, config.workspace.base_branch
+            ):
                 n = len(commits_ahead)
                 _log(
                     f"  ↻ ALREADY_DONE overridden — {n} commit{'s' if n != 1 else ''} on "
