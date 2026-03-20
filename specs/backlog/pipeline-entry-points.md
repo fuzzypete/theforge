@@ -1,5 +1,5 @@
 ---
-name: "Pipeline entry points and --until flag"
+name: "Pipeline entry points — --until flag and daemon mode"
 slug: pipeline-entry-points
 file_scope:
   - src/theforge/coordinator.py
@@ -67,3 +67,37 @@ available (e.g., you can't start at DEV without a workspace).
 - [ ] `--until` is incompatible with `--auto-merge` (can't merge without
       review) — clear error if both specified
 - [ ] Existing tests pass unchanged
+
+## Daemon Mode (`--detach`)
+
+### Problem
+
+`forge run` blocks the calling shell. If that shell exits (context reset,
+terminal close, SSH disconnect), the forge process receives SIGHUP and dies
+mid-run — no `run_end` log entry, no audit trail, partial worktree state.
+Observed in practice: review pool killed mid-run when shell exited, losing
+all reviewer results even though gate had passed.
+
+### Requirements
+
+1. `forge run <story> --detach` double-forks, detaches from the terminal,
+   writes a PID file to `.forge/runs/<slug>.pid`, and redirects stdout/stderr
+   to `.forge/logs/<slug>-<run_id>.log`
+2. `forge status [<slug>]` reads the PID file and log to report: running /
+   completed / failed, current phase, elapsed time, cost so far
+3. `forge attach <slug>` tails the detached log (like `tail -f`) until the
+   run completes
+4. On clean completion or failure, the PID file is removed and a `run_end`
+   entry is written to the structured log regardless of how the run ended
+5. `forge sprint` also accepts `--detach` — the sprint coordinator detaches,
+   individual story runs inherit the detached context
+
+### Acceptance Criteria
+
+- [ ] `forge run <story> --detach` returns immediately with the PID and log path
+- [ ] Detached process survives shell exit (SIGHUP ignored)
+- [ ] PID file written to `.forge/runs/<slug>.pid` on start, removed on end
+- [ ] `forge status` shows phase, elapsed, cost for running and completed runs
+- [ ] `forge attach <slug>` tails live log output until process exits
+- [ ] `run_end` event always written even if coordinator exits via exception
+- [ ] `forge sprint --detach` detaches the sprint coordinator
