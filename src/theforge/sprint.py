@@ -671,6 +671,7 @@ def run_sprint(
             config.hooks.timeout_seconds,
             "post_sprint",
             _sprint_logger,
+            secrets=config.secrets,
         )
 
     return sprint_result

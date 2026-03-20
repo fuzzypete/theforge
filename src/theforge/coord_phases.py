@@ -307,6 +307,7 @@ def _finalize_approve(
                 config.hooks.timeout_seconds,
                 "post_merge",
                 logger,
+                secrets=config.secrets,
             )
     elif effective_on_approve == "pr":
         merge_info = _create_pr(config, task, branch_name, parsed_review, state)

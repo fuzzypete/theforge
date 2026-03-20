@@ -294,6 +294,7 @@ def _fire_post_run_hook(
         config.hooks.timeout_seconds,
         "post_run",
         logger,
+        secrets=config.secrets,
     )
 
 
@@ -1166,6 +1167,7 @@ def run_task(
                 config.hooks.timeout_seconds,
                 "pre_run",
                 logger,
+                secrets=config.secrets,
             )
             if _pre_result.exit_code != 0:
                 state.phase = Phase.ESCALATE

@@ -41,6 +41,7 @@ def run_hook(
     timeout: int,
     label: str,
     logger: StructuredLogger | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> HookResult:
     """Execute a lifecycle hook command with payload on stdin.
 
@@ -98,12 +99,16 @@ def run_hook(
 
     payload_json = json.dumps(payload)
     try:
+        hook_env = dict(os.environ)
+        if secrets:
+            hook_env.update(secrets)
         proc = subprocess.run(
             shlex.split(command),
             input=payload_json,
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=hook_env,
         )
         duration_s = round(time.monotonic() - _start, 3)
         output = (proc.stdout or "") + (proc.stderr or "")
