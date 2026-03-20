@@ -900,6 +900,7 @@ def build_review_prompt(
     mode: str = "cli",
     review_role: str | None = None,
     dev_notes: str | None = None,
+    cycle_history: list[CycleHistory] | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -919,6 +920,47 @@ def build_review_prompt(
     The reviewer outputs ONLY a YAML block. No prose.
     """
     role_section = _REVIEW_ROLE_SECTIONS.get(review_role or "", _REVIEW_ROLE_GENERIC)
+
+    # Cycle 2+: build tri-part framing section from prior cycle history.
+    # Cycle 1 (empty/None): no framing — full independent review.
+    cycle_framing_section = ""
+    if cycle_history:
+        # Collect all P1 findings from prior cycles for the "Verify fixes" section.
+        prior_p1_lines: list[str] = []
+        for ch in cycle_history:
+            for desc in ch.p1_findings:
+                prior_p1_lines.append(f"  - [Cycle {ch.cycle}] {desc}")
+        prior_p1_block = "\n".join(prior_p1_lines) if prior_p1_lines else "  (none recorded)"
+        cycle_framing_section = dedent(f"""\
+
+            ## Cycle-Aware Review Framing
+
+            This is review cycle {len(cycle_history) + 1}. Prior cycles raised the findings below.
+            Structure your review in three parts:
+
+            ### Part 1 — Verify Fixes
+            Confirm that each prior P1 finding listed below is now resolved. For each:
+            - If fixed: note it briefly (no need to re-report).
+            - If still present: report it again as a P1 with its original description.
+
+            Prior P1 findings:
+            {prior_p1_block}
+
+            ### Part 2 — Scan Regressions
+            Examine the files touched in the latest dev iteration (check `git diff` or
+            the commit log). Flag as P1 any new defect that was introduced by the fix
+            (i.e., the code was correct before and is now broken). These are regressions —
+            report them even if they are unrelated to the original spec.
+
+            ### Part 3 — Additional Findings
+            You may report new P1 findings ONLY if they are:
+            (a) a direct regression from the fix (covered in Part 2), OR
+            (b) a critical issue that is independently, concretely evidenced
+                (file + line + what breaks).
+            Do NOT escalate speculative or style concerns to P1 in this section.
+
+        """)
+
     dev_notes_section = (
         dedent(f"""\
 
@@ -974,7 +1016,7 @@ def build_review_prompt(
         ## Your Role
 
         {role_section}
-
+        {cycle_framing_section}
         ## Spec
 
         {spec_content}

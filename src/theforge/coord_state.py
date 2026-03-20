@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from .review import ReviewResult
@@ -34,7 +34,34 @@ class Phase(Enum):
     ESCALATE = auto()
 
 
+# ── Disposition enum ──────────────────────────────────────────────────
+
+
+Disposition = Literal[
+    "unresolved", "fixed", "regression", "net_new", "corroborated_new", "downgraded"
+]
+
+
 # ── Dataclasses ──────────────────────────────────────────────────────
+
+
+@dataclass
+class FindingRecord:
+    """Persistent record of a finding across review cycles.
+
+    finding_id is a stable fingerprint: hash(severity + file + normalized description tokens).
+    disposition is assigned by finding_classifier.update_finding_registry() each cycle.
+    """
+
+    finding_id: str  # sha256 hex prefix
+    cycle_first_seen: int
+    cycle_last_seen: int
+    file: str | None
+    line: int | None
+    severity: str  # "P1" | "P2"
+    description: str  # canonicalized description
+    reporter: str  # profile name that raised it
+    disposition: Disposition
 
 
 @dataclass
@@ -119,6 +146,11 @@ class CoordinatorState:
     last_cycle_reviewer_results: list[tuple[str, ReviewResult]] = field(
         default_factory=list
     )  # (profile_name, ReviewResult) pairs from the most recent pool run
+    finding_registry: list[FindingRecord] = field(default_factory=list)
+    # Stable record of all findings across cycles, classified by finding_classifier
+    last_dev_start_commit: str | None = None
+    # HEAD commit hash captured before each dev iteration; used by finding_classifier
+    # to compute git diff --name-only for changed-file correlation.
 
     @property
     def total_dev_cost(self) -> float:

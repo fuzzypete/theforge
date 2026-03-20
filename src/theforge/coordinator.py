@@ -590,6 +590,7 @@ def _run_review_pool(
                     mode=p.mode,
                     review_role=p.review_role,
                     dev_notes=dev_notes,
+                    cycle_history=state.cycle_history if state.cycle_history else None,
                 )
                 for p in config.review_pool
             ]
@@ -603,6 +604,7 @@ def _run_review_pool(
                 handoff_content=handoff_content,
                 mode=config.review_pool[0].mode,
                 dev_notes=dev_notes,
+                cycle_history=state.cycle_history if state.cycle_history else None,
             )
         )
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
@@ -702,9 +704,7 @@ def _run_review_pool(
     # prompt via run_agent up to max_review_parse_retries times.
     # meta.parse_retries accumulates the sum of per-reviewer retries attempted.
     _profile_by_name = {p.name: p for p in config.review_pool}
-    _corrective_prompt_template = (
-        "Your previous review output had schema/parse errors:\n{errors}\n\n"
-        "Please produce valid review YAML with this exact structure:\n"
+    _corrective_yaml_structure = (
         "verdict: APPROVE | REQUEST_CHANGES\n"
         'summary: "one-line summary"\n'
         "findings:\n"
@@ -718,8 +718,7 @@ def _run_review_pool(
         "  mismatches: []\n"
         "test_coverage:\n"
         "  adequate: true | false\n"
-        "  gaps: []\n\n"
-        "Reproduce your review findings in this format."
+        "  gaps: []\n"
     )
     for i, (name, parsed) in enumerate(zip(names, parsed_results)):
         if not parsed.parse_errors:
@@ -727,19 +726,42 @@ def _run_review_pool(
         _prof = _profile_by_name.get(name)
         if _prof is None:
             continue
+        # Capture original AgentResult for this reviewer (session_id + raw output)
+        _original_result = successful[i]
         for _retry_num in range(1, max_review_parse_retries + 1):
             _error_desc = "; ".join(parsed.parse_errors)
             _log(
                 f"  ↻ {name} parse failed (retry {_retry_num}/{max_review_parse_retries}): "
                 f"{_error_desc[:120]}"
             )
-            _retry_prompt = _corrective_prompt_template.format(errors=_error_desc)
+            # Build corrective prompt — mode-specific to avoid re-review
+            if _prof.mode == "api":
+                # Include original output so the agent can reformat without re-reviewing
+                _original_output = _original_result.output or ""
+                _retry_prompt = (
+                    "Your previous output (reproduced below) had schema/parse errors:\n"
+                    + _error_desc
+                    + "\n\nReformat your output as valid YAML. Do NOT re-review the code.\n\n"
+                    "Required YAML structure:\n"
+                    + _corrective_yaml_structure
+                    + "\n\nYour previous output:\n"
+                    + _original_output
+                )
+            else:
+                # CLI: prompt is simpler — session continuity via session_id handles context
+                _retry_prompt = (
+                    "Your previous review output had schema/parse errors:\n"
+                    + _error_desc
+                    + "\n\nReformat your output as valid YAML. Do NOT re-review the code.\n\n"
+                    "Required YAML structure:\n" + _corrective_yaml_structure
+                )
             _retry_result = run_agent(
                 prompt=_retry_prompt,
                 profile=_prof,
                 working_dir=workspace_path,
                 quiet=True,
                 secrets=config.secrets,
+                session_id=_original_result.session_id if _prof.mode == "cli" else None,
             )
             meta.parse_retries += 1
             if not _retry_result.success:
@@ -2101,6 +2123,7 @@ def run_review_only(
         handoff_content=handoff_content,
         mode=config.review_pool[0].mode,
         dev_notes=dev_notes,
+        cycle_history=None,  # run_review_only is always a standalone cycle
     )
 
     meta = ReviewCycleMetadata(

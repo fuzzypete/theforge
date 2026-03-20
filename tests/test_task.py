@@ -607,6 +607,121 @@ class TestBuildReviewPrompt:
         assert "\n        ## Spec" in prompt or "\n## Spec" in prompt
 
 
+# ── build_review_prompt cycle_history ────────────────────────────────
+
+
+class TestBuildReviewPromptCycleHistory:
+    """Tests for build_review_prompt() cycle_history parameter."""
+
+    def _make_history(self) -> list[CycleHistory]:
+        return [
+            CycleHistory(
+                cycle=1,
+                verdict="REQUEST_CHANGES",
+                summary="Null check missing in foo",
+                p1_findings=["Missing null check in src/foo.py:42"],
+            ),
+        ]
+
+    def test_cycle1_no_framing_when_history_none(self, review_task: TaskSpec) -> None:
+        """Cycle 1 (no history): prompt unchanged — no tri-part framing."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=None,
+        )
+        assert "Cycle-Aware Review Framing" not in prompt
+        assert "Verify Fixes" not in prompt
+        assert "Scan Regressions" not in prompt
+
+    def test_cycle1_no_framing_when_history_empty(self, review_task: TaskSpec) -> None:
+        """Cycle 1 with empty list: same as None."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=[],
+        )
+        assert "Cycle-Aware Review Framing" not in prompt
+
+    def test_cycle2_includes_tri_part_framing(self, review_task: TaskSpec) -> None:
+        """Cycle 2+: prompt includes all three framing parts."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=self._make_history(),
+        )
+        assert "Cycle-Aware Review Framing" in prompt
+        assert "Part 1" in prompt
+        assert "Part 2" in prompt
+        assert "Part 3" in prompt
+
+    def test_cycle2_lists_prior_p1_findings(self, review_task: TaskSpec) -> None:
+        """Cycle 2+: prior P1 findings are listed under Verify Fixes."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=self._make_history(),
+        )
+        assert "Missing null check in src/foo.py:42" in prompt
+        assert "Cycle 1" in prompt
+
+    def test_cycle2_shows_correct_cycle_number(self, review_task: TaskSpec) -> None:
+        """Cycle 2+: cycle number in header reflects current cycle."""
+        history = self._make_history()  # 1 cycle → reviewing cycle 2
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=history,
+        )
+        assert "review cycle 2" in prompt
+
+    def test_cycle3_shows_all_prior_p1s(self, review_task: TaskSpec) -> None:
+        """Cycle 3+: findings from all prior cycles are listed."""
+        history = [
+            CycleHistory(
+                cycle=1,
+                verdict="REQUEST_CHANGES",
+                summary="First cycle issues",
+                p1_findings=["Alpha finding from cycle 1"],
+            ),
+            CycleHistory(
+                cycle=2,
+                verdict="REQUEST_CHANGES",
+                summary="Second cycle issues",
+                p1_findings=["Beta finding from cycle 2"],
+            ),
+        ]
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=history,
+        )
+        assert "Alpha finding from cycle 1" in prompt
+        assert "Beta finding from cycle 2" in prompt
+        assert "review cycle 3" in prompt
+
+    def test_cycle1_still_has_standard_sections(self, review_task: TaskSpec) -> None:
+        """Cycle 1 prompt still has Severity Definitions and Rules."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=None,
+        )
+        assert "## Severity Definitions" in prompt
+        assert "## Rules" in prompt
+
+    def test_cycle2_also_has_standard_sections(self, review_task: TaskSpec) -> None:
+        """Cycle 2 prompt keeps standard sections in addition to framing."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=self._make_history(),
+        )
+        assert "## Severity Definitions" in prompt
+        assert "## Rules" in prompt
+        assert "## Commits" in prompt
+
+
 # ── TaskSpec.depends_on ──────────────────────────────────────────────
 
 

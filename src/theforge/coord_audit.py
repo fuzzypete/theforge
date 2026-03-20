@@ -262,4 +262,31 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
         ),
         "merge": result.merge,
         "error": state.error,
+        "finding_registry": [
+            {
+                "finding_id": r.finding_id,
+                "cycle_first_seen": r.cycle_first_seen,
+                "cycle_last_seen": r.cycle_last_seen,
+                "file": r.file,
+                "line": r.line,
+                "severity": r.severity,
+                "description": r.description,
+                "reporter": r.reporter,
+                "disposition": r.disposition,
+            }
+            for r in state.finding_registry
+        ],
+        "non_blocking_p1s": [
+            {
+                "finding_id": r.finding_id,
+                "cycle_first_seen": r.cycle_first_seen,
+                "file": r.file,
+                "line": r.line,
+                "description": r.description,
+                "reporter": r.reporter,
+                "disposition": "net_new",
+            }
+            for r in state.finding_registry
+            if r.severity == "P1" and r.disposition == "net_new"
+        ],
     }
