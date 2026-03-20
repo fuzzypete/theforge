@@ -1033,6 +1033,85 @@ echo "$payload" | jq -c '.findings[]' | while read -r finding; do
     --label "forge-finding" \\
     --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
 done
+
+# ── PR Review Attribution ─────────────────────────────────────────────
+# Opt-in: set FORGE_GH_PR_REVIEWS=1 to enable posting per-reviewer GitHub reviews
+[ -z "${FORGE_GH_PR_REVIEWS:-}" ] && exit 0
+
+# Only post reviews on APPROVE
+[ "$verdict" != "APPROVE" ] && exit 0
+
+pr_number=$(echo "$payload" | jq -r '.pr_number // "null"')
+[ "$pr_number" = "null" ] && exit 0
+
+reviewers_count=$(echo "$payload" | jq '(.reviewers // []) | length')
+
+if [ "$reviewers_count" -le 1 ]; then
+  # Single-reviewer (or absent): post one APPROVE with that reviewer's findings
+  reviewer_body=$(echo "$payload" | jq -r '
+    (.reviewers // []) | if length == 0 then
+      "Approved by theforge review pool.\\n\\n*Posted by theforge post_run hook.*"
+    else
+      .[0] as $r |
+      "**Reviewer:** \\($r.name) (`\\($r.model)`)\\n\\n**Summary:** \\($r.summary)\\n\\n" +
+      (if ($r.findings | length) > 0 then
+        "**Findings:**\\n" +
+        ($r.findings | map(
+          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.description)"
+        ) | join("\\n")) + "\\n\\n"
+      else "" end) +
+      "*Posted by theforge post_run hook.*"
+    end
+  ')
+  gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \\
+    --method POST \\
+    --field body="$reviewer_body" \\
+    --field event="APPROVE" || true
+else
+  # Multi-reviewer: post one COMMENT per reviewer, then one final APPROVE
+  echo "$payload" | jq -c '.reviewers[]' | while read -r reviewer; do
+    r_name=$(echo "$reviewer" | jq -r '.name')
+    r_model=$(echo "$reviewer" | jq -r '.model')
+    r_verdict=$(echo "$reviewer" | jq -r '.verdict')
+    r_summary=$(echo "$reviewer" | jq -r '.summary')
+    r_findings_count=$(echo "$reviewer" | jq '.findings | length')
+
+    comment_body="**Reviewer:** ${r_name} (\\`${r_model}\\`)
+**Verdict:** ${r_verdict}
+**Summary:** ${r_summary}"
+
+    if [ "$r_findings_count" -gt 0 ]; then
+      findings_text=$(echo "$reviewer" | jq -r '
+        .findings | map(
+          "- [`\\(.file):\\(.line // "?")`] [\\(.severity)] \\(.description)"
+        ) | join("\\n")
+      ')
+      comment_body="${comment_body}
+
+**Findings:**
+${findings_text}"
+    fi
+
+    comment_body="${comment_body}
+
+*Posted by theforge post_run hook.*"
+
+    gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \\
+      --method POST \\
+      --field body="$comment_body" \\
+      --field event="COMMENT" || true
+  done
+
+  # Final APPROVE with merged summary
+  approve_body="**theforge review pool APPROVED** — ${summary}
+
+*Posted by theforge post_run hook.*"
+
+  gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \\
+    --method POST \\
+    --field body="$approve_body" \\
+    --field event="APPROVE" || true
+fi
 """
 
 _HOOKS_README = """\
@@ -1052,6 +1131,7 @@ The `post_run` hook receives a JSON object on stdin after every `forge run`:
   "slug": "my-feature",
   "branch": "feat/my-feature",
   "summary": "one-line review summary",
+  "pr_number": 42,
   "findings": [
     {
       "severity": "P1 | P2",
@@ -1060,9 +1140,28 @@ The `post_run` hook receives a JSON object on stdin after every `forge run`:
       "description": "what is wrong",
       "suggestion": "how to fix"
     }
+  ],
+  "reviewers": [
+    {
+      "name": "reviewer-profile-name",
+      "model": "claude-sonnet-4-6",
+      "verdict": "APPROVE | REQUEST_CHANGES",
+      "summary": "one-line summary from this reviewer",
+      "findings": [...]
+    }
   ]
 }
 ```
+
+`pr_number` is an integer extracted from the merge PR URL, or `null` if the run
+did not result in a PR merge. `reviewers` contains per-reviewer attribution from
+the last review cycle; empty list if no reviewers ran.
+
+## PR Review Attribution
+
+Set `FORGE_GH_PR_REVIEWS=1` to enable automatic posting of GitHub PR reviews
+after an APPROVE outcome. Requires `gh` CLI authenticated and `pr_number` to be
+non-null.
 
 ## Hook contract
 
