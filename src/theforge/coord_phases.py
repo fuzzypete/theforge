@@ -54,6 +54,58 @@ from .traces import write_trace
 
 _pr_log = logging.getLogger(__name__)
 
+
+def _archive_spec_to_done(
+    spec_path: str | Path,
+    cwd: Path,
+    *,
+    commit: bool = False,
+) -> bool:
+    """Move a spec file from backlog/ to done/ via git mv.
+
+    Returns True if the move succeeded, False otherwise (best-effort).
+    When *commit* is True a small git commit is created for the move.
+    """
+    src = Path(spec_path)
+    # Only move files that live under specs/backlog/
+    try:
+        rel = src.relative_to(cwd)
+    except ValueError:
+        # Absolute path — try making it relative
+        rel = src
+    parts = rel.parts
+    if "backlog" not in parts:
+        return False
+    # Build destination: replace 'backlog' with 'done'
+    idx = parts.index("backlog")
+    dest_parts = parts[:idx] + ("done",) + parts[idx + 1 :]
+    dest = Path(*dest_parts)
+    dest_abs = cwd / dest
+    dest_abs.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        proc = subprocess.run(
+            ["git", "mv", str(rel), str(dest)],
+            cwd=str(cwd),
+            capture_output=True,
+            timeout=15,
+        )
+        if proc.returncode != 0:
+            _log_verbose(f"  spec archive git mv failed: {proc.stderr.decode().strip()}")
+            return False
+        _log(f"  Archived spec: {rel} → {dest}")
+        if commit:
+            subprocess.run(
+                ["git", "commit", "-m", f"chore: archive {rel.name} to done/"],
+                cwd=str(cwd),
+                capture_output=True,
+                timeout=15,
+            )
+        return True
+    except Exception as exc:
+        _log_verbose(f"  spec archive failed: {exc}")
+        return False
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
@@ -118,10 +170,15 @@ def _create_pr(
     if config.workspace.pr_draft:
         cmd.append("--draft")
 
-    # Push the feature branch to origin before creating the PR.
+    # Archive spec from backlog/ to done/ in the feature branch so the
+    # merge carries the move into main.
     worktree_dir = config.workspace.path_pattern.format(slug=task.slug)
     worktree_path = config.project_root / worktree_dir
     push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
+    if task.spec_path:
+        _archive_spec_to_done(task.spec_path, push_cwd, commit=True)
+
+    # Push the feature branch to origin before creating the PR.
     try:
         push_proc = subprocess.run(
             ["git", "push", "-u", "origin", branch_name],
@@ -231,6 +288,8 @@ def _finalize_approve(
         merge_suffix = (
             " Merged." if merge_info["merged"] else f" Merge failed: {merge_info['error']}"
         )
+        if merge_info["merged"] and task.spec_path:
+            _archive_spec_to_done(task.spec_path, config.project_root, commit=True)
         if logger:
             logger._safe_emit(
                 "merge_result",
