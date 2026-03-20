@@ -98,6 +98,9 @@ APPROVE review via `gh api`. Currently done in `post_run.sh` behind
 - [ ] `FORGE_GH_PR_REVIEWS` env var no longer required
 - [ ] `forge init-hooks` does not scaffold GH blocks in hook when
       `github.enabled: true`
+- [ ] PR body includes `Closes #N` for matching milestone issue (auto-close
+      on merge). Match by slug against open issues or via `gh_issue` frontmatter
+      field in spec file.
 - [ ] `forge.yaml` in this project updated to use `github:` block
 - [ ] All existing tests pass; new tests for config parsing and GH integration
       logic
