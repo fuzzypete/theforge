@@ -234,6 +234,20 @@ dev or review — it's the upstream work of turning a vision into
 well-scoped, dependency-aware sprints. This phase brings that upstream
 workflow into the forge.
 
+**Core UX: document-in, forge figures it out.**
+
+The user doesn't pick a command per artifact type. They drop a document
+into forge and it classifies what it is, enters the pipeline at the
+right stage, and exits after the requested stage (or runs to completion):
+
+```
+forge run doc.md
+  → classify: "this looks like a brief" (or story, or epic, or sprint)
+  → HITL confirm: "Detected: brief. Start from ideation? [Y/n]"
+  → enter pipeline at the right stage
+  → exit after requested stage (default: one stage, --through=dev for full)
+```
+
 **The full lifecycle:**
 
 ```
@@ -248,11 +262,18 @@ Brief (vision)
                 → Execution (forge sprint)
 ```
 
+**Document classification** is lightweight — structure detection, not
+LLM inference. A brief has no acceptance criteria, a story has ACs but
+no sub-stories, an epic references child stories, a sprint has a
+`stories:` list. When ambiguous, HITL confirms. When unambiguous, forge
+proceeds (with `--confirm` flag to force the gate).
+
 **Key insight:** This is not one feature — it's a pipeline of
 transformations with HITL decision points at each stage:
 
 | Stage | Input | Output | HITL Gate |
 |-------|-------|--------|-----------|
+| Classify | Any doc | Detected type + entry point | Human confirms (if ambiguous) |
 | Ideate | Brief | Candidate stories | Human selects/edits stories |
 | Groom | Stories | Sized stories + epics | Human approves scope |
 | Decompose | Epic | Sub-stories with ACs | Human validates split |
@@ -260,23 +281,37 @@ transformations with HITL decision points at each stage:
 | Plan | Graph + budget | Sprint sequence | Human approves sprint plan |
 | Execute | Sprint file | Code + reviews | Existing forge pipeline |
 
+**Single entry point, multiple exit points:**
+
+```bash
+forge run vision.md                    # classify → ideate → stop (outputs stories)
+forge run vision.md --through=plan     # classify → ideate → groom → dep → plan → stop
+forge run vision.md --through=dev      # full pipeline: classify → ... → sprint → dev
+forge run story.md                     # classify as story → enters at dev (current behavior)
+forge run sprint.yaml                  # classify as sprint → enters at sprint (current behavior)
+```
+
 **Implementation path:**
 
-1. **`forge decompose <brief>`** — Takes a brief (one-paragraph vision)
-   and produces candidate stories via multi-model ideation. Each story
-   gets rough sizing (S/M/L) from the ideation models. Stories sized L
-   are flagged as potential epics.
+1. **Document classifier** — Structural detection (frontmatter keys,
+   AC presence, sub-story references) with HITL fallback. Not an LLM
+   call — deterministic rules in the coordinator.
 
-2. **`forge groom <stories...>`** — Reviews stories for scope. Promotes
-   oversized stories to epics, suggests splits, identifies missing
-   acceptance criteria. Output: groomed stories + epic candidates.
+2. **Stage-aware pipeline** — The coordinator gains an entry-point
+   parameter and a stop-after parameter. Current `forge run story.md`
+   is equivalent to `--enter=dev --through=done`.
 
-3. **`forge plan-sprint <stories...>`** — Analyzes dependencies across
-   stories, groups into parallel tracks, sequences into sprints.
-   Respects `depends_on` (explicit) and file-scope overlap (inferred).
+3. **`forge ideate` as the decomposition engine** — Multi-model
+   ideation applied to "what stories does this brief need?" and
+   "what sub-stories does this epic need?" Same deliberation protocol,
+   different prompt.
+
+4. **`forge plan-sprint`** — Analyzes dependencies across stories,
+   groups into parallel tracks, sequences into sprints. Respects
+   `depends_on` (explicit) and file-scope overlap (inferred).
    Output: sprint YAML files ready for `forge sprint`.
 
-4. **HITL at every stage** — The coordinator is still deterministic.
+5. **HITL at every stage** — The coordinator is still deterministic.
    LLMs propose, humans approve. Each stage writes its output to disk
    and pauses for human review before the next stage begins. No
    autonomous multi-stage execution without explicit human opt-in.
