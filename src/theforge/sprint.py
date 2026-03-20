@@ -192,6 +192,10 @@ def _triage_spec(
     worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
 
     # 1. Check if already merged to base branch
+    # --is-ancestor alone is not enough: a branch created at main HEAD with
+    # zero new commits also passes --is-ancestor.  We must also verify the
+    # branch has commits that diverge from main (i.e. it's not just pointing
+    # at the same commit or an older one).
     try:
         merge_result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, base_branch],
@@ -200,14 +204,25 @@ def _triage_spec(
             timeout=30,
         )
         if merge_result.returncode == 0:
-            return SpecTriage(
-                spec_path=spec_path,
-                action="skip_merged",
-                reason=f"already merged to {base_branch}",
-                worktree_path=None,
-                slug=slug,
+            # Verify branch actually has unique commits (not just at base HEAD)
+            ahead_result = subprocess.run(
+                ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
             )
-    except (subprocess.TimeoutExpired, OSError):
+            ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
+            if ahead_count > 0:
+                return SpecTriage(
+                    spec_path=spec_path,
+                    action="skip_merged",
+                    reason=f"already merged to {base_branch}",
+                    worktree_path=None,
+                    slug=slug,
+                )
+            # ahead_count == 0: branch exists at base HEAD, not truly merged —
+            # fall through to worktree checks below
+    except (subprocess.TimeoutExpired, OSError, ValueError):
         pass  # Branch may not exist yet — treat as not merged
 
     # 2. Check if worktree exists

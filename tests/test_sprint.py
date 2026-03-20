@@ -563,13 +563,46 @@ class TestTriageSpec:
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         config = _make_config(tmp_path)
 
-        with patch("theforge.sprint.subprocess.run") as mock_run:
-            # merge-base --is-ancestor returns 0 → merged
-            mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 0  # is ancestor
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"3"  # 3 commits ahead — truly merged, not just at base
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
         assert "merged" in triage.reason
+
+    def test_triage_branch_at_base_head_not_merged(self, tmp_path: Path) -> None:
+        """Branch at base HEAD with 0 commits ahead → full (not skip_merged)."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "--is-ancestor" in cmd:
+                m.returncode = 0  # is ancestor (trivially — same commit)
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"0"  # 0 commits ahead — just created at base HEAD
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "full"
+        assert "no worktree" in triage.reason
 
     def test_triage_worktree_with_passing_gate(self, tmp_path: Path) -> None:
         """Worktree exists, commits ahead, gate passes → review."""
