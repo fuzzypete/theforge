@@ -118,12 +118,42 @@ def _create_pr(
     if config.workspace.pr_draft:
         cmd.append("--draft")
 
+    # Push the feature branch to origin before creating the PR.
+    worktree_dir = config.workspace.path_pattern.format(slug=task.slug)
+    worktree_path = config.project_root / worktree_dir
+    push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
+    try:
+        push_proc = subprocess.run(
+            ["git", "push", "-u", "origin", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=push_cwd,
+            timeout=60,
+        )
+        if push_proc.returncode != 0:
+            err = push_proc.stderr.strip() or push_proc.stdout.strip()
+            _pr_log.warning("git push failed (exit %d): %s", push_proc.returncode, err)
+            return {
+                "action": "pr",
+                "pr_url": None,
+                "success": False,
+                "error": f"git push failed: {err}",
+            }
+    except Exception as exc:
+        _pr_log.warning("git push failed: %s", exc)
+        return {
+            "action": "pr",
+            "pr_url": None,
+            "success": False,
+            "error": f"git push failed: {exc}",
+        }
+
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            cwd=config.project_root,
+            cwd=push_cwd,
             timeout=60,
         )
         if proc.returncode == 0:

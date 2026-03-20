@@ -31,6 +31,7 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
+from theforge.coord_state import CoordinatorState
 from theforge.coordinator import Phase, run_from_review, run_task
 from theforge.task import TaskSpec
 
@@ -1530,3 +1531,120 @@ class TestFixPromptRouting:
         # iter 1 → build_dev_prompt; iter 2 (post-extend) → build_fix_prompt (P1 findings)
         assert mock_dev_prompt.call_count == 1
         assert mock_fix_prompt.call_count == 1
+
+
+# ── PR creation tests ──────────────────────────────────────────────────
+
+
+class TestCreatePR:
+    """Tests for _create_pr: push branch + gh pr create."""
+
+    def _make_pr_config(self, tmp_path):
+        ws_dir = tmp_path / ".forge" / "worktrees" / "test-task"
+        ws_dir.mkdir(parents=True)
+        return ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="echo",
+                path_pattern=".forge/worktrees/{slug}",
+                branch_pattern="feat/{slug}",
+                on_approve="pr",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(),
+        )
+
+    def _make_review(self):
+        from theforge.review import ReviewFinding, ReviewResult
+
+        return ReviewResult(
+            verdict="APPROVE",
+            summary="All good",
+            findings=[
+                ReviewFinding(
+                    severity="P2",
+                    file="foo.py",
+                    line=10,
+                    description="Minor style issue",
+                    suggestion="Rename var",
+                )
+            ],
+            spec_matches=True,
+            spec_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+
+    @patch("theforge.coord_phases.subprocess.run")
+    def test_push_before_pr_create(self, mock_run, tmp_path):
+        """_create_pr pushes branch before calling gh pr create."""
+        from theforge.coord_phases import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskSpec(
+            name="Test Task",
+            slug="test-task",
+            spec_path=spec,
+            file_scope=["src/"],
+        )
+        state = CoordinatorState()
+
+        # First call: git push (success). Second call: gh pr create (success).
+        mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type(
+                "Proc",
+                (),
+                {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""},
+            )(),
+        ]
+
+        result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        assert result["success"] is True
+        assert result["pr_url"] == "https://github.com/test/pr/1"
+        assert mock_run.call_count == 2
+
+        # First call must be git push
+        push_call = mock_run.call_args_list[0]
+        assert push_call[0][0][:3] == ["git", "push", "-u"]
+        assert "feat/test-task" in push_call[0][0]
+
+        # Second call must be gh pr create
+        pr_call = mock_run.call_args_list[1]
+        assert pr_call[0][0][:3] == ["gh", "pr", "create"]
+
+    @patch("theforge.coord_phases.subprocess.run")
+    def test_push_failure_aborts_pr(self, mock_run, tmp_path):
+        """If git push fails, _create_pr returns failure without calling gh."""
+        from theforge.coord_phases import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskSpec(
+            name="Test Task",
+            slug="test-task",
+            spec_path=spec,
+            file_scope=["src/"],
+        )
+        state = CoordinatorState()
+
+        mock_run.return_value = type(
+            "Proc", (), {"returncode": 128, "stdout": "", "stderr": "fatal: remote error"}
+        )()
+
+        result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        assert result["success"] is False
+        assert "git push failed" in result["error"]
+        assert mock_run.call_count == 1  # only push, no gh pr create
