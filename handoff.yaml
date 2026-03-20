@@ -1,114 +1,64 @@
 gate_decision: PASS
 dev_notes: |
-  summary: >
-    Implemented two specs in a single commit: (1) api-loop-diagnostics adds
-    three additive verbose-logging changes to AgentLoopManager — tool schema
-    names before the main loop, per-turn tool call names after each
-    _call_with_retry, and a conversation JSON dump to .forge/traces/ when the
-    loop exits via max-iterations in _finalize_or_timeout; (2) escalate-hitl
-    adds a _escalate_gate() HITL decision function to coord_notify.py that
-    intercepts every ESCALATE transition in the DEV/VALIDATE/REVIEW phases,
-    offering approve/resume/escalate via terminal stdin (interactive) or ntfy
-    action buttons (remote); RESUME is added to both _ReviewOutcome and
-    _ValidateOutcome enums and handled in _coordinator_loop — VALIDATE RESUME
-    re-enters from DEV (continue), REVIEW RESUME skips DEV/VALIDATE via
-    _skip_dev=True + continue; 10 unit tests cover all three gate paths plus
-    remote polling and audit log emission.
+  summary: "Implemented two specs: (1) api-loop-diagnostics adds verbose-logging to AgentLoopManager — tool schema names before the main loop, per-turn tool call names after each _call_with_retry, and a conversation JSON dump to .forge/traces/ on max-iterations exit in _finalize_or_timeout; (2) escalate-hitl adds _escalate_gate() to coord_notify.py that intercepts every ESCALATE transition in DEV/VALIDATE/REVIEW phases, offering approve/resume/escalate via terminal stdin or ntfy action buttons; RESUME added to both outcome enums; _coordinator_loop handles VALIDATE RESUME (continue) and REVIEW RESUME (_skip_dev=True + continue); 10 unit tests cover all gate paths."
   commits:
     - sha: "1388a04"
       message: "feat(runner,coord): api-loop-diagnostics + escalate-hitl"
   acceptance_criteria:
     - criterion: "Loop start logs tool schema names at verbose level"
       status: MET
-      notes: >
-        _log_verbose emitted in AgentLoopManager.run() before the while loop,
-        listing all schema names from tool_schemas.
+      notes: "_log_verbose emitted in AgentLoopManager.run() before the while loop, listing all schema names from tool_schemas."
     - criterion: "Each iteration logs tool call names at verbose level"
       status: MET
-      notes: >
-        _log_verbose emitted after _call_with_retry + iterations += 1 when
-        turn.tool_calls is non-empty, logging count and names.
+      notes: "_log_verbose emitted after _call_with_retry + iterations += 1 when turn.tool_calls is non-empty, logging count and names."
     - criterion: "Max-iterations path writes conversation JSON to .forge/traces/"
       status: MET
-      notes: >
-        _finalize_or_timeout() writes messages as JSON to
-        .forge/traces/{profile}-{epoch_ms}-conversation.json when reason is
-        'max iterations reached'; uses custom serializer for ToolCallRequest.
+      notes: "_finalize_or_timeout() writes messages as JSON to .forge/traces/{profile}-{epoch_ms}-conversation.json when reason is 'max iterations reached'; uses custom serializer for ToolCallRequest."
     - criterion: "Nudge prompt logged at verbose level when fired"
       status: MET
-      notes: Already satisfied pre-implementation (lines 597/615); unchanged.
+      notes: "Already satisfied pre-implementation (lines 597/615 in runner_api.py); unchanged."
     - criterion: "All existing tests pass (api-loop-diagnostics)"
       status: MET
-      notes: 1045 tests pass; additive-only changes, no signatures modified.
+      notes: "1045 tests pass; additive-only changes, no signatures modified."
     - criterion: "No sensitive data in diagnostic output"
       status: MET
-      notes: Only tool schema names and tool call names logged; no arguments.
+      notes: "Only tool schema names and tool call names logged; no arguments or secrets."
     - criterion: "Coordinator pauses at ESCALATE transition with decision prompt"
       status: MET
-      notes: >
-        _escalate_gate() wired at 5 VALIDATE callsites and 2 REVIEW callsites
-        in coord_phases.py; emits context block before prompting.
+      notes: "_escalate_gate() wired at 5 VALIDATE callsites and 2 REVIEW callsites in coord_phases.py; emits context block before prompting."
     - criterion: "Decision prompt shows review context (cycles, verdicts, costs)"
       status: MET
-      notes: >
-        Context block includes task name, phase, review_cycle, dev_iteration,
-        total_cost, elapsed, error, last verdict, and recent gate decisions.
+      notes: "Context block includes task name, phase, review_cycle, dev_iteration, total_cost, elapsed, error, last verdict, and recent gate decisions."
     - criterion: "Approve option triggers full DONE path (PR, hook, issues)"
       status: MET
-      notes: >
-        approve at the cycles-exhausted REVIEW escalation calls
-        _finalize_approve() with all required params; returns _ReviewOutcome.DONE.
+      notes: "approve at the cycles-exhausted REVIEW escalation calls _finalize_approve() with all required params; returns _ReviewOutcome.DONE."
     - criterion: "Resume option re-enters state machine at current phase"
       status: MET
-      notes: >
-        REVIEW RESUME sets _skip_dev=True + continue, so next iteration goes
-        directly to REVIEW. VALIDATE RESUME does plain continue, re-entering
-        from DEV (closest re-entry for VALIDATE escalations).
+      notes: "REVIEW RESUME sets _skip_dev=True + continue so next iteration goes to REVIEW. VALIDATE RESUME does plain continue, re-entering from DEV."
     - criterion: "Escalate option preserves current behavior"
       status: MET
-      notes: >
-        Default path falls through to _escalate_notify + return ESCALATE
-        CoordinatorResult, identical to previous behavior.
+      notes: "Default path falls through to _escalate_notify + return ESCALATE CoordinatorResult, identical to previous behavior."
     - criterion: "Interactive mode: terminal prompt with stdin"
       status: MET
-      notes: >
-        _escalate_gate_interactive() prints context + options to stderr, reads
-        from sys.stdin; EOF auto-escalates.
+      notes: "_escalate_gate_interactive() prints context + options to stderr, reads from sys.stdin; EOF auto-escalates."
     - criterion: "Remote mode: ntfy notification with action buttons"
       status: MET
-      notes: >
-        _escalate_gate_remote() publishes via _ntfy_publish with Actions header;
-        _ntfy_poll_escalate_reply() polls for approve/resume/escalate response.
+      notes: "_escalate_gate_remote() publishes via _ntfy_publish with Actions header; _ntfy_poll_escalate_reply() polls for approve/resume/escalate."
     - criterion: "Audit log captures escalation gate decision and context"
       status: MET
-      notes: >
-        logger._safe_emit('escalation_gate', decision=..., context={...}) called
-        after gate decision resolved when logger is not None.
+      notes: "logger._safe_emit('escalation_gate', decision=..., context={...}) called after gate decision resolved when logger is not None."
     - criterion: "All existing tests pass (escalate-hitl)"
       status: MET
-      notes: Gate only fires at DEV/VALIDATE/REVIEW callsites; 1045 tests pass.
+      notes: "Gate only fires at DEV/VALIDATE/REVIEW callsites; 1045 tests pass."
     - criterion: "New tests: approve path, resume path, escalate path"
       status: MET
-      notes: >
-        10 tests in TestEscalateGate cover: non-interactive auto-escalate,
-        interactive approve/resume/escalate/eof, disallow-approve re-prompt,
-        remote resume/approve/timeout, audit log emission.
+      notes: "10 tests in TestEscalateGate cover: non-interactive auto-escalate, interactive approve/resume/escalate/eof, disallow-approve re-prompt, remote resume/approve/timeout, audit log emission."
   spec_deviations:
-    - item: >
-        VALIDATE RESUME re-enters from DEV rather than the VALIDATE phase
-        itself. The loop structure places VALIDATE inside if not _skip_dev: so
-        returning directly to VALIDATE is not possible without restructuring.
-        Re-entry from DEV is semantically equivalent for all VALIDATE escalation
-        scenarios since the dev agent must act before the gate can be re-run.
-    - item: >
-        Approve option not offered at the all-reviewers-failed REVIEW escalation
-        (allow_approve=False), since no parsed_review verdict exists to pass to
-        _finalize_approve(). Only the cycles-exhausted non-interactive REVIEW
-        escalation offers approve.
-    - item: >
-        Trace filename uses {profile}-{epoch_ms} rather than {cycle}-{profile}
-        shown in the spec example. AgentLoopManager has no cycle number; adding
-        it would require signature changes across four provider runner functions.
-        Timestamp suffix is unambiguous and sufficient for debugging.
+    - description: "VALIDATE RESUME re-enters from DEV rather than the VALIDATE phase itself."
+      justification: "The loop structure places VALIDATE inside 'if not _skip_dev:' so returning directly to VALIDATE is not possible without restructuring the loop. Re-entry from DEV is semantically equivalent for all VALIDATE escalation scenarios since the dev agent must act before the gate can be re-run."
+    - description: "Approve option not offered at the all-reviewers-failed REVIEW escalation (allow_approve=False)."
+      justification: "No parsed_review verdict exists at that point to pass to _finalize_approve(). Approve is only offered at the cycles-exhausted non-interactive REVIEW escalation where parsed_review is in scope."
+    - description: "Trace filename uses {profile}-{epoch_ms} rather than {cycle}-{profile} shown in the spec example."
+      justification: "AgentLoopManager has no cycle number; adding it would require signature changes across four provider runner functions. Timestamp suffix is unambiguous and sufficient for debugging."
   deferred_items: none
   gate_result: PASS
