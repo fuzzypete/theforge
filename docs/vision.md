@@ -224,37 +224,75 @@ specs while serializing conflicting ones.
 
 ---
 
-### Phase 11: Decompose
+### Phase 11: Upstream Orchestration — Brief to Sprint Plan
 
 **Depends on:** Phase 9 + 10 (dependency analysis + parallel execution)
 
-**Why last:** LLM-driven spec decomposition is the capstone. A large
-spec gets split into sub-specs with annotated `file_scope`, which the
-dependency analyzer groups into parallel batches automatically.
+**Why this matters:** TheForge currently starts at the story level and
+assumes a human already decomposed the work. The real bottleneck isn't
+dev or review — it's the upstream work of turning a vision into
+well-scoped, dependency-aware sprints. This phase brings that upstream
+workflow into the forge.
 
-**Implementation path:** `forge ideate` is the implementation of DECOMPOSE
-done right. Instead of a single LLM splitting a spec, the multi-model
-deliberation protocol in `forge ideate` is applied to the question "what
-sub-problems does this spec contain?" The converged output feeds directly
-into a campaign manifest. To use `forge ideate` for decomposition:
+**The full lifecycle:**
 
 ```
-forge ideate "What sub-problems should <high-level spec> be split into?"
+Brief (vision)
+  → Stories (forge ideate / human)
+    → Grooming (too big? too vague?)
+      → Epic (promotes oversized story)
+        → Sub-stories (decomposed from epic)
+          → Dependency discovery (across all stories)
+            → Sprint plan (parallel tracks within each sprint)
+              → HITL gates (scope/rescope decisions)
+                → Execution (forge sprint)
 ```
 
-The synthesized spec becomes the campaign manifest template. Human reviews
-the ideation output before any `forge sprint` run is invoked — this is
-the mandatory human gate in the decompose flow. The coordinator remains
-fully deterministic; only the ideation agents are LLMs.
+**Key insight:** This is not one feature — it's a pipeline of
+transformations with HITL decision points at each stage:
 
-**What it means:**
-- `forge ideate` applied to "what sub-problems does this spec contain?"
-  produces a decomposition that the campaign runner can execute
-- Each sub-spec in the ideation output has its own `file_scope`,
-  acceptance criteria, and slug
-- Sub-specs feed into the campaign runner (sequential or parallel)
-- Human reviews the ideation output (mandatory gate) before execution
-- The coordinator is still deterministic — only the ideation agents are LLMs
+| Stage | Input | Output | HITL Gate |
+|-------|-------|--------|-----------|
+| Ideate | Brief | Candidate stories | Human selects/edits stories |
+| Groom | Stories | Sized stories + epics | Human approves scope |
+| Decompose | Epic | Sub-stories with ACs | Human validates split |
+| Dependency | All stories | Dependency graph | Human resolves ambiguity |
+| Plan | Graph + budget | Sprint sequence | Human approves sprint plan |
+| Execute | Sprint file | Code + reviews | Existing forge pipeline |
+
+**Implementation path:**
+
+1. **`forge decompose <brief>`** — Takes a brief (one-paragraph vision)
+   and produces candidate stories via multi-model ideation. Each story
+   gets rough sizing (S/M/L) from the ideation models. Stories sized L
+   are flagged as potential epics.
+
+2. **`forge groom <stories...>`** — Reviews stories for scope. Promotes
+   oversized stories to epics, suggests splits, identifies missing
+   acceptance criteria. Output: groomed stories + epic candidates.
+
+3. **`forge plan-sprint <stories...>`** — Analyzes dependencies across
+   stories, groups into parallel tracks, sequences into sprints.
+   Respects `depends_on` (explicit) and file-scope overlap (inferred).
+   Output: sprint YAML files ready for `forge sprint`.
+
+4. **HITL at every stage** — The coordinator is still deterministic.
+   LLMs propose, humans approve. Each stage writes its output to disk
+   and pauses for human review before the next stage begins. No
+   autonomous multi-stage execution without explicit human opt-in.
+
+**What "lightweight HITL at escalate" enables here:** When decomposition
+produces ambiguous splits or sizing disagreements between models, a
+synthesis model presents the human with structured options ("Model A
+suggests 3 stories, Model B suggests 5 — here's the tradeoff") rather
+than dumping raw outputs. This is the same pattern needed for dev
+escalation and can be built once and reused.
+
+**Relationship to `forge ideate`:** Ideation is the engine for stages
+1-3. The deliberation protocol (independent generation → cross-review
+→ convergence detection) applies to decomposition the same way it
+applies to spec writing. The coordinator remains fully deterministic;
+only the ideation agents are LLMs.
 
 ---
 
