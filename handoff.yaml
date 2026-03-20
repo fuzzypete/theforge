@@ -1,34 +1,41 @@
 dev_notes: |
-  summary: "Fixed the P1 line-number cross-validation rule in schemas.py and added three new tests. The old code unconditionally required a non-null line on all P1 findings, even when file was null (an architectural finding with no specific location). The fix narrows the line check: it only fires when file is explicitly set (non-null, non-empty). A P1 with file: null is treated as an architectural finding and is valid without a line. A P1 with file set to a non-empty string still requires a line. Empty-string file (file: '') still triggers the file-must-be-non-empty error, preserving the existing test. Three new tests were added: P1+file+null-line→error, P1+null-file+null-line→valid, P2+file+null-line→valid."
+  summary: "Removed file_scope from TaskSpec, all frontmatter parsers, all prompt
+    builders (build_preflight_prompt, build_plan_prompt, build_plan_review_prompt,
+    build_dev_prompt), and forge ideate templates. Deleted _load_file_scope_contents
+    from coord_preflight.py and its callsite in coordinator.py. Removed the _in_scope
+    helper and scope-gating block from coord_phases.py — all dirty files after dev
+    now unconditionally trigger a retry via the existing _dirty_dev_retry path.
+    Specs with file_scope in frontmatter parse silently without error (field is ignored).
+    All 976 tests pass."
   commits:
-    - sha: "40e7a55"
-      message: "fix(schemas): enforce line numbers on P1 findings only when file is set"
+    - sha: "9a87bb1"
+      message: "feat(task): remove file_scope from TaskSpec and all prompt builders"
   acceptance_criteria:
-    - criterion: "P1 finding with `file` set and `line: null` → schema validation error"
+    - criterion: "TaskSpec has no file_scope field"
       status: MET
-      notes: "schemas.py: when file_val is truthy and line is falsy, error is appended. Covered by test_p1_with_file_and_null_line_is_error."
-    - criterion: "P1 finding with `file: null` and `line: null` → valid (architectural finding)"
+      notes: "field removed from TaskSpec dataclass in task.py"
+    - criterion: "Specs with file_scope in frontmatter parse without error (ignored)"
       status: MET
-      notes: "schemas.py: when file_val is None, both the file check and line check are skipped. Covered by test_p1_with_null_file_and_null_line_is_valid."
-    - criterion: "P1 finding with `file` set and `line` set → valid (normal case)"
+      notes: "cli.py and sprint.py no longer pass fm.get('file_scope', []) to TaskSpec; extra frontmatter keys are silently ignored by yaml.safe_load"
+    - criterion: "Dev prompt contains no file scope restriction language"
       status: MET
-      notes: "Pre-existing behavior; test_valid_request_changes confirms this case."
-    - criterion: "P2 findings are NOT affected by this rule (line remains optional)"
+      notes: "removed file_scope_str block and ## File Scope section from build_dev_prompt()"
+    - criterion: "SCOPE_BLOCKED sentinel removed from task.py"
       status: MET
-      notes: "Line and file checks are inside `if severity == 'P1':` block; P2s are never checked. Covered by test_p2_with_file_and_null_line_is_valid."
-    - criterion: "New test: P1 + file + null line → error"
+      notes: "was already absent per preflight audit; confirmed no SCOPE_BLOCKED references in src/"
+    - criterion: "forge ideate output does not include file_scope in frontmatter"
       status: MET
-      notes: "test_p1_with_file_and_null_line_is_error added to test_schemas.py."
-    - criterion: "New test: P1 + null file + null line → no error"
+      notes: "removed file_scope: lines from both prompt templates in ideate.py (_build_single_model_prompt and _build_synthesis_prompt)"
+    - criterion: "Coordinator does not check for scope_blocked in dev output"
       status: MET
-      notes: "test_p1_with_null_file_and_null_line_is_valid added to test_schemas.py."
-    - criterion: "New test: P2 + file + null line → no error"
+      notes: "_load_file_scope_contents import and callsite removed from coordinator.py; file_contents kwarg removed from all four prompt builder calls"
+    - criterion: "All existing tests pass or are updated"
       status: MET
-      notes: "test_p2_with_file_and_null_line_is_valid added to test_schemas.py."
-    - criterion: "Existing tests pass unchanged"
-      status: MET
-      notes: "986 passed in 10.98s — zero failures. test_finding_missing_file (file='') still errors as before."
-  spec_deviations: none
+      notes: "976/976 tests pass after updating 11 test files; removed test_preflight_reads_file_scope, replaced 6 scope-specific dirty-worktree tests with 2 generic ones"
+  spec_deviations:
+    - "The scope-gating block in coord_phases.py auto-committed out-of-scope side effects
+      as a convenience. This path is now gone — all dirty files trigger a DEV retry.
+      This is the intended behavior per the spec (file_scope concept removed entirely);
+      the plan explicitly called for removing this branching logic."
   deferred_items: none
   gate_result: PASS
-gate_decision: PASS
