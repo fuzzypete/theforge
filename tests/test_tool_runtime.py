@@ -255,16 +255,12 @@ class TestWriteFile:
         assert (tmp_path / "existing.txt").read_text() == "new content"
 
     def test_creates_parent_directories(self, tmp_path):
-        result = _handle_write_file(
-            path="a/b/c/deep.txt", content="deep", working_dir=tmp_path
-        )
+        result = _handle_write_file(path="a/b/c/deep.txt", content="deep", working_dir=tmp_path)
         assert "Written" in result
         assert (tmp_path / "a" / "b" / "c" / "deep.txt").read_text() == "deep"
 
     def test_path_traversal_rejected(self, tmp_path):
-        result = _handle_write_file(
-            path="../outside.txt", content="bad", working_dir=tmp_path
-        )
+        result = _handle_write_file(path="../outside.txt", content="bad", working_dir=tmp_path)
         assert result.startswith("Error: path traversal rejected")
         assert not (tmp_path.parent / "outside.txt").exists()
 
@@ -276,7 +272,9 @@ class TestWriteFile:
     def test_content_not_truncated_by_max_bytes(self, tmp_path):
         # max_bytes limits the return value, not what is written to disk
         long_content = "x" * 200
-        _handle_write_file(path="big.txt", content=long_content, working_dir=tmp_path, max_bytes=10)
+        _handle_write_file(
+            path="big.txt", content=long_content, working_dir=tmp_path, max_bytes=10
+        )
         assert (tmp_path / "big.txt").read_text() == long_content
 
 
