@@ -5,11 +5,12 @@ dev_notes: |
     from coord_preflight.py and its callsite in coordinator.py. Removed the _in_scope
     helper and scope-gating block from coord_phases.py — all dirty files after dev
     now unconditionally trigger a retry via the existing _dirty_dev_retry path.
-    Specs with file_scope in frontmatter parse silently without error (field is ignored).
-    All 976 tests pass."
+    Specs with file_scope in frontmatter parse silently without error. All 976 tests pass."
   commits:
     - sha: "9a87bb1"
       message: "feat(task): remove file_scope from TaskSpec and all prompt builders"
+    - sha: "e53e034"
+      message: "chore: write dev_notes for drop-file-scope"
   acceptance_criteria:
     - criterion: "TaskSpec has no file_scope field"
       status: MET
@@ -25,7 +26,7 @@ dev_notes: |
       notes: "was already absent per preflight audit; confirmed no SCOPE_BLOCKED references in src/"
     - criterion: "forge ideate output does not include file_scope in frontmatter"
       status: MET
-      notes: "removed file_scope: lines from both prompt templates in ideate.py (_build_single_model_prompt and _build_synthesis_prompt)"
+      notes: "removed file_scope: lines from both prompt templates in ideate.py"
     - criterion: "Coordinator does not check for scope_blocked in dev output"
       status: MET
       notes: "_load_file_scope_contents import and callsite removed from coordinator.py; file_contents kwarg removed from all four prompt builder calls"
@@ -33,9 +34,8 @@ dev_notes: |
       status: MET
       notes: "976/976 tests pass after updating 11 test files; removed test_preflight_reads_file_scope, replaced 6 scope-specific dirty-worktree tests with 2 generic ones"
   spec_deviations:
-    - "The scope-gating block in coord_phases.py auto-committed out-of-scope side effects
-      as a convenience. This path is now gone — all dirty files trigger a DEV retry.
-      This is the intended behavior per the spec (file_scope concept removed entirely);
-      the plan explicitly called for removing this branching logic."
+    - description: "The scope-gating block in coord_phases.py previously auto-committed out-of-scope side effects as a convenience. This path is now gone — all dirty files trigger a DEV retry."
+      justification: "This is the intended behavior per the spec (file_scope concept removed entirely); the plan explicitly called for removing this branching logic."
   deferred_items: none
   gate_result: PASS
+gate_decision: PASS
