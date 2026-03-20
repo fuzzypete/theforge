@@ -479,6 +479,8 @@ class AgentLoopManager:
         messages = list(initial_messages)
         iterations = 0
         consecutive_malformed = 0
+        label = self._profile.name or f"{self._provider}/{self._profile.model}"
+        _log_verbose(f"  [{label}] tools: {[s.get('name', '?') for s in tool_schemas]}")
 
         while iterations < self._max_iterations:
             if self._timed_out():
@@ -492,6 +494,12 @@ class AgentLoopManager:
 
             self._usage.add(turn.usage)
             iterations += 1
+
+            if turn.tool_calls:
+                _call_names = [c.name for c in turn.tool_calls]
+                _log_verbose(
+                    f"  [{label}] iter {iterations}: {len(_call_names)} call(s): {_call_names}"
+                )
 
             # Check for submit tool call
             for call in turn.tool_calls:
@@ -620,10 +628,33 @@ class AgentLoopManager:
         self, messages: list[dict], iterations: int, reason: str
     ) -> AgentResult:
         """Attempt finalization via constrained output; fall back to timeout failure."""
+        label = self._profile.name or f"{self._provider}/{self._profile.model}"
+
+        if reason == "max iterations reached":
+            try:
+                traces_dir = self._working_dir / ".forge" / "traces"
+                traces_dir.mkdir(parents=True, exist_ok=True)
+                epoch_ms = int(time.time() * 1000)
+                safe_name = (
+                    self._profile.name or f"{self._provider}-{self._profile.model}"
+                ).replace("/", "-")
+                trace_path = traces_dir / f"{safe_name}-{epoch_ms}-conversation.json"
+
+                def _serialize(obj: object) -> object:
+                    if isinstance(obj, ToolCallRequest):
+                        return {"id": obj.id, "name": obj.name, "arguments": obj.arguments}
+                    return str(obj)
+
+                trace_path.write_text(
+                    json.dumps(messages, default=_serialize, indent=2), encoding="utf-8"
+                )
+                _log_verbose(f"  [{label}] conversation trace → {trace_path}")
+            except Exception as _exc:
+                _log_verbose(f"  [{label}] trace write failed: {_exc}")
+
         if self._finalizer is None:
             return self._timeout_result(iterations, reason=reason)
 
-        label = self._profile.name or f"{self._provider}/{self._profile.model}"
         _log(f"  ⚠ {label} {reason} after {iterations} iterations — attempting finalization")
 
         try:

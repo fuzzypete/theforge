@@ -25,6 +25,7 @@ from .coord_gate import (
 )
 from .coord_logging import StructuredLogger
 from .coord_notify import (
+    _escalate_gate,
     _escalate_notify,
     _is_remote_mode,
     _ntfy_done_notify,
@@ -345,6 +346,7 @@ class _ReviewOutcome(Enum):
     DONE = auto()
     ESCALATE = auto()
     RETRY_DEV = auto()
+    RESUME = auto()
 
 
 def _run_review_phase(
@@ -407,6 +409,12 @@ def _run_review_phase(
     if _candidate is None:
         # All reviewers failed or budget exceeded —
         # state.error already set by _run_review_pool
+        state.phase = Phase.ESCALATE
+        _gate_decision = _escalate_gate(
+            task, state, notify, config, logger, interactive=interactive, allow_approve=False
+        )
+        if _gate_decision == "resume":
+            return _ReviewOutcome.RESUME, None, config
         _escalate_notify(task, state, notify, config)
         return (
             _ReviewOutcome.ESCALATE,
@@ -783,6 +791,36 @@ def _run_review_phase(
             if logger:
                 logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
                 logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+            _gate_decision = _escalate_gate(
+                task, state, notify, config, logger, interactive=interactive, allow_approve=True
+            )
+            if _gate_decision == "approve":
+                _append_cycle_history(state, parsed_review)
+                return (
+                    _ReviewOutcome.DONE,
+                    _finalize_approve(
+                        state,
+                        config,
+                        task,
+                        parsed_review,
+                        workspace_path,
+                        branch_name,
+                        task_start,
+                        auto_merge=auto_merge,
+                        notify=notify,
+                        logger=logger,
+                        review_cost=_review_cost,
+                        review_elapsed=_review_elapsed,
+                        message=(
+                            f"Task '{task.name}' completed. "
+                            f"HITL approved after {state.review_cycle} cycle(s). "
+                        ),
+                        run_id=run_id,
+                    ),
+                    config,
+                )
+            if _gate_decision == "resume":
+                return _ReviewOutcome.RESUME, None, config
             _escalate_notify(task, state, notify, config)
             return (
                 _ReviewOutcome.ESCALATE,
@@ -817,6 +855,7 @@ class _ValidateOutcome(Enum):
     PASS = auto()
     RETRY_DEV = auto()
     ESCALATE = auto()
+    RESUME = auto()
 
 
 def _run_validate_phase(
@@ -826,6 +865,7 @@ def _run_validate_phase(
     workspace_path: Path,
     dev_calls_this_cycle: int,
     *,
+    interactive: bool = False,
     notify: bool,
     logger: StructuredLogger | None,
     mod: ModuleType,
@@ -874,6 +914,11 @@ def _run_validate_phase(
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
                 logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+            _gate_decision = _escalate_gate(
+                task, state, notify, config, logger, interactive=interactive, allow_approve=False
+            )
+            if _gate_decision == "resume":
+                return _ValidateOutcome.RESUME, None
             _escalate_notify(task, state, notify, config)
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
@@ -886,6 +931,11 @@ def _run_validate_phase(
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
                 logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+            _gate_decision = _escalate_gate(
+                task, state, notify, config, logger, interactive=interactive, allow_approve=False
+            )
+            if _gate_decision == "resume":
+                return _ValidateOutcome.RESUME, None
             _escalate_notify(task, state, notify, config)
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
@@ -932,6 +982,17 @@ def _run_validate_phase(
                         state.phase = Phase.ESCALATE
                         state.error = f"Dev agent left uncommitted changes: {dirty_files}"
                         _log(f"✗ ESCALATE   {state.error}")
+                        _gate_decision = _escalate_gate(
+                            task,
+                            state,
+                            notify,
+                            config,
+                            logger,
+                            interactive=interactive,
+                            allow_approve=False,
+                        )
+                        if _gate_decision == "resume":
+                            return _ValidateOutcome.RESUME, None
                         _escalate_notify(task, state, notify, config)
                         return _ValidateOutcome.ESCALATE, CoordinatorResult(
                             success=False, phase=state.phase, state=state, message=state.error
@@ -956,6 +1017,11 @@ def _run_validate_phase(
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
                 logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+            _gate_decision = _escalate_gate(
+                task, state, notify, config, logger, interactive=interactive, allow_approve=False
+            )
+            if _gate_decision == "resume":
+                return _ValidateOutcome.RESUME, None
             _escalate_notify(task, state, notify, config)
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
@@ -979,6 +1045,11 @@ def _run_validate_phase(
         state.phase = Phase.ESCALATE
         state.error = f"Unknown gate decision: {gate_decision!r}"
         _log(f"✗ ESCALATE   {state.error}")
+        _gate_decision = _escalate_gate(
+            task, state, notify, config, logger, interactive=interactive, allow_approve=False
+        )
+        if _gate_decision == "resume":
+            return _ValidateOutcome.RESUME, None
         _escalate_notify(task, state, notify, config)
         return _ValidateOutcome.ESCALATE, CoordinatorResult(
             success=False, phase=state.phase, state=state, message=state.error

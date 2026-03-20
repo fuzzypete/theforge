@@ -18,6 +18,7 @@ from . import coord_util as _cu
 
 if TYPE_CHECKING:
     from . import coord_state as _cs
+    from .coord_logging import StructuredLogger
 from .config import ForgeConfig
 from .review import ReviewResult
 from .task import TaskSpec
@@ -512,3 +513,200 @@ def _plan_review_interactive(
             return "abandon"
 
         print("Invalid choice. Enter 'a', 'e', 'r', or 'x'.", file=sys.stderr, flush=True)
+
+
+# ── Escalation gate ───────────────────────────────────────────────────
+
+
+def _ntfy_poll_escalate_reply(
+    reply_url: str,
+    since_ts: int,
+    timeout_seconds: int,
+) -> str:
+    """Poll ntfy reply topic for an escalation gate decision.
+
+    Returns 'approve', 'resume', 'escalate', or 'timeout'.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    poll_url = f"{reply_url}/json?poll=1&since={since_ts}"
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(poll_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("event") not in ("message", None):
+                    continue
+                msg = (obj.get("message") or "").strip().lower()
+                if msg == "approve":
+                    return "approve"
+                if msg == "resume":
+                    return "resume"
+                if msg == "escalate":
+                    return "escalate"
+        except Exception:
+            pass
+
+        sleep_secs = min(10.0, max(0.0, deadline - time.monotonic()))
+        if sleep_secs > 0:
+            time.sleep(sleep_secs)
+
+    return "timeout"
+
+
+def _escalate_gate_interactive(
+    context_lines: list[str],
+    options: list[str],
+    allow_approve: bool,
+) -> str:
+    """Interactive escalation gate via stdin. Returns 'approve', 'resume', or 'escalate'."""
+    for line in context_lines:
+        print(line, file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Options:", file=sys.stderr)
+    for opt in options:
+        print(opt, file=sys.stderr)
+    print("", file=sys.stderr)
+
+    while True:
+        prompt = "[a/r/e]: " if allow_approve else "[r/e]: "
+        print(f"[forge] Escalation gate choice {prompt}", end="", file=sys.stderr, flush=True)
+        raw = sys.stdin.readline()
+        if not raw:
+            return "escalate"
+        choice = raw.strip().lower()
+        if allow_approve and choice in ("a", "approve"):
+            return "approve"
+        if choice in ("r", "resume"):
+            return "resume"
+        if choice in ("e", "escalate"):
+            return "escalate"
+        print("Invalid choice.", file=sys.stderr)
+
+
+def _escalate_gate_remote(
+    task: "TaskSpec",
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    context_lines: list[str],
+    allow_approve: bool,
+) -> str:
+    """Remote (ntfy) escalation gate. Returns 'approve', 'resume', or 'escalate'."""
+    ntfy = config.notifications.ntfy
+    assert ntfy is not None
+
+    reply_url = _ntfy_reply_url(ntfy.url)
+    timeout_seconds = config.notifications.human_review_timeout_seconds
+
+    context_body = "\n".join(context_lines[1:])  # skip header line
+    if allow_approve:
+        actions = (
+            f"http, Approve, {reply_url}, method=POST, body=approve; "
+            f"http, Resume, {reply_url}, method=POST, body=resume; "
+            f"http, Escalate, {reply_url}, method=POST, body=escalate"
+        )
+    else:
+        actions = (
+            f"http, Resume, {reply_url}, method=POST, body=resume; "
+            f"http, Escalate, {reply_url}, method=POST, body=escalate"
+        )
+
+    _cu._log("─── Remote Escalation Gate (ntfy) ───")
+    _cu._log(f"  Topic:   {ntfy.url}")
+    _cu._log(f"  Reply:   {reply_url}")
+    _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
+
+    since_ts = int(time.time())
+    title = f"TheForge: escalation gate \u2014 {task.slug}"
+    _ntfy_publish(ntfy.url, title, context_body, priority=ntfy.priority, actions=actions)
+
+    decision = _ntfy_poll_escalate_reply(reply_url, since_ts, timeout_seconds)
+    if decision == "timeout":
+        _cu._log("Escalation gate timed out — auto-escalating")
+        return "escalate"
+    if not allow_approve and decision == "approve":
+        _cu._log("'approve' not valid at this escalation point — treating as escalate")
+        return "escalate"
+    return decision
+
+
+def _escalate_gate(
+    task: "TaskSpec",
+    state: "_cs.CoordinatorState",
+    notify: bool,
+    config: "ForgeConfig | None",
+    logger: "StructuredLogger | None",
+    interactive: bool = False,
+    allow_approve: bool = True,
+) -> str:
+    """HITL gate at ESCALATE transition. Returns 'approve', 'resume', or 'escalate'.
+
+    'approve' is only valid when allow_approve=True (REVIEW escalations with a parsed verdict).
+    'resume' re-enters the current phase loop.
+    'escalate' preserves current behavior (terminate).
+
+    When not interactive and no ntfy configured, auto-escalates without prompting.
+    """
+    import datetime as _dt
+
+    elapsed = 0.0
+    if state.started_at:
+        try:
+            started = _dt.datetime.fromisoformat(state.started_at)
+            elapsed = (_dt.datetime.now(_dt.timezone.utc) - started).total_seconds()
+        except Exception:
+            pass
+
+    last_verdict = ""
+    if state.review_results:
+        last_verdict = state.review_results[-1].verdict
+    gate_history = ", ".join(state.gate_decisions[-3:]) if state.gate_decisions else "none"
+
+    context_lines = [
+        "\u2500\u2500\u2500 Escalation Gate \u2500\u2500\u2500",
+        f"  Task:     {task.name}",
+        f"  Phase:    {state.phase.name if state.phase else 'unknown'}",
+        f"  Cycles:   {state.review_cycle}  Dev iter: {state.dev_iteration}",
+        f"  Cost:     ${state.total_cost:.2f}  Elapsed: {_cu._fmt_duration(elapsed)}",
+        f"  Error:    {(state.error or '')[:120]}",
+    ]
+    if last_verdict:
+        context_lines.append(f"  Verdict:  {last_verdict}")
+    if gate_history != "none":
+        context_lines.append(f"  Gates:    {gate_history}")
+
+    options = []
+    if allow_approve:
+        options.append("  [a]pprove  \u2192 DONE (trigger finalize path)")
+    options.append("  [r]esume   \u2192 re-enter dev loop")
+    options.append("  [e]scalate \u2192 terminate with ESCALATE (current behavior)")
+
+    if interactive:
+        decision = _escalate_gate_interactive(context_lines, options, allow_approve)
+    elif notify and config is not None and config.notifications.ntfy is not None:
+        decision = _escalate_gate_remote(task, state, config, context_lines, allow_approve)
+    else:
+        decision = "escalate"
+
+    if logger is not None:
+        logger._safe_emit(
+            "escalation_gate",
+            decision=decision,
+            context={
+                "review_cycle": state.review_cycle,
+                "dev_iteration": state.dev_iteration,
+                "total_cost": round(state.total_cost, 4),
+                "error": state.error,
+                "last_verdict": last_verdict,
+            },
+        )
+
+    return decision

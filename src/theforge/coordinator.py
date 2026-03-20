@@ -56,6 +56,7 @@ from .coord_gate import (  # noqa: F401
 # ── Structured logging ────────────────────────────────────────────────
 from .coord_logging import StructuredLogger  # noqa: F401
 from .coord_notify import (  # noqa: F401
+    _escalate_gate,
     _escalate_notify,
     _human_review,
     _is_remote_mode,
@@ -509,6 +510,7 @@ def _run_validate_phase(
     workspace_path: Path,
     dev_calls_this_cycle: int,
     *,
+    interactive: bool = False,
     notify: bool,
     logger: StructuredLogger | None,
 ) -> tuple[_ValidateOutcome, CoordinatorResult | None]:
@@ -518,6 +520,7 @@ def _run_validate_phase(
         task,
         workspace_path,
         dev_calls_this_cycle,
+        interactive=interactive,
         notify=notify,
         logger=logger,
         mod=_sys.modules[__name__],
@@ -967,11 +970,15 @@ def _coordinator_loop(
                 task,
                 workspace_path,
                 _dev_calls_this_cycle,
+                interactive=interactive,
                 notify=notify,
                 logger=logger,
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
+            if _val_outcome == _ValidateOutcome.RESUME:
+                # HITL chose resume at a VALIDATE escalation — re-enter from DEV
+                continue
             if _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (
                     state.dev_results
@@ -1052,6 +1059,10 @@ def _coordinator_loop(
         )
         if _rev_outcome in (_ReviewOutcome.DONE, _ReviewOutcome.ESCALATE):
             return _rev_result  # type: ignore[return-value]
+        if _rev_outcome == _ReviewOutcome.RESUME:
+            # HITL chose resume at a REVIEW escalation — skip DEV/VALIDATE, re-enter REVIEW
+            _skip_dev = True
+            continue
         # RETRY_DEV — reset cycle counter and loop back
         _dev_calls_this_cycle = 0
 

@@ -4728,3 +4728,252 @@ class TestProjectLocalLogDir:
         assert summary_path.exists(), "sprint-summary.yaml not written"
         data = _yaml.safe_load(summary_path.read_text())
         assert data["sprint"]["name"] == "my-sprint"
+
+
+# ── Escalation Gate Tests ─────────────────────────────────────────────
+
+
+class TestEscalateGate:
+    """Unit tests for the _escalate_gate HITL decision function."""
+
+    def _make_state(self):
+        from theforge.coord_state import CoordinatorState
+
+        return CoordinatorState()
+
+    def test_non_interactive_non_notify_auto_escalates(self, tmp_path):
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        result = _escalate_gate(
+            task, state, notify=False, config=None, logger=None, interactive=False
+        )
+        assert result == "escalate"
+
+    def test_interactive_approve(self, tmp_path):
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("a\n")):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=False,
+                config=None,
+                logger=None,
+                interactive=True,
+                allow_approve=True,
+            )
+        assert result == "approve"
+
+    def test_interactive_resume(self, tmp_path):
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("r\n")):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=False,
+                config=None,
+                logger=None,
+                interactive=True,
+            )
+        assert result == "resume"
+
+    def test_interactive_escalate(self, tmp_path):
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("e\n")):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=False,
+                config=None,
+                logger=None,
+                interactive=True,
+            )
+        assert result == "escalate"
+
+    def test_interactive_eof_escalates(self, tmp_path):
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("")):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=False,
+                config=None,
+                logger=None,
+                interactive=True,
+            )
+        assert result == "escalate"
+
+    def test_interactive_approve_not_offered_when_disallowed(self, tmp_path):
+        """'a' is rejected as invalid when allow_approve=False; re-prompts until valid."""
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        # First input 'a' is invalid (not allowed), second 'r' is accepted
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("a\nr\n")):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=False,
+                config=None,
+                logger=None,
+                interactive=True,
+                allow_approve=False,
+            )
+        assert result == "resume"
+
+    def test_remote_escalate_gate_resume(self, tmp_path):
+        """Remote mode returns resume when ntfy poll returns 'resume'."""
+        from theforge.coord_notify import _escalate_gate
+
+        config = _make_config(tmp_path)
+        # Patch config to have ntfy
+        import dataclasses
+
+        from theforge.config import NotificationConfig, NtfyConfig
+
+        config = dataclasses.replace(
+            config,
+            notifications=NotificationConfig(
+                backend="ntfy",
+                ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),
+            ),
+        )
+        task = _make_task(tmp_path)
+        state = self._make_state()
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch(
+                "theforge.coord_notify._ntfy_poll_escalate_reply",
+                return_value="resume",
+            ),
+        ):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=True,
+                config=config,
+                logger=None,
+                interactive=False,
+                allow_approve=False,
+            )
+        assert result == "resume"
+
+    def test_remote_escalate_gate_approve(self, tmp_path):
+        """Remote mode returns approve when ntfy poll returns 'approve'."""
+        from theforge.coord_notify import _escalate_gate
+
+        config = _make_config(tmp_path)
+        import dataclasses
+
+        from theforge.config import NotificationConfig, NtfyConfig
+
+        config = dataclasses.replace(
+            config,
+            notifications=NotificationConfig(
+                backend="ntfy",
+                ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),
+            ),
+        )
+        task = _make_task(tmp_path)
+        state = self._make_state()
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch(
+                "theforge.coord_notify._ntfy_poll_escalate_reply",
+                return_value="approve",
+            ),
+        ):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=True,
+                config=config,
+                logger=None,
+                interactive=False,
+                allow_approve=True,
+            )
+        assert result == "approve"
+
+    def test_remote_escalate_gate_timeout_auto_escalates(self, tmp_path):
+        """Remote mode auto-escalates when ntfy poll times out."""
+        from theforge.coord_notify import _escalate_gate
+
+        config = _make_config(tmp_path)
+        import dataclasses
+
+        from theforge.config import NotificationConfig, NtfyConfig
+
+        config = dataclasses.replace(
+            config,
+            notifications=NotificationConfig(
+                backend="ntfy",
+                ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),
+            ),
+        )
+        task = _make_task(tmp_path)
+        state = self._make_state()
+
+        with (
+            patch("theforge.coord_notify._ntfy_publish"),
+            patch(
+                "theforge.coord_notify._ntfy_poll_escalate_reply",
+                return_value="timeout",
+            ),
+        ):
+            result = _escalate_gate(
+                task,
+                state,
+                notify=True,
+                config=config,
+                logger=None,
+                interactive=False,
+            )
+        assert result == "escalate"
+
+    def test_audit_log_emitted_on_gate_decision(self, tmp_path):
+        """_escalate_gate emits an 'escalation_gate' audit event when logger provided."""
+        from theforge.coord_logging import StructuredLogger
+        from theforge.coord_notify import _escalate_gate
+
+        task = _make_task(tmp_path)
+        state = self._make_state()
+        log_path = tmp_path / "audit.jsonl"
+        logger = StructuredLogger(
+            run_id="test-run",
+            project="test",
+            task="test-task",
+            log_file=str(log_path),
+            enabled=True,
+            project_root=tmp_path,
+        )
+
+        with patch("theforge.coord_notify.sys.stdin", io.StringIO("e\n")):
+            _escalate_gate(
+                task,
+                state,
+                notify=False,
+                config=None,
+                logger=logger,
+                interactive=True,
+            )
+
+        events = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+        gate_events = [e for e in events if e.get("event") == "escalation_gate"]
+        assert gate_events, "No escalation_gate audit event found"
+        assert gate_events[0]["decision"] == "escalate"
