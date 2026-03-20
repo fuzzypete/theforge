@@ -5,13 +5,29 @@ conventions for any Claude agent working in this codebase.
 
 ---
 
+## Current State — Start Here
+
+To understand what's in progress and what's next, run:
+```bash
+gh milestone list                              # see milestones M1-M4
+gh issue list --milestone "M1: Stop bleeding money"  # current priority
+gh project item-list 1 --owner fuzzypete       # full project board
+```
+
+Project board: https://github.com/users/fuzzypete/projects/1
+
+Specs live in `specs/backlog/` (not started) and `specs/done/` (shipped).
+The GH milestones + issues are the source of truth for priorities, not the spec files.
+
+---
+
 ## Architecture
 
 **The coordinator (not an LLM) makes all process decisions.** Every state transition
 is deterministic Python code. Agents only write code and write reviews. The coordinator
 validates boundaries mechanically.
 
-State machine: `INIT → WORKSPACE → PREFLIGHT → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
+State machine: `INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
 
 Key modules:
 - `src/theforge/coordinator.py` — state machine, the heart of the system
