@@ -89,6 +89,39 @@ class TestHybridRunner:
         )
         assert result == mock_result
 
+    def test_run_agent_api_dev_dispatch(self, tmp_path: Path) -> None:
+        """run_agent dispatches to run_api_agent for a dev profile with provider set."""
+        dev_api_profile = ModelProfile(
+            name="dev",
+            provider="openai",
+            model="gpt-4o",
+            budget_usd=2.0,
+            timeout_seconds=1800,
+            allowed_tools=("write_file", "edit_file", "read_file", "bash", "glob", "grep"),
+        )
+        mock_result = AgentResult(
+            success=True,
+            output="implementation done",
+            session_id=None,
+            cost_usd=0.5,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+        )
+        with patch("theforge.runner_api.run_api_agent", return_value=mock_result) as mock_api:
+            result = run_agent(
+                prompt="implement it", profile=dev_api_profile, working_dir=tmp_path
+            )
+
+        mock_api.assert_called_once_with(
+            prompt="implement it",
+            profile=dev_api_profile,
+            working_dir=tmp_path,
+            quiet=False,
+            secrets={},
+        )
+        assert result == mock_result
+
     def test_run_agent_cli_dispatch(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """run_agent dispatches to CLI runner for CLI profiles."""
         with patch("theforge.runner._run_claude") as mock_cli_run:

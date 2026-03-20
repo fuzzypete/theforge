@@ -1357,3 +1357,219 @@ class TestDeepSeekProvider:
         with patch.dict("theforge.runner_api._LOOP_RUNNERS", {"deepseek": mock_fn}):
             run_api_agent(prompt="review", profile=profile, working_dir=tmp_path, quiet=True)
         mock_fn.assert_called_once_with("review", profile, tmp_path, None)
+
+
+class TestWriteFileHandler:
+    """Unit tests for the write_file tool handler."""
+
+    def test_write_creates_file(self, tmp_path):
+        from theforge.tool_runtime import _handle_write_file
+
+        result = _handle_write_file(path="hello.py", content="x = 1\n", working_dir=tmp_path)
+        assert "hello.py" in result
+        assert (tmp_path / "hello.py").read_text() == "x = 1\n"
+
+    def test_write_overwrites_existing_file(self, tmp_path):
+        from theforge.tool_runtime import _handle_write_file
+
+        (tmp_path / "a.py").write_text("old content", encoding="utf-8")
+        _handle_write_file(path="a.py", content="new content", working_dir=tmp_path)
+        assert (tmp_path / "a.py").read_text() == "new content"
+
+    def test_write_creates_parent_directories(self, tmp_path):
+        from theforge.tool_runtime import _handle_write_file
+
+        result = _handle_write_file(
+            path="nested/deep/file.py", content="# hi\n", working_dir=tmp_path
+        )
+        assert (tmp_path / "nested" / "deep" / "file.py").exists()
+        assert "nested/deep/file.py" in result
+
+    def test_write_rejects_path_traversal(self, tmp_path):
+        from theforge.tool_runtime import _handle_write_file
+
+        result = _handle_write_file(path="../outside.py", content="bad", working_dir=tmp_path)
+        assert result.startswith("Error: path traversal rejected")
+        assert not (tmp_path.parent / "outside.py").exists()
+
+
+class TestEditFileHandler:
+    """Unit tests for the edit_file tool handler."""
+
+    def test_edit_replaces_unique_string(self, tmp_path):
+        from theforge.tool_runtime import _handle_edit_file
+
+        (tmp_path / "f.py").write_text("def foo(): pass\n", encoding="utf-8")
+        result = _handle_edit_file(
+            path="f.py",
+            old_string="def foo(): pass",
+            new_string="def foo(): return 1",
+            working_dir=tmp_path,
+        )
+        assert "Replaced 1 occurrence" in result
+        assert (tmp_path / "f.py").read_text() == "def foo(): return 1\n"
+
+    def test_edit_errors_on_zero_matches(self, tmp_path):
+        from theforge.tool_runtime import _handle_edit_file
+
+        (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
+        result = _handle_edit_file(
+            path="f.py",
+            old_string="not_here",
+            new_string="replacement",
+            working_dir=tmp_path,
+        )
+        assert result.startswith("Error: old_string not found")
+        # File is unchanged
+        assert (tmp_path / "f.py").read_text() == "x = 1\n"
+
+    def test_edit_errors_on_multiple_matches(self, tmp_path):
+        from theforge.tool_runtime import _handle_edit_file
+
+        (tmp_path / "f.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
+        result = _handle_edit_file(
+            path="f.py",
+            old_string="x = 1",
+            new_string="x = 2",
+            working_dir=tmp_path,
+        )
+        assert "appears 2 times" in result
+        # File is unchanged
+        assert (tmp_path / "f.py").read_text() == "x = 1\nx = 1\n"
+
+    def test_edit_errors_on_missing_file(self, tmp_path):
+        from theforge.tool_runtime import _handle_edit_file
+
+        result = _handle_edit_file(
+            path="nonexistent.py",
+            old_string="anything",
+            new_string="other",
+            working_dir=tmp_path,
+        )
+        assert result.startswith("Error: FileNotFoundError")
+
+    def test_edit_rejects_path_traversal(self, tmp_path):
+        from theforge.tool_runtime import _handle_edit_file
+
+        result = _handle_edit_file(
+            path="../outside.py",
+            old_string="x",
+            new_string="y",
+            working_dir=tmp_path,
+        )
+        assert result.startswith("Error: path traversal rejected")
+
+
+class TestDevAgentApiLoop:
+    """Full AgentLoopManager tests exercising write_file and edit_file tools for dev use."""
+
+    def _make_dev_manager(self, tmp_path, adapter) -> AgentLoopManager:
+        from theforge.tool_runtime import TOOL_REGISTRY
+
+        profile = _make_profile(
+            name="dev",
+            allowed_tools=("write_file", "edit_file", "read_file", "bash", "glob", "grep"),
+        )
+        return AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+        )
+
+    def test_write_then_edit_then_finish(self, tmp_path):
+        """Mock dev agent creates a file, edits it, then returns final text."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="w1",
+                            name="write_file",
+                            arguments={"path": "src/app.py", "content": "x = 0\n"},
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            if call_count[0] == 2:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="e1",
+                            name="edit_file",
+                            arguments={
+                                "path": "src/app.py",
+                                "old_string": "x = 0",
+                                "new_string": "x = 42",
+                            },
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[],
+                text_output="Implementation complete.",
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_dev_manager(tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "implement feature"}],
+            tool_schemas=[],
+        )
+        assert result.success
+        assert result.output == "Implementation complete."
+        assert call_count[0] == 3
+        # Verify the file was created and edited
+        content = (tmp_path / "src" / "app.py").read_text()
+        assert content == "x = 42\n"
+
+    def test_write_file_result_fed_back_to_model(self, tmp_path):
+        """write_file tool result is included in messages for the next turn."""
+        received_messages: list[list[dict]] = []
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            received_messages.append(list(messages))
+            if call_count[0] == 1:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id="w1",
+                            name="write_file",
+                            arguments={"path": "out.py", "content": "done\n"},
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[],
+                text_output="done",
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_dev_manager(tmp_path, adapter)
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+        assert result.success
+        # Second call should have tool_results message containing write_file output
+        second_msgs = received_messages[1]
+        roles = [m["role"] for m in second_msgs]
+        assert "tool_results" in roles
+        tool_results_msg = next(m for m in second_msgs if m["role"] == "tool_results")
+        assert any("out.py" in r["content"] for r in tool_results_msg["results"])

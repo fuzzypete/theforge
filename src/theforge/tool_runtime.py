@@ -228,6 +228,64 @@ def _handle_glob(
         return f"Error: {type(exc).__name__} — {exc}"
 
 
+def _handle_write_file(
+    *,
+    path: str,
+    content: str,
+    working_dir: Path,
+    max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
+) -> str:
+    """Create or overwrite a file with the given content."""
+    resolved = _resolve_safe(working_dir, path)
+    if resolved is None:
+        return f"Error: path traversal rejected — '{path}' resolves outside working directory"
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        resolved.write_text(content, encoding="utf-8")
+        return truncate_output(
+            f"Written {len(content.encode('utf-8'))} bytes to {path}", max_bytes
+        )
+    except Exception as exc:
+        return f"Error: {type(exc).__name__} — {exc}"
+
+
+def _handle_edit_file(
+    *,
+    path: str,
+    old_string: str,
+    new_string: str,
+    working_dir: Path,
+    max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
+) -> str:
+    """Replace an exact string in a file.
+
+    Fails if old_string appears zero times (not found) or more than once
+    (ambiguous — provide more surrounding context to make it unique).
+    """
+    resolved = _resolve_safe(working_dir, path)
+    if resolved is None:
+        return f"Error: path traversal rejected — '{path}' resolves outside working directory"
+    if not resolved.exists():
+        return f"Error: FileNotFoundError — {path} does not exist"
+    if resolved.is_dir():
+        return f"Error: {path} is a directory, not a file"
+    try:
+        content = resolved.read_text(encoding="utf-8")
+        count = content.count(old_string)
+        if count == 0:
+            return f"Error: old_string not found in {path} — no changes made"
+        if count > 1:
+            return (
+                f"Error: old_string appears {count} times in {path} — "
+                "provide more surrounding context to make it unique"
+            )
+        new_content = content.replace(old_string, new_string, 1)
+        resolved.write_text(new_content, encoding="utf-8")
+        return truncate_output(f"Replaced 1 occurrence in {path}", max_bytes)
+    except Exception as exc:
+        return f"Error: {type(exc).__name__} — {exc}"
+
+
 # ── Tool registry ─────────────────────────────────────────────────────
 
 TOOL_REGISTRY: dict[str, ToolDef] = {
@@ -326,5 +384,58 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
             },
         },
         handler=_handle_glob,
+    ),
+    "write_file": ToolDef(
+        name="write_file",
+        description=(
+            "Create or overwrite a file with the given content. "
+            "Parent directories are created automatically. "
+            "Use for new files or complete rewrites; use edit_file for targeted changes."
+        ),
+        parameters={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path", "content"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file, relative to the working directory.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full content to write to the file.",
+                },
+            },
+        },
+        handler=_handle_write_file,
+    ),
+    "edit_file": ToolDef(
+        name="edit_file",
+        description=(
+            "Replace an exact string in a file. "
+            "Fails if old_string appears zero times (not found) or more than once "
+            "(ambiguous — provide more surrounding context to make it unique). "
+            "Use write_file to create new files or fully rewrite existing ones."
+        ),
+        parameters={
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path", "old_string", "new_string"],
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file, relative to the working directory.",
+                },
+                "old_string": {
+                    "type": "string",
+                    "description": "Exact string to find and replace. Must appear exactly once.",
+                },
+                "new_string": {
+                    "type": "string",
+                    "description": "Replacement string.",
+                },
+            },
+        },
+        handler=_handle_edit_file,
     ),
 }
