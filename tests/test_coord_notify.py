@@ -1244,6 +1244,7 @@ test_coverage:
             patch("theforge.coordinator.run_agent", return_value=preflight_already_done),
             patch("theforge.coord_util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coord_notify._ntfy_publish") as mock_ntfy,
+            patch("theforge.coordinator.has_review_approve", return_value=True),
         ):
             result = run_task(config, task, notify=True)
 
