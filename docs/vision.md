@@ -438,7 +438,7 @@ only the ideation agents are LLMs.
 3. **Multi-model review:** `forge.yaml` configures Claude + Codex + Gemini
    review pools. Tested with real cross-CLI reviews.
 
-4. **Unit tests:** 900+ tests across 29 test files covering all state
+4. **Unit tests:** 980+ tests across 29 test files covering all state
    transitions, budget enforcement, preflight verdicts, pool degradation,
    synthesis, human review, auto-merge, sprint execution, API agent loops,
    provider adapters, tool runtime, and edge cases. All tests mock

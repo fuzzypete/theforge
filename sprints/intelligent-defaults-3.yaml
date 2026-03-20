@@ -1,0 +1,14 @@
+name: "Intelligent Defaults Phase 3 — Escalation Learning"
+budget_usd: 80.00
+auto_merge: true
+
+# Learning sprint: the feedback loop that makes adaptive assignment improve
+# over time. Tracks escalation history per complexity tier and auto-promotes
+# models after repeated failures.
+#
+# Smaller budget — single focused story building on the assignment infrastructure.
+#
+# Depends on: adaptive-model-assignment (needs tier definitions and assign_models)
+
+specs:
+  - specs/backlog/escalation-learning.md

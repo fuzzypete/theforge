@@ -1,0 +1,17 @@
+name: "Intelligent Defaults Phase 1 — Smart Config + Health Metrics"
+budget_usd: 120.00
+auto_merge: true
+
+# Foundation sprint: two independent stories that establish the defaults
+# baseline and observability needed for adaptive assignment (Phase 2).
+#
+# Order: smart-defaults first because run-health-metrics references the
+# default retry/budget values in its reference ranges. Both are independent
+# enough to not conflict on files.
+#
+# smart-defaults: forge init CLI, built-in config defaults, validation warnings
+# run-health-metrics: per-phase cost/timing tracking, anomaly flags, health summary
+
+specs:
+  - specs/backlog/smart-defaults.md
+  - specs/backlog/run-health-metrics.md

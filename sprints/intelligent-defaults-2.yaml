@@ -1,0 +1,17 @@
+name: "Intelligent Defaults Phase 2 — Adaptive Model Assignment"
+budget_usd: 120.00
+auto_merge: true
+
+# Adaptive sprint: complexity-driven model routing using the tier definitions
+# and health metrics established in Phase 1.
+#
+# Single story — adaptive-model-assignment is large but cohesive:
+# - agents: pool config with tier + strengths
+# - assignment: config for bounds and behavior
+# - assign_models() pure function in new assignment.py module
+# - coordinator integration (after preflight, use assignment instead of static profiles)
+#
+# Depends on: smart-defaults (tier definitions), api-mode-dev (already on main)
+
+specs:
+  - specs/backlog/adaptive-model-assignment.md
