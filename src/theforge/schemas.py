@@ -56,17 +56,20 @@ def validate_review_yaml(data: Any) -> list[str]:
             )
         if severity == "P1":
             p1_count += 1
-            # P1 findings should cite a specific line to be actionable
-            if not finding.get("line"):
+            file_val = finding.get("file")  # None = null (architectural), "" = empty (error)
+
+            # P1 with file set must have a non-empty file path.
+            # P1 with file: null is an architectural finding — no file required.
+            if file_val is not None and not file_val:
+                errors.append(f"findings[{i}].file must be non-empty for P1 findings")
+
+            # P1 with file set must also cite a specific line to be actionable.
+            # P1 with file: null (architectural finding) does not require a line.
+            if file_val and not finding.get("line"):
                 errors.append(
-                    f"findings[{i}].line should be set for P1 findings — "
+                    f"findings[{i}].line must be set for P1 findings with a file — "
                     f"vague P1s block the pipeline without clear fix targets"
                 )
-
-        # P1 findings must cite a specific file to be actionable.
-        # P2 findings may omit file (e.g. "missing integration tests").
-        if severity == "P1" and not finding.get("file"):
-            errors.append(f"findings[{i}].file must be non-empty for P1 findings")
 
         if not finding.get("description"):
             errors.append(f"findings[{i}].description must be non-empty")
