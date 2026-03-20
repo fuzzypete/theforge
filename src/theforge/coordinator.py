@@ -538,10 +538,10 @@ def _run_review_pool(
     enforce_budgets: bool = True,
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
-) -> tuple[list, list, ReviewResult | None, list[ReviewResult]]:
+) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 
-    Returns (successful, failed, merged_result, individual_parsed).
+    Returns (successful, failed, merged_result, individual_parsed, named_parsed).
 
     Updates *meta* in-place (successful, failed, failed_detail, parse_retries).
     merged_result is None when all reviewers failed or budget exceeded;
@@ -551,6 +551,10 @@ def _run_review_pool(
     individual_parsed contains per-reviewer ReviewResult objects that passed
     schema validation (after per-reviewer retries).  Callers use this for
     best-individual fallback when the merged result has parse errors.
+
+    named_parsed contains (profile_name, ReviewResult) pairs aligned 1:1 with
+    successful agents (before parse-error filtering).  Used for PR review
+    attribution in build_post_run_payload().
 
     When multiple reviewers succeed, results are merged deterministically:
     strictest verdict wins, findings are unioned. No LLM synthesis call.
@@ -776,7 +780,10 @@ def _run_review_pool(
     # Individual parsed results (no parse errors) — used by caller for fallback
     individual_parsed: list[ReviewResult] = [p for p in parsed_results if not p.parse_errors]
 
-    # Named pairs aligned 1:1 with successful agents (before parse filtering)
+    # Named pairs aligned 1:1 with successful agents (before parse filtering).
+    # Reviewers with persistent parse errors are included with whatever partial
+    # data was extracted; callers that use this for PR review attribution will
+    # post a COMMENT with potentially empty findings/summary for those reviewers.
     named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
 
     # ── Merge ─────────────────────────────────────────────────────────

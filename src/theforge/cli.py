@@ -1035,7 +1035,11 @@ echo "$payload" | jq -c '.findings[]' | while read -r finding; do
 done
 
 # ── PR Review Attribution ─────────────────────────────────────────────
-# Opt-in: set FORGE_GH_PR_REVIEWS=1 to enable posting per-reviewer GitHub reviews
+# Opt-in: set FORGE_GH_PR_REVIEWS=1 to enable posting per-reviewer GitHub reviews.
+# The gh api calls below use `repos/{owner}/{repo}` — gh CLI resolves these
+# automatically to the current repository when run from within the repo.
+# See: https://cli.github.com/manual/gh_api (the {owner}/{repo} tokens are
+# expanded by gh from the remote origin URL automatically).
 [ -z "${FORGE_GH_PR_REVIEWS:-}" ] && exit 0
 
 # Only post reviews on APPROVE
