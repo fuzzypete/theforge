@@ -1,38 +1,43 @@
 dev_notes: |
   summary: "Added _branch_has_unmerged_commits() helper to coord_audit.py that runs
-    git rev-list base..branch --count and returns False on any error, missing branch
-    (non-zero exit), or non-integer output. Updated has_review_approve() to accept a
-    base_branch parameter (default 'main') and skip any APPROVE record where the
-    feature branch still has unmerged commits ahead of base — indicating an abandoned
-    run. Threaded base_branch from _triage_spec() in sprint.py and the ALREADY_DONE
-    guard in coordinator.py. Added four new tests covering stale APPROVE (branch ahead
-    → False), valid APPROVE merged (0 ahead → True), valid APPROVE branch absent
-    (non-zero exit → True), and baseline no-APPROVE. All 988 tests pass."
+    git rev-list base..branch --count and returns False on missing branch (non-zero exit),
+    timeout, OSError, or non-integer output. Updated has_review_approve() to accept
+    base_branch (default 'main') and branch parameters, skipping any APPROVE record where
+    the feature branch still has unmerged commits (abandoned run). The branch parameter
+    accepts the config-derived branch name so non-default branch_patterns (e.g. forge/<slug>)
+    work correctly — this was the P1 finding in cycle 1. The git call result is cached
+    per has_review_approve() invocation to avoid redundant subprocess calls. Threaded
+    base_branch and branch from sprint.py _triage_spec() and coordinator.py ALREADY_DONE
+    guard. Added 7 new tests covering all error paths. All 991 tests pass."
   commits:
     - sha: "1e78e66"
       message: "fix(coord_audit): skip stale APPROVE records from abandoned runs"
+    - sha: "a4b543b"
+      message: "fix(coord_audit): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "has_review_approve() returns False when the APPROVE record exists but feat/<slug> has unmerged commits ahead of base"
       status: MET
-      notes: "_branch_has_unmerged_commits returns True (3 commits ahead mock) → APPROVE is skipped → function returns False"
+      notes: "_branch_has_unmerged_commits returns True (3 commits ahead mock) → APPROVE is skipped → function returns False; branch parameter ensures correct branch is checked"
     - criterion: "has_review_approve() returns True when the APPROVE record exists and the branch has been merged (0 commits ahead or branch absent)"
       status: MET
       notes: "0 commits ahead (merged) and non-zero exit (branch absent) both cause helper to return False → APPROVE passes through → function returns True"
     - criterion: "_branch_has_unmerged_commits() handles missing branch (returns False), subprocess timeout (returns False), and non-integer output (returns False)"
       status: MET
-      notes: "returncode != 0 → False; TimeoutExpired/OSError/ValueError all caught and return False"
+      notes: "returncode != 0 → False; TimeoutExpired/OSError/ValueError all caught → False; tests cover timeout and non-integer paths explicitly"
     - criterion: "base_branch parameter threaded through from _triage_spec() call site"
       status: MET
-      notes: "sprint.py:265 now passes base_branch (already in scope at line 190); coordinator.py:1272 passes config.workspace.base_branch"
+      notes: "sprint.py:265 passes base_branch and branch (both already in scope); coordinator.py passes config.workspace.base_branch and branch_name"
     - criterion: "New tests in test_coord_audit.py cover: stale APPROVE (branch ahead), valid APPROVE (branch merged), valid APPROVE (branch absent), no APPROVE record"
       status: MET
-      notes: "four new test methods added: test_stale_approve_branch_ahead, test_valid_approve_branch_merged, test_valid_approve_branch_absent, test_no_approve_record_with_base_branch"
+      notes: "four original tests plus three additional: timeout → True, non-integer → True, custom branch pattern forwarded to subprocess"
     - criterion: "All existing tests pass"
       status: MET
-      notes: "988/988 tests pass (includes 4 new + 984 pre-existing)"
+      notes: "991/991 tests pass"
   spec_deviations:
-    - description: "Also updated coordinator.py:1272 call site (not mentioned in spec's AC but flagged by plan reviewer as a P2 risk)."
-      justification: "The plan reviewer noted this site would use the wrong base_branch for non-main configured projects. Fixed proactively since it uses the same has_review_approve function."
+    - description: "Added branch parameter to has_review_approve() beyond the spec's base_branch threading requirement."
+      justification: "P1 finding in cycle 1: hardcoded 'feat/<slug>' fails when branch_pattern is 'forge/<slug>' (the actual default). Both call sites already had the computed branch in scope."
+    - description: "Also updated coordinator.py:1272 call site (not in spec's AC)."
+      justification: "P2 from plan reviewer: coordinator used wrong base_branch for non-main projects. Fixed proactively."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
