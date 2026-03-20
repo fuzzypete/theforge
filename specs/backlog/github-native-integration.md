@@ -58,8 +58,16 @@ coordinator post-run logic, reading from the synthesized review result.
 
 P2 findings filed with `forge-finding` + `p2` labels.
 
+P2 findings on APPROVE are especially important — these are issues the
+reviewers flagged but didn't block on. Without issue filing they vanish
+into the audit log.
+
 Deduplication: check open issues for matching title before filing (avoid
 re-filing the same finding across review cycles).
+
+Labels: `forge-finding` + `p1`/`p2` + `code-review`. Plan review P2s → GH
+issues is an **open question** — may depend on whether code review catches
+them downstream.
 
 ### pr_reviews: true
 
@@ -81,8 +89,9 @@ APPROVE review via `gh api`. Currently done in `post_run.sh` behind
 - [ ] `on_approve: pr` still works as alias for backward compat
 - [ ] When `github.enabled: true`, coordinator creates PR on APPROVE without
       needing `post_run.sh`
-- [ ] When `github.enabled: true` and `on_finding: file_issue`, P1+P2 findings
-      filed as GH issues after each review cycle
+- [ ] When `github.enabled: true` and `on_finding: file_issue`, P1 findings
+      filed as GH issues on every review cycle
+- [ ] P2 findings on APPROVE filed as GH issues with `p2` + `code-review` labels
 - [ ] Finding deduplication: no duplicate issues filed for the same finding
 - [ ] When `github.enabled: true` and `pr_reviews: true`, per-reviewer reviews
       posted on PR after APPROVE
