@@ -289,7 +289,7 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
             errors.append(f"findings[{i}] must be a mapping")
             continue
         severity = f.get("severity", "P1")
-        if severity == "P0":
+        if severity in ("P0", "P1"):
             blocking_count += 1
         desc = f.get("description", "")
         if not desc:
@@ -307,7 +307,7 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
         errors.append("REJECT verdict without findings — cannot justify rejection")
     if verdict == "APPROVE" and blocking_count > 0:
         errors.append(
-            f"verdict is APPROVE but {blocking_count} P0 finding(s) exist — "
+            f"verdict is APPROVE but {blocking_count} P0/P1 finding(s) exist — "
             "cannot approve with blocking findings"
         )
 
@@ -327,14 +327,11 @@ def merge_plan_review_results(
 ) -> PlanReviewResult:
     """Merge multiple PlanReviewResults into one without an LLM call.
 
-    Expects per-reviewer advisory downgrade to have already been applied
-    (REJECT with no P0 and no parse_errors → APPROVE) before calling this.
-
     Rules:
     - Reviewers with parse_errors are excluded (caller should log a warning).
     - If no valid reviewers remain → REJECT with combined parse errors.
-    - If any remaining reviewer has a P0 finding → REJECT.
-    - Else → APPROVE (P1s are advisory; included in merged findings).
+    - If any remaining reviewer has a P0 or P1 finding → REJECT (triggers regen).
+    - Else → APPROVE (P2s are advisory; included in merged findings).
     - All findings are prefixed with ``[name]`` for attribution.
     """
     import logging as _logging
@@ -361,8 +358,8 @@ def merge_plan_review_results(
             or ["All plan reviewers failed or produced parse errors"],
         )
 
-    has_p0 = any(f.severity == "P0" for name, r in valid for f in r.findings)
-    verdict = "REJECT" if has_p0 else "APPROVE"
+    has_p0_or_p1 = any(f.severity in ("P0", "P1") for name, r in valid for f in r.findings)
+    verdict = "REJECT" if has_p0_or_p1 else "APPROVE"
 
     all_findings: list[PlanReviewFinding] = []
     for name, r in valid:

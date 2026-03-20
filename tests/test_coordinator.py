@@ -3874,10 +3874,10 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_plan_agent_review_p1_advisory_approve(
+    def test_plan_agent_review_p1_blocking_triggers_regen(
         self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
     ):
-        """P1 findings are advisory — plan is approved without regen."""
+        """P1 findings block — plan regenerated, second review APPROVE."""
         config = _make_plan_agent_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -3886,7 +3886,8 @@ class TestPlanAgentReview:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
-            _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nFixed plan.", cost_usd=0.12),
             _make_agent_result(success=True, output="Implemented."),
         ]
         mock_pool.side_effect = [
@@ -3898,16 +3899,24 @@ class TestPlanAgentReview:
                     profile_name="plan-review",
                 )
             ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.06,
+                    profile_name="plan-review",
+                )
+            ],
             [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
         ]
 
         result = run_task(config, task, interactive=True)
 
         assert result.success is True
-        assert result.state.plan_regen_count == 0  # no regen needed
+        assert result.state.plan_regen_count > 0  # regen triggered by P1
         assert result.state.plan_review_decision == "approve"
-        assert result.state.plan_output == "# Plan\n\nGood plan."
-        assert len(result.state.plan_results) == 1  # only one plan attempt
+        assert result.state.plan_output == "# Plan\n\nFixed plan."
+        assert len(result.state.plan_results) == 2  # two plan attempts
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.run_agent_pool")
@@ -4351,10 +4360,10 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_plan_review_pool_advisory_p1s_concatenated(
+    def test_plan_review_pool_p1_blocking_triggers_regen(
         self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
     ):
-        """Pool: advisory P1s from multiple reviewers are concatenated with attribution."""
+        """Pool: P1s from multiple reviewers block — regen triggered, findings attributed."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             plan_agent_review=PlanAgentReviewConfig(
@@ -4386,10 +4395,11 @@ class TestPlanAgentReview:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
-            _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nFixed plan.", cost_usd=0.12),
             _make_agent_result(success=True, output="Implemented."),
         ]
-        # Both reviewers return REJECT with P1 only -> advisory approve, findings attributed
+        # Both reviewers return REJECT with P1 -> blocks, regen triggered
         mock_pool.side_effect = [
             [
                 _make_agent_result(
@@ -4405,6 +4415,20 @@ class TestPlanAgentReview:
                     profile_name="reviewer-b",
                 ),
             ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.06,
+                    profile_name="reviewer-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.03,
+                    profile_name="reviewer-b",
+                ),
+            ],
             [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
         ]
 
@@ -4412,11 +4436,9 @@ class TestPlanAgentReview:
 
         assert result.success is True
         assert result.state.plan_review_decision == "approve"
-        assert result.state.plan_regen_count == 0
-        # Findings from both reviewers present with attribution
-        assert result.state.plan_agent_review_findings is not None
-        assert "reviewer-a" in result.state.plan_agent_review_findings
-        assert "reviewer-b" in result.state.plan_agent_review_findings
+        assert result.state.plan_regen_count > 0  # regen triggered by P1 pool findings
+        assert result.state.plan_output == "# Plan\n\nFixed plan."
+        assert len(result.state.plan_results) == 2
 
 
 # ── Structured logging tests ──────────────────────────────────────────

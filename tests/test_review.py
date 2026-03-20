@@ -181,8 +181,8 @@ findings: []
         assert result.verdict == "REJECT"
         assert len(result.parse_errors) == 1
 
-    def test_approve_with_p1_findings_allowed(self):
-        """P1 findings are advisory in plan review — APPROVE is valid."""
+    def test_approve_with_p1_findings_demoted_to_reject(self):
+        """P1 findings are blocking in plan review — APPROVE with P1 is demoted to REJECT."""
         yaml_text = """\
 ```yaml
 verdict: APPROVE
@@ -193,8 +193,9 @@ findings:
 ```
 """
         result = parse_plan_review_output(yaml_text)
-        assert result.verdict == "APPROVE"
-        assert len(result.findings) == 1
+        assert result.verdict == "REJECT"
+        assert len(result.parse_errors) >= 1
+        assert any("cannot approve" in e.lower() for e in result.parse_errors)
 
     def test_approve_with_p0_findings_demoted_to_reject(self):
         """P0 findings are blocking — APPROVE with P0 is demoted to REJECT."""
