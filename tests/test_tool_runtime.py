@@ -10,9 +10,11 @@ from theforge.tool_runtime import (
     TOOL_REGISTRY,
     ToolDef,
     _handle_bash,
+    _handle_edit_file,
     _handle_glob,
     _handle_grep,
     _handle_read_file,
+    _handle_write_file,
     _resolve_safe,
     truncate_output,
 )
@@ -239,6 +241,108 @@ class TestGlob:
         (sub / "file.py").touch()
         result = _handle_glob(pattern="**/*.py", working_dir=tmp_path)
         assert result.startswith("src/") or "src/file.py" in result
+
+
+class TestWriteFile:
+    def test_creates_new_file(self, tmp_path):
+        result = _handle_write_file(path="hello.txt", content="hi there", working_dir=tmp_path)
+        assert "Written" in result
+        assert (tmp_path / "hello.txt").read_text() == "hi there"
+
+    def test_overwrites_existing_file(self, tmp_path):
+        (tmp_path / "existing.txt").write_text("old content")
+        _handle_write_file(path="existing.txt", content="new content", working_dir=tmp_path)
+        assert (tmp_path / "existing.txt").read_text() == "new content"
+
+    def test_creates_parent_directories(self, tmp_path):
+        result = _handle_write_file(
+            path="a/b/c/deep.txt", content="deep", working_dir=tmp_path
+        )
+        assert "Written" in result
+        assert (tmp_path / "a" / "b" / "c" / "deep.txt").read_text() == "deep"
+
+    def test_path_traversal_rejected(self, tmp_path):
+        result = _handle_write_file(
+            path="../outside.txt", content="bad", working_dir=tmp_path
+        )
+        assert result.startswith("Error: path traversal rejected")
+        assert not (tmp_path.parent / "outside.txt").exists()
+
+    def test_success_message_contains_byte_count(self, tmp_path):
+        content = "abc"
+        result = _handle_write_file(path="f.txt", content=content, working_dir=tmp_path)
+        assert "3" in result  # 3 bytes
+
+    def test_content_not_truncated_by_max_bytes(self, tmp_path):
+        # max_bytes limits the return value, not what is written to disk
+        long_content = "x" * 200
+        _handle_write_file(path="big.txt", content=long_content, working_dir=tmp_path, max_bytes=10)
+        assert (tmp_path / "big.txt").read_text() == long_content
+
+
+class TestEditFile:
+    def test_replaces_exact_string(self, tmp_path):
+        (tmp_path / "code.py").write_text("def foo():\n    pass\n")
+        result = _handle_edit_file(
+            path="code.py",
+            old_string="    pass\n",
+            new_string="    return 42\n",
+            working_dir=tmp_path,
+        )
+        assert "Error" not in result
+        assert (tmp_path / "code.py").read_text() == "def foo():\n    return 42\n"
+
+    def test_error_when_old_string_not_found(self, tmp_path):
+        (tmp_path / "code.py").write_text("def foo(): pass\n")
+        result = _handle_edit_file(
+            path="code.py",
+            old_string="def bar():",
+            new_string="def baz():",
+            working_dir=tmp_path,
+        )
+        assert "not found" in result
+        # File unchanged
+        assert (tmp_path / "code.py").read_text() == "def foo(): pass\n"
+
+    def test_error_when_old_string_ambiguous(self, tmp_path):
+        (tmp_path / "code.py").write_text("x = 1\nx = 1\n")
+        result = _handle_edit_file(
+            path="code.py",
+            old_string="x = 1",
+            new_string="x = 2",
+            working_dir=tmp_path,
+        )
+        assert "appears" in result and "times" in result
+        # File unchanged
+        assert (tmp_path / "code.py").read_text() == "x = 1\nx = 1\n"
+
+    def test_error_when_file_does_not_exist(self, tmp_path):
+        result = _handle_edit_file(
+            path="missing.py",
+            old_string="foo",
+            new_string="bar",
+            working_dir=tmp_path,
+        )
+        assert "does not exist" in result
+
+    def test_error_when_path_is_directory(self, tmp_path):
+        (tmp_path / "adir").mkdir()
+        result = _handle_edit_file(
+            path="adir",
+            old_string="foo",
+            new_string="bar",
+            working_dir=tmp_path,
+        )
+        assert "directory" in result
+
+    def test_path_traversal_rejected(self, tmp_path):
+        result = _handle_edit_file(
+            path="../outside.py",
+            old_string="foo",
+            new_string="bar",
+            working_dir=tmp_path,
+        )
+        assert result.startswith("Error: path traversal rejected")
 
 
 class TestToolNameMap:
