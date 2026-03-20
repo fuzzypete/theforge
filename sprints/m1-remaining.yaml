@@ -1,0 +1,5 @@
+name: m1-remaining
+specs:
+  - specs/backlog/api-loop-diagnostics.md
+  - specs/backlog/escalate-hitl.md
+budget_usd: 30
