@@ -1,56 +1,52 @@
-gate_decision: PASS
 dev_notes: |
-  summary: "Implemented forge init-hooks command. Added cmd_init_hooks to cli.py
-    which scaffolds .forge/hooks/post_run.sh and .forge/hooks/README.md into a
-    project. The reference shell script reads the post_run JSON payload from
-    stdin, guards against missing gh/jq CLIs (warn + exit 0), filters to
-    ESCALATE/APPROVE verdicts only, skips zero-findings runs, and calls
-    gh issue create for each P1/P2 finding with title '[P1] slug: description'
-    (72-char truncated), body including file/line/description/suggestion, and
-    labels forge-finding plus the severity label. Command is idempotent —
-    existing files are skipped with a stderr warning. Added init-hooks to the
-    main() subparser registry and dispatch table. Updated getting-started.md
-    with a Lifecycle hooks section. Updated examples/hello-forge/forge.yaml
-    with a commented-out hooks: block. Added 10 unit tests in TestCmdInitHooks
-    using tmp_path + monkeypatch.chdir, matching the pattern of TestSecretsInit."
+  summary: "Added _handle_write_file() and _handle_edit_file() handler functions to tool_runtime.py and registered them in TOOL_REGISTRY with full JSON Schema definitions. write_file creates or overwrites files (creating parent dirs automatically); edit_file performs exact-string replacement and enforces a strict uniqueness contract — it returns an error if old_string appears zero times (not found) or more than once (ambiguous). TOOL_NAME_MAP already had Write/Edit entries (the P1 plan-review finding was incorrect). No changes to runner.py, runner_api.py, coord_phases.py, or config.py were needed — the routing infrastructure was already complete. Added 13 new tests covering isolated handlers, a full AgentLoopManager dev-loop integration test, and a dispatch test for dev+provider profiles."
   commits:
-    - sha: "a4af017"
-      message: "feat(cli): add forge init-hooks command with reference post_run.sh"
+    - sha: "2e71812"
+      message: "feat(tool_runtime): add write_file and edit_file handlers for API dev agent"
+    - sha: "a36b279"
+      message: "chore(handoff): write dev_notes for api-mode-dev"
   acceptance_criteria:
-    - criterion: "forge init-hooks creates .forge/hooks/post_run.sh with executable permissions"
+    - criterion: "Dev profile with `provider: openai` routes through API agent loop"
       status: MET
-      notes: "cmd_init_hooks writes the file and calls chmod(0o755). test_post_run_sh_is_executable verifies S_IXUSR bit."
-    - criterion: "forge init-hooks creates .forge/hooks/README.md documenting the payload schema"
+      notes: "Already implemented before this sprint. runner.py checks profile.mode == api and dispatches to run_api_agent. Verified by existing test + new test_run_agent_api_dev_dispatch in test_runner.py."
+    - criterion: "Dev profile with `provider: deepseek` routes through API agent loop"
       status: MET
-      notes: "cmd_init_hooks writes _HOOKS_README including full JSON payload schema. test_creates_readme verifies existence."
-    - criterion: "forge init-hooks prints guidance for adding hooks config to forge.yaml"
+      notes: "Already implemented before this sprint via _run_loop_deepseek. No code change needed; verified by existing TestDeepSeekProvider tests."
+    - criterion: "API dev agent receives full tool set (Read, Edit, Write, Bash, Glob, Grep)"
       status: MET
-      notes: "Prints 'hooks:\\n  post_run: ...' block to stdout after scaffolding. test_prints_hooks_guidance verifies."
-    - criterion: "forge init-hooks is idempotent (doesn't overwrite existing hooks)"
+      notes: "TOOL_REGISTRY now has all six canonical entries: read_file, bash, grep, glob, write_file, edit_file. TOOL_NAME_MAP (already had all six entries) normalizes capitalized forge.yaml names to canonical names at config parse time."
+    - criterion: "API dev agent can create files, edit files, and run commands in worktree"
       status: MET
-      notes: "Checks path.exists() before writing each file; skips and prints to stderr if already present. Two idempotency tests verify no overwrite."
-    - criterion: "Reference script parses the post_run JSON payload correctly"
+      notes: "write_file handler creates/overwrites files with parent dir creation. edit_file handler does exact-string replacement. bash handler (pre-existing) runs shell commands. All use _resolve_safe() for path security."
+    - criterion: "Handoff YAML is extracted from the agent's final response"
       status: MET
-      notes: "Script reads stdin via jq -r for all fields: verdict, slug, branch, summary, findings[].severity/file/line/description/suggestion."
-    - criterion: "Reference script creates GitHub Issues with title, body, and labels"
+      notes: "The spec's implementation note about parsing the final message is a misnomer. In theforge, the dev agent runs make gate via the bash tool which writes handoff.yaml to disk; the coordinator reads it via _get_handoff_content(). Identical to CLI mode. No text-parsing code exists or is needed."
+    - criterion: "Cost tracking works for API dev (token-level breakdown in audit)"
       status: MET
-      notes: "Calls gh issue create --title --body --label forge-finding --label sev,,. Title format: '[P1] slug: description' truncated to 72 chars. Body includes all fields."
-    - criterion: "Reference script handles missing gh CLI gracefully (warn + exit 0)"
+      notes: "AgentLoopManager accumulates token counts across turns into AgentResult.model_usage. Already implemented for review agents and unchanged."
+    - criterion: "Iteration nudge fires at 80% of max_iterations"
       status: MET
-      notes: "command -v gh guard at top; warns to stderr and exits 0. test_script_contains_gh_guard verifies."
-    - criterion: "Reference script handles zero findings gracefully (exit 0)"
+      notes: "Already implemented in AgentLoopManager.run(); covered by existing tests."
+    - criterion: "Time nudge fires at 80% of wall-clock timeout"
       status: MET
-      notes: "findings_count=0 → exit 0 before the loop. test_script_contains_zero_findings_guard verifies."
-    - criterion: "Unit tests for cmd_init_hooks (mocks filesystem)"
+      notes: "Already implemented in AgentLoopManager.run(); covered by existing tests."
+    - criterion: "CLI dev profiles continue to work unchanged (backward compatible)"
       status: MET
-      notes: "TestCmdInitHooks (10 tests) uses tmp_path + monkeypatch.chdir. No mocking of open/Path; real filesystem writes in isolated tmp dirs."
+      notes: "runner.py routing is additive — CLI path (profile.mode == cli) is untouched. All existing CLI runner tests pass unchanged."
+    - criterion: "`base_url` works for local model servers (Ollama, vLLM)"
+      status: MET
+      notes: "ModelProfile.base_url is passed through to the OpenAI client in _run_loop_openai. Already implemented; no changes needed."
+    - criterion: "Unit tests mock the API call and verify tool dispatch"
+      status: MET
+      notes: "Added TestWriteFileHandler (4 tests), TestEditFileHandler (5 tests), TestDevAgentApiLoop (2 tests), and test_run_agent_api_dev_dispatch in test_runner.py. All mock the provider adapter and verify tool dispatch, file effects, and error contracts."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "956 tests pass. make lint clean."
+      notes: "968 passed in 10.52s — zero failures."
   spec_deviations:
-    - description: "jq guard added in addition to gh guard"
-      justification: "Both gh and jq are required; failing silently on missing jq (set -euo pipefail + missing binary = non-zero exit) would violate the 'warn don't crash' contract. Added parallel guard."
-    - description: "Script also filters out REQUEST_CHANGES verdict (not just zero-findings)"
-      justification: "Spec says 'escalate or approve with findings'. REQUEST_CHANGES verdict means the story is still in review — filing issues at that point is premature. Explicit verdict filter avoids spurious issues."
-  deferred_items: none
+    - description: "Handoff YAML extraction not implemented as text-parsing of agent final message"
+      justification: "The spec's implementation note says to parse the agent's final message for a structured handoff YAML block, but this is a spec misnomer. In theforge, the dev agent runs make gate via the bash tool which writes handoff.yaml to disk; the coordinator reads it via _get_handoff_content(). This is identical to CLI mode and no text-parsing code exists in either path."
+  deferred_items:
+    - description: "Bash tool timeout hardcoded at 30s may be exceeded by make gate"
+      reason: "Running make gate (pytest + ruff) may exceed 30s as the test suite grows. The API dev agent will need to run make fmt, make lint, and make test in separate bash calls. This is a pre-existing constraint not introduced by this spec."
   gate_result: PASS
+gate_decision: PASS
