@@ -657,8 +657,8 @@ class AgentLoopManager:
 
             _log(f"  ... {label} finalization produced no structured output")
         except Exception as exc:
-            _log_verbose(f"  ... {label} finalization failed: {exc}")
-            _log_verbose(traceback.format_exc())
+            _log(f"  ... {label} finalization failed: {exc}")
+            _log_verbose(f"  [finalization traceback]\n{traceback.format_exc()}")
 
         return self._timeout_result(iterations, reason=reason)
 
@@ -1596,6 +1596,60 @@ def _make_openai_chat_finalizer(
     return finalizer
 
 
+def _make_deepseek_finalizer(
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None,
+    client: Any = None,
+) -> Finalizer:
+    """Build a finalizer for DeepSeek using response_format: json_object.
+
+    DeepSeek's Chat Completions API supports JSON mode (json_object) but not
+    structured output (json_schema).  Using json_schema returns HTTP 400.
+    """
+    if client is None:
+        client = _deepseek_client(profile, secrets)
+
+    def finalizer(messages: list[dict]) -> LoopTurn:
+        oai_messages = _translate_messages_openai_chat(messages)
+        oai_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Time is up. Deliver your code review verdict now as JSON. "
+                    "Include verdict, summary, findings, spec_compliance, and test_coverage. "
+                    "Output only valid JSON with no markdown fences."
+                ),
+            }
+        )
+        kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "messages": oai_messages,
+            "response_format": {"type": "json_object"},
+        }
+        if not _is_reasoning_model(profile.model):
+            kwargs["temperature"] = 0
+
+        response = client.chat.completions.create(**kwargs)
+        output_text = response.choices[0].message.content or ""
+        usage = _make_openai_usage(response.usage, profile.model)
+
+        structured_data = None
+        if output_text.strip():
+            try:
+                structured_data = json.loads(output_text)
+            except json.JSONDecodeError:
+                pass
+
+        return LoopTurn(
+            tool_calls=[],
+            text_output=output_text,
+            structured_data=structured_data,
+            usage=usage,
+        )
+
+    return finalizer
+
+
 def _make_openai_responses_finalizer(
     profile: "ModelProfile",
     secrets: dict[str, str] | None,
@@ -1900,7 +1954,7 @@ def _run_loop_deepseek(
         responses_api=False
     )
     adapter = _make_openai_chat_adapter(profile, secrets, client=client)
-    finalizer = _make_openai_chat_finalizer(profile, secrets, client=client)
+    finalizer = _make_deepseek_finalizer(profile, secrets, client=client)
 
     manager = AgentLoopManager(
         profile=profile,
