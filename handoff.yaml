@@ -1,43 +1,69 @@
 dev_notes: |
-  summary: "Added _branch_has_unmerged_commits() helper to coord_audit.py that runs
-    git rev-list base..branch --count and returns False on missing branch (non-zero exit),
-    timeout, OSError, or non-integer output. Updated has_review_approve() to accept
-    base_branch (default 'main') and branch parameters, skipping any APPROVE record where
-    the feature branch still has unmerged commits (abandoned run). The branch parameter
-    accepts the config-derived branch name so non-default branch_patterns (e.g. forge/<slug>)
-    work correctly — this was the P1 finding in cycle 1. The git call result is cached
-    per has_review_approve() invocation to avoid redundant subprocess calls. Threaded
-    base_branch and branch from sprint.py _triage_spec() and coordinator.py ALREADY_DONE
-    guard. Added 7 new tests covering all error paths. All 991 tests pass."
+  summary: "Implemented all four coordinated changes for review convergence: (1) wired cycle_history into build_review_prompt() with tri-part framing for cycle 2+; (2) added FindingRecord dataclass and finding_registry to CoordinatorState; (3) created finding_classifier.py with pure-Python fingerprinting (sha256 of severity+file+normalized tokens), Jaccard similarity matching (threshold 0.5), changed-file correlation via git diff --name-only, corroboration detection, and disposition assignment; (4) replaced flat any-P1-blocks with disposition-gated exit criteria (unresolved/regression/corroborated_new block; net_new does not); (5) fixed parse-retry loop to resume CLI sessions via session_id and embed original output in API corrective prompts. Cycle 1 uses traditional blocking (any P1 blocks) since there is no prior baseline; cycle 2+ uses dispositions. A fallback ensures synthetic P1s still block when individual reviewer tracking has no data."
   commits:
-    - sha: "1e78e66"
-      message: "fix(coord_audit): skip stale APPROVE records from abandoned runs"
-    - sha: "a4b543b"
-      message: "fix(coord_audit): address review findings (iter 1)"
+    - sha: "52afc74"
+      message: "feat(review): cycle-aware prompts, finding classification, and disposition-gated exit criteria"
+    - sha: "ba56123"
+      message: "chore: write dev_notes handoff for review-convergence"
   acceptance_criteria:
-    - criterion: "has_review_approve() returns False when the APPROVE record exists but feat/<slug> has unmerged commits ahead of base"
+    - criterion: "build_review_prompt() accepts cycle_history parameter"
       status: MET
-      notes: "_branch_has_unmerged_commits returns True (3 commits ahead mock) → APPROVE is skipped → function returns False; branch parameter ensures correct branch is checked"
-    - criterion: "has_review_approve() returns True when the APPROVE record exists and the branch has been merged (0 commits ahead or branch absent)"
+      notes: "Added cycle_history: list[CycleHistory] | None = None to signature in task.py"
+    - criterion: "Cycle 2+ review prompts include previous cycle findings and tri-part framing"
       status: MET
-      notes: "0 commits ahead (merged) and non-zero exit (branch absent) both cause helper to return False → APPROVE passes through → function returns True"
-    - criterion: "_branch_has_unmerged_commits() handles missing branch (returns False), subprocess timeout (returns False), and non-integer output (returns False)"
+      notes: "When cycle_history is non-empty, renders Cycle-Aware Review Framing with Part 1 (Verify Fixes), Part 2 (Scan Regressions), Part 3 (Additional Findings). Prior P1s from all cycles listed explicitly."
+    - criterion: "Cycle 1 review prompts unchanged (full independent review)"
       status: MET
-      notes: "returncode != 0 → False; TimeoutExpired/OSError/ValueError all caught → False; tests cover timeout and non-integer paths explicitly"
-    - criterion: "base_branch parameter threaded through from _triage_spec() call site"
+      notes: "Empty/None cycle_history produces no framing section. Existing tests confirm no regression."
+    - criterion: "FindingRecord dataclass in coord_state.py with all specified fields"
       status: MET
-      notes: "sprint.py:265 passes base_branch and branch (both already in scope); coordinator.py passes config.workspace.base_branch and branch_name"
-    - criterion: "New tests in test_coord_audit.py cover: stale APPROVE (branch ahead), valid APPROVE (branch merged), valid APPROVE (branch absent), no APPROVE record"
+      notes: "FindingRecord has finding_id, cycle_first_seen, cycle_last_seen, file, line, severity, description, reporter, disposition — all spec-required fields present."
+    - criterion: "CoordinatorState has finding_registry field"
       status: MET
-      notes: "four original tests plus three additional: timeout → True, non-integer → True, custom branch pattern forwarded to subprocess"
+      notes: "finding_registry: list[FindingRecord] = field(default_factory=list) added to CoordinatorState. Also added last_dev_start_commit for git diff correlation."
+    - criterion: "Finding registry updated after each review cycle"
+      status: MET
+      notes: "update_finding_registry() called in coord_phases.py after every cycle including cycle 1. Cycle 1 findings all receive disposition=net_new as baseline."
+    - criterion: "Deterministic fingerprint matching: file + normalized description tokens"
+      status: MET
+      notes: "sha256(severity|file|sorted_normalized_tokens)[:16]. Jaccard similarity >= 0.5 threshold. Calibration note documented in finding_classifier.py."
+    - criterion: "Changed-file correlation via git diff from previous dev iteration"
+      status: MET
+      notes: "_get_changed_files() runs git diff --name-only prev_commit..HEAD. last_dev_start_commit captured before each dev agent run via git rev-parse HEAD. Interpreted as same-file-only with comment explaining rationale."
+    - criterion: "Corroboration detection: 2+ reviewers raising same net-new finding"
+      status: MET
+      notes: "fingerprint_to_reports tracks fingerprint to list of (reviewer, finding). If 2+ unique reviewers and finding not previously raised -> corroborated_new."
+    - criterion: "Disposition assignment is pure Python, no LLM"
+      status: MET
+      notes: "finding_classifier.py is stdlib-only. No LLM calls anywhere in the classification path."
+    - criterion: "Exit criteria: unresolved/regression/corroborated_new P1s block; single-reviewer net_new P1s don't block"
+      status: MET
+      notes: "Applies to cycle 2+. Cycle 1 retains traditional any-P1-blocks behavior. Fallback ensures synthetic P1s still block when _classified is empty."
+    - criterion: "Net-new non-blocking P1s recorded in audit trail with explicit labeling"
+      status: MET
+      notes: "coord_audit.py emits finding_registry (all findings) and non_blocking_p1s (P1s with disposition=net_new) as dedicated keys in the audit YAML."
+    - criterion: "Parse retry for CLI agents passes session_id for session continuity"
+      status: MET
+      notes: "coordinator.py retry loop captures _original_result = successful[i] and passes session_id=_original_result.session_id to run_agent() for CLI agents."
+    - criterion: "Parse retry for API agents includes original output in corrective prompt"
+      status: MET
+      notes: "API agents: _original_result.output embedded in corrective prompt via string concatenation (not str.format) to avoid brace collision with original output."
+    - criterion: "Corrective prompt says 'reformat, do NOT re-review'"
+      status: MET
+      notes: "Both CLI and API corrective prompts say: Reformat your output as valid YAML. Do NOT re-review the code."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "991/991 tests pass"
+      notes: "1035 tests pass. Key edge cases handled: subprocess mock interception (broad except), synthetic P1 injection fallback."
+    - criterion: "New tests for finding fingerprinting, classification logic, and exit criteria"
+      status: MET
+      notes: "tests/test_finding_classifier.py: 30 tests covering normalize_tokens, jaccard, fingerprint, matches_prior, update_finding_registry (cycle 1 and 2+), has_blocking_p1, net_new_p1s, get_changed_files. tests/test_task.py: 8 new tests in TestBuildReviewPromptCycleHistory."
   spec_deviations:
-    - description: "Added branch parameter to has_review_approve() beyond the spec's base_branch threading requirement."
-      justification: "P1 finding in cycle 1: hardcoded 'feat/<slug>' fails when branch_pattern is 'forge/<slug>' (the actual default). Both call sites already had the computed branch in scope."
-    - description: "Also updated coordinator.py:1272 call site (not in spec's AC)."
-      justification: "P2 from plan reviewer: coordinator used wrong base_branch for non-main projects. Fixed proactively."
+    - description: "Cycle 1 uses traditional any-P1-blocks exit rule instead of disposition-gated"
+      justification: "The spec says classification applies after parsing cycle 2+ results. Applying net_new=non-blocking to cycle 1 would make first-cycle REQUEST_CHANGES non-blocking, which is wrong. Cycle 1 findings are still recorded in registry as net_new for cycle 2 baseline."
+    - description: "Corrective prompt template replaced with mode-specific string building instead of str.format with {original_output} slot"
+      justification: "str.format() with {original_output} raises ValueError when reviewer output contains literal braces. String concatenation is safer and produces equivalent behavior."
+    - description: "Coordinator overrides synthesized verdict when all cycle 2+ P1s are net_new"
+      justification: "The spec says the coordinator owns the blocking decision independently of synthesis. The synthesized verdict is preserved in ReviewResult for audit; only the blocking determination is overridden. This is the correct implementation of the spec intent."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS

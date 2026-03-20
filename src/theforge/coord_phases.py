@@ -17,6 +17,7 @@ from pathlib import Path
 from types import ModuleType
 
 from . import coord_util as _cu
+from . import finding_classifier as _fc
 from .config import MODEL_REGISTRY, ForgeConfig
 from .coord_gate import (
     _is_gate_skip,
@@ -468,6 +469,31 @@ def _run_review_phase(
         sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
     )
 
+    # ── Finding classification ─────────────────────────────────────────
+    # Call classifier for every cycle (cycle 1 finds are all net_new as baseline).
+    # Cycle 1 uses the traditional exit rule (any P1 blocks) because there is no
+    # prior registry to determine which findings are latent vs. real regressions.
+    # Cycle 2+: disposition-gated logic — only unresolved/regression/corroborated_new block.
+    _classified = _fc.update_finding_registry(
+        state=state,
+        cycle_results=state.last_cycle_reviewer_results,
+        workspace_path=workspace_path,
+        cycle_num=state.review_cycle,
+        prev_commit=state.last_dev_start_commit,
+    )
+    if state.review_cycle >= 2:
+        _blocking_p1 = _fc.has_blocking_p1(_classified)
+        _nonblocking_p1s = _fc.net_new_p1s(_classified)
+        # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
+        # P1 injection when all reviewers failed to produce parseable output), block
+        # traditionally to avoid silently passing an unknown failure.
+        if not _blocking_p1 and not _nonblocking_p1s and _p1_count > 0:
+            _blocking_p1 = True
+    else:
+        # Cycle 1: any P1 is blocking (no prior baseline to classify against)
+        _blocking_p1 = _p1_count > 0
+        _nonblocking_p1s = []
+
     _log(f"  Summary: {parsed_review.summary}")
     # Log findings grouped by severity
     _findings_by_sev: dict[str, list] = {}
@@ -486,10 +512,24 @@ def _run_review_phase(
             cost_usd=round(_review_cost, 6),
         )
 
-    # ── APPROVE ──────────────────────────────────────────────────
-    if parsed_review.verdict == "APPROVE":
+    # ── APPROVE (or disposition-gated pass) ─────────────────────────
+    # The coordinator makes the blocking decision independently of the synthesized verdict.
+    # If the synthesized verdict is REQUEST_CHANGES but all P1s are net_new (single-reviewer,
+    # not in changed files, not previously raised), we treat the cycle as passing.
+    # Net-new P1s are recorded in the audit trail but do not block.
+    _effective_approve = parsed_review.verdict == "APPROVE" or (
+        parsed_review.verdict == "REQUEST_CHANGES" and not _blocking_p1
+    )
+    if _effective_approve and _nonblocking_p1s:
+        _nb_descs = "; ".join(r.description[:80] for r in _nonblocking_p1s)
+        _log(f"  ↷ {len(_nonblocking_p1s)} net-new P1(s) recorded but not blocking: {_nb_descs}")
+
+    if _effective_approve:
+        _verdict_label = (
+            "APPROVE" if parsed_review.verdict == "APPROVE" else "REQUEST_CHANGES→net_new_pass"
+        )
         _log(
-            f"  ✓ REVIEW   APPROVE  {_p1_count} P1  {_p2_count} P2"
+            f"  ✓ REVIEW   {_verdict_label}  {_p1_count} P1  {_p2_count} P2"
             f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
         )
         if interactive:
@@ -600,7 +640,7 @@ def _run_review_phase(
                 config,
             )
 
-    # ── REQUEST_CHANGES ──────────────────────────────────────────
+    # ── REQUEST_CHANGES (blocking P1s present) ───────────────────
     _is_persistent_p1 = False
     if config.smart_config_models is not None and len(state.review_results) >= 2:
         _prev_result = state.review_results[-2]
@@ -969,6 +1009,20 @@ def _run_dev_phase(
     )
     if logger:
         logger._safe_emit("phase_start", phase="DEV", iteration=state.dev_iteration)
+
+    # Capture HEAD before the dev agent runs — used by finding_classifier for git diff.
+    # Best-effort: any failure is silently ignored (non-critical for correctness).
+    try:
+        _head_proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=10,
+        )
+        if _head_proc.returncode == 0:
+            state.last_dev_start_commit = _head_proc.stdout.decode().strip()
+    except Exception:  # noqa: BLE001  # best-effort, any error is harmless
+        pass
 
     _gate_cmd = (
         task.gate_override
