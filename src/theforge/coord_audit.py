@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import subprocess
 from pathlib import Path
 
 from .config import ForgeConfig
@@ -11,16 +12,52 @@ from .coord_state import CoordinatorResult
 from .task import TaskSpec
 
 
-def has_review_approve(project_root: Path, slug: str) -> bool:
+def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
+    """Return True if branch exists and has commits ahead of base.
+
+    Returns False on missing branch (non-zero exit), timeout, OSError, or
+    non-integer output — all treated as "no unmerged commits".
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", f"{base}..{branch}", "--count"],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        count = int(result.stdout.decode("utf-8", errors="replace").strip())
+        return count > 0
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return False
+
+
+def has_review_approve(
+    project_root: Path,
+    slug: str,
+    base_branch: str = "main",
+    branch: str | None = None,
+) -> bool:
     """Return True if any prior run for slug produced a review APPROVE.
 
     Reads .forge/audits/history.jsonl line-by-line. Returns False on missing
     file, parse errors, or if no matching APPROVE record exists (safe default:
     assume no APPROVE so review is never skipped incorrectly).
+
+    An APPROVE record is skipped if the feature branch still has unmerged
+    commits ahead of base_branch — that indicates an abandoned run.
+
+    Args:
+        branch: The feature branch name (e.g. config.workspace.branch_pattern
+            formatted with slug). If None, defaults to 'feat/<slug>'.
     """
     history_path = project_root / ".forge" / "audits" / "history.jsonl"
     if not history_path.exists():
         return False
+    feature_branch = branch if branch is not None else f"feat/{slug}"
+    # Cache the branch state check — it does not change mid-loop.
+    branch_is_stale: bool | None = None
     try:
         with open(history_path, encoding="utf-8") as f:
             for raw in f:
@@ -36,6 +73,12 @@ def has_review_approve(project_root: Path, slug: str) -> bool:
                     continue
                 for review in record.get("reviews", []):
                     if review.get("verdict") == "APPROVE":
+                        if branch_is_stale is None:
+                            branch_is_stale = _branch_has_unmerged_commits(
+                                project_root, feature_branch, base_branch
+                            )
+                        if branch_is_stale:
+                            continue  # stale APPROVE from abandoned run
                         return True
     except OSError:
         pass

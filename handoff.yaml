@@ -1,41 +1,43 @@
 dev_notes: |
-  summary: "Removed file_scope from TaskSpec, all frontmatter parsers, all prompt
-    builders (build_preflight_prompt, build_plan_prompt, build_plan_review_prompt,
-    build_dev_prompt), and forge ideate templates. Deleted _load_file_scope_contents
-    from coord_preflight.py and its callsite in coordinator.py. Removed the _in_scope
-    helper and scope-gating block from coord_phases.py — all dirty files after dev
-    now unconditionally trigger a retry via the existing _dirty_dev_retry path.
-    Specs with file_scope in frontmatter parse silently without error. All 976 tests pass."
+  summary: "Added _branch_has_unmerged_commits() helper to coord_audit.py that runs
+    git rev-list base..branch --count and returns False on missing branch (non-zero exit),
+    timeout, OSError, or non-integer output. Updated has_review_approve() to accept
+    base_branch (default 'main') and branch parameters, skipping any APPROVE record where
+    the feature branch still has unmerged commits (abandoned run). The branch parameter
+    accepts the config-derived branch name so non-default branch_patterns (e.g. forge/<slug>)
+    work correctly — this was the P1 finding in cycle 1. The git call result is cached
+    per has_review_approve() invocation to avoid redundant subprocess calls. Threaded
+    base_branch and branch from sprint.py _triage_spec() and coordinator.py ALREADY_DONE
+    guard. Added 7 new tests covering all error paths. All 991 tests pass."
   commits:
-    - sha: "9a87bb1"
-      message: "feat(task): remove file_scope from TaskSpec and all prompt builders"
-    - sha: "e53e034"
-      message: "chore: write dev_notes for drop-file-scope"
+    - sha: "1e78e66"
+      message: "fix(coord_audit): skip stale APPROVE records from abandoned runs"
+    - sha: "a4b543b"
+      message: "fix(coord_audit): address review findings (iter 1)"
   acceptance_criteria:
-    - criterion: "TaskSpec has no file_scope field"
+    - criterion: "has_review_approve() returns False when the APPROVE record exists but feat/<slug> has unmerged commits ahead of base"
       status: MET
-      notes: "field removed from TaskSpec dataclass in task.py"
-    - criterion: "Specs with file_scope in frontmatter parse without error (ignored)"
+      notes: "_branch_has_unmerged_commits returns True (3 commits ahead mock) → APPROVE is skipped → function returns False; branch parameter ensures correct branch is checked"
+    - criterion: "has_review_approve() returns True when the APPROVE record exists and the branch has been merged (0 commits ahead or branch absent)"
       status: MET
-      notes: "cli.py and sprint.py no longer pass fm.get('file_scope', []) to TaskSpec; extra frontmatter keys are silently ignored by yaml.safe_load"
-    - criterion: "Dev prompt contains no file scope restriction language"
+      notes: "0 commits ahead (merged) and non-zero exit (branch absent) both cause helper to return False → APPROVE passes through → function returns True"
+    - criterion: "_branch_has_unmerged_commits() handles missing branch (returns False), subprocess timeout (returns False), and non-integer output (returns False)"
       status: MET
-      notes: "removed file_scope_str block and ## File Scope section from build_dev_prompt()"
-    - criterion: "SCOPE_BLOCKED sentinel removed from task.py"
+      notes: "returncode != 0 → False; TimeoutExpired/OSError/ValueError all caught → False; tests cover timeout and non-integer paths explicitly"
+    - criterion: "base_branch parameter threaded through from _triage_spec() call site"
       status: MET
-      notes: "was already absent per preflight audit; confirmed no SCOPE_BLOCKED references in src/"
-    - criterion: "forge ideate output does not include file_scope in frontmatter"
+      notes: "sprint.py:265 passes base_branch and branch (both already in scope); coordinator.py passes config.workspace.base_branch and branch_name"
+    - criterion: "New tests in test_coord_audit.py cover: stale APPROVE (branch ahead), valid APPROVE (branch merged), valid APPROVE (branch absent), no APPROVE record"
       status: MET
-      notes: "removed file_scope: lines from both prompt templates in ideate.py"
-    - criterion: "Coordinator does not check for scope_blocked in dev output"
+      notes: "four original tests plus three additional: timeout → True, non-integer → True, custom branch pattern forwarded to subprocess"
+    - criterion: "All existing tests pass"
       status: MET
-      notes: "_load_file_scope_contents import and callsite removed from coordinator.py; file_contents kwarg removed from all four prompt builder calls"
-    - criterion: "All existing tests pass or are updated"
-      status: MET
-      notes: "976/976 tests pass after updating 11 test files; removed test_preflight_reads_file_scope, replaced 6 scope-specific dirty-worktree tests with 2 generic ones"
+      notes: "991/991 tests pass"
   spec_deviations:
-    - description: "The scope-gating block in coord_phases.py previously auto-committed out-of-scope side effects as a convenience. This path is now gone — all dirty files trigger a DEV retry."
-      justification: "This is the intended behavior per the spec (file_scope concept removed entirely); the plan explicitly called for removing this branching logic."
+    - description: "Added branch parameter to has_review_approve() beyond the spec's base_branch threading requirement."
+      justification: "P1 finding in cycle 1: hardcoded 'feat/<slug>' fails when branch_pattern is 'forge/<slug>' (the actual default). Both call sites already had the computed branch in scope."
+    - description: "Also updated coordinator.py:1272 call site (not in spec's AC)."
+      justification: "P2 from plan reviewer: coordinator used wrong base_branch for non-main projects. Fixed proactively."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
