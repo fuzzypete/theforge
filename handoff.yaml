@@ -1,58 +1,63 @@
-gate_decision: PASS
-gate_result: PASS
 dev_notes: |
-  summary: >
-    Implemented spec validation: a lightweight advisory pre-PLAN quality check.
-    Added src/theforge/spec_validator.py with validate_spec(), SpecValidationFinding,
-    and SpecValidationResult dataclasses. The coordinator calls validate_spec() after
-    PREFLIGHT and before PLAN using the same guard as should_plan (plan enabled AND
-    complexity medium/large AND no --plan injection). A fast profile is derived from
-    config.dev_profile by substituting sonnet for any model containing 'opus'
-    (case-insensitive) via dataclasses.replace(). On WARN, findings are logged to
-    the console and execution always continues. Fail-safe: any exception or malformed
-    output returns PASS. Results stored on CoordinatorState and written to
-    forge_audit.yaml under spec_validation.findings.
+  summary: "Hardened the existing OpenAI adapter for local model use (iter 1 review
+    fixes applied). Iter 0: Added four model keys to MODEL_REGISTRY (openai/codestral,
+    openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder) with cost_rank=1
+    and dev_capable=True, routing through the existing OpenAI adapter via base_url.
+    Introduced _is_local_endpoint() and used it in _openai_result() to zero costs
+    for single-shot calls, and in _run_loop_openai to zero costs post-loop. Added
+    BadRequestError catch in _run_loop_openai for tool-not-supported fallback to
+    single-shot mode. Extended cmd_check_providers to label local profiles with
+    [local] and $0.000 cost. Added docs/guides/local-models.md. Iter 1 (review
+    fixes): (1) Replaced substring-based _is_local_endpoint with urlparse-based
+    hostname check to prevent false positives from 'localhost' in URL paths/queries;
+    also added ::1 and 0.0.0.0 detection. (2) Added _zero_cost_if_local() helper
+    and called it in AgentLoopManager._success_result and _failure_result so costs
+    are zeroed at the source, not just in the outer _run_loop_openai wrapper. (3)
+    Fixed BadRequestError propagation: AgentLoopManager.run() now re-raises HTTP 400
+    errors (via status_code attribute check) instead of swallowing them as generic
+    failures, allowing _run_loop_openai's except block to implement the tool-calling
+    fallback. Moved the 'import openai' to the top of _run_loop_openai for clarity.
+    Added 7 new tests (1099 total passing)."
   commits:
-    - sha: "5d9a0ab"
-      message: "feat(spec-validation): add pre-PLAN spec quality check"
+    - sha: "29d6d31"
+      message: "feat(local-models): validate ollama/vllm via existing OpenAI adapter"
+    - sha: "5da551e"
+      message: "chore(local-models): write dev handoff.yaml"
+    - sha: "3bc5e99"
+      message: "fix(local-model-support): rewrite dev handoff to match schema"
+    - sha: "ed5f338"
+      message: "fix(local-model-support): address review findings (iter 1)"
   acceptance_criteria:
-    - criterion: "Spec validation runs after PREFLIGHT, before PLAN"
+    - criterion: "OpenAI adapter works with ollama base_url for models with tool support"
       status: MET
-      notes: "Inserted in coordinator.py at the PROCEED branch, after BLOCKED check, before should_plan block."
-    - criterion: "Validation produces PASS or WARN verdict"
+      notes: "_run_loop_openai passes base_url to openai.OpenAI() via _openai_client(). No change needed for this AC."
+    - criterion: "Graceful fallback when model doesn't support tool calling"
       status: MET
-      notes: "SpecValidationResult.verdict is PASS or WARN; invalid model output coerced to PASS."
-    - criterion: "On WARN, findings are logged to the console before PLAN starts"
+      notes: "AgentLoopManager.run() now re-raises HTTP 400 errors. _run_loop_openai catches BadRequestError with 'tool' in the message and retries via single-shot PROVIDER_RUNNERS['openai'] with a JSON instruction appended."
+    - criterion: "Cost reported as $0.00 for local endpoints"
       status: MET
-      notes: "_log() called for each finding with category, description, and split suggestions before should_plan block."
-    - criterion: "On WARN, the run continues — validation never blocks execution"
+      notes: "_is_local_endpoint() uses urlparse hostname check. _openai_result() stores 0.0 for single-shot. AgentLoopManager._success_result/_failure_result zero costs via _zero_cost_if_local(). _run_loop_openai also zeroes post-run as a defensive second pass."
+    - criterion: "Common local models added to MODEL_REGISTRY"
       status: MET
-      notes: "No return or raise on WARN. validate_spec() is fully fail-safe."
-    - criterion: "Validation findings are recorded in forge_audit.yaml under spec_validation.findings"
+      notes: "Four entries: openai/codestral, openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder. All cost_rank=1, dev_capable=True."
+    - criterion: "forge check-providers tests local endpoints when configured"
       status: MET
-      notes: "coord_audit.py reads state.spec_validation_result and emits spec_validation key with verdict, cost, duration, and findings."
-    - criterion: "Validation is skipped when --plan flag is used"
+      notes: "cmd_check_providers detects local profiles via base_url and annotates output with [local] tag and $0.000 cost display."
+    - criterion: "Documentation for local model setup with ollama/vllm"
       status: MET
-      notes: "Guard includes plan_path is None. Verified by test_spec_validation_skipped_on_plan_injection."
-    - criterion: "Validation uses a fast/cheap model (sonnet or equivalent), not opus"
+      notes: "docs/guides/local-models.md covers forge.yaml config, ollama/vllm setup, registry keys, cost tracking, and tool-calling fallback."
+    - criterion: "All existing tests pass"
       status: MET
-      notes: "_make_fast_profile() substitutes model='sonnet' for any model containing 'opus' (case-insensitive substring) using dataclasses.replace()."
-    - criterion: "Scope findings are categorized separately from requirement findings"
+      notes: "1099 tests pass (1078 pre-existing + 21 new)."
+    - criterion: "New tests for local endpoint detection and cost zeroing"
       status: MET
-      notes: "SpecValidationFinding.category is 'requirement' or 'scope'; preserved in audit log."
-    - criterion: "When scope is flagged, the finding includes concrete split suggestions with story names and AC assignments"
-      status: MET
-      notes: "SpecValidationFinding.split_suggestion holds {stories: [{name, acs}]}. Prompt instructs model to populate this for scope findings."
-    - criterion: "Existing tests pass"
-      status: MET
-      notes: "1103 tests pass after all changes."
-    - criterion: "New tests cover: PASS verdict continues to PLAN, WARN verdict logs and continues, skipped on --plan injection, scope WARN with split suggestion"
-      status: MET
-      notes: "21 unit tests in test_spec_validator.py; 5 integration tests in TestSpecValidation class in test_coordinator.py."
+      notes: "21 new tests: TestIsLocalEndpoint (12 cases incl. ::1, 0.0.0.0, false-positive paths), TestLocalEndpointCostZeroing (5 cases incl. AgentLoopManager direct), TestToolCallingFallback (2 cases), TestLocalModelRegistry (4 cases)."
   spec_deviations:
-    - description: "Named SpecValidationFinding (not SpecFinding)"
-      justification: "Plan reviewer P2 note explicitly suggested this to avoid confusion with the review system's Finding class."
-    - description: "validation timeout forced to 120s inside validate_spec()"
-      justification: "Advisory call should be fast; inheriting a dev timeout (up to 10 min) would be surprising for an advisory step."
+    - description: "Fallback call uses 3 args (prompt, profile, secrets), not 4 as plan listed"
+      justification: "_run_openai's actual signature is (prompt, profile, secrets) — no working_dir. Plan had a typo; fixed per plan reviewer P2 note."
+    - description: "No base_url validation for local registry entries at config load time"
+      justification: "Plan reviewer flagged as advisory (P2). Omitted to avoid scope creep; docs/guides/local-models.md clearly warns that base_url is required for local model keys."
   deferred_items: none
   gate_result: PASS
+gate_decision: PASS
+gate_result: PASS

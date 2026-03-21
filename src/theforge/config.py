@@ -51,6 +51,19 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
         cost_rank=2,
         dev_capable=False,
     ),
+    # Local models via ollama/vllm — route through the OpenAI adapter using base_url
+    "openai/codestral": ModelInfo(
+        cli="codex", model="codestral", tier="fast", capability=7, cost_rank=1
+    ),
+    "openai/deepseek-coder": ModelInfo(
+        cli="codex", model="deepseek-coder", tier="fast", capability=7, cost_rank=1
+    ),
+    "openai/llama3.1": ModelInfo(
+        cli="codex", model="llama3.1", tier="fast", capability=6, cost_rank=1
+    ),
+    "openai/qwen2.5-coder": ModelInfo(
+        cli="codex", model="qwen2.5-coder", tier="fast", capability=7, cost_rank=1
+    ),
 }
 
 # Maps provider prefix → CLI name

@@ -803,6 +803,11 @@ def cmd_check_providers(args: argparse.Namespace) -> int:
         prov_col = f"{provider:<10}"
         model_col = f"{model:<28}"
 
+        is_local = profile.base_url and (
+            "localhost" in profile.base_url or "127.0.0.1" in profile.base_url
+        )
+        local_tag = " [local]" if is_local else ""
+
         if isinstance(outcome, Exception):
             any_failed = True
             print(
@@ -817,8 +822,14 @@ def cmd_check_providers(args: argparse.Namespace) -> int:
             msg = "no valid verdict in structured output"
             print(f"  {name_col} {prov_col} {model_col} \u2717  {msg}")
         else:
-            cost_str = f"${outcome.cost_usd:.3f}" if outcome.cost_usd is not None else "$?.???"
-            print(f"  {name_col} {prov_col} {model_col} \u2713  {elapsed:.1f}s  {cost_str}")
+            if is_local or outcome.cost_usd == 0.0:
+                cost_str = "$0.000"
+            elif outcome.cost_usd is not None:
+                cost_str = f"${outcome.cost_usd:.3f}"
+            else:
+                cost_str = "$?.???"
+            suffix = f"{elapsed:.1f}s  {cost_str}{local_tag}"
+            print(f"  {name_col} {prov_col} {model_col} \u2713  {suffix}")
 
     passed = sum(
         1
