@@ -9,11 +9,11 @@ dev_notes: |
     passes the plan and filtered P1 registry to build_fix_prompt(). Added import yaml to
     coord_phases.py (was missing). Tests added for iteration-3 trace continuity,
     handoff-in-audit, and disposition injection."
-
   commits:
     - sha: "da91e4b"
       message: "feat(observability): dev handoff snapshots, plan anchoring, disposition injection in fix prompts"
-
+    - sha: "486952b"
+      message: "chore(handoff): update dev_notes for dev-observability-and-anchoring"
   acceptance_criteria:
     - criterion: "Dev prompt and output traces written for every iteration, not just the first. Filenames include iteration number."
       status: MET
@@ -23,10 +23,10 @@ dev_notes: |
       notes: "dev_handoff_snapshots field added to CoordinatorState; coord_phases.py reads handoff.yaml after each dev call and appends the parsed dict (or None); generate_audit_log() emits dev_handoffs list. Three tests in TestDevHandoffsInAudit."
     - criterion: "Fix iteration prompts re-inject the approved plan and explicitly instruct the agent to fix within the plan's approach, not redesign."
       status: MET
-      notes: "build_fix_prompt() now accepts plan_output (str|dict). When provided, renders an Approved Plan section with the same isinstance-based logic as build_dev_prompt(), followed by an explicit do-not-redesign instruction. Call site passes state.plan_structured ?? state.plan_output."
+      notes: "build_fix_prompt() now accepts plan_output (str|dict). When provided, renders an Approved Plan section with the same isinstance-based logic as build_dev_prompt(), followed by an explicit do-not-redesign instruction. Call site passes state.plan_structured if not None else state.plan_output."
     - criterion: "Fix iteration prompts list each P1 finding with its disposition (unresolved, regression, new) so the agent knows what to prioritize."
       status: MET
-      notes: "build_fix_prompt() accepts classified_p1s: list[FindingRecord]. When non-empty, renders a P1 Findings section with [disposition] description (file:line) per entry. Call site passes [r for r in state.finding_registry if r.severity == 'P1'] or None."
+      notes: "build_fix_prompt() accepts classified_p1s list[FindingRecord]. When non-empty, renders a P1 Findings section with [disposition] description (file:line) per entry. Call site passes filtered finding_registry P1s or None."
     - criterion: "Audit trail supports post-mortem comparison: P1s sent to dev vs what dev claimed to address vs what reviewer found still broken."
       status: MET
       notes: "Already satisfied (finding_registry with dispositions + per-cycle findings). dev_handoffs now adds what dev claimed to address per iteration."
@@ -36,10 +36,8 @@ dev_notes: |
     - criterion: "New tests for trace capture on iteration 2+ and handoff in audit."
       status: MET
       notes: "test_dev_traces_written_for_iteration_3 in test_traces.py; TestDevHandoffsInAudit (3 tests) and TestFixPromptDispositions (2 tests) in test_coord_audit.py."
-
   story_deviations:
-    - "Plan reviewer noted disposition values net_new/corroborated_new vs 'new'. Kept the raw FindingRecord disposition strings in the prompt rather than mapping — the dev agent benefits from the precise classification, and the AC example values (unresolved, regression, new) are illustrative, not exhaustive."
-
+    - description: "Used raw FindingRecord disposition strings (net_new, corroborated_new) in fix prompt rather than mapping to 'new'."
+      justification: "The AC example values (unresolved, regression, new) are illustrative. The dev agent benefits from precise classification, and the FindingRecord type already uses these values throughout the codebase."
   deferred_items: none
-
   gate_result: PASS
