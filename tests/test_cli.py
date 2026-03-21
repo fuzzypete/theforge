@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from theforge.cli import (
+    _apply_dev_model_override,
     _build_task,
     _ensure_gitignored,
     _find_config,
@@ -564,3 +565,37 @@ class TestCmdInitHooks:
         sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
         content = sh_path.read_text(encoding="utf-8")
         assert "forge-finding" in content
+
+
+class TestApplyDevModelOverride:
+    """Tests for _apply_dev_model_override provider normalisation."""
+
+    def _base_config(self, tmp_path: Path) -> ForgeConfig:
+        return _make_forge_config(tmp_path)
+
+    def test_ollama_provider_normalised_to_openai(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_dev_model_override(
+            cfg, "ollama/qwen2.5-coder:14b@http://localhost:11434/v1"
+        )
+        assert result.dev_profile.provider == "openai"
+        assert result.dev_profile.model == "qwen2.5-coder:14b"
+        assert result.dev_profile.base_url == "http://localhost:11434/v1"
+
+    def test_openai_provider_unchanged(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_dev_model_override(cfg, "openai/gpt-4o@http://localhost:11434/v1")
+        assert result.dev_profile.provider == "openai"
+
+    def test_anthropic_provider_unchanged(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_dev_model_override(cfg, "anthropic/claude-opus-4-6")
+        assert result.dev_profile.provider == "anthropic"
+        assert result.dev_profile.base_url is None
+
+    def test_mode_is_api_for_ollama(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_dev_model_override(
+            cfg, "ollama/qwen2.5-coder:7b@http://localhost:11434/v1"
+        )
+        assert result.dev_profile.mode == "api"

@@ -1909,9 +1909,32 @@ def _make_google_finalizer(
 # ── Loop-mode entry points ────────────────────────────────────────────
 
 
+_CLI_TO_REGISTRY: dict[str, str] = {
+    # Claude CLI tool names → API registry keys
+    "Read": "read_file",
+    "Edit": "edit_file",
+    "Write": "write_file",
+    "Bash": "bash",
+    "Glob": "glob",
+    "Grep": "grep",
+}
+
+
 def _build_registry_tools(profile: "ModelProfile") -> list[ToolDef]:
-    """Build the list of ToolDef objects from profile.allowed_tools."""
-    return [TOOL_REGISTRY[name] for name in profile.allowed_tools if name in TOOL_REGISTRY]
+    """Build the list of ToolDef objects from profile.allowed_tools.
+
+    Normalises Claude CLI tool names (Read, Edit, Write, Bash, Glob, Grep) to
+    their API registry equivalents so that forge.yaml profiles work for both
+    CLI runners and API runners (e.g. Ollama via --dev-model).
+    """
+    result = []
+    for name in profile.allowed_tools:
+        key = _CLI_TO_REGISTRY.get(
+            name, name
+        )  # normalise CLI name; fall through if already API name
+        if key in TOOL_REGISTRY:
+            result.append(TOOL_REGISTRY[key])
+    return result
 
 
 def _run_loop_openai(
