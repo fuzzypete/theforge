@@ -265,6 +265,145 @@ def _ntfy_poll_plan_reply(
 _BLOCKING_POLL_CHUNK = 300  # seconds per poll iteration in blocking mode
 
 
+# ── Escalate gate ─────────────────────────────────────────────────────
+
+
+def _ntfy_poll_escalate_reply(
+    reply_url: str,
+    since_ts: int,
+    timeout_seconds: int,
+) -> str:
+    """Poll ntfy reply topic for an escalate gate decision.
+
+    Returns 'approve', 'reject', 'continue', or 'timeout'.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    poll_url = f"{reply_url}/json?poll=1&since={since_ts}"
+
+    while time.monotonic() < deadline:
+        try:
+            req = urllib.request.Request(poll_url)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                content = resp.read().decode("utf-8", errors="replace")
+            for line in content.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("event") not in ("message", None):
+                    continue
+                msg = (obj.get("message") or "").strip().lower()
+                if msg == "approve":
+                    return "approve"
+                if msg == "reject":
+                    return "reject"
+                if msg == "continue":
+                    return "continue"
+        except Exception:
+            pass
+
+        sleep_secs = min(10.0, max(0.0, deadline - time.monotonic()))
+        if sleep_secs > 0:
+            time.sleep(sleep_secs)
+
+    return "timeout"
+
+
+def _escalate_gate_interactive(
+    state: "_cs.CoordinatorState",
+    escalate_reason: str,
+    reviewer_verdicts: dict[str, str],
+    gate_result: str | None,
+) -> str:
+    """Interactive escalate gate prompt. Returns 'approve' | 'reject' | 'continue'."""
+    _cu._log("─── ESCALATE Gate ───")
+    _cu._log(f"  Reason:   {escalate_reason}")
+    if reviewer_verdicts:
+        verdicts_str = "  ".join(f"{k}({v})" for k, v in reviewer_verdicts.items())
+        _cu._log(f"  Reviewers: {verdicts_str}")
+    if gate_result:
+        _cu._log(f"  Gate:     {gate_result}")
+    _cu._log(f"  Cost:     ${state.total_cost:.3f}")
+    _cu._log(f"  Dev iter: {state.dev_iteration}  Review cycles: {state.review_cycle}")
+    _cu._log("")
+    _cu._log("  Choose:")
+    _cu._log("    [a] Approve  — treat as APPROVE, create PR / merge")
+    _cu._log("    [r] Reject   — exit as ESCALATE, preserve worktree")
+    _cu._log("    [c] Continue — run one more review cycle")
+
+    while True:
+        print("[forge] Choice [a/r/c]: ", end="", file=sys.stderr, flush=True)
+        raw = sys.stdin.readline()
+        if not raw:
+            _cu._log("EOF on stdin — rejecting.")
+            return "reject"
+        choice = raw.strip().lower()
+        if choice in ("a", "approve"):
+            return "approve"
+        if choice in ("r", "reject"):
+            return "reject"
+        if choice in ("c", "continue"):
+            return "continue"
+        _cu._log("Invalid choice. Enter 'a', 'r', or 'c'.")
+
+
+def _escalate_gate_remote(
+    state: "_cs.CoordinatorState",
+    task: "TaskSpec",
+    config: "ForgeConfig",
+    escalate_reason: str,
+    reviewer_verdicts: dict[str, str],
+    gate_result: str | None,
+) -> str:
+    """Ntfy-backed escalate gate. Returns 'approve' | 'reject' | 'continue'."""
+    ntfy = config.notifications.ntfy
+    assert ntfy is not None
+
+    reply_url = _ntfy_reply_url(ntfy.url)
+    timeout_seconds = config.notifications.human_review_timeout_seconds
+
+    approve_count = sum(1 for v in reviewer_verdicts.values() if v == "APPROVE")
+    total_count = len(reviewer_verdicts)
+    verdict_line = (
+        f"{approve_count}/{total_count} reviewers APPROVE" if reviewer_verdicts else "no verdicts"
+    )
+    gate_line = gate_result or ""
+    body = "\n".join(filter(None, [verdict_line, gate_line, escalate_reason[:120]]))
+
+    actions = (
+        f"http, Approve, {reply_url}, method=POST, body=approve; "
+        f"http, Reject, {reply_url}, method=POST, body=reject; "
+        f"http, Continue, {reply_url}, method=POST, body=continue"
+    )
+
+    _cu._log("─── Remote Escalate Gate (ntfy) ───")
+    _cu._log(f"  Topic:   {ntfy.url}")
+    _cu._log(f"  Reply:   {reply_url}")
+    _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
+
+    since_ts = int(time.time())
+    title = f"TheForge: ESCALATE \u2014 {task.slug}"
+    _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
+
+    _poll_start = time.monotonic()
+    # Poll indefinitely until an explicit decision arrives
+    while True:
+        decision = _ntfy_poll_escalate_reply(reply_url, since_ts, _BLOCKING_POLL_CHUNK)
+        if decision != "timeout":
+            break
+        elapsed = _cu._fmt_duration(time.monotonic() - _poll_start)
+        _cu._log(f"  ESCALATE gate still waiting for decision (elapsed {elapsed})")
+
+    waited = time.monotonic() - _poll_start
+    state.human_review_waited_seconds = (state.human_review_waited_seconds or 0.0) + waited
+    waited_str = _cu._fmt_duration(waited)
+    _cu._log(f"  Escalate gate decision: {decision!r} (waited {waited_str})")
+    return decision
+
+
 def _plan_review_remote(
     state: "_cs.CoordinatorState",
     plan_text: str,
