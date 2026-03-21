@@ -26,8 +26,8 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.sprint import (
-    SpecTriage,
-    _build_task_from_spec,
+    StoryTriage,
+    _build_task_from_story,
     _triage_spec,
     load_sprint_manifest,
     run_sprint,
@@ -115,13 +115,13 @@ class TestLoadManifest:
     def test_valid_manifest(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(
-            yaml.dump({"name": "My Campaign", "budget_usd": 5.0, "specs": ["a.md", "b.md"]}),
+            yaml.dump({"name": "My Campaign", "budget_usd": 5.0, "stories": ["a.md", "b.md"]}),
             encoding="utf-8",
         )
         manifest = load_sprint_manifest(path)
         assert manifest.name == "My Campaign"
         assert manifest.budget_usd == 5.0
-        assert manifest.specs == ["a.md", "b.md"]
+        assert manifest.stories == ["a.md", "b.md"]
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="not found"):
@@ -129,20 +129,20 @@ class TestLoadManifest:
 
     def test_missing_name(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
-        path.write_text(yaml.dump({"budget_usd": 5.0, "specs": ["a.md"]}), encoding="utf-8")
+        path.write_text(yaml.dump({"budget_usd": 5.0, "stories": ["a.md"]}), encoding="utf-8")
         with pytest.raises(ValueError, match="name"):
             load_sprint_manifest(path)
 
     def test_missing_budget(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
-        path.write_text(yaml.dump({"name": "X", "specs": ["a.md"]}), encoding="utf-8")
+        path.write_text(yaml.dump({"name": "X", "stories": ["a.md"]}), encoding="utf-8")
         with pytest.raises(ValueError, match="budget_usd"):
             load_sprint_manifest(path)
 
     def test_zero_budget(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(
-            yaml.dump({"name": "X", "budget_usd": 0.0, "specs": ["a.md"]}), encoding="utf-8"
+            yaml.dump({"name": "X", "budget_usd": 0.0, "stories": ["a.md"]}), encoding="utf-8"
         )
         with pytest.raises(ValueError, match="budget_usd.*> 0"):
             load_sprint_manifest(path)
@@ -150,7 +150,7 @@ class TestLoadManifest:
     def test_negative_budget(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(
-            yaml.dump({"name": "X", "budget_usd": -1.0, "specs": ["a.md"]}), encoding="utf-8"
+            yaml.dump({"name": "X", "budget_usd": -1.0, "stories": ["a.md"]}), encoding="utf-8"
         )
         with pytest.raises(ValueError, match="budget_usd.*> 0"):
             load_sprint_manifest(path)
@@ -158,13 +158,15 @@ class TestLoadManifest:
     def test_missing_specs(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
         path.write_text(yaml.dump({"name": "X", "budget_usd": 5.0}), encoding="utf-8")
-        with pytest.raises(ValueError, match="specs"):
+        with pytest.raises(ValueError, match="stories"):
             load_sprint_manifest(path)
 
     def test_empty_specs(self, tmp_path: Path) -> None:
         path = tmp_path / "campaign.yaml"
-        path.write_text(yaml.dump({"name": "X", "budget_usd": 5.0, "specs": []}), encoding="utf-8")
-        with pytest.raises(ValueError, match="specs"):
+        path.write_text(
+            yaml.dump({"name": "X", "budget_usd": 5.0, "stories": []}), encoding="utf-8"
+        )
+        with pytest.raises(ValueError, match="stories"):
             load_sprint_manifest(path)
 
     def test_non_string_spec_entry(self, tmp_path: Path) -> None:
@@ -470,9 +472,9 @@ class TestEscalationNotifications:
         spec_path.write_text("---\nslug: my-slug\n---\n# Spec", encoding="utf-8")
         config = _make_config(tmp_path)
 
-        from theforge.task import TaskSpec
+        from theforge.task import TaskStory
 
-        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug")
+        task = TaskStory(name="Test", story_path=spec_path, slug="my-slug")
 
         with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(
@@ -495,9 +497,9 @@ class TestEscalationNotifications:
         spec_path.write_text("---\nslug: my-slug\n---\n# Spec", encoding="utf-8")
         config = _make_config(tmp_path)
 
-        from theforge.task import TaskSpec
+        from theforge.task import TaskStory
 
-        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug")
+        task = TaskStory(name="Test", story_path=spec_path, slug="my-slug")
         long_error = "x" * 200
 
         with patch("theforge.coord_notify._notify") as mock_notify:
@@ -518,9 +520,9 @@ class TestEscalationNotifications:
         spec_path.write_text("---\nslug: my-slug\n---\n# Spec", encoding="utf-8")
         config = _make_config(tmp_path)
 
-        from theforge.task import TaskSpec
+        from theforge.task import TaskStory
 
-        task = TaskSpec(name="Test", spec_path=spec_path, slug="my-slug")
+        task = TaskStory(name="Test", story_path=spec_path, slug="my-slug")
 
         with patch("theforge.coord_notify._notify") as mock_notify:
             with patch(
@@ -785,8 +787,8 @@ class TestResumeSprintSkipApproved:
         record = {"task": {"slug": "feature-a"}, "reviews": [{"verdict": "APPROVE"}]}
         (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
 
-        skip_triage = SpecTriage(
-            spec_path="feature-a.md",
+        skip_triage = StoryTriage(
+            story_path="feature-a.md",
             action="skip",
             reason="prior APPROVE in audit trail (2 commits ahead)",
             worktree_path=worktree,
@@ -808,8 +810,8 @@ class TestResumeSprintIntegration:
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
         config = _make_config(tmp_path)
 
-        merged_triage = SpecTriage(
-            spec_path="feature-a.md",
+        merged_triage = StoryTriage(
+            story_path="feature-a.md",
             action="skip_merged",
             reason="already merged to main",
             worktree_path=None,
@@ -832,8 +834,8 @@ class TestResumeSprintIntegration:
         worktree = tmp_path / "feature-a"
         worktree.mkdir()
 
-        dev_triage = SpecTriage(
-            spec_path="feature-a.md",
+        dev_triage = StoryTriage(
+            story_path="feature-a.md",
             action="dev",
             reason="gate fails",
             worktree_path=worktree,
@@ -863,14 +865,14 @@ class TestResumeSprintIntegration:
         with open(audits_dir / "sprint-audit.yaml", "w") as f:
             yaml.dump(prior_audit, f)
 
-        merged_triage = SpecTriage(
-            spec_path="feature-a.md",
+        merged_triage = StoryTriage(
+            story_path="feature-a.md",
             action="skip_merged",
             reason="already merged to main",
             worktree_path=None,
         )
-        full_triage = SpecTriage(
-            spec_path="feature-b.md",
+        full_triage = StoryTriage(
+            story_path="feature-b.md",
             action="full",
             reason="no worktree found",
             worktree_path=None,
@@ -899,8 +901,8 @@ class TestResumeSprintIntegration:
         worktree = tmp_path / "feature-a"
         worktree.mkdir()
 
-        review_triage = SpecTriage(
-            spec_path="feature-a.md",
+        review_triage = StoryTriage(
+            story_path="feature-a.md",
             action="review",
             reason="gate passes",
             worktree_path=worktree,
@@ -929,8 +931,8 @@ class TestResumeSprintIntegration:
         with open(audits_dir / "sprint-audit.yaml", "w") as f:
             yaml.dump(prior_audit, f)
 
-        full_triage = SpecTriage(
-            spec_path="feature-a.md",
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
             action="full",
             reason="no worktree found",
             worktree_path=None,
@@ -957,8 +959,8 @@ class TestResumeSprintIntegration:
         with open(audits_dir / "sprint-audit.yaml", "w") as f:
             yaml.dump(prior_audit, f)
 
-        full_triage = SpecTriage(
-            spec_path="feature-a.md",
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
             action="full",
             reason="no worktree found",
             worktree_path=None,
@@ -990,26 +992,26 @@ class TestResumeSprintIntegration:
         assert result.specs_succeeded == 1
 
 
-# ── _build_task_from_spec depends_on parsing ─────────────────────────
+# ── _build_task_from_story depends_on parsing ─────────────────────────
 
 
 class TestBuildTaskDependsOn:
     def test_depends_on_missing(self, tmp_path: Path) -> None:
         """No depends_on in frontmatter → depends_on == []."""
         spec = _make_spec_file(tmp_path, "Spec A", "spec-a")
-        task = _build_task_from_spec(spec)
+        task = _build_task_from_story(spec)
         assert task.depends_on == []
 
     def test_depends_on_single_string(self, tmp_path: Path) -> None:
         """depends_on as single string → normalized to single-element list."""
         spec = _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["single-slug"])
-        task = _build_task_from_spec(spec)
+        task = _build_task_from_story(spec)
         assert task.depends_on == ["single-slug"]
 
     def test_depends_on_list(self, tmp_path: Path) -> None:
         """depends_on as list → preserved as list."""
         spec = _make_spec_file(tmp_path, "Spec C", "spec-c", depends_on=["slug-a", "slug-b"])
-        task = _build_task_from_spec(spec)
+        task = _build_task_from_story(spec)
         assert task.depends_on == ["slug-a", "slug-b"]
 
 
@@ -1077,15 +1079,15 @@ class TestSprintDependencies:
         manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
         config = _make_config(tmp_path)
 
-        merged_triage = SpecTriage(
-            spec_path="spec-a.md",
+        merged_triage = StoryTriage(
+            story_path="spec-a.md",
             action="skip_merged",
             reason="already merged to main",
             worktree_path=None,
             slug="spec-a",
         )
-        full_triage = SpecTriage(
-            spec_path="spec-b.md",
+        full_triage = StoryTriage(
+            story_path="spec-b.md",
             action="full",
             reason="no worktree found",
             worktree_path=None,
@@ -1114,15 +1116,15 @@ class TestSprintDependencies:
         manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
         config = _make_config(tmp_path)
 
-        approved_triage = SpecTriage(
-            spec_path="spec-a.md",
+        approved_triage = StoryTriage(
+            story_path="spec-a.md",
             action="skip",
             reason="already approved",
             worktree_path=None,
             slug="spec-a",
         )
-        full_triage = SpecTriage(
-            spec_path="spec-b.md",
+        full_triage = StoryTriage(
+            story_path="spec-b.md",
             action="full",
             reason="no worktree found",
             worktree_path=None,

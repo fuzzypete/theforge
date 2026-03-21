@@ -1,5 +1,5 @@
 name: m1-finish
-specs:
+stories:
   - specs/backlog/deepseek-loop-diagnostics.md
   - specs/backlog/escalate-hitl.md
 budget_usd: 50.00

@@ -10,7 +10,7 @@ from . import coord_util as _cu
 from .config import ForgeConfig
 from .coord_gate import _run_gate
 from .runner import run_agent
-from .task import TaskSpec
+from .task import TaskStory as TaskSpec  # noqa: F401
 
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120

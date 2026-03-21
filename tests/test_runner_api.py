@@ -137,7 +137,7 @@ class TestAgentLoopLifecycle:
             "verdict": "APPROVE",
             "summary": "Looks good",
             "findings": [],
-            "spec_compliance": {"matches_spec": True, "mismatches": []},
+            "story_compliance": {"matches_spec": True, "mismatches": []},
             "test_coverage": {"adequate": True, "gaps": []},
         }
 
@@ -865,7 +865,7 @@ class TestFinalization:
             "verdict": "APPROVE",
             "summary": "Finalized review",
             "findings": [],
-            "spec_compliance": {"matches_spec": True, "mismatches": []},
+            "story_compliance": {"matches_spec": True, "mismatches": []},
             "test_coverage": {"adequate": True, "gaps": []},
         }
 
@@ -1304,7 +1304,7 @@ class TestDeepSeekProvider:
                 "verdict": "APPROVE",
                 "summary": "ok",
                 "findings": [],
-                "spec_compliance": {"matches_spec": True, "mismatches": []},
+                "story_compliance": {"matches_spec": True, "mismatches": []},
                 "test_coverage": {"adequate": True, "gaps": []},
             }
         )
@@ -1939,7 +1939,7 @@ class TestLocalEndpointCostZeroing:
                 "verdict": "APPROVE",
                 "summary": "ok",
                 "findings": [],
-                "spec_compliance": {"matches_spec": True, "mismatches": []},
+                "story_compliance": {"matches_spec": True, "mismatches": []},
                 "test_coverage": {"adequate": True, "gaps": []},
             }
         )
@@ -2049,7 +2049,7 @@ class TestToolCallingFallback:
                 "verdict": "APPROVE",
                 "summary": "ok",
                 "findings": [],
-                "spec_compliance": {"matches_spec": True, "mismatches": []},
+                "story_compliance": {"matches_spec": True, "mismatches": []},
                 "test_coverage": {"adequate": True, "gaps": []},
             }
         )

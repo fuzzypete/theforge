@@ -1,6 +1,6 @@
 name: "observability-2"
 budget_usd: 40.00
-specs:
+stories:
   - specs/backlog/run-log-capture.md
   - specs/backlog/audit-improvements.md
   - specs/backlog/provider-smoke-test.md

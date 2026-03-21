@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from .config import ForgeConfig
     from .coord_logging import StructuredLogger
     from .coord_state import CoordinatorResult, CoordinatorState
-    from .task import TaskSpec
+    from .task import TaskStory as TaskSpec  # noqa: F401
 
 
 @dataclass
@@ -178,7 +178,8 @@ def build_pre_run_payload(
         "event": "pre_run",
         "project": config.project,
         "slug": task.slug,
-        "spec": str(task.spec_path),
+        "story": str(task.story_path),
+        "spec": str(task.story_path),  # backward compat
         "run_id": run_id,
     }
 
@@ -263,7 +264,8 @@ def build_post_run_payload(
         "event": "post_run",
         "project": config.project,
         "slug": task.slug,
-        "spec": str(task.spec_path),
+        "story": str(task.story_path),
+        "spec": str(task.story_path),  # backward compat
         "branch": branch,
         "run_id": run_id,
         "outcome": outcome,

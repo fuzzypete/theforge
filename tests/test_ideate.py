@@ -262,7 +262,7 @@ def test_single_model_prompt_includes_lean_constraints() -> None:
 
 def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
     """Spec produced by run_ideation parses into a non-empty dev prompt."""
-    from theforge.task import TaskSpec, build_dev_prompt, parse_spec_frontmatter
+    from theforge.task import TaskStory, build_dev_prompt, parse_spec_frontmatter
 
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
     output_path = tmp_path / "specs" / "test-feature.md"
@@ -277,9 +277,9 @@ def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
     assert output_path.exists()
 
     fm = parse_spec_frontmatter(output_path)
-    task = TaskSpec(
+    task = TaskStory(
         name=fm.get("name", "test"),
-        spec_path=output_path,
+        story_path=output_path,
         slug=fm.get("slug", "test"),
         pytest_target=fm.get("pytest_target", "tests/"),
     )
@@ -288,7 +288,7 @@ def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
         task,
         workspace_path=tmp_path / "workspace",
         branch_name="feat/test-feature",
-        spec_content=spec_content,
+        story_content=spec_content,
         gate_command="make gate",
     )
     assert len(dev_prompt) > 0
@@ -535,7 +535,7 @@ def test_synthesis_writes_spec_file(tmp_path: Path) -> None:
     ):
         result = run_ideation(config, "Build a feature", output_path, max_rounds=1)
 
-    assert result.spec_path == output_path
+    assert result.story_path == output_path
     assert output_path.exists()
     content = output_path.read_text(encoding="utf-8")
     assert "Test Feature" in content
@@ -718,7 +718,7 @@ def test_dry_run_no_file_written(tmp_path: Path) -> None:
     ):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
-    assert result.spec_path is None
+    assert result.story_path is None
     # No spec files created
     spec_files = list(tmp_path.rglob("*.md"))
     assert spec_files == []
@@ -866,21 +866,23 @@ def test_max_rounds_zero_clamped_to_one(tmp_path: Path) -> None:
 
 
 def test_specs_dir_writes_slug_based_file(tmp_path: Path) -> None:
-    """When specs_dir is provided and output_path is None, spec is written to specs_dir/slug.md."""
+    """When stories_dir is provided, story is written to stories_dir/<slug>.md."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
-    specs_dir = tmp_path / "specs"
+    stories_dir = tmp_path / "stories"
 
     with (
         patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
         patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
     ):
-        result = run_ideation(config, "Build a feature", None, specs_dir=specs_dir, max_rounds=1)
+        result = run_ideation(
+            config, "Build a feature", None, stories_dir=stories_dir, max_rounds=1
+        )
 
     assert result.success
-    assert result.spec_path is not None
-    assert result.spec_path.parent == specs_dir
-    assert result.spec_path.name == "test-feature.md"  # slug from _VALID_SPEC
-    assert result.spec_path.exists()
+    assert result.story_path is not None
+    assert result.story_path.parent == stories_dir
+    assert result.story_path.name == "test-feature.md"  # slug from _VALID_SPEC
+    assert result.story_path.exists()
 
 
 def test_synthesis_invalid_frontmatter_returns_failed_result(tmp_path: Path) -> None:
@@ -907,7 +909,7 @@ No triple-dash delimiters here.
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
     assert result.success is False
-    assert result.spec_path is None
+    assert result.story_path is None
 
 
 # ── Audit tests ───────────────────────────────────────────────────────
@@ -1056,7 +1058,7 @@ def _make_ideation_result_cli(tmp_path: Path, *, write_spec: bool = True) -> Ide
     )
     return IdeationResult(
         success=True,
-        spec_path=spec_path,
+        story_path=spec_path,
         rounds=[round_],
         final_synthesis=_VALID_SPEC,
         residual_divergence=[],
@@ -1108,7 +1110,7 @@ class TestCmdIdeate:
         assert rc == 0
         assert (tmp_path / ".forge" / "audits" / "forge_ideation_audit.yaml").exists()
         call_kwargs = mock_run.call_args
-        assert call_kwargs.kwargs.get("specs_dir") == tmp_path / "specs"
+        assert call_kwargs.kwargs.get("stories_dir") == tmp_path / "stories"
 
     def test_output_flag_passes_explicit_path(self, tmp_path):
         """--output passes the resolved path to run_ideation."""

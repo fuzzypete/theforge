@@ -23,7 +23,7 @@ from theforge.config import (
 from theforge.coord_util import resolve_timeout
 from theforge.coordinator import run_task
 from theforge.runner import AgentResult
-from theforge.task import TaskSpec
+from theforge.task import TaskStory
 
 # ── resolve_timeout ────────────────────────────────────────────────────
 
@@ -141,7 +141,7 @@ APPROVE_REVIEW = """\
 verdict: APPROVE
 summary: "Looks good."
 findings: []
-spec_compliance:
+story_compliance:
   matches_spec: true
   mismatches: []
 test_coverage:
@@ -194,10 +194,10 @@ def _make_config(
     )
 
 
-def _make_task(tmp_path: Path) -> TaskSpec:
+def _make_task(tmp_path: Path) -> TaskStory:
     spec = tmp_path / "spec.md"
     spec.write_text("# Test Spec\n\nDo the thing.", encoding="utf-8")
-    return TaskSpec(name="Test Task", spec_path=spec, slug="test-task")
+    return TaskStory(name="Test Task", story_path=spec, slug="test-task")
 
 
 def _get_call_profile(mock_agent, call_idx: int) -> ModelProfile:

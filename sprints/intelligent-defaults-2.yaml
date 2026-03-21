@@ -13,5 +13,5 @@ auto_merge: true
 #
 # Depends on: smart-defaults (tier definitions), api-mode-dev (already on main)
 
-specs:
+stories:
   - specs/backlog/adaptive-model-assignment.md

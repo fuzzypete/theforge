@@ -123,9 +123,10 @@ from .review import (  # noqa: F401
 )
 from .runner import LogLevel, log_agent_result, run_agent, run_agent_pool
 from .sessions import load_sessions, save_sessions
-from .spec_validator import validate_spec
+from .story_validator import validate_story
 from .task import (  # noqa: F401
     TaskSpec,
+    TaskStory,
     build_dev_prompt,
     build_fix_prompt,
     build_handoff_fix_prompt,
@@ -133,8 +134,10 @@ from .task import (  # noqa: F401
     build_plan_review_prompt,
     build_preflight_prompt,
     build_review_prompt,
-    load_spec,
     parse_plan_output,
+)
+from .task import (
+    load_story as load_spec,
 )
 from .traces import write_trace
 
@@ -442,7 +445,7 @@ def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff 
             summary="",
             commits=[],
             acceptance_criteria=[],
-            spec_deviations=[],
+            story_deviations=[],
             deferred_items=[],
             gate_result="",
             parse_errors=["dev_notes field is missing or blank in handoff.yaml"],
@@ -484,7 +487,7 @@ def _run_dev_phase(
     state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
-    spec_content: str,
+    story_content: str,
     workspace_path: Path,
     branch_name: str,
     *,
@@ -495,7 +498,7 @@ def _run_dev_phase(
         state,
         config,
         task,
-        spec_content,
+        story_content,
         workspace_path,
         branch_name,
         notify=notify,
@@ -508,7 +511,7 @@ def _run_review_phase(
     state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
-    spec_content: str,
+    story_content: str,
     workspace_path: Path,
     branch_name: str,
     task_start: float,
@@ -523,7 +526,7 @@ def _run_review_phase(
         state,
         config,
         task,
-        spec_content,
+        story_content,
         workspace_path,
         branch_name,
         task_start,
@@ -562,7 +565,7 @@ def _run_review_pool(
     state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
-    spec_content: str,
+    story_content: str,
     workspace_path: Path,
     branch_name: str,
     meta: ReviewCycleMetadata,
@@ -617,7 +620,7 @@ def _run_review_pool(
             [
                 build_review_prompt(
                     task,
-                    spec_content=spec_content,
+                    story_content=story_content,
                     commit_log=commit_log,
                     workspace_path=str(workspace_path),
                     branch=branch_name,
@@ -632,7 +635,7 @@ def _run_review_pool(
             if any(p.review_role for p in config.review_pool)
             else build_review_prompt(
                 task,
-                spec_content=spec_content,
+                story_content=story_content,
                 commit_log=commit_log,
                 workspace_path=str(workspace_path),
                 branch=branch_name,
@@ -836,8 +839,8 @@ def _run_review_pool(
                     verdict="REQUEST_CHANGES",
                     summary="",
                     findings=[],
-                    spec_matches=False,
-                    spec_mismatches=[],
+                    story_matches=False,
+                    story_mismatches=[],
                     test_adequate=False,
                     test_gaps=[],
                     parse_errors=[_error_desc],
@@ -886,7 +889,7 @@ def _setup_resume_entry(
 ) -> tuple[CoordinatorState, StructuredLogger, str, str, float] | CoordinatorResult:
     """Shared setup for run_from_review / run_from_dev.
 
-    Returns (state, logger, branch_name, spec_content, task_start) on success,
+    Returns (state, logger, branch_name, story_content, task_start) on success,
     or a CoordinatorResult on failure (worktree missing).
     """
     state = CoordinatorState(
@@ -909,7 +912,7 @@ def _setup_resume_entry(
     )
     logger._safe_emit(
         "run_start",
-        specs=[str(task.spec_path)],
+        specs=[str(task.story_path)],
         budget_usd=config.dev_profile.budget_usd,
         resume=True,
     )
@@ -946,16 +949,16 @@ def _setup_resume_entry(
         branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
 
-    spec_content = load_spec(task.spec_path)
+    story_content = load_spec(task.story_path)
 
-    return state, logger, branch_name, spec_content, _task_start
+    return state, logger, branch_name, story_content, _task_start
 
 
 def _coordinator_loop(
     state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
-    spec_content: str,
+    story_content: str,
     task_start: float,
     *,
     interactive: bool = False,
@@ -997,7 +1000,7 @@ def _coordinator_loop(
                 state,
                 config,
                 task,
-                spec_content,
+                story_content,
                 workspace_path,
                 branch_name,
                 notify=notify,
@@ -1086,7 +1089,7 @@ def _coordinator_loop(
             state,
             config,
             task,
-            spec_content,
+            story_content,
             workspace_path,
             branch_name,
             task_start,
@@ -1132,7 +1135,7 @@ def run_task(
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
-    spec_content = load_spec(task.spec_path)
+    story_content = load_spec(task.story_path)
     _sprint_name = sprint_name  # passed to _make_story_log_dir for sprint nesting
 
     # ── Structured logger ──────────────────────────────────────────
@@ -1147,7 +1150,7 @@ def run_task(
     )
     logger._safe_emit(
         "run_start",
-        specs=[str(task.spec_path)],
+        specs=[str(task.story_path)],
         budget_usd=config.dev_profile.budget_usd,
         resume=False,
     )
@@ -1281,7 +1284,7 @@ def run_task(
         _log_phase(state.phase, preflight_profile.model)
         logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
 
-        preflight_prompt = build_preflight_prompt(task, spec_content=spec_content)
+        preflight_prompt = build_preflight_prompt(task, story_content=story_content)
 
         _preflight_start = time.monotonic()
         preflight_result = run_agent(
@@ -1367,7 +1370,7 @@ def run_task(
                     state,
                     config,
                     task,
-                    spec_content,
+                    story_content,
                     _task_start,
                     interactive=interactive,
                     auto_merge=auto_merge,
@@ -1441,15 +1444,15 @@ def run_task(
                 if "opus" in config.dev_profile.model.lower()
                 else config.dev_profile
             )
-            _sv_result = validate_spec(
-                spec_content=spec_content,
+            _sv_result = validate_story(
+                story_content=story_content,
                 profile=_fast_profile,
                 working_dir=workspace_path,
                 secrets=config.secrets,
             )
-            state.spec_validation_result = _sv_result
+            state.story_validation_result = _sv_result
             if _sv_result.verdict == "WARN":
-                _log("⚠  Spec validation: WARN — review findings before planning")
+                _log("⚠  Story validation: WARN — review findings before planning")
                 for _finding in _sv_result.findings:
                     _log(f"   [{_finding.category}] {_finding.description}")
                     if _finding.split_suggestion:
@@ -1493,7 +1496,7 @@ def run_task(
 
             plan_prompt = build_plan_prompt(
                 task,
-                spec_content=spec_content,
+                story_content=story_content,
                 preflight_output=(preflight_result.output if preflight_result.success else None),
             )
 
@@ -1549,7 +1552,7 @@ def run_task(
 
                         pr_prompt = build_plan_review_prompt(
                             task,
-                            story_content=spec_content,
+                            story_content=story_content,
                             plan_content=state.plan_structured or plan_text,
                             mode=par_profiles[0].mode,
                             preflight_output=(
@@ -1727,7 +1730,7 @@ def run_task(
                         # Rebuild plan prompt with rejection findings appended
                         regen_prompt = build_plan_prompt(
                             task,
-                            spec_content=spec_content,
+                            story_content=story_content,
                             preflight_output=(
                                 preflight_result.output if preflight_result.success else None
                             ),
@@ -1952,12 +1955,12 @@ def run_task(
 
         # ── Plan validation (advisory, before DEV) ───────────────────
         if state.plan_structured is not None and state.workspace_path is not None:
-            from .plan_validator import extract_spec_criteria
+            from .plan_validator import extract_story_criteria
             from .plan_validator import validate_plan as _validate_plan
 
-            _spec_criteria = extract_spec_criteria(spec_content)
+            _story_criteria = extract_story_criteria(story_content)
             _pv_findings = _validate_plan(
-                state.plan_structured, _spec_criteria, state.workspace_path
+                state.plan_structured, _story_criteria, state.workspace_path
             )
             state.plan_validation_findings = _pv_findings
             for _f in _pv_findings:
@@ -1979,7 +1982,7 @@ def run_task(
             state,
             config,
             task,
-            spec_content,
+            story_content,
             _task_start,
             interactive=interactive,
             auto_merge=auto_merge,
@@ -2043,7 +2046,7 @@ def run_from_review(
     )
     if isinstance(setup, CoordinatorResult):
         return setup
-    state, logger, branch_name, spec_content, _task_start = setup
+    state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
 
     _tee: tuple[object, object] | None = None
@@ -2068,7 +2071,7 @@ def run_from_review(
             state,
             config,
             task,
-            spec_content,
+            story_content,
             _task_start,
             interactive=interactive,
             auto_merge=auto_merge,
@@ -2130,7 +2133,7 @@ def run_from_dev(
     )
     if isinstance(setup, CoordinatorResult):
         return setup
-    state, logger, branch_name, spec_content, _task_start = setup
+    state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
 
     _tee: tuple[object, object] | None = None
@@ -2154,7 +2157,7 @@ def run_from_dev(
             state,
             config,
             task,
-            spec_content,
+            story_content,
             _task_start,
             interactive=interactive,
             auto_merge=auto_merge,
@@ -2211,7 +2214,7 @@ def run_review_only(
     )
     logger._safe_emit(
         "run_start",
-        specs=[str(task.spec_path)],
+        specs=[str(task.story_path)],
         budget_usd=config.dev_profile.budget_usd,
         resume=True,
     )
@@ -2234,7 +2237,7 @@ def run_review_only(
     branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
 
-    spec_content = load_spec(task.spec_path)
+    story_content = load_spec(task.story_path)
 
     # ── REVIEW ────────────────────────────────────────────────────────
     state.phase = Phase.REVIEW
@@ -2250,7 +2253,7 @@ def run_review_only(
     dev_notes = _get_dev_notes(config, workspace_path)
     review_prompt = build_review_prompt(
         task,
-        spec_content=spec_content,
+        story_content=story_content,
         commit_log=commit_log,
         workspace_path=str(workspace_path),
         branch=branch_name,
@@ -2273,7 +2276,7 @@ def run_review_only(
         state,
         config,
         task,
-        spec_content,
+        story_content,
         workspace_path,
         branch_name,
         meta,
@@ -2304,8 +2307,8 @@ def run_review_only(
             verdict="REQUEST_CHANGES",
             summary=canonical_summary,
             findings=parsed_review.findings,
-            spec_matches=parsed_review.spec_matches,
-            spec_mismatches=parsed_review.spec_mismatches,
+            story_matches=parsed_review.story_matches,
+            story_mismatches=parsed_review.story_mismatches,
             test_adequate=parsed_review.test_adequate,
             test_gaps=parsed_review.test_gaps,
             parse_errors=parsed_review.parse_errors,

@@ -66,12 +66,12 @@ def _make_config(project="test-project", base_branch="main", post_run=None, post
     )
 
 
-def _make_task(slug="my-feature", spec_path=None):
-    from theforge.task import TaskSpec
+def _make_task(slug="my-feature", story_path=None):
+    from theforge.task import TaskStory
 
-    return TaskSpec(
+    return TaskStory(
         name="My Feature",
-        spec_path=spec_path or Path("/tmp/specs/my-feature.md"),
+        story_path=story_path or Path("/tmp/specs/my-feature.md"),
         slug=slug,
     )
 
@@ -295,8 +295,8 @@ class TestBuildPostRunPayload:
                     suggestion="fix it",
                 )
             ],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],
@@ -393,8 +393,8 @@ class TestBuildPostRunPayloadReviewers:
                         suggestion="fix it",
                     )
                 ],
-                spec_matches=True,
-                spec_mismatches=[],
+                story_matches=True,
+                story_mismatches=[],
                 test_adequate=True,
                 test_gaps=[],
                 parse_errors=[],

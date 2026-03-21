@@ -1,7 +1,7 @@
 """CLI entry point for TheForge.
 
 Usage:
-    forge run <spec-file> [--slug SLUG] [--config forge.yaml]
+    forge run <story-file> [--slug SLUG] [--config forge.yaml]
     forge init
     forge audit <audit-file>
 """
@@ -34,7 +34,7 @@ from .runner import AgentResult, LogLevel
 from .runner import set_log_level as runner_set_log_level
 from .runner_api import run_api_agent
 from .sprint import _triage_spec, run_sprint
-from .task import TaskSpec, build_dev_prompt, build_review_prompt, load_spec
+from .task import TaskSpec, TaskStory, build_dev_prompt, build_review_prompt, load_story
 
 
 def _find_config(start: Path | None = None) -> Path | None:
@@ -47,10 +47,10 @@ def _find_config(start: Path | None = None) -> Path | None:
     return None
 
 
-def _parse_spec_frontmatter(spec_path: Path) -> dict:
-    """Extract YAML frontmatter from a spec file.
+def _parse_story_frontmatter(story_path: Path) -> dict:
+    """Extract YAML frontmatter from a story file.
 
-    Spec files can optionally have YAML frontmatter delimited by ---:
+    Story files can optionally have YAML frontmatter delimited by ---:
 
         ---
         name: Phase 6H: per-user export
@@ -58,11 +58,11 @@ def _parse_spec_frontmatter(spec_path: Path) -> dict:
         pytest_target: tests/test_export.py
         ---
 
-        # Spec content starts here...
+        # Story content starts here...
 
     If no frontmatter is present, returns empty dict.
     """
-    text = spec_path.read_text(encoding="utf-8")
+    text = story_path.read_text(encoding="utf-8")
     if not text.startswith("---"):
         return {}
 
@@ -82,16 +82,16 @@ def _parse_spec_frontmatter(spec_path: Path) -> dict:
     return result
 
 
-def _build_task(spec_path: Path, slug: str | None = None) -> TaskSpec:
-    """Build a TaskSpec from a spec file, using frontmatter if available."""
-    fm = _parse_spec_frontmatter(spec_path)
+def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
+    """Build a TaskStory from a story file, using frontmatter if available."""
+    fm = _parse_story_frontmatter(story_path)
 
     # Slug: CLI arg > frontmatter > filename stem
-    resolved_slug = slug or fm.get("slug") or spec_path.stem
+    resolved_slug = slug or fm.get("slug") or story_path.stem
 
-    return TaskSpec(
-        name=fm.get("name", spec_path.stem.replace("_", " ").replace("-", " ").title()),
-        spec_path=spec_path.resolve(),
+    return TaskStory(
+        name=fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title()),
+        story_path=story_path.resolve(),
         slug=resolved_slug,
         pytest_target=fm.get("pytest_target"),
         gate_override=fm.get("gate"),
@@ -118,7 +118,7 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Append to history log (JSONL, never overwritten).
     _append_history(audits_dir, audit)
-    # Also write to worktree for per-spec persistence (not overwritten by next run).
+    # Also write to worktree for per-story persistence (not overwritten by next run).
     # Skip for ALREADY_DONE — no real work was done, worktree is just a checkout.
     already_done = result.state.preflight_verdict == "ALREADY_DONE"
     if not already_done and result.state.workspace_path and result.state.workspace_path.exists():
@@ -137,9 +137,9 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
     return audit_path
 
 
-def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
+def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
     """Print what would happen without invoking any agents."""
-    spec_content = load_spec(spec_path)
+    story_content = load_story(story_path)
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
     branch_name = config.workspace.branch_pattern.format(slug=task.slug)
 
@@ -147,12 +147,12 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskSpec, spec_path: Path) -> int:
         task,
         workspace_path=workspace_path,
         branch_name=branch_name,
-        spec_content=spec_content,
+        story_content=story_content,
         gate_command=config.validation.gate_command,
     )
     review_prompt = build_review_prompt(
         task,
-        spec_content=spec_content,
+        story_content=story_content,
         commit_log="(dry run — no commits available)",
         workspace_path=str(workspace_path),
         branch=branch_name,
@@ -299,24 +299,24 @@ def cmd_init(args: argparse.Namespace) -> int:
     target.write_text(generate_default_config(), encoding="utf-8")
     print(f"Created {target}")
 
-    specs_dir = Path.cwd() / "specs"
-    specs_dir.mkdir(exist_ok=True)
-    template_path = specs_dir / "TEMPLATE.md"
+    stories_dir = Path.cwd() / "stories"
+    stories_dir.mkdir(exist_ok=True)
+    template_path = stories_dir / "TEMPLATE.md"
     if not template_path.exists():
         template_path.write_text(_STORY_TEMPLATE, encoding="utf-8")
         print(f"Created {template_path}")
 
-    print("Edit forge.yaml to match your project, then run: forge run <spec-file>")
+    print("Edit forge.yaml to match your project, then run: forge run <story-file>")
 
     _ensure_gitignored(Path.cwd())
     return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Execute the dev→review loop for a spec file."""
-    spec_path = Path(args.spec).resolve()
-    if not spec_path.exists():
-        print(f"Spec file not found: {spec_path}", file=sys.stderr)
+    """Execute the dev→review loop for a story file."""
+    story_path = Path(args.story).resolve()
+    if not story_path.exists():
+        print(f"Story file not found: {story_path}", file=sys.stderr)
         return 1
 
     # Find config
@@ -324,7 +324,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.config:
         config_path = Path(args.config).resolve()
     else:
-        config_path = _find_config(spec_path.parent)
+        config_path = _find_config(story_path.parent)
 
     if config_path is None or not config_path.exists():
         print(
@@ -350,7 +350,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         pass  # not a git repo or git not installed — ignore
 
     config = load_config(config_path)
-    task = _build_task(spec_path, slug=args.slug)
+    task = _build_task(story_path, slug=args.slug)
 
     print("TheForge v0.1.0", file=sys.stderr)
     print(f"  Project:    {config.project}", file=sys.stderr)
@@ -373,7 +373,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         runner_set_log_level(LogLevel.VERBOSE)
 
     if getattr(args, "dry_run", False):
-        return _cmd_dry_run(config, task, spec_path)
+        return _cmd_dry_run(config, task, story_path)
 
     # --interactive enables human review checkpoint on APPROVE; default is unattended
     interactive = getattr(args, "interactive", False)
@@ -382,7 +382,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     resume = getattr(args, "resume", False)
 
     if resume:
-        triage = _triage_spec(str(spec_path), config, config.project_root)
+        triage = _triage_spec(str(story_path), config, config.project_root)
         action_label = triage.action.upper().replace("_", " ")
         print(f"  Resume triage: {action_label} — {triage.reason}", file=sys.stderr)
 
@@ -447,9 +447,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def cmd_review(args: argparse.Namespace) -> int:
     """Run only the review pool on an existing worktree."""
-    spec_path = Path(args.spec).resolve()
-    if not spec_path.exists():
-        print(f"Spec file not found: {spec_path}", file=sys.stderr)
+    story_path = Path(args.story).resolve()
+    if not story_path.exists():
+        print(f"Story file not found: {story_path}", file=sys.stderr)
         return 1
 
     # Find config
@@ -457,7 +457,7 @@ def cmd_review(args: argparse.Namespace) -> int:
     if args.config:
         config_path = Path(args.config).resolve()
     else:
-        config_path = _find_config(spec_path.parent)
+        config_path = _find_config(story_path.parent)
 
     if config_path is None or not config_path.exists():
         print(
@@ -472,7 +472,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         runner_set_log_level(LogLevel.VERBOSE)
 
     config = load_config(config_path)
-    task = _build_task(spec_path, slug=args.slug)
+    task = _build_task(story_path, slug=args.slug)
 
     # Resolve workspace path
     if args.worktree:
@@ -517,7 +517,7 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 
 def cmd_sprint(args: argparse.Namespace) -> int:
-    """Run multiple specs sequentially via a sprint manifest."""
+    """Run multiple stories sequentially via a sprint manifest."""
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():
         print(f"Sprint manifest not found: {manifest_path}", file=sys.stderr)
@@ -565,7 +565,7 @@ def cmd_sprint(args: argparse.Namespace) -> int:
 
 
 def cmd_ideate(args: argparse.Namespace) -> int:
-    """Run multi-LLM deliberation to generate a spec from a brief."""
+    """Run multi-LLM deliberation to generate a story from a brief."""
     # Load brief from file or inline string
     brief_arg = args.brief
     brief_path = Path(brief_arg)
@@ -613,23 +613,23 @@ def cmd_ideate(args: argparse.Namespace) -> int:
 
     dry_run: bool = args.dry_run
 
-    # Compute output_path and specs_dir once before calling run_ideation.
+    # Compute output_path and stories_dir once before calling run_ideation.
     # dry-run → no file written (both None); explicit --output → output_path set;
-    # default → specs_dir set so run_ideation derives the slug-based filename.
+    # default → stories_dir set so run_ideation derives the slug-based filename.
     run_output_path: Path | None = None
-    run_specs_dir: Path | None = None
+    run_stories_dir: Path | None = None
     if not dry_run:
         if args.output:
             run_output_path = Path(args.output).resolve()
         else:
-            run_specs_dir = config.project_root / "specs"
+            run_stories_dir = config.project_root / "stories"
 
     ideation_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     ideation_start_mono = time.monotonic()
 
     try:
         result = run_ideation(
-            config, brief, run_output_path, specs_dir=run_specs_dir, max_rounds=max_rounds
+            config, brief, run_output_path, stories_dir=run_stories_dir, max_rounds=max_rounds
         )
     except ValueError as exc:
         print(f"Ideation error: {exc}", file=sys.stderr)
@@ -669,7 +669,7 @@ def _cmd_audit_ideate(audit: dict) -> int:
     sep = "=" * 60
     icon = "✓" if audit.get("success") else "✗"
     brief_preview = (audit.get("brief", "") or "")[:80].replace("\n", " ")
-    spec_path = audit.get("spec_path") or "(none)"
+    spec_path = audit.get("story_path") or audit.get("spec_path") or "(none)"
     print(sep)
     print(f"{icon} IDEATE  →  {spec_path}")
     print(sep)
@@ -1412,9 +1412,9 @@ def main() -> None:
     )
 
     # forge run
-    run_parser = subparsers.add_parser("run", help="Run dev→review loop for a spec")
-    run_parser.add_argument("spec", help="Path to the spec file")
-    run_parser.add_argument("--slug", help="Workspace slug (default: spec filename stem)")
+    run_parser = subparsers.add_parser("run", help="Run dev→review loop for a story")
+    run_parser.add_argument("story", help="Path to the story file")
+    run_parser.add_argument("--slug", help="Workspace slug (default: story filename stem)")
     run_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
     run_parser.add_argument(
         "--dry-run",
@@ -1463,8 +1463,8 @@ def main() -> None:
     review_parser = subparsers.add_parser(
         "review", help="Run only the review pool on an existing worktree"
     )
-    review_parser.add_argument("spec", help="Path to the spec file")
-    review_parser.add_argument("--slug", help="Workspace slug (default: spec filename stem)")
+    review_parser.add_argument("story", help="Path to the story file")
+    review_parser.add_argument("--slug", help="Workspace slug (default: story filename stem)")
     review_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
     review_parser.add_argument(
         "--worktree",
@@ -1492,7 +1492,7 @@ def main() -> None:
 
     # forge sprint
     sprint_parser = subparsers.add_parser(
-        "sprint", help="Run multiple specs sequentially from a sprint manifest"
+        "sprint", help="Run multiple stories sequentially from a sprint manifest"
     )
     sprint_parser.add_argument("manifest", help="Path to sprint.yaml manifest")
     sprint_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
@@ -1500,13 +1500,13 @@ def main() -> None:
         "--auto-merge",
         action="store_true",
         default=False,
-        help="Merge each spec's branch after APPROVE",
+        help="Merge each story's branch after APPROVE",
     )
     sprint_parser.add_argument(
         "--interactive",
         action="store_true",
         default=False,
-        help="Pause for human review at each spec",
+        help="Pause for human review at each story",
     )
     sprint_parser.add_argument(
         "--verbose",
@@ -1530,7 +1530,7 @@ def main() -> None:
 
     # forge ideate
     ideate_parser = subparsers.add_parser(
-        "ideate", help="Run multi-LLM deliberation to generate a spec from a brief"
+        "ideate", help="Run multi-LLM deliberation to generate a story from a brief"
     )
     ideate_parser.add_argument(
         "brief",
@@ -1542,7 +1542,7 @@ def main() -> None:
     )
     ideate_parser.add_argument(
         "--output",
-        help="Output path for generated spec (default: specs/<slug>.md)",
+        help="Output path for generated story (default: stories/<slug>.md)",
     )
     ideate_parser.add_argument(
         "--rounds",

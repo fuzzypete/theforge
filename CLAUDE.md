@@ -16,7 +16,7 @@ gh project item-list 1 --owner fuzzypete       # full project board
 
 Project board: https://github.com/users/fuzzypete/projects/1
 
-Specs live in `specs/backlog/` (not started) and `specs/done/` (shipped).
+Stories live in `specs/backlog/` (not started) and `specs/done/` (shipped).
 The GH milestones + issues are the source of truth for priorities, not the spec files.
 
 ---
@@ -67,7 +67,7 @@ findings:
     line: <number or null>
     description: "<what is wrong>"
     suggestion: "<how to fix>"
-spec_compliance:
+story_compliance:
   matches_spec: true | false
   mismatches: []
 test_coverage:
@@ -86,8 +86,8 @@ Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.
 - **If preflight can't understand a story without reading the codebase, the
   story is too implementation-coupled.** Preflight should be able to classify
   it from the story text alone.
-- A rename from "spec" to "story" is planned (#67). Until then, the code says
-  `TaskSpec` and `specs/` but the writing convention is "story."
+- The primary term is "story" throughout the codebase. `TaskSpec` is a
+  backward-compat alias for `TaskStory`; prefer `TaskStory` in new code.
 
 ### Dogfooding config
 `forge.yaml` at the project root configures theforge to develop itself. Worktrees

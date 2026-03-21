@@ -8,7 +8,7 @@ from theforge.coord_state import CycleHistory
 from theforge.review import ReviewFinding, ReviewResult, review_to_dev_handoff
 from theforge.task import (
     PlanData,
-    TaskSpec,
+    TaskStory,
     build_dev_prompt,
     build_fix_prompt,
     build_handoff_fix_prompt,
@@ -19,12 +19,12 @@ from theforge.task import (
 )
 
 
-def _make_task(tmp_path: Path) -> TaskSpec:
+def _make_task(tmp_path: Path) -> TaskStory:
     spec = tmp_path / "spec.md"
     spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
-        spec_path=spec,
+        story_path=spec,
         slug="test-task",
     )
 
@@ -38,7 +38,7 @@ class TestBuildDevPrompt:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test-task",
-            spec_content="# Spec\n\nDo the thing.",
+            story_content="# Spec\n\nDo the thing.",
             gate_command="make gate",
         )
         assert "SCOPE_BLOCKED" not in prompt
@@ -50,7 +50,7 @@ class TestBuildDevPrompt:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test-task",
-            spec_content=spec_text,
+            story_content=spec_text,
             gate_command="make gate",
         )
         assert "acceptance criteria" in prompt.lower()
@@ -330,7 +330,7 @@ class TestBuildDevPromptEscalation:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             review_findings="P1: bug",
         )
@@ -353,7 +353,7 @@ class TestBuildDevPromptEscalation:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             cycle_history=history,
         )
@@ -368,7 +368,7 @@ class TestBuildDevPromptEscalation:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
         )
         assert "Model Escalation" not in prompt
@@ -381,7 +381,7 @@ class TestBuildDevPromptEscalation:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             escalation_note=note,
         )
@@ -396,7 +396,7 @@ class TestBuildDevPromptEscalation:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             review_findings=None,
             escalation_note=note,
@@ -411,7 +411,7 @@ class TestBuildPlanPrompt:
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
-            spec_content="# Spec\n\nDo the unique thing.",
+            story_content="# Spec\n\nDo the unique thing.",
         )
         assert "Do the unique thing." in prompt
 
@@ -419,7 +419,7 @@ class TestBuildPlanPrompt:
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
-            spec_content="# Spec",
+            story_content="# Spec",
         )
         assert "Do NOT write code" in prompt
 
@@ -427,7 +427,7 @@ class TestBuildPlanPrompt:
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
-            spec_content="# Spec",
+            story_content="# Spec",
         )
         assert "plan:" in prompt
         assert "YAML" in prompt or "yaml" in prompt
@@ -436,7 +436,7 @@ class TestBuildPlanPrompt:
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
-            spec_content="# Spec",
+            story_content="# Spec",
             preflight_output="verdict: PROCEED\ncomplexity: medium",
         )
         assert "verdict: PROCEED" in prompt
@@ -445,7 +445,7 @@ class TestBuildPlanPrompt:
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
-            spec_content="# Spec",
+            story_content="# Spec",
             preflight_output=None,
         )
         assert "Preflight Analysis" not in prompt
@@ -461,7 +461,7 @@ class TestBuildDevPromptPlanOutput:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec\n\nDo the thing.",
+            story_content="# Spec\n\nDo the thing.",
             gate_command="make gate",
             plan_output=plan_text,
         )
@@ -474,7 +474,7 @@ class TestBuildDevPromptPlanOutput:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec\n\nDo the thing.",
+            story_content="# Spec\n\nDo the thing.",
             gate_command="make gate",
         )
         assert "Implementation Plan (from planning agent)" not in prompt
@@ -486,7 +486,7 @@ class TestBuildDevPromptPlanOutput:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec\n\nUnique spec content here.",
+            story_content="# Spec\n\nUnique spec content here.",
             gate_command="make gate",
             plan_output=plan_text,
         )
@@ -499,7 +499,7 @@ class TestBuildDevPromptPlanOutput:
 
 
 _REVIEW_COMMON_KWARGS = dict(
-    spec_content="# Spec",
+    story_content="# Spec",
     commit_log="abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests",
     workspace_path="/tmp/ws",
     branch="feat/test",
@@ -508,12 +508,12 @@ _REVIEW_COMMON_KWARGS = dict(
 
 
 @pytest.fixture
-def review_task(tmp_path: Path) -> TaskSpec:
+def review_task(tmp_path: Path) -> TaskStory:
     spec = tmp_path / "spec.md"
     spec.write_text("# Spec\n\nDo the thing.", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
-        spec_path=spec,
+        story_path=spec,
         slug="test-task",
     )
 
@@ -521,13 +521,13 @@ def review_task(tmp_path: Path) -> TaskSpec:
 class TestBuildReviewPrompt:
     """Tests for build_review_prompt() role specialization."""
 
-    def test_default_no_role(self, review_task: TaskSpec) -> None:
+    def test_default_no_role(self, review_task: TaskStory) -> None:
         """review_role=None produces the generic prompt."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "You are a code reviewer." in prompt
         assert "safe to merge" in prompt
 
-    def test_correctness_role(self, review_task: TaskSpec) -> None:
+    def test_correctness_role(self, review_task: TaskStory) -> None:
         """review_role='correctness' produces correctness-focused lens."""
         prompt = build_review_prompt(
             review_task, **_REVIEW_COMMON_KWARGS, review_role="correctness"
@@ -537,7 +537,7 @@ class TestBuildReviewPrompt:
         assert "logic bugs" in prompt
         assert "API boundaries" not in prompt
 
-    def test_patterns_role(self, review_task: TaskSpec) -> None:
+    def test_patterns_role(self, review_task: TaskStory) -> None:
         """review_role='patterns' produces patterns-focused lens."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role="patterns")
         assert "patterns" in prompt
@@ -545,7 +545,7 @@ class TestBuildReviewPrompt:
         assert "Error handling completeness" in prompt
         assert "Data integrity risks" not in prompt
 
-    def test_edge_cases_role(self, review_task: TaskSpec) -> None:
+    def test_edge_cases_role(self, review_task: TaskStory) -> None:
         """review_role='edge-cases' produces edge-case-focused lens."""
         prompt = build_review_prompt(
             review_task, **_REVIEW_COMMON_KWARGS, review_role="edge-cases"
@@ -555,7 +555,7 @@ class TestBuildReviewPrompt:
         assert "Failure under unexpected input" in prompt
         assert "API boundaries" not in prompt
 
-    def test_unknown_role_falls_back(self, review_task: TaskSpec) -> None:
+    def test_unknown_role_falls_back(self, review_task: TaskStory) -> None:
         """Unknown review_role falls back to the generic prompt."""
         prompt_unknown = build_review_prompt(
             review_task, **_REVIEW_COMMON_KWARGS, review_role="unknown-role"
@@ -563,13 +563,13 @@ class TestBuildReviewPrompt:
         prompt_none = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role=None)
         assert prompt_unknown == prompt_none
 
-    def test_empty_string_role_falls_back(self, review_task: TaskSpec) -> None:
+    def test_empty_string_role_falls_back(self, review_task: TaskStory) -> None:
         """Empty string review_role falls back to the generic prompt."""
         prompt_empty = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role="")
         prompt_none = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert prompt_empty == prompt_none
 
-    def test_shared_structure_across_roles(self, review_task: TaskSpec) -> None:
+    def test_shared_structure_across_roles(self, review_task: TaskStory) -> None:
         """All roles share the same YAML output format and severity rules."""
         for role in [None, "correctness", "patterns", "edge-cases", "unknown"]:
             prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, review_role=role)
@@ -578,12 +578,12 @@ class TestBuildReviewPrompt:
             assert "## Severity Definitions" in prompt
             assert "## Rules" in prompt
 
-    def test_includes_task_name(self, review_task: TaskSpec) -> None:
+    def test_includes_task_name(self, review_task: TaskStory) -> None:
         """Task name appears in the prompt header."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "Test Task" in prompt
 
-    def test_includes_commit_log(self, review_task: TaskSpec) -> None:
+    def test_includes_commit_log(self, review_task: TaskStory) -> None:
         """Commit log is embedded in the prompt as primary handoff."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "## Commits" in prompt
@@ -592,7 +592,7 @@ class TestBuildReviewPrompt:
         assert "git show" in prompt
         assert "Changed Files (git diff --stat)" not in prompt
 
-    def test_includes_tool_instructions(self, review_task: TaskSpec) -> None:
+    def test_includes_tool_instructions(self, review_task: TaskStory) -> None:
         """Reviewer is instructed to use Read/Bash/Glob/Grep tools."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "Read" in prompt
@@ -602,7 +602,7 @@ class TestBuildReviewPrompt:
         assert "/tmp/ws" in prompt
         assert "feat/test" in prompt
 
-    def test_includes_spec(self, review_task: TaskSpec) -> None:
+    def test_includes_spec(self, review_task: TaskStory) -> None:
         """Spec content is embedded in the prompt."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "# Spec" in prompt
@@ -626,7 +626,7 @@ class TestBuildReviewPromptCycleHistory:
             ),
         ]
 
-    def test_cycle1_no_framing_when_history_none(self, review_task: TaskSpec) -> None:
+    def test_cycle1_no_framing_when_history_none(self, review_task: TaskStory) -> None:
         """Cycle 1 (no history): prompt unchanged — no tri-part framing."""
         prompt = build_review_prompt(
             review_task,
@@ -637,7 +637,7 @@ class TestBuildReviewPromptCycleHistory:
         assert "Verify Fixes" not in prompt
         assert "Scan Regressions" not in prompt
 
-    def test_cycle1_no_framing_when_history_empty(self, review_task: TaskSpec) -> None:
+    def test_cycle1_no_framing_when_history_empty(self, review_task: TaskStory) -> None:
         """Cycle 1 with empty list: same as None."""
         prompt = build_review_prompt(
             review_task,
@@ -646,7 +646,7 @@ class TestBuildReviewPromptCycleHistory:
         )
         assert "Cycle-Aware Review Framing" not in prompt
 
-    def test_cycle2_includes_tri_part_framing(self, review_task: TaskSpec) -> None:
+    def test_cycle2_includes_tri_part_framing(self, review_task: TaskStory) -> None:
         """Cycle 2+: prompt includes all three framing parts."""
         prompt = build_review_prompt(
             review_task,
@@ -658,7 +658,7 @@ class TestBuildReviewPromptCycleHistory:
         assert "Part 2" in prompt
         assert "Part 3" in prompt
 
-    def test_cycle2_lists_prior_p1_findings(self, review_task: TaskSpec) -> None:
+    def test_cycle2_lists_prior_p1_findings(self, review_task: TaskStory) -> None:
         """Cycle 2+: prior P1 findings are listed under Verify Fixes."""
         prompt = build_review_prompt(
             review_task,
@@ -668,7 +668,7 @@ class TestBuildReviewPromptCycleHistory:
         assert "Missing null check in src/foo.py:42" in prompt
         assert "Cycle 1" in prompt
 
-    def test_cycle2_shows_correct_cycle_number(self, review_task: TaskSpec) -> None:
+    def test_cycle2_shows_correct_cycle_number(self, review_task: TaskStory) -> None:
         """Cycle 2+: cycle number in header reflects current cycle."""
         history = self._make_history()  # 1 cycle → reviewing cycle 2
         prompt = build_review_prompt(
@@ -678,7 +678,7 @@ class TestBuildReviewPromptCycleHistory:
         )
         assert "review cycle 2" in prompt
 
-    def test_cycle3_shows_all_prior_p1s(self, review_task: TaskSpec) -> None:
+    def test_cycle3_shows_all_prior_p1s(self, review_task: TaskStory) -> None:
         """Cycle 3+: findings from all prior cycles are listed."""
         history = [
             CycleHistory(
@@ -703,7 +703,7 @@ class TestBuildReviewPromptCycleHistory:
         assert "Beta finding from cycle 2" in prompt
         assert "review cycle 3" in prompt
 
-    def test_cycle1_still_has_standard_sections(self, review_task: TaskSpec) -> None:
+    def test_cycle1_still_has_standard_sections(self, review_task: TaskStory) -> None:
         """Cycle 1 prompt still has Severity Definitions and Rules."""
         prompt = build_review_prompt(
             review_task,
@@ -713,7 +713,7 @@ class TestBuildReviewPromptCycleHistory:
         assert "## Severity Definitions" in prompt
         assert "## Rules" in prompt
 
-    def test_cycle2_also_has_standard_sections(self, review_task: TaskSpec) -> None:
+    def test_cycle2_also_has_standard_sections(self, review_task: TaskStory) -> None:
         """Cycle 2 prompt keeps standard sections in addition to framing."""
         prompt = build_review_prompt(
             review_task,
@@ -725,22 +725,22 @@ class TestBuildReviewPromptCycleHistory:
         assert "## Commits" in prompt
 
 
-# ── TaskSpec.depends_on ──────────────────────────────────────────────
+# ── TaskStory.depends_on ──────────────────────────────────────────────
 
 
-class TestTaskSpecDependsOn:
+class TestTaskStoryDependsOn:
     def test_depends_on_default_empty(self, tmp_path: Path) -> None:
-        """TaskSpec without depends_on argument defaults to []."""
+        """TaskStory without depends_on argument defaults to []."""
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test")
+        task = TaskStory(name="Test", story_path=spec, slug="test")
         assert task.depends_on == []
 
     def test_depends_on_list(self, tmp_path: Path) -> None:
-        """TaskSpec accepts depends_on as a list of strings."""
+        """TaskStory accepts depends_on as a list of strings."""
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test", depends_on=["a", "b"])
+        task = TaskStory(name="Test", story_path=spec, slug="test", depends_on=["a", "b"])
         assert task.depends_on == ["a", "b"]
 
 
@@ -751,8 +751,8 @@ def _make_review_result(
     verdict: str = "REQUEST_CHANGES",
     summary: str = "Review summary.",
     findings: list[ReviewFinding] | None = None,
-    spec_matches: bool = True,
-    spec_mismatches: list[str] | None = None,
+    story_matches: bool = True,
+    story_mismatches: list[str] | None = None,
     test_adequate: bool = True,
     test_gaps: list[str] | None = None,
 ) -> ReviewResult:
@@ -760,8 +760,8 @@ def _make_review_result(
         verdict=verdict,
         summary=summary,
         findings=findings or [],
-        spec_matches=spec_matches,
-        spec_mismatches=spec_mismatches or [],
+        story_matches=story_matches,
+        story_mismatches=story_mismatches or [],
         test_adequate=test_adequate,
         test_gaps=test_gaps or [],
         parse_errors=[],
@@ -781,8 +781,8 @@ class TestReviewToDevHandoff:
         result = _make_review_result(
             summary="Found a bug.",
             findings=[finding],
-            spec_matches=False,
-            spec_mismatches=["Missing batch config"],
+            story_matches=False,
+            story_mismatches=["Missing batch config"],
             test_adequate=False,
             test_gaps=["No edge case test"],
         )
@@ -802,7 +802,7 @@ class TestReviewToDevHandoff:
         result = _make_review_result(
             summary="All good.",
             findings=[],
-            spec_matches=True,
+            story_matches=True,
             test_adequate=True,
         )
         output = review_to_dev_handoff(result)
@@ -823,7 +823,7 @@ class TestReviewToDevHandoff:
         result = _make_review_result(
             summary="Minor issue only.",
             findings=[finding],
-            spec_matches=True,
+            story_matches=True,
             test_adequate=True,
         )
         output = review_to_dev_handoff(result)
@@ -860,7 +860,7 @@ class TestReviewToDevHandoff:
         assert "**Fix:**" not in output
 
     def test_spec_false_but_empty_mismatches_omits_section(self):
-        result = _make_review_result(spec_matches=False, spec_mismatches=[])
+        result = _make_review_result(story_matches=False, story_mismatches=[])
         output = review_to_dev_handoff(result)
         assert "## Spec Compliance Issues" not in output
 
@@ -874,7 +874,7 @@ class TestReviewToDevHandoff:
 
 
 class TestBuildReviewPromptDevNotes:
-    def test_dev_notes_present(self, review_task: TaskSpec) -> None:
+    def test_dev_notes_present(self, review_task: TaskStory) -> None:
         prompt = build_review_prompt(
             review_task,
             **_REVIEW_COMMON_KWARGS,
@@ -885,11 +885,11 @@ class TestBuildReviewPromptDevNotes:
         # Dev Notes section appears before Commits
         assert prompt.index("## Developer Notes") < prompt.index("## Commits")
 
-    def test_dev_notes_none(self, review_task: TaskSpec) -> None:
+    def test_dev_notes_none(self, review_task: TaskStory) -> None:
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, dev_notes=None)
         assert "## Developer Notes" not in prompt
 
-    def test_dev_notes_empty_string(self, review_task: TaskSpec) -> None:
+    def test_dev_notes_empty_string(self, review_task: TaskStory) -> None:
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS, dev_notes="")
         assert "## Developer Notes" not in prompt
 
@@ -901,12 +901,12 @@ class TestBuildDevPromptDevNotesInstruction:
     def test_gate_not_skipped_includes_dev_notes(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test")
+        task = TaskStory(name="Test", story_path=spec, slug="test")
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             gate_skipped=False,
         )
@@ -916,12 +916,12 @@ class TestBuildDevPromptDevNotesInstruction:
     def test_gate_skipped_excludes_gate_command(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test")
+        task = TaskStory(name="Test", story_path=spec, slug="test")
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             gate_skipped=True,
         )
@@ -982,7 +982,7 @@ class TestBuildPlanReviewPrompt:
 class TestBuildHandoffFixPrompt:
     def test_contains_validation_errors(self, tmp_path: Path) -> None:
         task = _make_task(tmp_path)
-        errors = ["summary must be a non-empty string", "spec_deviations is required"]
+        errors = ["summary must be a non-empty string", "story_deviations is required"]
         prompt = build_handoff_fix_prompt(
             task,
             workspace_path=tmp_path / "ws",
@@ -990,7 +990,7 @@ class TestBuildHandoffFixPrompt:
             validation_errors=errors,
         )
         assert "summary must be a non-empty string" in prompt
-        assert "spec_deviations is required" in prompt
+        assert "story_deviations is required" in prompt
 
     def test_contains_workspace_info(self, tmp_path: Path) -> None:
         task = _make_task(tmp_path)
@@ -1012,7 +1012,7 @@ class TestBuildHandoffFixPrompt:
             branch_name="feat/test",
             validation_errors=["error"],
         )
-        assert "spec_deviations" in prompt
+        assert "story_deviations" in prompt
         assert "deferred_items" in prompt
         assert "summary" in prompt
         assert "commits" in prompt
@@ -1038,17 +1038,17 @@ class TestBuildDevPromptStructuredHandoff:
     def test_gate_not_skipped_includes_structured_format(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
         spec.write_text("# Spec", encoding="utf-8")
-        task = TaskSpec(name="Test", spec_path=spec, slug="test")
+        task = TaskStory(name="Test", story_path=spec, slug="test")
         prompt = build_dev_prompt(
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             gate_skipped=False,
         )
         # Must instruct all structured YAML fields
-        assert "spec_deviations" in prompt
+        assert "story_deviations" in prompt
         assert "deferred_items" in prompt
         assert "summary" in prompt
         assert "commits" in prompt
@@ -1236,7 +1236,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan,
         )
@@ -1252,7 +1252,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan,
         )
@@ -1265,7 +1265,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan,
         )
@@ -1278,7 +1278,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan,
         )
@@ -1291,7 +1291,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan,
         )
@@ -1306,7 +1306,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan,
         )
@@ -1320,7 +1320,7 @@ class TestBuildDevPromptStructuredPlan:
             task,
             workspace_path=tmp_path / "ws",
             branch_name="feat/test",
-            spec_content="# Spec",
+            story_content="# Spec",
             gate_command="make gate",
             plan_output=plan_text,
         )

@@ -14,14 +14,14 @@ logger = logging.getLogger(__name__)
 
 def validate_plan(
     plan: dict,
-    spec_criteria: list[str],
+    story_criteria: list[str],
     workspace_path: Path,
 ) -> list[dict]:
     """Run four mechanical validation checks on a structured plan.
 
     Args:
         plan: A PlanData dict (from parse_plan_output).
-        spec_criteria: Acceptance criterion strings from the spec.
+        story_criteria: Acceptance criterion strings from the story.
         workspace_path: Root of the workspace for file-existence checks.
 
     Returns:
@@ -34,7 +34,7 @@ def validate_plan(
 
     # ── 1. AC coverage ────────────────────────────────────────────────
     mapped_criteria = {entry.get("criterion", "") for entry in criteria_mapping}
-    for criterion in spec_criteria:
+    for criterion in story_criteria:
         if criterion and criterion not in mapped_criteria:
             findings.append(
                 {
@@ -140,8 +140,8 @@ def validate_plan(
     return findings
 
 
-def extract_spec_criteria(spec_content: str) -> list[str]:
-    """Extract acceptance criteria lines from a spec's markdown body.
+def extract_story_criteria(story_content: str) -> list[str]:
+    """Extract acceptance criteria lines from a story's markdown body.
 
     Looks for lines matching '- [ ] <criterion>' under any heading that
     contains 'acceptance criteria' (case-insensitive).
@@ -152,7 +152,7 @@ def extract_spec_criteria(spec_content: str) -> list[str]:
     criteria: list[str] = []
     in_ac_section = False
 
-    for line in spec_content.splitlines():
+    for line in story_content.splitlines():
         stripped = line.strip()
         # Detect AC section header
         if stripped.startswith("#") and "acceptance criteria" in stripped.lower():
@@ -170,3 +170,7 @@ def extract_spec_criteria(spec_content: str) -> list[str]:
                     criteria.append(criterion)
 
     return criteria
+
+
+# Backward-compat alias
+extract_spec_criteria = extract_story_criteria

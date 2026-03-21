@@ -1,5 +1,5 @@
 name: m1-remaining
-specs:
+stories:
   - specs/backlog/escalate-hitl.md
   - specs/backlog/crash-diagnostics.md
   - specs/backlog/workspace-branch-collision.md

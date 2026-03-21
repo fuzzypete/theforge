@@ -22,7 +22,7 @@ class DevHandoff:
     summary: str
     commits: list[dict[str, str]]  # [{sha, message}]
     acceptance_criteria: list[dict[str, str]]  # [{criterion, status, notes}]
-    spec_deviations: list[dict[str, str]]  # [{description, justification}]
+    story_deviations: list[dict[str, str]]  # [{description, justification}]
     deferred_items: list[dict[str, str]]  # [{description, reason}]
     gate_result: str  # "PASS" or "FAIL"
     parse_errors: list[str]  # non-empty if parsing/validation failed
@@ -41,7 +41,7 @@ def parse_dev_handoff(dev_notes: str) -> DevHandoff:
         summary="",
         commits=[],
         acceptance_criteria=[],
-        spec_deviations=[],
+        story_deviations=[],
         deferred_items=[],
         gate_result="",
         parse_errors=[],
@@ -95,13 +95,15 @@ def parse_dev_handoff(dev_notes: str) -> DevHandoff:
                     }
                 )
 
-    # Extract spec_deviations
-    raw_deviations = data.get("spec_deviations")
-    spec_deviations: list[dict[str, str]] = []
+    # Extract story_deviations (accept spec_deviations for backward compat)
+    raw_deviations = (
+        data.get("story_deviations") if "story_deviations" in data else data.get("spec_deviations")
+    )
+    story_deviations: list[dict[str, str]] = []
     if isinstance(raw_deviations, list):
         for d in raw_deviations:
             if isinstance(d, dict):
-                spec_deviations.append(
+                story_deviations.append(
                     {
                         "description": d.get("description", ""),
                         "justification": d.get("justification", ""),
@@ -125,7 +127,7 @@ def parse_dev_handoff(dev_notes: str) -> DevHandoff:
         summary=data.get("summary", ""),
         commits=commits,
         acceptance_criteria=acceptance_criteria,
-        spec_deviations=spec_deviations,
+        story_deviations=story_deviations,
         deferred_items=deferred_items,
         gate_result=str(data.get("gate_result", "")),
         parse_errors=schema_errors,
@@ -161,9 +163,9 @@ def dev_handoff_to_reviewer_text(handoff: DevHandoff) -> str:
                 lines.append(f"  {ac['notes']}")
         parts.append("\n".join(lines))
 
-    if handoff.spec_deviations:
-        lines = ["**Spec Deviations:**"]
-        for d in handoff.spec_deviations:
+    if handoff.story_deviations:
+        lines = ["**Story Deviations:**"]
+        for d in handoff.story_deviations:
             lines.append(f"- {d['description']}")
             lines.append(f"  *Justification:* {d['justification']}")
         parts.append("\n".join(lines))

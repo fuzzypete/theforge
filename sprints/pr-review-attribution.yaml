@@ -1,4 +1,4 @@
 name: "PR review attribution — per-reviewer GitHub reviews"
 budget_usd: 30.00
-specs:
+stories:
   - specs/backlog/pr-review-attribution.md

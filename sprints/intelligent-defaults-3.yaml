@@ -10,5 +10,5 @@ auto_merge: true
 #
 # Depends on: adaptive-model-assignment (needs tier definitions and assign_models)
 
-specs:
+stories:
   - specs/backlog/escalation-learning.md

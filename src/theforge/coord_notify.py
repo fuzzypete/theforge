@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from . import coord_state as _cs
 from .config import ForgeConfig
 from .review import ReviewResult
-from .task import TaskSpec
+from .task import TaskStory as TaskSpec  # noqa: F401
 
 
 def _osa_quote(s: str) -> str:

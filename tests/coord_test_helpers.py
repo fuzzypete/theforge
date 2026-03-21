@@ -21,7 +21,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.runner import AgentResult, LogLevel  # noqa: F401
-from theforge.task import TaskSpec
+from theforge.task import TaskStory
 
 
 def _make_config(tmp_path: Path) -> ForgeConfig:
@@ -66,13 +66,13 @@ def _make_pool_config(
     )
 
 
-def _make_task(tmp_path: Path) -> TaskSpec:
+def _make_task(tmp_path: Path) -> TaskStory:
     """Create a test task with a real spec file."""
     spec = tmp_path / "spec.md"
     spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
-        spec_path=spec,
+        story_path=spec,
         slug="test-task",
     )
 
@@ -125,7 +125,7 @@ _VALID_DEV_NOTES = (
     '  - criterion: "It works"\n'
     "    status: MET\n"
     '    notes: "tested"\n'
-    "spec_deviations: none\n"
+    "story_deviations: none\n"
     "deferred_items: none\n"
     "gate_result: PASS\n"
 )
@@ -192,7 +192,7 @@ APPROVE_REVIEW = """\
 verdict: APPROVE
 summary: "Looks good."
 findings: []
-spec_compliance:
+story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
@@ -209,7 +209,7 @@ findings:
     line: 10
     description: "Off by one"
     suggestion: "Fix it"
-spec_compliance:
+story_compliance:
   matches_spec: false
   mismatches:
     - "Missing batch config"

@@ -50,24 +50,24 @@ from .coord_workspace import _merge_branch
 from .review import ReviewFinding, ReviewResult, _best_individual_result, review_to_dev_handoff
 from .runner import log_agent_result
 from .sessions import save_sessions
-from .task import TaskSpec
+from .task import TaskStory as TaskSpec  # noqa: F401
 from .traces import write_trace
 
 _pr_log = logging.getLogger(__name__)
 
 
-def _archive_spec_to_done(
-    spec_path: str | Path,
+def _archive_story_to_done(
+    story_path: str | Path,
     cwd: Path,
     *,
     commit: bool = False,
 ) -> bool:
-    """Move a spec file from backlog/ to done/ via git mv.
+    """Move a story file from backlog/ to done/ via git mv.
 
     Returns True if the move succeeded, False otherwise (best-effort).
     When *commit* is True a small git commit is created for the move.
     """
-    src = Path(spec_path)
+    src = Path(story_path)
     # Only move files that live under specs/backlog/
     try:
         rel = src.relative_to(cwd)
@@ -91,9 +91,9 @@ def _archive_spec_to_done(
             timeout=15,
         )
         if proc.returncode != 0:
-            _log_verbose(f"  spec archive git mv failed: {proc.stderr.decode().strip()}")
+            _log_verbose(f"  story archive git mv failed: {proc.stderr.decode().strip()}")
             return False
-        _log(f"  Archived spec: {rel} → {dest}")
+        _log(f"  Archived story: {rel} → {dest}")
         if commit:
             subprocess.run(
                 ["git", "commit", "-m", f"chore: archive {rel.name} to done/"],
@@ -103,7 +103,7 @@ def _archive_spec_to_done(
             )
         return True
     except Exception as exc:
-        _log_verbose(f"  spec archive failed: {exc}")
+        _log_verbose(f"  story archive failed: {exc}")
         return False
 
 
@@ -146,8 +146,8 @@ def _create_pr(
         f"- **Tests:** N/A\n\n"
         f"## Findings\n\n"
         f"{findings_md}\n\n"
-        f"## Spec\n\n"
-        f"{task.name} (`{task.spec_path}`)\n\n"
+        f"## Story\n\n"
+        f"{task.name} (`{task.story_path}`)\n\n"
         f"---\n"
         f"*Created automatically by [TheForge](https://github.com/fuzzypete/theforge)*"
     )
@@ -176,8 +176,8 @@ def _create_pr(
     worktree_dir = config.workspace.path_pattern.format(slug=task.slug)
     worktree_path = config.project_root / worktree_dir
     push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
-    if task.spec_path:
-        _archive_spec_to_done(task.spec_path, push_cwd, commit=True)
+    if task.story_path:
+        _archive_story_to_done(task.story_path, push_cwd, commit=True)
 
     # Push the feature branch to origin before creating the PR.
     try:
@@ -289,8 +289,8 @@ def _finalize_approve(
         merge_suffix = (
             " Merged." if merge_info["merged"] else f" Merge failed: {merge_info['error']}"
         )
-        if merge_info["merged"] and task.spec_path:
-            _archive_spec_to_done(task.spec_path, config.project_root, commit=True)
+        if merge_info["merged"] and task.story_path:
+            _archive_story_to_done(task.story_path, config.project_root, commit=True)
         if logger:
             logger._safe_emit(
                 "merge_result",
@@ -504,7 +504,7 @@ def _run_review_phase(
     state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
-    spec_content: str,
+    story_content: str,
     workspace_path: Path,
     branch_name: str,
     task_start: float,
@@ -546,7 +546,7 @@ def _run_review_phase(
             state,
             config,
             task,
-            spec_content,
+            story_content,
             workspace_path,
             branch_name,
             meta,
@@ -609,8 +609,8 @@ def _run_review_phase(
                         suggestion="Check reviewer logs for details.",
                     )
                 ],
-                spec_matches=False,
-                spec_mismatches=[],
+                story_matches=False,
+                story_mismatches=[],
                 test_adequate=False,
                 test_gaps=[],
                 parse_errors=[],
@@ -1156,7 +1156,7 @@ def _run_dev_phase(
     state: CoordinatorState,
     config: ForgeConfig,
     task: TaskSpec,
-    spec_content: str,
+    story_content: str,
     workspace_path: Path,
     branch_name: str,
     *,
@@ -1221,7 +1221,7 @@ def _run_dev_phase(
             task,
             workspace_path=workspace_path,
             branch_name=branch_name,
-            spec_content=spec_content,
+            story_content=story_content,
             gate_command=_gate_cmd,
             gate_skipped=_is_gate_skip(task.gate_override),
             review_findings=state.last_review_findings,

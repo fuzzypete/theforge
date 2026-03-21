@@ -1,11 +1,11 @@
-"""Multi-LLM deliberation for spec generation.
+"""Multi-LLM deliberation for story generation.
 
 Runs a structured deliberation protocol across a model pool to produce a
-synthesized spec from an ambiguous brief. The protocol has three phases:
+synthesized story from an ambiguous brief. The protocol has three phases:
 
   Phase 1: Independent generation — each model produces ideas independently.
   Phase 2: Cross-review — each model critiques all Phase 1 outputs.
-  Phase 3: Synthesis — a synthesis model consolidates to a draft spec.
+  Phase 3: Synthesis — a synthesis model consolidates to a draft story.
 
 The coordinator remains fully deterministic. Only the ideation agents are LLMs.
 """
@@ -46,7 +46,7 @@ class IdeationRound:
 @dataclass
 class IdeationResult:
     success: bool
-    spec_path: Path | None  # written spec file, or None if human-decision needed
+    story_path: Path | None  # written story file, or None if human-decision needed
     rounds: list[IdeationRound]
     final_synthesis: str  # final synthesized spec text
     residual_divergence: list[str]  # items needing human executive decision
@@ -420,7 +420,7 @@ def _failed_result(
     """Return a failed IdeationResult with an error message in final_synthesis."""
     return IdeationResult(
         success=False,
-        spec_path=None,
+        story_path=None,
         rounds=rounds,
         final_synthesis=msg,
         residual_divergence=[],
@@ -434,7 +434,7 @@ def run_ideation(
     brief: str,
     output_path: Path | None,
     *,
-    specs_dir: Path | None = None,
+    stories_dir: Path | None = None,
     max_rounds: int = 2,
 ) -> IdeationResult:
     """Execute the full deliberation protocol.
@@ -453,8 +453,8 @@ def run_ideation(
         brief: The ideation brief (text).
         output_path: Where to write the generated spec. Pass None to skip writing
             (caller handles output, or use specs_dir for auto-naming).
-        specs_dir: When output_path is None and specs_dir is provided, the spec
-            is written to specs_dir/<slug>.md after synthesis (slug derived from
+        stories_dir: When output_path is None and stories_dir is provided, the story
+            is written to stories_dir/<slug>.md after synthesis (slug derived from
             the synthesized frontmatter). Ignored when output_path is given.
         max_rounds: Maximum deliberation rounds before surfacing residual divergence.
             Must be >= 1; values < 1 are clamped to 1.
@@ -697,9 +697,9 @@ def run_ideation(
     # function definitions, or class/dataclass definitions.
     has_prohibited, prohibited_reason = _has_prohibited_content(final_synthesis)
     if has_prohibited:
-        _log(f"✗ IDEATE   spec contains prohibited content: {prohibited_reason}")
+        _log(f"✗ IDEATE   story contains prohibited content: {prohibited_reason}")
         return _failed_result(
-            f"Spec contains prohibited implementation detail ({prohibited_reason}). "
+            f"Story contains prohibited implementation detail ({prohibited_reason}). "
             f"Regenerate without code blocks, function signatures, or class definitions.",
             all_rounds,
             total_cost,
@@ -711,9 +711,9 @@ def run_ideation(
     # this check ensures overlong responses never reach the output file.
     spec_line_count = len(final_synthesis.splitlines())
     if spec_line_count > _SPEC_LINE_LIMIT:
-        _log(f"✗ IDEATE   spec exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines)")
+        _log(f"✗ IDEATE   story exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines)")
         return _failed_result(
-            f"Spec exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines). "
+            f"Story exceeds {_SPEC_LINE_LIMIT}-line limit ({spec_line_count} lines). "
             f"Revise the brief to reduce scope.",
             all_rounds,
             total_cost,
@@ -723,9 +723,9 @@ def run_ideation(
     written_path: Path | None = None
     if output_path is not None:
         written_path = output_path
-    elif specs_dir is not None:
-        slug = _extract_slug_from_spec(final_synthesis) or "ideated-spec"
-        written_path = specs_dir / f"{slug}.md"
+    elif stories_dir is not None:
+        slug = _extract_slug_from_spec(final_synthesis) or "ideated-story"
+        written_path = stories_dir / f"{slug}.md"
 
     # Write spec file
     if written_path is not None:
@@ -737,7 +737,7 @@ def run_ideation(
     mins, secs = divmod(int(elapsed_total), 60)
     dur_str = f"{mins}m {secs:02d}s" if mins else f"{secs}s"
     spec_label = str(written_path) if written_path else "(no output)"
-    _log(f"✓ IDEATE   spec written: {spec_label}  ${total_cost:.2f}  {dur_str}")
+    _log(f"✓ IDEATE   story written: {spec_label}  ${total_cost:.2f}  {dur_str}")
     if human_decision_required:
         _log(
             f"⚠ {len(residual_divergence)} item(s) require human decision "
@@ -746,7 +746,7 @@ def run_ideation(
 
     return IdeationResult(
         success=True,
-        spec_path=written_path,
+        story_path=written_path,
         rounds=all_rounds,
         final_synthesis=final_synthesis,
         residual_divergence=residual_divergence,
@@ -786,7 +786,7 @@ def generate_ideation_audit(
     return {
         "type": "ideate",
         "brief": brief[:500],  # truncate very long briefs for readability
-        "spec_path": str(result.spec_path) if result.spec_path else None,
+        "story_path": str(result.story_path) if result.story_path else None,
         "success": result.success,
         "human_decision_required": result.human_decision_required,
         "residual_divergence": result.residual_divergence,

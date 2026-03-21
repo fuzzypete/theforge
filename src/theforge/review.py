@@ -33,8 +33,8 @@ class ReviewResult:
     verdict: str  # "APPROVE" or "REQUEST_CHANGES"
     summary: str
     findings: list[ReviewFinding]
-    spec_matches: bool
-    spec_mismatches: list[str]
+    story_matches: bool
+    story_mismatches: list[str]
     test_adequate: bool
     test_gaps: list[str]
     parse_errors: list[str]  # non-empty if parsing/validation failed
@@ -81,10 +81,10 @@ def parse_review_json(data: dict) -> ReviewResult:
                 )
             )
 
-    # Extract spec compliance
-    spec = data.get("spec_compliance", {})
-    spec_matches = spec.get("matches_spec", False) if isinstance(spec, dict) else False
-    spec_mismatches = spec.get("mismatches", []) if isinstance(spec, dict) else []
+    # Extract story compliance (accept both story_compliance and spec_compliance for compat)
+    spec = data.get("story_compliance") or data.get("spec_compliance") or {}
+    story_matches = spec.get("matches_spec", False) if isinstance(spec, dict) else False
+    story_mismatches = spec.get("mismatches", []) if isinstance(spec, dict) else []
 
     # Extract test coverage
     tests = data.get("test_coverage", {})
@@ -95,8 +95,8 @@ def parse_review_json(data: dict) -> ReviewResult:
         verdict=data.get("verdict", "REQUEST_CHANGES"),
         summary=data.get("summary", "(no summary)"),
         findings=findings,
-        spec_matches=spec_matches,
-        spec_mismatches=spec_mismatches if isinstance(spec_mismatches, list) else [],
+        story_matches=story_matches,
+        story_mismatches=story_mismatches if isinstance(story_mismatches, list) else [],
         test_adequate=test_adequate,
         test_gaps=test_gaps if isinstance(test_gaps, list) else [],
         parse_errors=schema_errors,
@@ -130,8 +130,8 @@ def parse_review_output(agent_output: str) -> ReviewResult:
             verdict="REQUEST_CHANGES",
             summary="PARSE ERROR: Could not parse review output as YAML",
             findings=[],
-            spec_matches=False,
-            spec_mismatches=[],
+            story_matches=False,
+            story_mismatches=[],
             test_adequate=False,
             test_gaps=[],
             parse_errors=[f"YAML parse error: {e}"],
@@ -143,8 +143,8 @@ def parse_review_output(agent_output: str) -> ReviewResult:
             verdict="REQUEST_CHANGES",
             summary="PARSE ERROR: Review output root is not a YAML mapping",
             findings=[],
-            spec_matches=False,
-            spec_mismatches=[],
+            story_matches=False,
+            story_mismatches=[],
             test_adequate=False,
             test_gaps=[],
             parse_errors=["Root element is not a mapping"],
@@ -168,10 +168,10 @@ def parse_review_output(agent_output: str) -> ReviewResult:
                 )
             )
 
-    # Extract spec compliance
-    spec = data.get("spec_compliance", {})
-    spec_matches = spec.get("matches_spec", False) if isinstance(spec, dict) else False
-    spec_mismatches = spec.get("mismatches", []) if isinstance(spec, dict) else []
+    # Extract story compliance (accept both story_compliance and spec_compliance for compat)
+    spec = data.get("story_compliance") or data.get("spec_compliance") or {}
+    story_matches = spec.get("matches_spec", False) if isinstance(spec, dict) else False
+    story_mismatches = spec.get("mismatches", []) if isinstance(spec, dict) else []
 
     # Extract test coverage
     tests = data.get("test_coverage", {})
@@ -182,8 +182,8 @@ def parse_review_output(agent_output: str) -> ReviewResult:
         verdict=data.get("verdict", "REQUEST_CHANGES"),
         summary=data.get("summary", "(no summary)"),
         findings=findings,
-        spec_matches=spec_matches,
-        spec_mismatches=spec_mismatches if isinstance(spec_mismatches, list) else [],
+        story_matches=story_matches,
+        story_mismatches=story_mismatches if isinstance(story_mismatches, list) else [],
         test_adequate=test_adequate,
         test_gaps=test_gaps if isinstance(test_gaps, list) else [],
         parse_errors=schema_errors,
@@ -401,8 +401,8 @@ def review_to_dev_handoff(result: ReviewResult) -> str:
 
     parts.append(f"## Review Summary\n{result.summary}")
 
-    if not result.spec_matches and result.spec_mismatches:
-        bullets = "\n".join(f"- {m}" for m in result.spec_mismatches)
+    if not result.story_matches and result.story_mismatches:
+        bullets = "\n".join(f"- {m}" for m in result.story_mismatches)
         parts.append(f"## Spec Compliance Issues\n{bullets}")
 
     if not result.test_adequate and result.test_gaps:
@@ -433,7 +433,7 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
     - Verdict: REQUEST_CHANGES if any valid reviewer says so, else APPROVE
     - Summary: one line per valid reviewer labelled by name
     - Findings: union of all valid findings (preserves duplicates)
-    - spec_matches: False if any valid reviewer says False
+    - story_matches: False if any valid reviewer says False
     - test_adequate: False if any valid reviewer says False
     """
     import logging as _logging
@@ -458,8 +458,8 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
             verdict="REQUEST_CHANGES",
             summary="All reviewers produced unparseable output",
             findings=[],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=excluded_errors or ["All reviewers failed to produce valid output"],
@@ -476,11 +476,11 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
     for _, r in valid:
         all_findings.extend(r.findings)
 
-    spec_matches = all(r.spec_matches for _, r in valid)
-    spec_mismatches: list[str] = []
+    story_matches = all(r.story_matches for _, r in valid)
+    story_mismatches: list[str] = []
     for name, r in valid:
-        for m in r.spec_mismatches:
-            spec_mismatches.append(f"[{name}] {m}")
+        for m in r.story_mismatches:
+            story_mismatches.append(f"[{name}] {m}")
 
     test_adequate = all(r.test_adequate for _, r in valid)
     test_gaps: list[str] = []
@@ -492,8 +492,8 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
         verdict=verdict,
         summary=summary,
         findings=all_findings,
-        spec_matches=spec_matches,
-        spec_mismatches=spec_mismatches,
+        story_matches=story_matches,
+        story_mismatches=story_mismatches,
         test_adequate=test_adequate,
         test_gaps=test_gaps,
         parse_errors=[],  # valid reviewers had no errors

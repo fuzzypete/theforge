@@ -1,6 +1,6 @@
 name: "Hardening Sprint 3 — PR on approve + project-local logs"
 budget_usd: 60
 auto_merge: true
-specs:
+stories:
   - specs/backlog/pr-on-approve.md
   - specs/backlog/project-local-logs.md

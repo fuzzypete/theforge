@@ -9,7 +9,7 @@ import yaml
 
 from . import coord_util as _cu
 from .config import ForgeConfig
-from .task import TaskSpec
+from .task import TaskStory as TaskSpec  # noqa: F401
 from .traces import write_trace
 
 
