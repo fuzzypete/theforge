@@ -166,6 +166,7 @@ class CoordinatorState:
     escalate_decision: str | None = None  # "approve" | "reject" | "continue"
     escalate_reason: str | None = None  # human-readable escalation reason
     spec_validation_result: SpecValidationResult | None = None
+    plan_validation_findings: list[dict] = field(default_factory=list)
 
     @property
     def total_dev_cost(self) -> float:

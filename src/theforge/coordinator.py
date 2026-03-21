@@ -1950,6 +1950,30 @@ def run_task(
                     message=state.error,
                 )
 
+        # ── Plan validation (advisory, before DEV) ───────────────────
+        if state.plan_structured is not None and state.workspace_path is not None:
+            from .plan_validator import extract_spec_criteria
+            from .plan_validator import validate_plan as _validate_plan
+
+            _spec_criteria = extract_spec_criteria(spec_content)
+            _pv_findings = _validate_plan(
+                state.plan_structured, _spec_criteria, state.workspace_path
+            )
+            state.plan_validation_findings = _pv_findings
+            for _f in _pv_findings:
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "Plan validation [%s]: %s", _f["check"], _f["message"]
+                )
+            if _pv_findings:
+                _log(
+                    f"  ⚠ PLAN_VALIDATION  {len(_pv_findings)} finding(s) — "
+                    f"advisory only, proceeding to DEV"
+                )
+            else:
+                _log("  ✓ PLAN_VALIDATION  all checks passed")
+
         # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
         result = _coordinator_loop(
             state,
