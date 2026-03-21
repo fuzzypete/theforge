@@ -111,7 +111,8 @@ if [ "$reviewers_count" -le 1 ]; then
       --input - || true
 else
   # Multi-reviewer: post one COMMENT per reviewer, then one final APPROVE
-  echo "$payload" | jq -c '.reviewers[]' | while read -r reviewer; do
+  # Use process substitution to avoid pipefail killing the script before APPROVE
+  while read -r reviewer; do
     r_name=$(echo "$reviewer" | jq -r '.name')
     r_model=$(echo "$reviewer" | jq -r '.model')
     r_verdict=$(echo "$reviewer" | jq -r '.verdict')
@@ -143,7 +144,7 @@ ${findings_text}"
       gh api "repos/{owner}/{repo}/pulls/${pr_number}/reviews" \
         --method POST \
         --input - || true
-  done
+  done < <(echo "$payload" | jq -c '.reviewers[]')
 
   # Final APPROVE with merged summary
   approve_body="**theforge review pool APPROVED** — ${summary}
