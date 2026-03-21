@@ -1,35 +1,51 @@
 gate_decision: PASS
 gate_result: PASS
 dev_notes: |
-  summary: "Added dev_trace_count to CoordinatorState — a monotonically increasing counter
-    that is never reset across review cycles. Updated coord_phases.py to use dev_trace_count
-    for dev trace filenames instead of dev_iteration (which resets to 0 after every
-    REQUEST_CHANGES). Added a coordinator-level test verifying that 2-dev-prompt.txt and
-    2-dev-output.txt are written after a REQUEST_CHANGES cycle with distinct content."
+  summary: "Hardened the existing OpenAI adapter for local model use. Added four
+    model keys to MODEL_REGISTRY (openai/codestral, openai/deepseek-coder,
+    openai/llama3.1, openai/qwen2.5-coder) with cost_rank=1 and dev_capable=True,
+    routed through the existing OpenAI adapter via base_url. Introduced
+    _is_local_endpoint() to detect localhost/127.0.0.1 URLs, then used it in
+    _openai_result() to store 0.0 (not None) for single-shot calls, and in
+    _run_loop_openai to zero both result.cost_usd and each ModelUsage.cost_usd
+    after the loop completes. Added a BadRequestError catch in _run_loop_openai
+    that falls back to PROVIDER_RUNNERS['openai'] (single-shot) when the error
+    message contains 'tool', covering models that don't support tool-calling.
+    Extended cmd_check_providers in cli.py to label local profiles with [local]
+    and display $0.000 cost. Added docs/guides/local-models.md. Added 14 new
+    tests covering the helper, cost zeroing in both paths, BadRequestError
+    fallback, and MODEL_REGISTRY entries."
   commits:
-    - sha: "7d02b33"
-      message: "fix(traces): write dev traces for all iterations, not just cycle 1"
-    - sha: "6a729ea"
-      message: "chore(traces): write handoff.yaml for dev-trace-fix-iterations"
+    - sha: "29d6d31"
+      message: "feat(local-models): validate ollama/vllm via existing OpenAI adapter"
   acceptance_criteria:
-    - criterion: "Dev prompt trace written for every DEV iteration, not just first"
+    - criterion: "OpenAI adapter works with ollama base_url for models with tool support"
       status: MET
-      notes: "dev_trace_count increments before every dev call and never resets; coord_phases.py uses it for the prompt trace filename"
-    - criterion: "Dev output trace written for every DEV iteration"
+      notes: "Already satisfied pre-implementation; _run_loop_openai passes base_url to openai.OpenAI() via _openai_client(). No change needed here."
+    - criterion: "Graceful fallback when model doesn't support tool calling"
       status: MET
-      notes: "Same dev_trace_count used for the output trace filename"
-    - criterion: "Filenames include iteration number: {iteration}-dev-prompt.txt"
+      notes: "BadRequestError with 'tool' in the message triggers single-shot retry via PROVIDER_RUNNERS['openai'] with a JSON instruction appended to the prompt. Errors without 'tool' re-raise normally."
+    - criterion: "Cost reported as $0.00 for local endpoints"
       status: MET
-      notes: "Pattern is {dev_trace_count}-dev-prompt.txt and {dev_trace_count}-dev-output.txt; 1-based, monotonically increasing"
-    - criterion: "Existing first-iteration trace behavior unchanged"
+      notes: "_is_local_endpoint() checks for localhost/127.0.0.1. _openai_result() stores 0.0 for single-shot; _run_loop_openai zeros both result.cost_usd and model_usage cost entries after manager.run() returns."
+    - criterion: "Common local models added to MODEL_REGISTRY"
       status: MET
-      notes: "dev_trace_count starts at 0 and is incremented to 1 before the first dev call, producing the same 1-dev-prompt.txt as before"
+      notes: "Four entries added: openai/codestral, openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder. All have cost_rank=1 and dev_capable=True."
+    - criterion: "forge check-providers tests local endpoints when configured"
+      status: MET
+      notes: "cmd_check_providers detects local profiles via base_url and annotates output with [local] tag and $0.000 cost display."
+    - criterion: "Documentation for local model setup with ollama/vllm"
+      status: MET
+      notes: "docs/guides/local-models.md added covering forge.yaml config, ollama/vllm setup, registry keys, cost tracking behavior, and tool-calling fallback."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1078 tests pass"
-    - criterion: "New test verifying traces written on iteration 2+"
+      notes: "1092 tests pass (1078 pre-existing + 14 new)."
+    - criterion: "New tests for local endpoint detection and cost zeroing"
       status: MET
-      notes: "test_dev_traces_written_for_iteration_2 in tests/test_traces.py drives REQUEST_CHANGES then APPROVE, asserts 1-dev-* and 2-dev-* trace files both exist with distinct content"
-  spec_deviations: none
+      notes: "14 new tests added across TestIsLocalEndpoint, TestLocalEndpointCostZeroing, TestToolCallingFallback (test_runner_api.py), and TestLocalModelRegistry (test_config.py)."
+  spec_deviations:
+    - "Plan reviewer P2: fallback call uses PROVIDER_RUNNERS['openai'](prompt, profile, secrets) — 3 args, no working_dir, matching _run_openai's actual signature. Plan had a typo listing working_dir."
+    - "Plan reviewer P2: loop cost zeroing also zeros model_usage[].cost_usd entries via dataclasses.replace, not just result.cost_usd, per reviewer recommendation."
+    - "Plan reviewer P2: no base_url validation added for local registry entries at config load time — noted as advisory. The docs warn clearly that base_url is required for local models."
   deferred_items: none
   gate_result: PASS
