@@ -1021,6 +1021,7 @@ def _run_validate_phase(
             config, workspace_path, task=task, iter_num=state.dev_iteration
         )
     _gate_elapsed = time.monotonic() - _gate_start
+    state.validate_durations.append(_gate_elapsed)
     if logger:
         logger._safe_emit(
             "gate_result",

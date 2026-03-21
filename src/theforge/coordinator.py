@@ -1287,6 +1287,7 @@ def run_task(
             secrets=config.secrets,
         )
         _preflight_elapsed = time.monotonic() - _preflight_start
+        state.preflight_duration_s = _preflight_elapsed
         state.preflight_result = preflight_result
         log_agent_result(preflight_result, "PREFLIGHT")
 
@@ -1472,6 +1473,7 @@ def run_task(
                 secrets=config.secrets,
             )
             _plan_elapsed = time.monotonic() - _plan_start
+            state.plan_durations.append(_plan_elapsed)
             state.plan_results.append(plan_result)
             state.plan_session_id = plan_result.session_id or state.plan_session_id
             write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
@@ -1535,6 +1537,7 @@ def run_task(
                             secrets=config.secrets,
                         )
                         _pr_elapsed = time.monotonic() - _pr_start
+                        state.plan_review_durations.append(_pr_elapsed)
 
                         # Update session IDs and accumulate results
                         for _prof, _res in zip(par_profiles, pr_results):
@@ -1727,6 +1730,7 @@ def run_task(
                             secrets=config.secrets,
                         )
                         _plan_elapsed = time.monotonic() - _plan_start
+                        state.plan_durations.append(_plan_elapsed)
                         state.plan_results.append(plan_result)
                         state.plan_session_id = plan_result.session_id or state.plan_session_id
                         write_trace(
@@ -1851,6 +1855,7 @@ def run_task(
                                 secrets=config.secrets,
                             )
                             _plan_elapsed = time.monotonic() - _plan_start
+                            state.plan_durations.append(_plan_elapsed)
                             state.plan_results.append(plan_result)
                             state.plan_session_id = plan_result.session_id or state.plan_session_id
                             write_trace(

@@ -106,6 +106,12 @@ class CoordinatorState:
     review_durations: list[float] = field(
         default_factory=list
     )  # wall-clock seconds per review call
+    preflight_duration_s: float | None = None  # wall-clock seconds for preflight
+    plan_durations: list[float] = field(default_factory=list)  # per plan-gen invocation
+    plan_review_durations: list[float] = field(
+        default_factory=list
+    )  # per agent plan-review iteration
+    validate_durations: list[float] = field(default_factory=list)  # per validate (gate) call
     review_results: list[ReviewResult] = field(default_factory=list)
     review_cycle_metadata: list[ReviewCycleMetadata] = field(default_factory=list)
     gate_decisions: list[str] = field(default_factory=list)

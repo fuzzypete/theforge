@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -404,3 +406,190 @@ class TestReviewsFindings:
         assert reviews[1]["cycle"] == 2
         assert reviews[1]["verdict"] == "APPROVE"
         assert reviews[1]["findings"] == []
+
+
+# ── Phases block tests ─────────────────────────────────────────────────
+
+
+class TestPhasesBlock:
+    def test_phases_key_present(self, tmp_path: Path) -> None:
+        """generate_audit_log always includes phases and totals keys."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert "phases" in log
+        assert "totals" in log
+
+    def test_preflight_phase_populated(self, tmp_path: Path) -> None:
+        """phases.preflight is populated when preflight ran."""
+        state = CoordinatorState()
+        state.preflight_result = _make_agent_result(cost_usd=0.11)
+        state.preflight_verdict = "PROCEED"
+        state.preflight_duration_s = 31.0
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        pf = log["phases"]["preflight"]
+        assert pf is not None
+        assert pf["cost_usd"] == pytest.approx(0.11)
+        assert pf["duration_s"] == pytest.approx(31.0)
+        assert pf["outcome"] == "proceed"
+
+    def test_preflight_phase_none_when_not_run(self, tmp_path: Path) -> None:
+        """phases.preflight is None when preflight was not run."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["phases"]["preflight"] is None
+
+    def test_plan_phase_populated(self, tmp_path: Path) -> None:
+        """phases.plan is populated from plan_results and plan_durations."""
+        state = CoordinatorState()
+        state.plan_results.append(_make_agent_result(cost_usd=0.21))
+        state.plan_durations.append(78.0)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        plan = log["phases"]["plan"]
+        assert plan is not None
+        assert plan["cost_usd"] == pytest.approx(0.21)
+        assert plan["duration_s"] == pytest.approx(78.0)
+
+    def test_plan_phase_none_when_not_run(self, tmp_path: Path) -> None:
+        """phases.plan is None when plan phase was not run."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["phases"]["plan"] is None
+
+    def test_plan_review_phase_populated(self, tmp_path: Path) -> None:
+        """phases.plan_review is populated when plan review ran."""
+        state = CoordinatorState()
+        state.plan_review_results.append(_make_agent_result(cost_usd=0.53))
+        state.plan_review_durations.append(73.0)
+        state.plan_review_decision = "approve"
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        pr = log["phases"]["plan_review"]
+        assert pr is not None
+        assert pr["cost_usd"] == pytest.approx(0.53)
+        assert pr["duration_s"] == pytest.approx(73.0)
+        assert pr["outcome"] == "approve"
+
+    def test_dev_phase_populated(self, tmp_path: Path) -> None:
+        """phases.dev is populated from dev_results and dev_durations."""
+        state = CoordinatorState()
+        state.dev_results.append(_make_agent_result(cost_usd=3.26))
+        state.dev_durations.append(969.0)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        dev = log["phases"]["dev"]
+        assert dev is not None
+        assert dev["cost_usd"] == pytest.approx(3.26)
+        assert dev["duration_s"] == pytest.approx(969.0)
+        assert dev["iterations"] == 1
+
+    def test_validate_phase_populated(self, tmp_path: Path) -> None:
+        """phases.validate is populated when gate ran."""
+        state = CoordinatorState()
+        state.gate_decisions.append("PASS")
+        state.validate_durations.append(12.0)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        validate = log["phases"]["validate"]
+        assert validate is not None
+        assert validate["duration_s"] == pytest.approx(12.0)
+        assert validate["outcome"] == "pass"
+
+    def test_review_phase_per_reviewer(self, tmp_path: Path) -> None:
+        """phases.review.per_reviewer groups agents by profile, cross-refs verdict."""
+        state = CoordinatorState()
+        state.review_agent_results.append(
+            _make_agent_result(cost_usd=0.50, profile_name="claude-reviewer")
+        )
+        state.review_agent_results.append(
+            _make_agent_result(cost_usd=0.45, profile_name="codex-reviewer")
+        )
+        state.review_durations.extend([100.0, 108.0])
+        state.review_cycle = 1
+        state.last_cycle_reviewer_results = [
+            ("claude-reviewer", _make_review_result("APPROVE")),
+            ("codex-reviewer", _make_review_result("APPROVE")),
+        ]
+        state.review_results.append(_make_review_result("APPROVE"))
+        state.review_cycle_metadata.append(
+            ReviewCycleMetadata(
+                pool_models=["claude-reviewer", "codex-reviewer"],
+                successful=["claude-reviewer", "codex-reviewer"],
+                failed=[],
+                synthesized=False,
+            )
+        )
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        review = log["phases"]["review"]
+        assert review is not None
+        per = review["per_reviewer"]
+        assert "claude-reviewer" in per
+        assert "codex-reviewer" in per
+        assert per["claude-reviewer"]["cost"] == pytest.approx(0.50)
+        assert per["claude-reviewer"]["verdict"] == "APPROVE"
+        assert per["codex-reviewer"]["cost"] == pytest.approx(0.45)
+
+    def test_synthesis_excluded_from_per_reviewer(self, tmp_path: Path) -> None:
+        """synthesis agent is excluded from phases.review.per_reviewer."""
+        state = CoordinatorState()
+        state.review_agent_results.append(
+            _make_agent_result(cost_usd=0.50, profile_name="claude-reviewer")
+        )
+        state.review_agent_results.append(
+            _make_agent_result(cost_usd=0.02, profile_name="synthesis")
+        )
+        state.review_durations.extend([100.0, 5.0])
+        state.review_cycle = 1
+        state.last_cycle_reviewer_results = [
+            ("claude-reviewer", _make_review_result("APPROVE")),
+        ]
+        state.review_results.append(_make_review_result("APPROVE"))
+        state.review_cycle_metadata.append(
+            ReviewCycleMetadata(
+                pool_models=["claude-reviewer"],
+                successful=["claude-reviewer"],
+                failed=[],
+                synthesized=True,
+            )
+        )
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        per = log["phases"]["review"]["per_reviewer"]
+        assert "synthesis" not in per
+        assert "claude-reviewer" in per
+
+    def test_totals_cost_equals_state_total_cost(self, tmp_path: Path) -> None:
+        """totals.cost_usd equals state.total_cost."""
+        state = CoordinatorState()
+        state.dev_results.append(_make_agent_result(cost_usd=3.26))
+        state.review_agent_results.append(
+            _make_agent_result(cost_usd=1.77, profile_name="reviewer")
+        )
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["totals"]["cost_usd"] == pytest.approx(state.total_cost)
+
+    def test_all_phase_keys_present(self, tmp_path: Path) -> None:
+        """phases dict always has all six phase keys, even if their values are None."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        for key in ("preflight", "plan", "plan_review", "dev", "validate", "review"):
+            assert key in log["phases"], f"missing phase key: {key}"
