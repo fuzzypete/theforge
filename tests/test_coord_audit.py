@@ -7,7 +7,119 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from theforge.coord_audit import has_review_approve
+from theforge.config import (
+    DEFAULT_DEV_PROFILE,
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_REVIEW_PROFILE,
+    ForgeConfig,
+    RetryPolicy,
+    ValidationConfig,
+    WorkspaceConfig,
+)
+from theforge.coord_audit import generate_audit_log, has_review_approve
+from theforge.coord_state import CoordinatorResult, CoordinatorState, Phase
+from theforge.runner import AgentResult
+from theforge.task import TaskStory
+
+
+def _make_config(tmp_path: Path) -> ForgeConfig:
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=ValidationConfig(
+            gate_command="make gate",
+            handoff_file="handoff.yaml",
+            gate_decision_key="gate_result",
+        ),
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+    )
+
+
+def _make_task(tmp_path: Path) -> TaskStory:
+    spec_path = tmp_path / "spec.md"
+    spec_path.write_text("# Test spec", encoding="utf-8")
+    return TaskStory(name="Test Task", slug="test-task", story_path=spec_path)
+
+
+def _make_result(state: CoordinatorState) -> CoordinatorResult:
+    return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+
+
+class TestPlanValidationAuditBlock:
+    """plan_validation block shape: empty findings vs skipped vs populated."""
+
+    def test_clean_pass_emits_empty_findings_not_none(self, tmp_path: Path) -> None:
+        """When plan ran and produced zero findings, block must be present with findings=[]."""
+        state = CoordinatorState()
+        state.plan_structured = {"steps": []}  # non-None: plan ran
+        state.plan_validation_findings = []
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        pv = log["plan_validation"]
+        assert pv is not None
+        assert pv["skipped"] is False
+        assert pv["findings"] == []
+        assert pv["finding_count"] == 0
+
+    def test_skipped_when_plan_structured_is_none(self, tmp_path: Path) -> None:
+        """When plan_structured is None (plan didn't run), block must have skipped=True."""
+        state = CoordinatorState()
+        assert state.plan_structured is None
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        pv = log["plan_validation"]
+        assert pv["skipped"] is True
+
+    def test_findings_present_when_populated(self, tmp_path: Path) -> None:
+        """When plan ran and produced findings, they appear in the block."""
+        state = CoordinatorState()
+        state.plan_structured = {"steps": []}
+        state.plan_validation_findings = [{"severity": "P2", "description": "missing file"}]
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        pv = log["plan_validation"]
+        assert pv["skipped"] is False
+        assert pv["finding_count"] == 1
+        assert pv["findings"][0]["description"] == "missing file"
+
+
+class TestDurationAndCostNoneChecks:
+    """Duration and cost fields with a legitimate 0.0 value must not be masked."""
+
+    def test_preflight_duration_zero_preserved_in_totals(self, tmp_path: Path) -> None:
+        """preflight_duration_s=0.0 is a real measurement; must appear in total duration."""
+        state = CoordinatorState()
+        state.preflight_duration_s = 0.0
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        # totals.duration_s must include the 0.0 contribution (sum stays 0.0 but shouldn't error)
+        assert log["totals"]["duration_s"] is not None
+
+    def test_reviewer_cost_zero_included_in_per_reviewer(self, tmp_path: Path) -> None:
+        """A reviewer with cost_usd=0.0 must appear in per_reviewer with cost=0.0."""
+        state = CoordinatorState()
+        r = AgentResult(
+            success=True,
+            output="ok",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=0,
+            raw={},
+            profile_name="fast-reviewer",
+        )
+        state.review_agent_results.append(r)
+        state.review_durations.append(5.0)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        per_reviewer = log["phases"]["review"]["per_reviewer"]
+        # A reviewer with cost_usd=0.0 must still appear in per_reviewer (not masked by or 0.0)
+        assert "fast-reviewer" in per_reviewer
+        assert per_reviewer["fast-reviewer"]["cost"] == 0.0
+
 
 
 class TestHasReviewApprove:

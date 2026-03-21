@@ -693,7 +693,7 @@ def _run_review_pool(
     if enforce_budgets:
         for profile in config.review_pool:
             profile_cost = sum(
-                r.cost_usd or 0.0
+                r.cost_usd if r.cost_usd is not None else 0.0
                 for r in state.review_agent_results
                 if r.profile_name == profile.name
             )

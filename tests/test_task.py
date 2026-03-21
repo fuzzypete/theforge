@@ -1416,3 +1416,50 @@ class TestBuildPlanReviewPromptStructured:
         )
         assert "Step 1: implement X." in prompt
         assert "Criteria Mapping" not in prompt
+
+
+def _minimal_plan_yaml(description: str = "do it") -> str:
+    """Return a minimal but valid plan YAML with all required fields."""
+    return (
+        "---\n"
+        "plan:\n"
+        "  approach: implement the feature\n"
+        "  steps:\n"
+        f"    - id: 1\n"
+        f"      description: {description}\n"
+        "      files: [src/foo.py]\n"
+        "      action: modify\n"
+        "      details: change the code\n"
+    )
+
+
+class TestParsePlanOutputYamlMarker:
+    """Tests that YAML document marker '---' is stripped as a token, not char-by-char."""
+
+    def test_yaml_document_marker_stripped_correctly(self):
+        """Normal '---\\nplan:' input is parsed and '---' removed as a token."""
+        result = parse_plan_output(_minimal_plan_yaml("step one"))
+        assert result is not None
+        assert result["steps"][0]["description"] == "step one"
+
+    def test_slug_with_leading_dashes_in_description_not_truncated(self):
+        """lstrip('-') would corrupt a value starting with '-'; [3:] leaves it intact."""
+        result = parse_plan_output(_minimal_plan_yaml("-home-page setup"))
+        assert result is not None
+        assert result["steps"][0]["description"] == "-home-page setup"
+
+    def test_plan_without_document_marker_also_works(self):
+        """Plain 'plan:' without '---' header is also accepted."""
+        yaml_input = (
+            "plan:\n"
+            "  approach: do it\n"
+            "  steps:\n"
+            "    - id: 1\n"
+            "      description: plain step\n"
+            "      files: []\n"
+            "      action: modify\n"
+            "      details: details here\n"
+        )
+        result = parse_plan_output(yaml_input)
+        assert result is not None
+        assert result["steps"][0]["description"] == "plain step"

@@ -1143,8 +1143,10 @@ class TestPlanPhase:
         assert result.success is True
         state = result.state
         assert state.total_plan_cost == pytest.approx(0.20)
-        # total_cost = dev(0.50) + review(0.50) + preflight(0.05) + plan(0.20)
-        assert state.total_cost == pytest.approx(0.50 + 0.50 + 0.05 + 0.20)
+        # total_cost = dev(0.50) + review(0.50) + preflight(0.05) + plan(0.20) + story_validation
+        assert state.total_cost == pytest.approx(
+            0.50 + 0.50 + 0.05 + 0.20 + state.total_story_validation_cost
+        )
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")

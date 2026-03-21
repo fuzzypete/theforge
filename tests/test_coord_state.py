@@ -7,6 +7,7 @@ import json as _json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 from coord_test_helpers import (
     APPROVE_REVIEW,
@@ -31,6 +32,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coord_state import CoordinatorState
 from theforge.coord_util import _generate_run_id
 from theforge.coordinator import (
     Phase,
@@ -41,6 +43,45 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.runner import AgentResult
+from theforge.story_validator import StoryValidationResult
+
+
+class TestTotalCostIncludesStoryValidation:
+    """Tests that total_cost includes story_validation_result.cost_usd."""
+
+    def test_total_cost_includes_story_validation_when_present(self):
+        state = CoordinatorState()
+        state.story_validation_result = StoryValidationResult(
+            verdict="PASS",
+            findings=[],
+            cost_usd=0.05,
+        )
+        assert state.total_cost == pytest.approx(0.05)
+
+    def test_total_cost_excludes_story_validation_when_none(self):
+        state = CoordinatorState()
+        assert state.story_validation_result is None
+        assert state.total_cost == pytest.approx(0.0)
+
+    def test_total_cost_handles_story_validation_cost_usd_none(self):
+        """story_validation_result present but cost_usd is None — treat as 0."""
+        state = CoordinatorState()
+        state.story_validation_result = StoryValidationResult(
+            verdict="PASS",
+            findings=[],
+            cost_usd=None,
+        )
+        assert state.total_cost == pytest.approx(0.0)
+
+    def test_total_cost_handles_story_validation_cost_zero(self):
+        """cost_usd of exactly 0.0 should be preserved, not treated as missing."""
+        state = CoordinatorState()
+        state.story_validation_result = StoryValidationResult(
+            verdict="PASS",
+            findings=[],
+            cost_usd=0.0,
+        )
+        assert state.total_cost == pytest.approx(0.0)
 
 
 class TestStructuredLogger:
