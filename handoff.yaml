@@ -1,41 +1,57 @@
 gate_result: PASS
 dev_notes: |
-  summary: "Implemented per-phase cost, duration, and success tracking end-to-end. Added four new duration-tracking fields to CoordinatorState (preflight_duration_s, plan_durations, plan_review_durations, validate_durations) and populated them at the existing timing sites in coordinator.py and coord_phases.py. Added _build_phases_block() to coord_audit.py which assembles phases + totals sub-dicts from state fields and embeds them into every audit log record via **-unpacking. Added forge telemetry CLI command to cli.py that reads history.jsonl, filters by --since, optionally restricts output to --phase, and prints a run table plus per-phase average cost/duration breakdown. Tests cover the phases block structure in test_generate_audit_log.py (12 new cases) and telemetry CLI aggregation/filters/graceful-handling in test_telemetry.py (18 new cases). All 1077 tests pass."
+  summary: >
+    Implemented spec validation: a lightweight advisory pre-PLAN quality check.
+    Added src/theforge/spec_validator.py with validate_spec(), SpecValidationFinding,
+    and SpecValidationResult dataclasses. The coordinator calls validate_spec() after
+    PREFLIGHT and before PLAN using the same guard as should_plan (plan enabled AND
+    complexity medium/large AND no --plan injection). A fast profile is derived from
+    config.dev_profile by substituting sonnet for any model containing 'opus'
+    (case-insensitive) via dataclasses.replace(). On WARN, findings are logged to
+    the console and execution always continues. Fail-safe: any exception or malformed
+    output returns PASS. Results stored on CoordinatorState and written to
+    forge_audit.yaml under spec_validation.findings.
   commits:
-    - sha: "70dd6f0"
-      message: "feat(telemetry): per-phase cost, duration, and success tracking"
-    - sha: "55942a4"
-      message: "chore(telemetry): write handoff.yaml for phase-telemetry"
+    - sha: "5d9a0ab"
+      message: "feat(spec-validation): add pre-PLAN spec quality check"
   acceptance_criteria:
-    - criterion: "Audit log gains phases block with per-phase cost, duration, outcome"
+    - criterion: "Spec validation runs after PREFLIGHT, before PLAN"
       status: MET
-      notes: "_build_phases_block() builds all six phase entries; embedded via ** in generate_audit_log return dict"
-    - criterion: "Per-reviewer cost breakdown in review phase"
+      notes: "Inserted in coordinator.py at the PROCEED branch, after BLOCKED check, before should_plan block."
+    - criterion: "Validation produces PASS or WARN verdict"
       status: MET
-      notes: "phases.review.per_reviewer groups review_agent_results by profile (excluding synthesis), cross-refs last_cycle_reviewer_results for verdict"
-    - criterion: "forge telemetry CLI command reads history and displays summary table"
+      notes: "SpecValidationResult.verdict is PASS or WARN; invalid model output coerced to PASS."
+    - criterion: "On WARN, findings are logged to the console before PLAN starts"
       status: MET
-      notes: "cmd_telemetry() reads .forge/audits/history.jsonl, prints run table with slug/cost/time/iterations/outcome"
-    - criterion: "Phase breakdown shows average cost and duration across runs"
+      notes: "_log() called for each finding with category, description, and split suggestions before should_plan block."
+    - criterion: "On WARN, the run continues — validation never blocks execution"
       status: MET
-      notes: "Phase breakdown averages cost and duration from phases key across all records with phase data"
-    - criterion: "--since date filter"
+      notes: "No return or raise on WARN. validate_spec() is fully fail-safe."
+    - criterion: "Validation findings are recorded in forge_audit.yaml under spec_validation.findings"
       status: MET
-      notes: "Parses ISO date, filters records by timing.started_at"
-    - criterion: "--phase filter to show single phase detail"
+      notes: "coord_audit.py reads state.spec_validation_result and emits spec_validation key with verdict, cost, duration, and findings."
+    - criterion: "Validation is skipped when --plan flag is used"
       status: MET
-      notes: "When --phase is set, run table is suppressed and only that phase row is shown in breakdown"
-    - criterion: "Handles missing/partial data gracefully (old runs without phase data)"
+      notes: "Guard includes plan_path is None. Verified by test_spec_validation_skipped_on_plan_injection."
+    - criterion: "Validation uses a fast/cheap model (sonnet or equivalent), not opus"
       status: MET
-      notes: "Records without phases key are counted in run table but skipped for phase averages; prints explanatory message when no phase data exists"
-    - criterion: "All existing tests pass"
+      notes: "_make_fast_profile() substitutes model='sonnet' for any model containing 'opus' (case-insensitive substring) using dataclasses.replace()."
+    - criterion: "Scope findings are categorized separately from requirement findings"
       status: MET
-      notes: "1077 tests pass (1035 pre-existing + 42 new)"
-    - criterion: "New tests for telemetry aggregation and CLI output formatting"
+      notes: "SpecValidationFinding.category is 'requirement' or 'scope'; preserved in audit log."
+    - criterion: "When scope is flagged, the finding includes concrete split suggestions with story names and AC assignments"
       status: MET
-      notes: "12 new tests in TestPhasesBlock (test_generate_audit_log.py), 18 new tests in test_telemetry.py"
+      notes: "SpecValidationFinding.split_suggestion holds {stories: [{name, acs}]}. Prompt instructs model to populate this for scope findings."
+    - criterion: "Existing tests pass"
+      status: MET
+      notes: "1103 tests pass after all changes."
+    - criterion: "New tests cover: PASS verdict continues to PLAN, WARN verdict logs and continues, skipped on --plan injection, scope WARN with split suggestion"
+      status: MET
+      notes: "21 unit tests in test_spec_validator.py; 5 integration tests in TestSpecValidation class in test_coordinator.py."
   spec_deviations:
-    - description: "forge.log cross-referencing not implemented"
-      justification: "The spec mentions reading from both history.jsonl AND forge.log cross-referenced by run_id. The approved implementation plan concluded this was unnecessary: phase data is now embedded directly in the audit record, which is simpler and more reliable than log parsing. run_id is not a field in audit records, so cross-referencing would require additional work with no benefit."
+    - description: "Named SpecValidationFinding (not SpecFinding)"
+      justification: "Plan reviewer P2 note explicitly suggested this to avoid confusion with the review system's Finding class."
+    - description: "validation timeout forced to 120s inside validate_spec()"
+      justification: "Advisory call should be fast; inheriting a dev timeout (up to 10 min) would be surprising for an advisory step."
   deferred_items: none
   gate_result: PASS
