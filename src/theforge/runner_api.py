@@ -1485,7 +1485,7 @@ def _make_google_adapter(
                     {
                         "text": (
                             "Now deliver your code review verdict as structured JSON. "
-                            "Include verdict, summary, findings, spec_compliance, "
+                            "Include verdict, summary, findings, story_compliance, "
                             "and test_coverage."
                         )
                     }
@@ -1623,7 +1623,7 @@ def _make_openai_chat_finalizer(
                 "role": "user",
                 "content": (
                     "Time is up. Deliver your code review verdict now as structured JSON. "
-                    "Include verdict, summary, findings, spec_compliance, and test_coverage."
+                    "Include verdict, summary, findings, story_compliance, and test_coverage."
                 ),
             }
         )
@@ -1679,7 +1679,7 @@ def _make_deepseek_finalizer(
                 "role": "user",
                 "content": (
                     "Time is up. Deliver your code review verdict now as JSON. "
-                    "Include verdict, summary, findings, spec_compliance, and test_coverage. "
+                    "Include verdict, summary, findings, story_compliance, and test_coverage. "
                     "Output only valid JSON with no markdown fences."
                 ),
             }
@@ -1728,7 +1728,7 @@ def _make_openai_responses_finalizer(
                 "role": "user",
                 "content": (
                     "Time is up. Deliver your code review verdict now as structured JSON. "
-                    "Include verdict, summary, findings, spec_compliance, and test_coverage."
+                    "Include verdict, summary, findings, story_compliance, and test_coverage."
                 ),
             }
         )
@@ -1794,7 +1794,7 @@ def _make_anthropic_finalizer(
                 "role": "user",
                 "content": (
                     "Time is up. Deliver your code review verdict now. "
-                    "Include verdict, summary, findings, spec_compliance, and test_coverage."
+                    "Include verdict, summary, findings, story_compliance, and test_coverage."
                 ),
             }
         )
@@ -1860,7 +1860,7 @@ def _make_google_finalizer(
                         "text": (
                             "Time is up. Deliver your code review verdict now "
                             "as structured JSON. Include verdict, summary, "
-                            "findings, spec_compliance, and test_coverage."
+                            "findings, story_compliance, and test_coverage."
                         )
                     }
                 ],

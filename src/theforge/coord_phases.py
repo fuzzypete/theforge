@@ -1008,13 +1008,13 @@ def _run_validate_phase(
     gate_output_tail: str = ""
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
-        _log("  Gate: none (spec override)")
+        _log("  Gate: none (story override)")
         gate_decision: str | None = "PASS"
         gate_err: str | None = None
     else:
         if gate_override is not None:
             _log_phase(state.phase, "running gate... (override)")
-            _log(f"  Gate: {gate_override} (spec override)")
+            _log(f"  Gate: {gate_override} (story override)")
         else:
             _log_phase(state.phase, "running gate...")
         gate_decision, gate_err, gate_output_tail = _run_gate_full(

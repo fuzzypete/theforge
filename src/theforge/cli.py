@@ -1525,7 +1525,7 @@ def main() -> None:
         "--resume",
         action="store_true",
         default=False,
-        help="Auto-triage failed specs and pick optimal re-entry point",
+        help="Auto-triage failed stories and pick optimal re-entry point",
     )
 
     # forge ideate

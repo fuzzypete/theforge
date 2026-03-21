@@ -1,38 +1,50 @@
 gate_decision: PASS
 next_recommended_step: merge
 dev_notes: |
-  summary: "Renamed spec → story across the entire codebase: Python types, CLI
-    help text and error messages, schema keys, sprint manifests, audit records,
-    ideation output, and test suite. Backward-compat aliases and dual-key YAML
-    readers ensure old files and imports continue to work."
+  summary: "Renamed spec → story across the entire codebase: Python types (TaskSpec →
+    TaskStory), CLI help text and error messages, schema keys (story_compliance /
+    story_deviations), sprint manifests, audit records, ideation output, and test
+    suite. Backward-compat aliases and dual-key YAML readers ensure old files and
+    imports continue to work. Review-cycle fixes addressed remaining 'spec' references
+    in CLI --resume help text, CLAUDE.md, coordinator YAML template, runner_api.py
+    prompt strings, sprint user-visible output, coord_phases log messages, sprint
+    internal variable names, and task.py docstring."
 
   commits:
     - sha: "3ccbacd"
       message: "feat: rename spec → story throughout the codebase"
     - sha: "b6395fc"
       message: "chore: write handoff.yaml — gate PASS, ready for review"
+    - sha: "a6b9cc7"
+      message: "fix(spec-to-story-rename): rewrite dev handoff to match schema"
+    - sha: "918725e"
+      message: "fix(spec-to-story-rename): rewrite dev handoff to match schema"
 
   acceptance_criteria:
     - criterion: "The primary user-facing term is 'story' everywhere: CLI help
         text, error messages, log output, forge.yaml comments, documentation"
       status: MET
-      notes: "CLI argparse help strings updated (forge run/review/sprint/ideate);
-        error messages say 'Story file not found'; log output says 'story written';
-        forge.yaml TEMPLATE.md uses story terminology; CLAUDE.md updated"
+      notes: "All CLI argparse help strings updated including --resume flag;
+        error messages say 'Story file not found'; sprint prints 'N stories';
+        log output says 'story written' / 'story override'; CLAUDE.md updated;
+        runner_api.py prompts use story_compliance; coordinator YAML template
+        uses story_compliance"
     - criterion: "The directory for story files is named to reflect the new terminology"
       status: PARTIAL
-      notes: "forge init now creates stories/ directory. The existing specs/ directory
-        at the repo root was not renamed — doing so would require updating all sprint
-        manifest paths and forge.yaml references in a coordinated follow-on story"
+      notes: "forge init creates stories/ directory. The existing specs/ directory
+        at the repo root was not renamed — requires coordinated path updates across
+        all sprint manifests; noted as deferred follow-on"
     - criterion: "Sprint manifests use the new key name for listing story files"
       status: MET
       notes: "All 23 sprint YAML manifests updated from specs: to stories:; backward
-        compat preserved in load_sprint_manifest (specs: key still accepted)"
+        compat preserved in load_sprint_manifest (specs: key still accepted with
+        deprecation warning)"
     - criterion: "Internal code types and variables reflect the rename"
       status: MET
-      notes: "TaskSpec → TaskStory (field spec_path → story_path); spec_validator.py
-        → story_validator.py; story_compliance / story_deviations replace old keys;
-        TaskSpec / load_spec / parse_spec_frontmatter kept as compat aliases"
+      notes: "TaskSpec → TaskStory (story_path field); spec_validator.py →
+        story_validator.py; story_compliance / story_deviations replace old keys;
+        spec_paths variable renamed to story_paths in sprint.py; coord_phases log
+        messages updated to 'story override'; task.py docstring updated"
     - criterion: "forge init scaffolds with the new naming"
       status: MET
       notes: "cmd_init creates stories/ directory and writes TEMPLATE.md there;
@@ -40,12 +52,11 @@ dev_notes: |
     - criterion: "forge ideate output uses the new naming"
       status: MET
       notes: "IdeationResult.story_path replaces spec_path; run_ideation uses
-        stories_dir parameter; audit record emits story_path key; log says
-        'story written'"
+        stories_dir parameter; audit record emits story_path key"
     - criterion: "Backward compatibility: old key names in forge.yaml and sprint
         manifests still work (with deprecation warning in logs)"
       status: MET
-      notes: "load_sprint_manifest accepts specs: with a deprecation warning;
+      notes: "load_sprint_manifest accepts specs: with deprecation warning;
         validate_review_yaml and validate_dev_handoff accept both old and new
         YAML keys; hook payload emits both story and spec fields"
     - criterion: "All existing tests pass (updated to reflect new names)"
@@ -54,15 +65,15 @@ dev_notes: |
         test_story_validator.py; all test helpers and assertions updated"
     - criterion: "CLAUDE.md conventions reference 'story' not 'spec'"
       status: MET
-      notes: "story_compliance in review YAML example; stale 'rename is planned'
-        note replaced with accurate description of TaskSpec compat alias"
+      notes: "story_compliance in review YAML example; stale terminology removed;
+        'Writing stories (specs)' heading corrected to 'Writing stories'"
 
   spec_deviations:
     - description: "specs/ directory at repo root was not renamed to stories/"
       justification: "Renaming the directory requires updating every path in all
         sprint manifests and forge.yaml. Doing that in the same commit would
-        conflate two separate concerns (terminology rename vs directory layout
-        change) and create a larger blast radius. Noted as deferred follow-on."
+        conflate two separate concerns and create a larger blast radius. Noted
+        as deferred follow-on."
 
   deferred_items:
     - description: "Rename specs/ directory to stories/"

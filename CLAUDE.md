@@ -17,7 +17,7 @@ gh project item-list 1 --owner fuzzypete       # full project board
 Project board: https://github.com/users/fuzzypete/projects/1
 
 Stories live in `specs/backlog/` (not started) and `specs/done/` (shipped).
-The GH milestones + issues are the source of truth for priorities, not the spec files.
+The GH milestones + issues are the source of truth for priorities, not the story files.
 
 ---
 
@@ -75,7 +75,7 @@ test_coverage:
   gaps: []
 ```
 
-### Writing stories (specs)
+### Writing stories
 Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.
 
 - **No function names, class names, or file paths** unless the story IS about

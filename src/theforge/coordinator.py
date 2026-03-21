@@ -762,7 +762,7 @@ def _run_review_pool(
         "    line: <number or null>\n"
         '    description: "what is wrong"\n'
         '    suggestion: "how to fix"\n'
-        "spec_compliance:\n"
+        "story_compliance:\n"
         "  matches_spec: true | false\n"
         "  mismatches: []\n"
         "test_coverage:\n"

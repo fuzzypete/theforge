@@ -1,6 +1,6 @@
 """Task definition and prompt builders for agent invocations.
 
-The orchestrator builds prompts mechanically from templates + spec content.
+The orchestrator builds prompts mechanically from templates + story content.
 No LLM is involved in prompt construction.
 """
 
