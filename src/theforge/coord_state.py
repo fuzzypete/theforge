@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from .review import ReviewResult
     from .runner import AgentResult
     from .spec_validator import SpecValidationResult
+    from .task import PlanData
 
 # ── Phase enum ────────────────────────────────────────────────────────
 
@@ -134,7 +135,10 @@ class CoordinatorState:
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
     preflight_result: AgentResult | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
-    plan_output: str | None = None  # contents of forge_plan.md, passed to dev
+    plan_output: str | None = (
+        None  # contents of forge_plan.md, passed to dev (raw string for audit)
+    )
+    plan_structured: PlanData | None = None  # parsed structured plan; None if fallback to markdown
     plan_review_decision: str | None = None  # "approve" | "regenerate" | "abandon"
     plan_regen_count: int = 0  # number of plan regen attempts so far
     plan_review_waited_seconds: float | None = None

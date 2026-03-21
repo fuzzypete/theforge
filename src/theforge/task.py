@@ -9,12 +9,105 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from textwrap import dedent
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import yaml
 
 if TYPE_CHECKING:
     from .coord_state import CycleHistory
+
+
+# ── Plan TypedDicts ───────────────────────────────────────────────────
+
+
+class _PlanStepRequired(TypedDict):
+    id: int
+    description: str
+    files: list[str]
+    action: str  # "modify" | "create" | "delete"
+    details: str
+
+
+class PlanStep(_PlanStepRequired, total=False):
+    """A single step in a structured plan. depends_on is optional."""
+
+    depends_on: list[int]
+
+
+class _PlanDataRequired(TypedDict):
+    approach: str
+    steps: list[PlanStep]
+
+
+class PlanData(_PlanDataRequired, total=False):
+    """Structured plan output parsed from YAML."""
+
+    criteria_mapping: list[dict]
+    risks: list[dict]
+
+
+def parse_plan_output(text: str) -> PlanData | None:
+    """Parse structured YAML plan output from a plan agent.
+
+    Returns a PlanData dict on success, or None if the text is not valid
+    structured plan YAML (e.g. freeform markdown fallback).
+    """
+    stripped = text.strip()
+
+    # Strip fenced code block if present (```yaml ... ```)
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        # Remove first line (```yaml or ```) and last line (```)
+        inner = lines[1:]
+        if inner and inner[-1].strip() == "```":
+            inner = inner[:-1]
+        stripped = "\n".join(inner).strip()
+
+    # Detect YAML plan: starts with 'plan:' or '---' followed by 'plan:'
+    if not (stripped.startswith("plan:") or stripped.startswith("---")):
+        return None
+
+    # Strip YAML document markers if present
+    if stripped.startswith("---"):
+        stripped = stripped.lstrip("-").strip()
+
+    try:
+        data = yaml.safe_load(stripped)
+    except yaml.YAMLError:
+        return None
+
+    if not isinstance(data, dict) or "plan" not in data:
+        return None
+
+    plan = data["plan"]
+    if not isinstance(plan, dict):
+        return None
+
+    # Validate required top-level keys
+    if "approach" not in plan or "steps" not in plan:
+        return None
+
+    if not isinstance(plan["steps"], list):
+        return None
+
+    # Validate each step has required fields
+    for step in plan["steps"]:
+        if not isinstance(step, dict):
+            return None
+        for required_field in ("id", "description", "files", "action", "details"):
+            if required_field not in step:
+                return None
+
+    result: PlanData = {
+        "approach": str(plan["approach"]),
+        "steps": plan["steps"],
+    }
+    if "criteria_mapping" in plan and isinstance(plan["criteria_mapping"], list):
+        result["criteria_mapping"] = plan["criteria_mapping"]
+    if "risks" in plan and isinstance(plan["risks"], list):
+        result["risks"] = plan["risks"]
+
+    return result
 
 
 @dataclass(frozen=True)
@@ -187,7 +280,7 @@ def build_plan_review_prompt(
     task: TaskSpec,
     *,
     story_content: str,
-    plan_content: str,
+    plan_content: str | PlanData,
     mode: str = "cli",
     preflight_output: str | None = None,
     rejection_findings: str | None = None,
@@ -217,6 +310,35 @@ def build_plan_review_prompt(
 
             {rejection_findings}
         """)
+
+    # Render plan content: convert PlanData dict to readable text with criteria_mapping
+    criteria_mapping_section = ""
+    if isinstance(plan_content, dict):
+        plan_text_lines = [f"**Approach:** {plan_content.get('approach', '')}"]
+        plan_text_lines.append("")
+        for step in plan_content.get("steps", []):
+            step_id = step.get("id", "?")
+            plan_text_lines.append(f"Step {step_id}: {step.get('description', '')}")
+            plan_text_lines.append(f"  Action: {step.get('action', '')}")
+            if "depends_on" in step and step["depends_on"]:
+                deps = ", ".join(f"Step {d}" for d in step["depends_on"])
+                plan_text_lines.append(f"  Depends on: {deps}")
+            plan_text_lines.append(f"  Files: {', '.join(step.get('files', []))}")
+            plan_text_lines.append(f"  Details: {step.get('details', '')}")
+            plan_text_lines.append("")
+        plan_content_str = "\n".join(plan_text_lines)
+
+        mapping = plan_content.get("criteria_mapping")
+        if mapping:
+            mapping_lines = ["## Criteria Mapping (from structured plan)", ""]
+            for entry in mapping:
+                criterion = entry.get("criterion", "")
+                steps = entry.get("steps", [])
+                steps_str = ", ".join(f"Step {s}" for s in steps)
+                mapping_lines.append(f"- **{criterion}** → {steps_str}")
+            criteria_mapping_section = "\n" + "\n".join(mapping_lines) + "\n"
+    else:
+        plan_content_str = plan_content
 
     output_format_section = dedent("""\
         ## Output Format
@@ -262,8 +384,8 @@ def build_plan_review_prompt(
 
         ## Generated Plan
 
-        {plan_content}
-        {preflight_section}{rejection_section}
+        {plan_content_str}
+        {criteria_mapping_section}{preflight_section}{rejection_section}
         ## Evaluation Process
 
         1. **Acceptance criteria coverage** — walk through each AC in the spec
@@ -315,10 +437,10 @@ def build_plan_prompt(
 ) -> str:
     """Build the planning agent prompt.
 
-    The planning agent reads the spec and produces a structured forge_plan.md
-    document. It does NOT write code.
+    The planning agent reads the spec and produces a structured YAML plan.
+    It does NOT write code.
 
-    Output is ONLY the plan document, starting with '# Implementation Plan'.
+    Output is ONLY the plan document in YAML format.
     """
     preflight_section = ""
     if preflight_output:
@@ -346,34 +468,36 @@ def build_plan_prompt(
         {preflight_section}
         ## Output Format
 
-        You MUST output ONLY the plan document. No prose before or after.
-        Start your response with `# Implementation Plan` and produce valid markdown.
+        You MUST output ONLY a YAML block. No prose before or after.
+        Start your response with `plan:` and produce valid YAML.
 
-        The plan MUST cover:
+        The plan MUST follow this exact schema:
 
-        ```
-        # Implementation Plan: {task.name}
-
-        ## Summary
-        One paragraph: what we're doing and the key decision(s).
-
-        ## Approach
-        The implementation strategy in 3-5 sentences. What is the core idea?
-        What is the main trade-off or design choice?
-
-        ## Changes
-        For each file to modify:
-        - **File**: path
-        - **What**: what changes and why (1-2 sentences)
-        - **Callers**: list any other files that call the functions being changed
-
-        ## Acceptance Criteria Map
-        For each AC in the spec, state which change satisfies it.
-
-        ## Risks
-        Anything ambiguous in the spec or risky in the approach. If the spec
-        has internal contradictions, call them out here — do not silently
-        pick one interpretation.
+        ```yaml
+        plan:
+          approach: "<1-2 sentence summary of the implementation strategy>"
+          steps:
+            - id: 1
+              description: "<what this step does>"
+              files:
+                - src/theforge/example.py
+              action: modify  # modify | create | delete
+              details: "<concrete implementation details for this step>"
+            - id: 2
+              description: "<what this step does>"
+              files:
+                - src/theforge/other.py
+              action: create
+              details: "<concrete implementation details for this step>"
+              depends_on: [1]
+          criteria_mapping:
+            - criterion: "<acceptance criterion text from the spec>"
+              steps: [1]
+            - criterion: "<another acceptance criterion>"
+              steps: [2]
+          risks:
+            - description: "<what is risky or ambiguous>"
+              mitigation: "<how to address it>"
         ```
 
         ## Rules
@@ -382,9 +506,12 @@ def build_plan_prompt(
         - Do NOT invent function signatures — cite what exists in the codebase.
         - Do NOT pad the plan with edge case tables or test scenario details
           that the dev agent will derive from the code. Keep it lean.
-        - Cover ALL acceptance criteria from the spec.
+        - Cover ALL acceptance criteria from the spec in criteria_mapping.
+        - Every step MUST include: id, description, files, action, details.
+        - depends_on is optional — only include it when a step truly depends
+          on another step completing first.
         - If something in the spec is ambiguous or contradictory, say so
-          explicitly in Risks rather than guessing.
+          explicitly in risks rather than guessing.
     """)
 
 
@@ -402,7 +529,7 @@ def build_dev_prompt(
     review_findings: str | None = None,
     human_feedback: str | None = None,
     preflight_output: str | None = None,
-    plan_output: str | None = None,
+    plan_output: str | PlanData | None = None,
     plan_review_advisory: str | None = None,
     iteration: int = 1,
     escalation_note: str | None = None,
@@ -472,15 +599,39 @@ def build_dev_prompt(
 
     plan_section = ""
     if plan_output:
-        plan_section = dedent(f"""\
+        if isinstance(plan_output, dict):
+            # Structured plan: render as step-by-step checklist
+            plan_lines = [
+                "## Implementation Plan (from planning agent)",
+                "",
+                "The planning agent has already analysed this codebase and produced a",
+                "detailed implementation plan. Follow it closely — do not re-derive the",
+                "approach from scratch.",
+                "",
+                f"**Approach:** {plan_output.get('approach', '')}",
+                "",
+            ]
+            for step in plan_output.get("steps", []):
+                step_id = step.get("id", "?")
+                plan_lines.append(f"Step {step_id}: {step.get('description', '')}")
+                plan_lines.append(f"  Action: {step.get('action', '')}")
+                if "depends_on" in step and step["depends_on"]:
+                    deps = ", ".join(f"Step {d}" for d in step["depends_on"])
+                    plan_lines.append(f"  Depends on: {deps}")
+                plan_lines.append(f"  Details: {step.get('details', '')}")
+                plan_lines.append("")
+            plan_section = "\n" + "\n".join(plan_lines) + "\n"
+        else:
+            plan_section = dedent(f"""\
 
-            ## Implementation Plan (from planning agent)
+                ## Implementation Plan (from planning agent)
 
-            The planning agent has already analysed this codebase and produced a detailed
-            implementation plan. Follow it closely — do not re-derive the approach from scratch.
+                The planning agent has already analysed this codebase and produced a
+                detailed implementation plan. Follow it closely — do not re-derive the
+                approach from scratch.
 
-            {plan_output}
-        """)
+                {plan_output}
+            """)
         if plan_review_advisory:
             plan_section += dedent(f"""\
 
