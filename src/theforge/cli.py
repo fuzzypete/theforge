@@ -317,8 +317,12 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
 
     Format: provider/model@base_url
     Examples:
+        ollama/qwen2.5-coder:14b@http://localhost:11434/v1
         openai/qwen2.5-coder:7b@http://localhost:11434/v1
         anthropic/claude-opus-4-6
+
+    The "ollama" provider alias is normalised to "openai" because Ollama exposes
+    an OpenAI-compatible API.  Pass the Ollama base URL via the @url suffix.
     """
     from dataclasses import replace
 
@@ -331,6 +335,11 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
     else:
         provider = "openai"
         model = spec
+
+    # Ollama exposes an OpenAI-compatible API — normalise so it routes through
+    # the existing OpenAI runner (which already passes base_url to the client).
+    if provider == "ollama":
+        provider = "openai"
 
     new_dev = replace(
         config.dev_profile,
