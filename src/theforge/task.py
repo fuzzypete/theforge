@@ -1,6 +1,6 @@
 """Task definition and prompt builders for agent invocations.
 
-The orchestrator builds prompts mechanically from templates + spec content.
+The orchestrator builds prompts mechanically from templates + story content.
 No LLM is involved in prompt construction.
 """
 
@@ -111,26 +111,34 @@ def parse_plan_output(text: str) -> PlanData | None:
 
 
 @dataclass(frozen=True)
-class TaskSpec:
+class TaskStory:
     """A single unit of work for the orchestrator to execute."""
 
     name: str  # human-readable, e.g. "Phase 6H: per-user export"
-    spec_path: Path  # path to the spec file
+    story_path: Path  # path to the story file
     slug: str  # workspace slug, e.g. "export-service"
     pytest_target: str | None = None  # specific test target, or None for all
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
 
 
-def load_spec(spec_path: Path) -> str:
-    """Read the spec file content. Raises FileNotFoundError if missing."""
-    return spec_path.read_text(encoding="utf-8")
+# Backward-compat alias
+TaskSpec = TaskStory
 
 
-def parse_spec_frontmatter(spec_path: Path) -> dict:
-    """Extract YAML frontmatter from a spec file.
+def load_story(story_path: Path) -> str:
+    """Read the story file content. Raises FileNotFoundError if missing."""
+    return story_path.read_text(encoding="utf-8")
 
-    Spec files can optionally have YAML frontmatter delimited by ---::
+
+# Backward-compat alias
+load_spec = load_story
+
+
+def parse_story_frontmatter(story_path: Path) -> dict:
+    """Extract YAML frontmatter from a story file.
+
+    Story files can optionally have YAML frontmatter delimited by ---::
 
         ---
         name: Phase 6H: per-user export
@@ -138,11 +146,11 @@ def parse_spec_frontmatter(spec_path: Path) -> dict:
         gate: none
         ---
 
-        # Spec content starts here...
+        # Story content starts here...
 
     If no frontmatter is present, returns empty dict.
     """
-    text = spec_path.read_text(encoding="utf-8")
+    text = story_path.read_text(encoding="utf-8")
     if not text.startswith("---"):
         return {}
 
@@ -167,13 +175,17 @@ def parse_spec_frontmatter(spec_path: Path) -> dict:
     return result
 
 
+# Backward-compat alias
+parse_spec_frontmatter = parse_story_frontmatter
+
+
 # ── Preflight prompt ─────────────────────────────────────────────────
 
 
 def build_preflight_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
-    spec_content: str,
+    story_content: str,
 ) -> str:
     """Build the preflight check prompt.
 
@@ -194,7 +206,7 @@ def build_preflight_prompt(
 
         ## Spec
 
-        {spec_content}
+        {story_content}
 
         ## Classification
 
@@ -277,7 +289,7 @@ def build_preflight_prompt(
 
 
 def build_plan_review_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
     story_content: str,
     plan_content: str | PlanData,
@@ -430,14 +442,14 @@ def build_plan_review_prompt(
 
 
 def build_plan_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
-    spec_content: str,
+    story_content: str,
     preflight_output: str | None = None,
 ) -> str:
     """Build the planning agent prompt.
 
-    The planning agent reads the spec and produces a structured YAML plan.
+    The planning agent reads the story and produces a structured YAML plan.
     It does NOT write code.
 
     Output is ONLY the plan document in YAML format.
@@ -464,7 +476,7 @@ def build_plan_prompt(
 
         ## Spec
 
-        {spec_content}
+        {story_content}
         {preflight_section}
         ## Output Format
 
@@ -519,11 +531,11 @@ def build_plan_prompt(
 
 
 def build_dev_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
     workspace_path: Path,
     branch_name: str,
-    spec_content: str,
+    story_content: str,
     gate_command: str,
     gate_skipped: bool = False,
     review_findings: str | None = None,
@@ -689,7 +701,7 @@ def build_dev_prompt(
         > If an AC is ambiguous or contradicts another section, implement the
         > most reasonable interpretation and flag the ambiguity in `dev_notes`.
 
-        {spec_content}
+        {story_content}
         {feedback_section}{preflight_section}
         ## Workflow
 
@@ -717,7 +729,7 @@ def build_dev_prompt(
                - criterion: "AC text from the spec"
                  status: MET | PARTIAL | NOT_MET
                  notes: "how it was met, or why not"
-             spec_deviations: none  # or list deviations with justification
+             story_deviations: none  # or list deviations with justification
              deferred_items: none   # or list with reason
              gate_result: PASS
            ```
@@ -741,7 +753,7 @@ def build_dev_prompt(
 
 
 def build_handoff_fix_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
     workspace_path: Path,
     branch_name: str,
@@ -788,7 +800,7 @@ def build_handoff_fix_prompt(
             - criterion: "AC text from the spec"
               status: MET | PARTIAL | NOT_MET
               notes: "how it was met, or why not"
-          spec_deviations:
+          story_deviations:
             - description: "What deviated from spec"
               justification: "Why you deviated"
           deferred_items:
@@ -797,7 +809,7 @@ def build_handoff_fix_prompt(
           gate_result: PASS
         ```
 
-        Use `spec_deviations: none` if you followed the spec exactly.
+        Use `story_deviations: none` if you followed the spec exactly.
         Use `deferred_items: none` if nothing was deferred.
         List ALL commits (use `git log --oneline` for shas).
         List EVERY acceptance criterion from the spec with its status.
@@ -818,7 +830,7 @@ def build_handoff_fix_prompt(
 
 
 def build_fix_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
     workspace_path: Path,
     branch_name: str,
@@ -917,10 +929,10 @@ def build_fix_prompt(
 
 
 def build_synthesis_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     review_outputs: list[str],
     review_names: list[str],
-    spec_content: str,
+    story_content: str,
     *,
     failed_count: int = 0,
     total_count: int | None = None,
@@ -960,7 +972,7 @@ def build_synthesis_prompt(
         {degraded_note}
         ## Spec
 
-        {spec_content}
+        {story_content}
 
         ## Independent Reviews
 
@@ -990,7 +1002,7 @@ def build_synthesis_prompt(
             line: <line number or null>
             description: "<what is wrong>"
             suggestion: "<how to fix it>"
-        spec_compliance:
+        story_compliance:
           matches_spec: true | false
           mismatches:
             - "<description of mismatch>"
@@ -1041,9 +1053,9 @@ _REVIEW_ROLE_GENERIC = dedent("""\
 
 
 def build_review_prompt(
-    task: TaskSpec,
+    task: TaskStory,
     *,
-    spec_content: str,
+    story_content: str,
     commit_log: str,
     workspace_path: str,
     branch: str,
@@ -1142,7 +1154,7 @@ def build_review_prompt(
             line: <line number or null>
             description: "<what is wrong>"
             suggestion: "<how to fix it>"
-        spec_compliance:
+        story_compliance:
           matches_spec: true | false
           mismatches:
             - "<description of mismatch>"
@@ -1170,7 +1182,7 @@ def build_review_prompt(
         {cycle_framing_section}
         ## Spec
 
-        {spec_content}
+        {story_content}
         {dev_notes_section}
         ## Commits
 

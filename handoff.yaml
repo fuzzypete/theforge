@@ -1,69 +1,85 @@
+gate_decision: PASS
+next_recommended_step: merge
 dev_notes: |
-  summary: "Added plan_validator.py with four advisory checks (AC coverage, step
-    completeness, file validity, dependency ordering). The validator is wired into
-    coordinator.py immediately before _coordinator_loop() (i.e., after PLAN_REVIEW
-    finalizes and before DEV starts). Findings are logged at WARNING level via Python
-    logging and also printed to the coordinator console with a ⚠ prefix. Results are
-    stored on CoordinatorState.plan_validation_findings and emitted to the audit log
-    under the plan_validation key. A helper extract_spec_criteria() parses acceptance
-    criteria from the spec markdown body (- [ ] lines under ## Acceptance Criteria).
-    Validation is skipped entirely when state.plan_structured is None (freeform
-    markdown fallback). 15 new tests cover all four checks and the criteria extractor.
-    All 1167 tests pass."
+  summary: "Renamed spec → story across the entire codebase: Python types (TaskSpec →
+    TaskStory), CLI help text and error messages, schema keys (story_compliance /
+    story_deviations), sprint manifests, audit records, ideation output, and test
+    suite. Backward-compat aliases and dual-key YAML readers ensure old files and
+    imports continue to work. Review-cycle fixes addressed remaining 'spec' references
+    in CLI --resume help text, CLAUDE.md, coordinator YAML template, runner_api.py
+    prompt strings, sprint user-visible output, coord_phases log messages, sprint
+    internal variable names, and task.py docstring."
+
   commits:
-    - sha: "700eb5e"
-      message: "feat(plan-validation): add mechanical plan structure validation before DEV"
+    - sha: "3ccbacd"
+      message: "feat: rename spec → story throughout the codebase"
+    - sha: "b6395fc"
+      message: "chore: write handoff.yaml — gate PASS, ready for review"
+    - sha: "a6b9cc7"
+      message: "fix(spec-to-story-rename): rewrite dev handoff to match schema"
+    - sha: "918725e"
+      message: "fix(spec-to-story-rename): rewrite dev handoff to match schema"
+
   acceptance_criteria:
-    - criterion: "Mechanical plan validation runs after PLAN, before DEV"
+    - criterion: "The primary user-facing term is 'story' everywhere: CLI help
+        text, error messages, log output, forge.yaml comments, documentation"
       status: MET
-      notes: "validate_plan() is called immediately before _coordinator_loop() in
-        run_task(), guarded by state.plan_structured is not None."
-    - criterion: "AC coverage check: warns on unmapped acceptance criteria"
+      notes: "All CLI argparse help strings updated including --resume flag;
+        error messages say 'Story file not found'; sprint prints 'N stories';
+        log output says 'story written' / 'story override'; CLAUDE.md updated;
+        runner_api.py prompts use story_compliance; coordinator YAML template
+        uses story_compliance"
+    - criterion: "The directory for story files is named to reflect the new terminology"
+      status: PARTIAL
+      notes: "forge init creates stories/ directory. The existing specs/ directory
+        at the repo root was not renamed — requires coordinated path updates across
+        all sprint manifests; noted as deferred follow-on"
+    - criterion: "Sprint manifests use the new key name for listing story files"
       status: MET
-      notes: "Check 1 in validate_plan() iterates spec_criteria and warns on any
-        criterion not found in plan criteria_mapping entries."
-    - criterion: "Step completeness check: warns on steps missing description/files/action"
+      notes: "All 23 sprint YAML manifests updated from specs: to stories:; backward
+        compat preserved in load_sprint_manifest (specs: key still accepted with
+        deprecation warning)"
+    - criterion: "Internal code types and variables reflect the rename"
       status: MET
-      notes: "Check 2 warns when description is falsy, files list is empty, or action
-        is falsy for any plan step."
-    - criterion: "File validity check: warns on modify/delete for nonexistent files"
+      notes: "TaskSpec → TaskStory (story_path field); spec_validator.py →
+        story_validator.py; story_compliance / story_deviations replace old keys;
+        spec_paths variable renamed to story_paths in sprint.py; coord_phases log
+        messages updated to 'story override'; task.py docstring updated"
+    - criterion: "forge init scaffolds with the new naming"
       status: MET
-      notes: "Check 3 warns for action=modify or action=delete when the file path
-        does not exist under workspace_path. Skips action=create."
-    - criterion: "Dependency check: warns on invalid step refs or circular deps"
+      notes: "cmd_init creates stories/ directory and writes TEMPLATE.md there;
+        post-init message references forge run <story-file>"
+    - criterion: "forge ideate output uses the new naming"
       status: MET
-      notes: "Check 4 validates all depends_on IDs exist in the step set, then runs
-        DFS cycle detection, emitting one warning if a cycle is found."
-    - criterion: "Validation is advisory — never blocks DEV"
+      notes: "IdeationResult.story_path replaces spec_path; run_ideation uses
+        stories_dir parameter; audit record emits story_path key"
+    - criterion: "Backward compatibility: old key names in forge.yaml and sprint
+        manifests still work (with deprecation warning in logs)"
       status: MET
-      notes: "No exception raised. Findings are logged and stored; execution always
-        proceeds to _coordinator_loop()."
-    - criterion: "Skipped for freeform markdown plans (no structured data)"
+      notes: "load_sprint_manifest accepts specs: with deprecation warning;
+        validate_review_yaml and validate_dev_handoff accept both old and new
+        YAML keys; hook payload emits both story and spec fields"
+    - criterion: "All existing tests pass (updated to reflect new names)"
       status: MET
-      notes: "Guard 'if state.plan_structured is not None' in coordinator.py ensures
-        the validator is never called when plan_structured is None."
-    - criterion: "Findings logged to console and recorded in audit log"
+      notes: "1167 tests pass; test_spec_validator.py renamed to
+        test_story_validator.py; all test helpers and assertions updated"
+    - criterion: "CLAUDE.md conventions reference 'story' not 'spec'"
       status: MET
-      notes: "Each finding is logged via logging.getLogger(__name__).warning() and a
-        summary line is printed via _log(). Findings stored in
-        state.plan_validation_findings and emitted under plan_validation in
-        generate_audit_log()."
-    - criterion: "All existing tests pass"
-      status: MET
-      notes: "1167 tests pass (1152 pre-existing + 15 new)."
-    - criterion: "New tests for each validation check"
-      status: MET
-      notes: "tests/test_plan_validator.py has 15 tests covering all four checks,
-        the clean-plan baseline, and extract_spec_criteria()."
+      notes: "story_compliance in review YAML example; stale terminology removed;
+        'Writing stories (specs)' heading corrected to 'Writing stories'"
+
   spec_deviations:
-    - description: "task.acceptance_criteria attribute does not exist on TaskSpec"
-      justification: "The plan assumed this attribute existed. Added extract_spec_criteria()
-        helper in plan_validator.py that parses - [ ] lines from the spec markdown body
-        under ## Acceptance Criteria. Called in coordinator.py from spec_content (already
-        loaded). Equivalent to the spec intent."
-    - description: "File validity for delete action"
-      justification: "Plan notes called it ambiguous. Spec AC says 'warns on modify/delete
-        for nonexistent files'. Implemented as warning for both modify and delete,
-        consistent with the spec."
-  deferred_items: none
+    - description: "specs/ directory at repo root was not renamed to stories/"
+      justification: "Renaming the directory requires updating every path in all
+        sprint manifests and forge.yaml. Doing that in the same commit would
+        conflate two separate concerns and create a larger blast radius. Noted
+        as deferred follow-on."
+
+  deferred_items:
+    - description: "Rename specs/ directory to stories/"
+      reason: "Requires coordinated path updates across all sprint manifests;
+        deferred to a follow-on story"
+    - description: "SprintResult.specs_failed field rename"
+      reason: "Internal Python field, not user-visible; low priority cleanup"
+
   gate_result: PASS

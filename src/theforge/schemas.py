@@ -86,14 +86,14 @@ def validate_review_yaml(data: Any) -> list[str]:
             "must have at least one P1 to justify REQUEST_CHANGES"
         )
 
-    # ── spec_compliance ───────────────────────────────────────────
-    spec = data.get("spec_compliance")
+    # ── story_compliance (accept spec_compliance for backward compat) ──
+    spec = data.get("story_compliance") or data.get("spec_compliance")
     if spec is None:
-        errors.append("spec_compliance section is required")
+        errors.append("story_compliance section is required")
     elif not isinstance(spec, dict):
-        errors.append("spec_compliance must be a mapping")
+        errors.append("story_compliance must be a mapping")
     elif "matches_spec" not in spec:
-        errors.append("spec_compliance.matches_spec is required (true/false)")
+        errors.append("story_compliance.matches_spec is required (true/false)")
 
     # ── test_coverage ─────────────────────────────────────────────
     tests = data.get("test_coverage")
@@ -118,7 +118,7 @@ def validate_dev_handoff(data: Any) -> list[str]:
     - summary: non-empty string describing what was implemented
     - commits: non-empty list of {sha, message}
     - acceptance_criteria: non-empty list of {criterion, status, notes}
-    - spec_deviations: list of {description, justification} or the string "none"
+    - story_deviations: list of {description, justification} or the string "none"
     - deferred_items: list of {description, reason} or the string "none"
     - gate_result: "PASS" or "FAIL"
     """
@@ -180,26 +180,28 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(notes, str) or not notes.strip():
                 errors.append(f"acceptance_criteria[{i}].notes must be a non-empty string")
 
-    # ── spec_deviations ────────────────────────────────────────────
-    deviations = data.get("spec_deviations")
+    # ── story_deviations (accept spec_deviations for backward compat) ─
+    deviations = (
+        data.get("story_deviations") if "story_deviations" in data else data.get("spec_deviations")
+    )
     if deviations is None:
-        errors.append("spec_deviations is required (list of deviations or 'none')")
+        errors.append("story_deviations is required (list of deviations or 'none')")
     elif isinstance(deviations, str):
         if deviations.strip().lower() != "none":
-            errors.append("spec_deviations must be a list or the string 'none'")
+            errors.append("story_deviations must be a list or the string 'none'")
     elif isinstance(deviations, list):
         for i, d in enumerate(deviations):
             if not isinstance(d, dict):
-                errors.append(f"spec_deviations[{i}] must be a mapping")
+                errors.append(f"story_deviations[{i}] must be a mapping")
                 continue
             desc = d.get("description")
             if not isinstance(desc, str) or not desc.strip():
-                errors.append(f"spec_deviations[{i}].description must be a non-empty string")
+                errors.append(f"story_deviations[{i}].description must be a non-empty string")
             just = d.get("justification")
             if not isinstance(just, str) or not just.strip():
-                errors.append(f"spec_deviations[{i}].justification must be a non-empty string")
+                errors.append(f"story_deviations[{i}].justification must be a non-empty string")
     else:
-        errors.append("spec_deviations must be a list or the string 'none'")
+        errors.append("story_deviations must be a list or the string 'none'")
 
     # ── deferred_items ─────────────────────────────────────────────
     deferred = data.get("deferred_items")
@@ -241,7 +243,7 @@ def review_json_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["verdict", "summary", "findings", "spec_compliance", "test_coverage"],
+        "required": ["verdict", "summary", "findings", "story_compliance", "test_coverage"],
         "properties": {
             "verdict": {
                 "type": "string",
@@ -270,7 +272,7 @@ def review_json_schema() -> dict:
                     },
                 },
             },
-            "spec_compliance": {
+            "story_compliance": {
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["matches_spec", "mismatches"],

@@ -24,7 +24,7 @@ from theforge.coord_state import (
 )
 from theforge.review import ReviewFinding, ReviewResult
 from theforge.runner import AgentResult
-from theforge.task import TaskSpec
+from theforge.task import TaskStory
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -51,13 +51,13 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _make_task(tmp_path: Path) -> TaskSpec:
+def _make_task(tmp_path: Path) -> TaskStory:
     spec_path = tmp_path / "spec.md"
     spec_path.write_text("# Test spec", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
         slug="test-task",
-        spec_path=spec_path,
+        story_path=spec_path,
     )
 
 
@@ -84,8 +84,8 @@ def _make_review_result(
         verdict=verdict,
         summary="Looks good",
         findings=findings or [],
-        spec_matches=True,
-        spec_mismatches=[],
+        story_matches=True,
+        story_mismatches=[],
         test_adequate=True,
         test_gaps=[],
         parse_errors=[],

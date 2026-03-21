@@ -9,7 +9,7 @@ def _valid_review() -> dict:
         "verdict": "APPROVE",
         "summary": "Clean implementation, all checks pass.",
         "findings": [],
-        "spec_compliance": {"matches_spec": True, "mismatches": []},
+        "story_compliance": {"matches_spec": True, "mismatches": []},
         "test_coverage": {"adequate": True, "gaps": []},
     }
 
@@ -60,11 +60,11 @@ class TestValidateReviewYaml:
         errors = validate_review_yaml(data)
         assert any("summary" in e for e in errors)
 
-    def test_missing_spec_compliance(self):
+    def test_missing_story_compliance(self):
         data = _valid_review()
-        del data["spec_compliance"]
+        del data["story_compliance"]
         errors = validate_review_yaml(data)
-        assert any("spec_compliance" in e for e in errors)
+        assert any("story_compliance" in e for e in errors)
 
     def test_missing_test_coverage(self):
         data = _valid_review()

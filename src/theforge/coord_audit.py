@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .config import ForgeConfig
 from .coord_state import CoordinatorResult, CoordinatorState
-from .task import TaskSpec
+from .task import TaskStory as TaskSpec  # noqa: F401
 
 
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
@@ -315,7 +315,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
         "task": {
             "name": task.name,
             "slug": task.slug,
-            "spec_path": str(task.spec_path),
+            "story_path": str(task.story_path),
         },
         "outcome": {
             "success": result.success,
@@ -420,21 +420,21 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             else None
         ),
         "error": state.error,
-        "spec_validation": (
+        "story_validation": (
             {
-                "verdict": state.spec_validation_result.verdict,
-                "cost_usd": state.spec_validation_result.cost_usd,
-                "duration_s": state.spec_validation_result.duration_s,
+                "verdict": state.story_validation_result.verdict,
+                "cost_usd": state.story_validation_result.cost_usd,
+                "duration_s": state.story_validation_result.duration_s,
                 "findings": [
                     {
                         "category": f.category,
                         "description": f.description,
                         "split_suggestion": f.split_suggestion,
                     }
-                    for f in state.spec_validation_result.findings
+                    for f in state.story_validation_result.findings
                 ],
             }
-            if state.spec_validation_result is not None
+            if state.story_validation_result is not None
             else None
         ),
         "finding_registry": [

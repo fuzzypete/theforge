@@ -584,7 +584,7 @@ criteria_checked: []
 def _make_review_finding(
     severity: str = "P1",
     file: str = "src/cli.py",
-    description: str = "cli.py never wires gate_override into TaskSpec",
+    description: str = "cli.py never wires gate_override into TaskStory",
 ) -> ReviewFinding:
     return ReviewFinding(
         severity=severity, file=file, line=None, description=description, suggestion=None
@@ -661,7 +661,7 @@ class TestHasPersistentP1:
         """Substring containment and token overlap both match."""
         # Substring containment: prev description contains curr description
         curr = [_make_review_finding(description="gate_override never wired")]
-        prev = [_make_review_finding(description="gate_override never wired into TaskSpec")]
+        prev = [_make_review_finding(description="gate_override never wired into TaskStory")]
         assert _has_persistent_p1(curr, prev) is True
 
         # Token overlap > 60%: "missing batch configuration" vs "batch configuration is missing"
@@ -725,9 +725,9 @@ findings:
   - severity: P1
     file: src/cli.py
     line: 42
-    description: "cli.py never wires gate_override into TaskSpec"
+    description: "cli.py never wires gate_override into TaskStory"
     suggestion: "Wire it"
-spec_compliance:
+story_compliance:
   matches_spec: false
   mismatches:
     - "Missing wiring"
@@ -1337,7 +1337,7 @@ class TestPersistentP1Descriptions:
     def test_substring_containment_matches(self):
         """Substring containment triggers a match."""
         curr = [_make_review_finding(description="gate_override never wired")]
-        prev = [_make_review_finding(description="gate_override never wired into TaskSpec")]
+        prev = [_make_review_finding(description="gate_override never wired into TaskStory")]
         result = _persistent_p1_descriptions(curr, prev)
         assert "gate_override never wired" in result
 
@@ -1393,8 +1393,8 @@ class TestCycleHistoryAccumulation:
                     suggestion=None,
                 )
             ],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],
@@ -1427,8 +1427,8 @@ class TestCycleHistoryAccumulation:
             verdict="REQUEST_CHANGES",
             summary="fourth",
             findings=[],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],
@@ -1452,8 +1452,8 @@ class TestCycleHistoryAccumulation:
             verdict="REQUEST_CHANGES",
             summary="s",
             findings=[],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],
@@ -1478,8 +1478,8 @@ class TestCycleHistoryAccumulation:
             verdict="REQUEST_CHANGES",
             summary="s",
             findings=[],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],
@@ -1510,8 +1510,8 @@ class TestCycleHistoryAccumulation:
                     suggestion=None,
                 )
             ],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],

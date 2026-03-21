@@ -10,7 +10,7 @@ from theforge.cli import (
     _build_task,
     _ensure_gitignored,
     _find_config,
-    _parse_spec_frontmatter,
+    _parse_story_frontmatter,
     cmd_check_providers,
     cmd_init_hooks,
     cmd_secrets_init,
@@ -41,33 +41,33 @@ class TestParseFrontmatter:
             "# Spec content\n",
             encoding="utf-8",
         )
-        fm = _parse_spec_frontmatter(spec)
+        fm = _parse_story_frontmatter(spec)
         assert fm["name"] == "Phase 6H"
         assert fm["slug"] == "export-svc"
 
     def test_without_frontmatter(self, tmp_path):
         spec = tmp_path / "plain.md"
         spec.write_text("# Just a spec\n\nNo frontmatter.", encoding="utf-8")
-        fm = _parse_spec_frontmatter(spec)
+        fm = _parse_story_frontmatter(spec)
         assert fm == {}
 
     def test_invalid_yaml_frontmatter(self, tmp_path):
         spec = tmp_path / "bad.md"
         spec.write_text("---\n[invalid: yaml: [[\n---\n", encoding="utf-8")
-        fm = _parse_spec_frontmatter(spec)
+        fm = _parse_story_frontmatter(spec)
         assert fm == {}
 
     def test_non_mapping_frontmatter(self, tmp_path):
         """Non-dict frontmatter (e.g. a list) must return empty dict, not crash."""
         spec = tmp_path / "list_fm.md"
         spec.write_text("---\n- not-a-mapping\n- item-two\n---\nContent\n", encoding="utf-8")
-        fm = _parse_spec_frontmatter(spec)
+        fm = _parse_story_frontmatter(spec)
         assert fm == {}
 
     def test_scalar_frontmatter(self, tmp_path):
         spec = tmp_path / "scalar.md"
         spec.write_text("---\njust a string\n---\nContent\n", encoding="utf-8")
-        fm = _parse_spec_frontmatter(spec)
+        fm = _parse_story_frontmatter(spec)
         assert fm == {}
 
 

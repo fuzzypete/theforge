@@ -1,14 +1,14 @@
-"""Unit tests for spec_validator.py."""
+"""Unit tests for story_validator.py."""
 
 from unittest.mock import patch
 
 from theforge.config import DEFAULT_DEV_PROFILE
 from theforge.runner import AgentResult
-from theforge.spec_validator import (
+from theforge.story_validator import (
     _extract_yaml_block,
     _make_fast_profile,
     _parse_validation_output,
-    validate_spec,
+    validate_story,
 )
 
 # ── Helper ────────────────────────────────────────────────────────────
@@ -193,16 +193,16 @@ def test_make_fast_profile_does_not_mutate_original():
     assert fast.model == "sonnet"
 
 
-# ── Tests: validate_spec (integration with mocked run_agent) ──────────
+# ── Tests: validate_story (integration with mocked run_agent) ──────────
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_pass(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_pass(mock_run_agent, tmp_path):
     """PASS verdict from model → result.verdict == PASS with no findings."""
     mock_run_agent.return_value = _make_agent_result(PASS_OUTPUT, cost_usd=0.005)
 
-    result = validate_spec(
-        spec_content="# Spec\n\n## AC\n- [ ] Feature works",
+    result = validate_story(
+        story_content="# Spec\n\n## AC\n- [ ] Feature works",
         profile=DEFAULT_DEV_PROFILE,
         working_dir=tmp_path,
     )
@@ -214,13 +214,13 @@ def test_validate_spec_pass(mock_run_agent, tmp_path):
     mock_run_agent.assert_called_once()
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_warn_requirement(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_warn_requirement(mock_run_agent, tmp_path):
     """WARN with requirement finding → finding propagated."""
     mock_run_agent.return_value = _make_agent_result(WARN_REQUIREMENT_OUTPUT, cost_usd=0.008)
 
-    result = validate_spec(
-        spec_content="# Spec\n\nSome spec content",
+    result = validate_story(
+        story_content="# Spec\n\nSome spec content",
         profile=DEFAULT_DEV_PROFILE,
         working_dir=tmp_path,
     )
@@ -230,13 +230,13 @@ def test_validate_spec_warn_requirement(mock_run_agent, tmp_path):
     assert result.findings[0].category == "requirement"
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_warn_scope_with_split(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_warn_scope_with_split(mock_run_agent, tmp_path):
     """WARN with scope finding including split_suggestion."""
     mock_run_agent.return_value = _make_agent_result(WARN_SCOPE_OUTPUT, cost_usd=0.010)
 
-    result = validate_spec(
-        spec_content="# Big Spec\n\nLots of ACs",
+    result = validate_story(
+        story_content="# Big Spec\n\nLots of ACs",
         profile=DEFAULT_DEV_PROFILE,
         working_dir=tmp_path,
     )
@@ -249,13 +249,13 @@ def test_validate_spec_warn_scope_with_split(mock_run_agent, tmp_path):
     assert len(f.split_suggestion["stories"]) == 3
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_malformed_output_is_pass(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_malformed_output_is_pass(mock_run_agent, tmp_path):
     """Malformed model output → fail-safe PASS, run is not blocked."""
     mock_run_agent.return_value = _make_agent_result(MALFORMED_OUTPUT)
 
-    result = validate_spec(
-        spec_content="# Spec",
+    result = validate_story(
+        story_content="# Spec",
         profile=DEFAULT_DEV_PROFILE,
         working_dir=tmp_path,
     )
@@ -264,13 +264,13 @@ def test_validate_spec_malformed_output_is_pass(mock_run_agent, tmp_path):
     assert result.findings == []
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_agent_exception_is_pass(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_agent_exception_is_pass(mock_run_agent, tmp_path):
     """Exception from run_agent → fail-safe PASS."""
     mock_run_agent.side_effect = RuntimeError("agent failed")
 
-    result = validate_spec(
-        spec_content="# Spec",
+    result = validate_story(
+        story_content="# Spec",
         profile=DEFAULT_DEV_PROFILE,
         working_dir=tmp_path,
     )
@@ -278,16 +278,16 @@ def test_validate_spec_agent_exception_is_pass(mock_run_agent, tmp_path):
     assert result.verdict == "PASS"
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_uses_fast_profile_for_opus(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_uses_fast_profile_for_opus(mock_run_agent, tmp_path):
     """Opus dev profile → model substituted to sonnet before calling run_agent."""
     import dataclasses
 
     mock_run_agent.return_value = _make_agent_result(PASS_OUTPUT)
     opus_profile = dataclasses.replace(DEFAULT_DEV_PROFILE, model="opus")
 
-    validate_spec(
-        spec_content="# Spec",
+    validate_story(
+        story_content="# Spec",
         profile=opus_profile,
         working_dir=tmp_path,
     )
@@ -296,16 +296,16 @@ def test_validate_spec_uses_fast_profile_for_opus(mock_run_agent, tmp_path):
     assert called_profile.model == "sonnet"
 
 
-@patch("theforge.spec_validator.run_agent")
-def test_validate_spec_passthrough_non_opus(mock_run_agent, tmp_path):
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_passthrough_non_opus(mock_run_agent, tmp_path):
     """Non-opus profile model is passed through unchanged."""
     import dataclasses
 
     mock_run_agent.return_value = _make_agent_result(PASS_OUTPUT)
     sonnet_profile = dataclasses.replace(DEFAULT_DEV_PROFILE, model="sonnet")
 
-    validate_spec(
-        spec_content="# Spec",
+    validate_story(
+        story_content="# Spec",
         profile=sonnet_profile,
         working_dir=tmp_path,
     )

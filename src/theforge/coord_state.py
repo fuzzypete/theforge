@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from .review import ReviewResult
     from .runner import AgentResult
-    from .spec_validator import SpecValidationResult
+    from .story_validator import StoryValidationResult
     from .task import PlanData
 
 # ── Phase enum ────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ class CoordinatorState:
     # to compute git diff --name-only for changed-file correlation.
     escalate_decision: str | None = None  # "approve" | "reject" | "continue"
     escalate_reason: str | None = None  # human-readable escalation reason
-    spec_validation_result: SpecValidationResult | None = None
+    story_validation_result: StoryValidationResult | None = None
     plan_validation_findings: list[dict] = field(default_factory=list)
 
     @property

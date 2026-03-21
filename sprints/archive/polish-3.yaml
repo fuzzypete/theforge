@@ -16,7 +16,7 @@ budget_usd: 80.00
 #   4. reasoning-effort     — 3 missing config validation tests
 #   5. remote-hitl          — ntfy async decisions; depends on hitl above
 
-specs:
+stories:
   - specs/audit-improvements.md
   - specs/archive/human-in-the-loop.md
   - specs/gate-hardening.md

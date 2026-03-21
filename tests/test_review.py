@@ -15,7 +15,7 @@ VALID_APPROVE_YAML = """\
 verdict: APPROVE
 summary: "Clean implementation, matches spec."
 findings: []
-spec_compliance:
+story_compliance:
   matches_spec: true
   mismatches: []
 test_coverage:
@@ -39,7 +39,7 @@ findings:
     line: 10
     description: "Unused import os"
     suggestion: "Remove import os"
-spec_compliance:
+story_compliance:
   matches_spec: false
   mismatches:
     - "Batch size not configurable as spec requires"
@@ -56,7 +56,7 @@ class TestParseReviewOutput:
         result = parse_review_output(VALID_APPROVE_YAML)
         assert result.verdict == "APPROVE"
         assert result.findings == []
-        assert result.spec_matches is True
+        assert result.story_matches is True
         assert result.test_adequate is True
         assert result.parse_errors == []
 
@@ -68,8 +68,8 @@ class TestParseReviewOutput:
         assert result.findings[0].file == "src/batch.py"
         assert result.findings[0].line == 42
         assert result.findings[1].severity == "P2"
-        assert result.spec_matches is False
-        assert len(result.spec_mismatches) == 1
+        assert result.story_matches is False
+        assert len(result.story_mismatches) == 1
         assert result.test_adequate is False
         assert len(result.test_gaps) == 1
 
@@ -78,7 +78,7 @@ class TestParseReviewOutput:
             "verdict: APPROVE\n"
             "summary: ok\n"
             "findings: []\n"
-            "spec_compliance:\n"
+            "story_compliance:\n"
             "  matches_spec: true\n"
             "test_coverage:\n"
             "  adequate: true\n"
@@ -98,7 +98,7 @@ class TestParseReviewOutput:
             "verdict: APPROVE\n"
             "summary: all good\n"
             "findings: []\n"
-            "spec_compliance:\n"
+            "story_compliance:\n"
             "  matches_spec: true\n"
             "test_coverage:\n"
             "  adequate: true\n"
@@ -246,7 +246,7 @@ VALID_APPROVE_OUTPUT = """\
 verdict: APPROVE
 summary: "All good"
 findings: []
-spec_compliance:
+story_compliance:
   matches_spec: true
   mismatches: []
 test_coverage:
@@ -288,7 +288,7 @@ findings: []
             "verdict": "APPROVE",
             "summary": "ok",
             "findings": [],
-            "spec_compliance": {"matches_spec": True, "mismatches": []},
+            "story_compliance": {"matches_spec": True, "mismatches": []},
             "test_coverage": {"adequate": True, "gaps": []},
         }
         result = _try_parse_review("", structured_data=data)
@@ -314,8 +314,8 @@ def _make_review_result(
         verdict=verdict,
         summary=f"summary for {verdict}",
         findings=findings or [],
-        spec_matches=True,
-        spec_mismatches=[],
+        story_matches=True,
+        story_mismatches=[],
         test_adequate=True,
         test_gaps=[],
         parse_errors=parse_errors or [],

@@ -38,7 +38,7 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.runner import AgentResult, LogLevel
-from theforge.task import TaskSpec
+from theforge.task import TaskStory
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -144,13 +144,13 @@ def _make_pool_config(
     )
 
 
-def _make_task(tmp_path: Path) -> TaskSpec:
+def _make_task(tmp_path: Path) -> TaskStory:
     """Create a test task with a real spec file."""
     spec = tmp_path / "spec.md"
     spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
-        spec_path=spec,
+        story_path=spec,
         slug="test-task",
     )
 
@@ -278,7 +278,7 @@ APPROVE_REVIEW = """\
 verdict: APPROVE
 summary: "Looks good."
 findings: []
-spec_compliance:
+story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
@@ -289,7 +289,7 @@ APPROVE_REVIEW_JSON = {
     "verdict": "APPROVE",
     "summary": "Looks good.",
     "findings": [],
-    "spec_compliance": {"matches_spec": True},
+    "story_compliance": {"matches_spec": True},
     "test_coverage": {"adequate": True},
 }
 
@@ -304,7 +304,7 @@ findings:
     line: 10
     description: "Off by one"
     suggestion: "Fix it"
-spec_compliance:
+story_compliance:
   matches_spec: false
   mismatches:
     - "Missing batch config"
@@ -1112,12 +1112,12 @@ criteria_checked: []
 """
 
 
-class TestSpecValidation:
+class TestStoryValidation:
     """Tests for spec validation (pre-PLAN quality check)."""
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator._plan_review_interactive")
-    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
@@ -1132,14 +1132,14 @@ class TestSpecValidation:
         tmp_path,
     ):
         """PASS verdict → run continues to PLAN normally."""
-        from theforge.spec_validator import SpecValidationResult
+        from theforge.story_validator import StoryValidationResult
 
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_validate.return_value = SpecValidationResult(verdict="PASS")
+        mock_validate.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
@@ -1155,14 +1155,14 @@ class TestSpecValidation:
 
         assert result.success is True
         mock_validate.assert_called_once()
-        assert result.state.spec_validation_result is not None
-        assert result.state.spec_validation_result.verdict == "PASS"
+        assert result.state.story_validation_result is not None
+        assert result.state.story_validation_result.verdict == "PASS"
         # Plan still ran
         assert len(result.state.plan_results) == 1
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator._plan_review_interactive")
-    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
@@ -1178,17 +1178,17 @@ class TestSpecValidation:
         capsys,
     ):
         """WARN verdict → findings logged, run continues to PLAN."""
-        from theforge.spec_validator import SpecValidationFinding, SpecValidationResult
+        from theforge.story_validator import StoryValidationFinding, StoryValidationResult
 
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_validate.return_value = SpecValidationResult(
+        mock_validate.return_value = StoryValidationResult(
             verdict="WARN",
             findings=[
-                SpecValidationFinding(
+                StoryValidationFinding(
                     category="requirement",
                     description="AC-3 contradicts Requirement-2",
                     split_suggestion=None,
@@ -1210,7 +1210,7 @@ class TestSpecValidation:
 
         assert result.success is True
         # Validation ran and returned WARN
-        assert result.state.spec_validation_result.verdict == "WARN"
+        assert result.state.story_validation_result.verdict == "WARN"
         # Run still continued to PLAN
         assert len(result.state.plan_results) == 1
         # Finding was logged
@@ -1219,7 +1219,7 @@ class TestSpecValidation:
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator._plan_review_interactive")
-    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
@@ -1233,7 +1233,7 @@ class TestSpecValidation:
         mock_human_review,
         tmp_path,
     ):
-        """validate_spec not called when --plan is injected."""
+        """validate_story not called when --plan is injected."""
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -1256,7 +1256,7 @@ class TestSpecValidation:
         mock_validate.assert_not_called()
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
@@ -1269,7 +1269,7 @@ class TestSpecValidation:
         mock_human_review,
         tmp_path,
     ):
-        """validate_spec not called when preflight complexity is small."""
+        """validate_story not called when preflight complexity is small."""
         config = _make_config(tmp_path)  # plan not enabled → small specs skip plan
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -1291,7 +1291,7 @@ class TestSpecValidation:
 
     @patch("theforge.coordinator._human_review", return_value=("approve", None))
     @patch("theforge.coordinator._plan_review_interactive")
-    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
@@ -1306,7 +1306,7 @@ class TestSpecValidation:
         tmp_path,
     ):
         """WARN with scope finding → spec_validation.findings appears in audit log."""
-        from theforge.spec_validator import SpecValidationFinding, SpecValidationResult
+        from theforge.story_validator import StoryValidationFinding, StoryValidationResult
 
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1316,11 +1316,11 @@ class TestSpecValidation:
         split = {
             "stories": [{"name": "Story A", "acs": ["AC1"]}, {"name": "Story B", "acs": ["AC2"]}]
         }
-        mock_validate.return_value = SpecValidationResult(
+        mock_validate.return_value = StoryValidationResult(
             verdict="WARN",
             cost_usd=0.005,
             findings=[
-                SpecValidationFinding(
+                StoryValidationFinding(
                     category="scope",
                     description="Spec covers two independent subsystems",
                     split_suggestion=split,
@@ -1342,7 +1342,7 @@ class TestSpecValidation:
         audit = generate_audit_log(config, task, result)
 
         assert result.success is True
-        sv = audit["spec_validation"]
+        sv = audit["story_validation"]
         assert sv is not None
         assert sv["verdict"] == "WARN"
         assert sv["cost_usd"] == 0.005
@@ -1624,7 +1624,7 @@ findings:
     line: 5
     description: "Missing log statement"
     suggestion: "Add logger.info(...)"
-spec_compliance:
+story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
@@ -2255,7 +2255,7 @@ class TestCoordinatorSchemaErrorOnRequestChanges:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
-        # Malformed REQUEST_CHANGES: has P1 finding but spec_compliance missing fields
+        # Malformed REQUEST_CHANGES: has P1 finding but story_compliance missing fields
         malformed_review = """\
 ```yaml
 verdict: REQUEST_CHANGES
@@ -2932,7 +2932,7 @@ summary: "Looks good."
 findings: []
 ```
 """
-# Missing spec_compliance and test_coverage → schema errors
+# Missing story_compliance and test_coverage → schema errors
 
 
 class TestReviewParseRetry:
@@ -5284,10 +5284,10 @@ class TestEscalateGate:
 class TestSigtermHandler:
     """Tests for _make_sigterm_handler crash diagnostics."""
 
-    def _make_task(self, tmp_path: Path) -> "TaskSpec":
+    def _make_task(self, tmp_path: Path) -> "TaskStory":
         spec = tmp_path / "spec.md"
         spec.write_text("# spec")
-        return TaskSpec(name="Test Task", slug="test-task", spec_path=spec)
+        return TaskStory(name="Test Task", slug="test-task", story_path=spec)
 
     def _make_config_no_ntfy(self, tmp_path: Path) -> ForgeConfig:
         return ForgeConfig(

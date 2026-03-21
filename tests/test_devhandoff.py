@@ -16,7 +16,7 @@ def _valid_handoff() -> dict:
         "acceptance_criteria": [
             {"criterion": "Feature X works", "status": "MET", "notes": "Tested in test_x.py"},
         ],
-        "spec_deviations": "none",
+        "story_deviations": "none",
         "deferred_items": "none",
         "gate_result": "PASS",
     }
@@ -29,7 +29,7 @@ class TestValidateDevHandoff:
 
     def test_valid_with_deviations_list(self):
         data = _valid_handoff()
-        data["spec_deviations"] = [
+        data["story_deviations"] = [
             {
                 "description": "Used coord_util instead of coordinator",
                 "justification": "Shared by 4 modules",
@@ -178,11 +178,11 @@ class TestValidateDevHandoff:
         errors = validate_dev_handoff(data)
         assert any("gate_result" in e for e in errors)
 
-    def test_missing_spec_deviations(self):
+    def test_missing_story_deviations(self):
         data = _valid_handoff()
-        del data["spec_deviations"]
+        del data["story_deviations"]
         errors = validate_dev_handoff(data)
-        assert any("spec_deviations" in e for e in errors)
+        assert any("story_deviations" in e for e in errors)
 
     def test_missing_deferred_items(self):
         data = _valid_handoff()
@@ -190,13 +190,13 @@ class TestValidateDevHandoff:
         errors = validate_dev_handoff(data)
         assert any("deferred_items" in e for e in errors)
 
-    # ── spec_deviations / deferred_items existing behavior ─────────
+    # ── story_deviations / deferred_items existing behavior ─────────
 
-    def test_spec_deviations_invalid_string(self):
+    def test_story_deviations_invalid_string(self):
         data = _valid_handoff()
-        data["spec_deviations"] = "some random text"
+        data["story_deviations"] = "some random text"
         errors = validate_dev_handoff(data)
-        assert any("spec_deviations" in e for e in errors)
+        assert any("story_deviations" in e for e in errors)
 
     def test_deferred_items_invalid_string(self):
         data = _valid_handoff()
@@ -204,11 +204,11 @@ class TestValidateDevHandoff:
         errors = validate_dev_handoff(data)
         assert any("deferred_items" in e for e in errors)
 
-    def test_spec_deviations_invalid_type(self):
+    def test_story_deviations_invalid_type(self):
         data = _valid_handoff()
-        data["spec_deviations"] = 42
+        data["story_deviations"] = 42
         errors = validate_dev_handoff(data)
-        assert any("spec_deviations" in e for e in errors)
+        assert any("story_deviations" in e for e in errors)
 
     def test_deferred_items_invalid_type(self):
         data = _valid_handoff()
@@ -218,13 +218,13 @@ class TestValidateDevHandoff:
 
     def test_deviation_missing_description(self):
         data = _valid_handoff()
-        data["spec_deviations"] = [{"justification": "reason"}]
+        data["story_deviations"] = [{"justification": "reason"}]
         errors = validate_dev_handoff(data)
         assert any("description" in e for e in errors)
 
     def test_deviation_missing_justification(self):
         data = _valid_handoff()
-        data["spec_deviations"] = [{"description": "what"}]
+        data["story_deviations"] = [{"description": "what"}]
         errors = validate_dev_handoff(data)
         assert any("justification" in e for e in errors)
 
@@ -247,7 +247,7 @@ class TestValidateDevHandoff:
 
     def test_non_dict_deviation_item(self):
         data = _valid_handoff()
-        data["spec_deviations"] = ["not a dict"]
+        data["story_deviations"] = ["not a dict"]
         errors = validate_dev_handoff(data)
         assert any("mapping" in e for e in errors)
 
@@ -257,9 +257,9 @@ class TestValidateDevHandoff:
         errors = validate_dev_handoff(data)
         assert any("mapping" in e for e in errors)
 
-    def test_spec_deviations_none_case_insensitive(self):
+    def test_story_deviations_none_case_insensitive(self):
         data = _valid_handoff()
-        data["spec_deviations"] = "None"
+        data["story_deviations"] = "None"
         errors = validate_dev_handoff(data)
         assert errors == []
 
@@ -297,13 +297,13 @@ class TestValidateDevHandoff:
 
     def test_deviation_description_non_string_rejected(self):
         data = _valid_handoff()
-        data["spec_deviations"] = [{"description": 123, "justification": "reason"}]
+        data["story_deviations"] = [{"description": 123, "justification": "reason"}]
         errors = validate_dev_handoff(data)
         assert any("description" in e and "string" in e for e in errors)
 
     def test_deviation_justification_non_string_rejected(self):
         data = _valid_handoff()
-        data["spec_deviations"] = [{"description": "what", "justification": False}]
+        data["story_deviations"] = [{"description": "what", "justification": False}]
         errors = validate_dev_handoff(data)
         assert any("justification" in e and "string" in e for e in errors)
 
@@ -348,7 +348,7 @@ class TestParseDevHandoff:
         assert len(result.acceptance_criteria) == 1
         assert result.acceptance_criteria[0]["criterion"] == "It works"
         assert result.acceptance_criteria[0]["status"] == "MET"
-        assert result.spec_deviations == []
+        assert result.story_deviations == []
         assert result.deferred_items == []
         assert result.gate_result == "PASS"
 
@@ -376,9 +376,9 @@ class TestParseDevHandoff:
         )
         result = parse_dev_handoff(text)
         assert result.parse_errors == []
-        assert len(result.spec_deviations) == 1
-        assert result.spec_deviations[0]["description"] == "Used different module"
-        assert result.spec_deviations[0]["justification"] == "Better encapsulation"
+        assert len(result.story_deviations) == 1
+        assert result.story_deviations[0]["description"] == "Used different module"
+        assert result.story_deviations[0]["justification"] == "Better encapsulation"
 
     def test_parse_with_deferred(self):
         text = (
@@ -454,7 +454,7 @@ class TestDevHandoffToReviewerText:
             acceptance_criteria=[
                 {"criterion": "X works", "status": "MET", "notes": "Tested"},
             ],
-            spec_deviations=[
+            story_deviations=[
                 {"description": "Moved to util", "justification": "Shared by 3 modules"}
             ],
             deferred_items=[{"description": "Caching", "reason": "Out of scope"}],
@@ -469,7 +469,7 @@ class TestDevHandoffToReviewerText:
         assert "feat(x): implement X" in text
         assert "**[MET]** X works" in text
         assert "Tested" in text
-        assert "Spec Deviations" in text
+        assert "Story Deviations" in text
         assert "Moved to util" in text
         assert "Shared by 3 modules" in text
         assert "Deferred Items" in text
@@ -483,7 +483,7 @@ class TestDevHandoffToReviewerText:
             acceptance_criteria=[
                 {"criterion": "Works", "status": "MET", "notes": "yes"},
             ],
-            spec_deviations=[],
+            story_deviations=[],
             deferred_items=[],
             gate_result="PASS",
             parse_errors=[],
@@ -493,7 +493,7 @@ class TestDevHandoffToReviewerText:
         assert "Implemented the thing." in text
         assert "Commits" in text
         assert "Acceptance Criteria" in text
-        assert "Spec Deviations" not in text
+        assert "Story Deviations" not in text
         assert "Deferred Items" not in text
 
     def test_empty_handoff_returns_empty(self):
@@ -501,7 +501,7 @@ class TestDevHandoffToReviewerText:
             summary="",
             commits=[],
             acceptance_criteria=[],
-            spec_deviations=[],
+            story_deviations=[],
             deferred_items=[],
             gate_result="",
             parse_errors=[],
@@ -519,7 +519,7 @@ class TestDevHandoffToReviewerText:
                 {"criterion": "AC 2", "status": "PARTIAL", "notes": "mostly"},
                 {"criterion": "AC 3", "status": "NOT_MET", "notes": "deferred"},
             ],
-            spec_deviations=[],
+            story_deviations=[],
             deferred_items=[],
             gate_result="FAIL",
             parse_errors=[],

@@ -13,7 +13,7 @@ budget_usd: 60.00
 #   4. session-resume-review-path — reviewer/dev session continuity across forge review
 #                               invocations. No dependencies on above, but most complex.
 
-specs:
+stories:
   - specs/spec-validation.md
   - specs/lean-story-output.md
   - specs/complexity-based-timeouts.md

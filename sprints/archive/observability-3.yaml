@@ -2,6 +2,6 @@ name: "Observability 3 — Project-Local Logs + Lifecycle Hooks"
 budget_usd: 100.00
 auto_merge: true
 
-specs:
+stories:
   - specs/backlog/project-local-logs.md
   - specs/backlog/lifecycle-hooks.md

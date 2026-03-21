@@ -1,6 +1,6 @@
-"""Sprint mode: run multiple specs sequentially through the full pipeline.
+"""Sprint mode: run multiple stories sequentially through the full pipeline.
 
-A sprint is defined by a YAML manifest listing spec paths to run in order,
+A sprint is defined by a YAML manifest listing story paths to run in order,
 with an aggregate budget ceiling (Claude costs only).
 """
 
@@ -30,7 +30,7 @@ from .coordinator import (
     run_from_review,
     run_task,
 )
-from .task import TaskSpec
+from .task import TaskStory as TaskSpec  # noqa: F401
 
 
 @dataclass
@@ -39,7 +39,7 @@ class SprintManifest:
 
     name: str
     budget_usd: float
-    specs: list[str]  # relative paths to spec files
+    stories: list[str]  # relative paths to story files
 
 
 @dataclass
@@ -85,20 +85,30 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
     if budget_usd <= 0:
         raise ValueError(f"Sprint 'budget_usd' must be > 0, got {budget_usd}")
 
-    specs = raw.get("specs")
-    if not specs or not isinstance(specs, list):
-        raise ValueError("Sprint manifest must have a non-empty 'specs' list")
-    if not all(isinstance(s, str) for s in specs):
-        raise ValueError("All entries in 'specs' must be strings (file paths)")
+    # Accept both 'stories' (new) and 'specs' (deprecated) keys
+    stories = raw.get("stories")
+    if stories is None:
+        specs_legacy = raw.get("specs")
+        if specs_legacy is not None:
+            import logging as _logging
 
-    return SprintManifest(name=name, budget_usd=budget_usd, specs=specs)
+            _logging.getLogger(__name__).warning(
+                "Sprint manifest uses deprecated 'specs:' key — rename to 'stories:'"
+            )
+            stories = specs_legacy
+    if not stories or not isinstance(stories, list):
+        raise ValueError("Sprint manifest must have a non-empty 'stories' list")
+    if not all(isinstance(s, str) for s in stories):
+        raise ValueError("All entries in 'stories' must be strings (file paths)")
+
+    return SprintManifest(name=name, budget_usd=budget_usd, stories=stories)
 
 
-def _validate_spec_paths(manifest: SprintManifest, project_root: Path) -> list[Path]:
-    """Resolve and validate all spec paths. Raises ValueError if any are missing."""
+def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[Path]:
+    """Resolve and validate all story paths. Raises ValueError if any are missing."""
     resolved: list[Path] = []
     missing: list[str] = []
-    for spec_str in manifest.specs:
+    for spec_str in manifest.stories:
         path = (project_root / spec_str).resolve()
         if not path.exists():
             missing.append(spec_str)
@@ -106,16 +116,16 @@ def _validate_spec_paths(manifest: SprintManifest, project_root: Path) -> list[P
             resolved.append(path)
     if missing:
         raise ValueError(
-            f"Sprint manifest references {len(missing)} missing spec(s):\n"
+            f"Sprint manifest references {len(missing)} missing story/stories:\n"
             + "\n".join(f"  {s}" for s in missing)
         )
     return resolved
 
 
-def _build_task_from_spec(spec_path: Path) -> TaskSpec:
-    """Build a TaskSpec from a spec file using frontmatter if available."""
+def _build_task_from_story(story_path: Path) -> TaskSpec:
+    """Build a TaskStory from a story file using frontmatter if available."""
     # Import here to avoid circular imports; cli._build_task is essentially the same logic
-    text = spec_path.read_text(encoding="utf-8")
+    text = story_path.read_text(encoding="utf-8")
     fm: dict = {}
     if text.startswith("---"):
         end = text.find("---", 3)
@@ -127,8 +137,8 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
             except yaml.YAMLError:
                 pass
 
-    slug = fm.get("slug") or spec_path.stem
-    name = fm.get("name", spec_path.stem.replace("_", " ").replace("-", " ").title())
+    slug = fm.get("slug") or story_path.stem
+    name = fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title())
     raw_deps = fm.get("depends_on", [])
     if isinstance(raw_deps, str):
         depends_on = [raw_deps]
@@ -138,7 +148,7 @@ def _build_task_from_spec(spec_path: Path) -> TaskSpec:
         depends_on = []
     return TaskSpec(
         name=name,
-        spec_path=spec_path,
+        story_path=story_path,
         slug=slug,
         pytest_target=fm.get("pytest_target"),
         gate_override=fm.get("gate"),
@@ -150,18 +160,18 @@ def _log(msg: str) -> None:
     print(f"[sprint] {msg}", file=sys.stderr, flush=True)
 
 
-def _spec_header(idx: int, total: int, slug: str) -> str:
-    """Format a spec header line: [N/total] slug ─────... (fills to 60 chars)."""
+def _story_header(idx: int, total: int, slug: str) -> str:
+    """Format a story header line: [N/total] slug ─────... (fills to 60 chars)."""
     prefix = f"[{idx}/{total}] {slug} "
     dashes = "─" * max(0, 60 - len(prefix))
     return prefix + dashes
 
 
 @dataclass
-class SpecTriage:
-    """Result of triaging a spec for sprint resume."""
+class StoryTriage:
+    """Result of triaging a story for sprint resume."""
 
-    spec_path: str
+    story_path: str
     action: str  # "skip_merged", "skip", "review", "dev", "full"
     reason: str
     worktree_path: Path | None = None
@@ -169,11 +179,11 @@ class SpecTriage:
 
 
 def _triage_spec(
-    spec_path: str,
+    story_path: str,
     config: ForgeConfig,
     project_root: Path,
-) -> SpecTriage:
-    """Determine the optimal re-entry point for a spec.
+) -> StoryTriage:
+    """Determine the optimal re-entry point for a story.
 
     Decision tree:
       merged to base?           → skip_merged
@@ -182,8 +192,8 @@ def _triage_spec(
       gate passes?              → review
       gate fails?               → dev
     """
-    full_path = (project_root / spec_path).resolve()
-    task = _build_task_from_spec(full_path)
+    full_path = (project_root / story_path).resolve()
+    task = _build_task_from_story(full_path)
     slug = task.slug
 
     branch = config.workspace.branch_pattern.format(slug=slug)
@@ -212,8 +222,8 @@ def _triage_spec(
             )
             ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
             if ahead_count > 0:
-                return SpecTriage(
-                    spec_path=spec_path,
+                return StoryTriage(
+                    story_path=story_path,
                     action="skip_merged",
                     reason=f"already merged to {base_branch}",
                     worktree_path=None,
@@ -226,8 +236,8 @@ def _triage_spec(
 
     # 2. Check if worktree exists
     if not worktree_path.exists():
-        return SpecTriage(
-            spec_path=spec_path,
+        return StoryTriage(
+            story_path=story_path,
             action="full",
             reason="no worktree found",
             worktree_path=None,
@@ -253,8 +263,8 @@ def _triage_spec(
     if not commits_ahead:
         # Stale worktree: 0 commits ahead of base. run_task WORKSPACE phase will
         # recreate it from scratch. Pass worktree_path=None so callers don't reuse it.
-        return SpecTriage(
-            spec_path=spec_path,
+        return StoryTriage(
+            story_path=story_path,
             action="full",
             reason=f"worktree exists but 0 commits ahead of {base_branch} (stale)",
             worktree_path=None,
@@ -263,8 +273,8 @@ def _triage_spec(
 
     # 4. Check audit trail for a prior review APPROVE
     if has_review_approve(project_root, slug, base_branch, branch):
-        return SpecTriage(
-            spec_path=spec_path,
+        return StoryTriage(
+            story_path=story_path,
             action="skip",
             reason=f"prior APPROVE in audit trail ({len(commits_ahead)} commits ahead)",
             worktree_path=worktree_path,
@@ -275,8 +285,8 @@ def _triage_spec(
     gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
 
     if gate_err is None and gate_decision == "PASS":
-        return SpecTriage(
-            spec_path=spec_path,
+        return StoryTriage(
+            story_path=story_path,
             action="review",
             reason=f"worktree exists, gate passes ({len(commits_ahead)} commits ahead)",
             worktree_path=worktree_path,
@@ -284,8 +294,8 @@ def _triage_spec(
         )
 
     reason_detail = gate_err or f"gate returned {gate_decision}"
-    return SpecTriage(
-        spec_path=spec_path,
+    return StoryTriage(
+        story_path=story_path,
         action="dev",
         reason=f"worktree exists, gate fails ({reason_detail})",
         worktree_path=worktree_path,
@@ -315,7 +325,7 @@ def run_sprint(
     notify: bool = False,
     resume: bool = False,
 ) -> SprintResult:
-    """Run all specs in a sprint manifest sequentially.
+    """Run all stories in a sprint manifest sequentially.
 
     Budget enforcement tracks Claude costs only; Codex/Gemini invocations
     report $0.00 and do not count toward the ceiling.
@@ -323,21 +333,21 @@ def run_sprint(
     Args:
         config: Loaded ForgeConfig for the project.
         manifest_path: Path to the sprint.yaml manifest.
-        auto_merge: If True, merge each spec's branch after APPROVE.
-        interactive: If True, pause for human review at each spec.
-        resume: If True, triage each spec to find the optimal re-entry point
+        auto_merge: If True, merge each story's branch after APPROVE.
+        interactive: If True, pause for human review at each story.
+        resume: If True, triage each story to find the optimal re-entry point
             (skip_merged / review / dev / full) and carry forward prior costs.
 
     Returns:
-        SprintResult with per-spec outcomes and aggregate stats.
+        SprintResult with per-story outcomes and aggregate stats.
     """
     manifest = load_sprint_manifest(manifest_path)
-    spec_paths = _validate_spec_paths(manifest, config.project_root)
+    story_paths = _validate_story_paths(manifest, config.project_root)
 
-    total = len(spec_paths)
-    plural = "s" if total != 1 else ""
+    total = len(story_paths)
+    noun = "stories" if total != 1 else "story"
     print(
-        f'[sprint] "{manifest.name}"  {total} spec{plural}  budget=${manifest.budget_usd:.2f}',
+        f'[sprint] "{manifest.name}"  {total} {noun}  budget=${manifest.budget_usd:.2f}',
         file=sys.stderr,
         flush=True,
     )
@@ -355,7 +365,7 @@ def run_sprint(
     )
     _sprint_logger.emit(
         "run_start",
-        specs=manifest.specs,
+        stories=manifest.stories,
         budget_usd=manifest.budget_usd,
         resume=resume,
     )
@@ -378,32 +388,32 @@ def run_sprint(
     merged_slugs: set[str] = set()
 
     # Pre-scan: parse all TaskSpecs once and build dependent_slugs.
-    # Caching avoids re-reading spec files in the main loop.
+    # Caching avoids re-reading story files in the main loop.
     # We collect all dependents regardless of manifest ordering — merging earlier
     # is safe and simpler than strict look-ahead filtering.
-    _parsed_tasks: dict[Path, object] = {_sp: _build_task_from_spec(_sp) for _sp in spec_paths}
+    _parsed_tasks: dict[Path, object] = {_sp: _build_task_from_story(_sp) for _sp in story_paths}
     dependent_slugs: set[str] = set()
     for _t in _parsed_tasks.values():
         dependent_slugs.update(_t.depends_on)  # type: ignore[union-attr]
 
-    # Resume mode: triage all specs and carry forward prior costs
-    triages: dict[str, SpecTriage] = {}
+    # Resume mode: triage all stories and carry forward prior costs
+    triages: dict[str, StoryTriage] = {}
     if resume:
         prior_cost = _read_prior_sprint_cost(config.project_root)
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
         _log("Triaging specs...")
-        for spec_str in manifest.specs:
+        for spec_str in manifest.stories:
             triage = _triage_spec(spec_str, config, config.project_root)
             triages[spec_str] = triage
             action_label = triage.action.upper().replace("_", " ")
             _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
 
-    for idx, spec_path in enumerate(spec_paths, start=1):
-        spec_str = manifest.specs[idx - 1]
-        task = _parsed_tasks[spec_path]  # type: ignore[assignment]
+    for idx, story_path in enumerate(story_paths, start=1):
+        spec_str = manifest.stories[idx - 1]
+        task = _parsed_tasks[story_path]  # type: ignore[assignment]
 
-        # Resume mode: skip already-merged or already-approved specs before budget check.
+        # Resume mode: skip already-merged or already-approved stories before budget check.
         # These represent completed work; not subject to budget enforcement.
         if resume:
             triage = triages.get(spec_str)
@@ -428,14 +438,14 @@ def run_sprint(
             _log(f"[{idx}/{total}] SKIPPED (budget exhausted: ${acc:.2f} >= ${bud:.2f})")
             specs_skipped += 1
             stopped_reason = f"Budget exhausted (${acc:.2f} >= ${bud:.2f})"
-            # Mark remaining specs as skipped too
+            # Mark remaining stories as skipped too
             for remaining_idx in range(idx + 1, total + 1):
                 _log(f"[{remaining_idx}/{total}] SKIPPED (budget exhausted)")
                 specs_skipped += 1
             break
 
         # Dependency check: all depends_on slugs must have merged.
-        # Only this spec is skipped — independent specs continue.
+        # Only this story is skipped — independent stories continue.
         missing_deps = [dep for dep in task.depends_on if dep not in merged_slugs]
         if missing_deps:
             dep_list = ", ".join(missing_deps)
@@ -443,12 +453,12 @@ def run_sprint(
             specs_skipped += 1
             continue
 
-        # Emit spec header banner
-        print(_spec_header(idx, total, task.slug), file=sys.stderr, flush=True)
+        # Emit story header banner
+        print(_story_header(idx, total, task.slug), file=sys.stderr, flush=True)
 
         _spec_start = datetime.datetime.now(datetime.timezone.utc)
 
-        # Eager merge: if any later spec declares this slug as a dependency, force
+        # Eager merge: if any later story declares this slug as a dependency, force
         # auto_merge so the merged code is on main before the dependent starts.
         effective_auto_merge = auto_merge or (task.slug in dependent_slugs)
 
@@ -509,7 +519,7 @@ def run_sprint(
             audit_path = workspace_path / "forge_audit.yaml"
             with open(audit_path, "w", encoding="utf-8") as f:
                 yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-            _log(f"[{idx}/{total}] Per-spec audit written: {audit_path}")
+            _log(f"[{idx}/{total}] Per-story audit written: {audit_path}")
         # Copy audit to durable per-story log dir
         if result.state.log_dir is not None:
             try:
@@ -540,7 +550,7 @@ def run_sprint(
         ):
             merged_slugs.add(task.slug)
 
-        # Emit spec completion summary
+        # Emit story completion summary
         icon = "✓" if result.success else "✗"
         dur = _fmt_duration(_spec_elapsed)
         _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {dur}")
@@ -549,7 +559,7 @@ def run_sprint(
         if (prior_cost + accumulated_cost) >= manifest.budget_usd and idx < total:
             acc = prior_cost + accumulated_cost
             bud = manifest.budget_usd
-            stopped_reason = f"Budget exceeded after spec {idx} (${acc:.2f} >= ${bud:.2f})"
+            stopped_reason = f"Budget exceeded after story {idx} (${acc:.2f} >= ${bud:.2f})"
             for remaining_idx in range(idx + 1, total + 1):
                 _log(f"[{remaining_idx}/{total}] SKIPPED (budget exceeded)")
                 specs_skipped += 1
@@ -612,7 +622,7 @@ def run_sprint(
     _write_sprint_audit(
         manifest=manifest,
         result=sprint_result,
-        spec_paths=spec_paths,
+        story_paths=story_paths,
         started_at=started_at,
         finished_at=finished_at,
         duration=duration,
@@ -624,7 +634,7 @@ def run_sprint(
         _write_sprint_summary(
             manifest=manifest,
             result=sprint_result,
-            spec_paths=spec_paths,
+            story_paths=story_paths,
             started_at=started_at,
             finished_at=finished_at,
             duration=duration,
@@ -680,7 +690,7 @@ def run_sprint(
 def _write_sprint_audit(
     manifest: SprintManifest,
     result: SprintResult,
-    spec_paths: list[Path],
+    story_paths: list[Path],
     started_at: datetime.datetime,
     finished_at: datetime.datetime,
     duration: float,
@@ -691,7 +701,7 @@ def _write_sprint_audit(
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
-    for spec_str, spec_path in zip(manifest.specs, spec_paths):
+    for spec_str, story_path in zip(manifest.stories, story_paths):
         if spec_str in results_by_spec:
             res = results_by_spec[spec_str]
             preflight = res.state.preflight_verdict or "PROCEED"
@@ -773,7 +783,7 @@ def _write_sprint_audit(
 def _write_sprint_summary(
     manifest: SprintManifest,
     result: SprintResult,
-    spec_paths: list[Path],
+    story_paths: list[Path],
     started_at: datetime.datetime,
     finished_at: datetime.datetime,
     duration: float,
@@ -783,7 +793,7 @@ def _write_sprint_summary(
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
-    for spec_str, spec_path in zip(manifest.specs, spec_paths):
+    for spec_str, story_path in zip(manifest.stories, story_paths):
         if spec_str in results_by_spec:
             res = results_by_spec[spec_str]
             preflight = res.state.preflight_verdict or "PROCEED"
@@ -795,7 +805,7 @@ def _write_sprint_summary(
                 last_verdict = "APPROVE"
             entry = {
                 "path": spec_str,
-                "slug": spec_path.stem,
+                "slug": story_path.stem,
                 "outcome": outcome,
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),

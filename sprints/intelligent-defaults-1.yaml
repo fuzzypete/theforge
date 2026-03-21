@@ -12,6 +12,6 @@ auto_merge: true
 # smart-defaults: forge init CLI, built-in config defaults, validation warnings
 # run-health-metrics: per-phase cost/timing tracking, anomaly flags, health summary
 
-specs:
+stories:
   - specs/backlog/smart-defaults.md
   - specs/backlog/run-health-metrics.md

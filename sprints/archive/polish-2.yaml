@@ -20,7 +20,7 @@ budget_usd: 40.00
 #   5. rename-campaign-to-sprint — rename last so test file rename doesn't
 #                                  break earlier specs in this sprint
 
-specs:
+stories:
   - specs/stale-worktree.md
   - specs/audit-improvements.md
   - specs/archive/human-in-the-loop.md

@@ -1004,7 +1004,7 @@ class TestNtfyTerminalNotifications:
 verdict: APPROVE
 summary: "{long_summary}"
 findings: []
-spec_compliance:
+story_compliance:
   matches_spec: true
 test_coverage:
   adequate: true
@@ -1097,7 +1097,7 @@ findings:
     line: 10
     description: "{long_desc}"
     suggestion: "Fix it"
-spec_compliance:
+story_compliance:
   matches_spec: false
   mismatches: []
 test_coverage:

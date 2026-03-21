@@ -14,7 +14,7 @@ budget_usd: 80.00
 #   5. forge-ideate       — last: benefits from human-in-the-loop being in place;
 #                           once working, use it to ideate Phase 9/10/11 specs
 
-specs:
+stories:
   - specs/notifications.md
   - specs/audit-improvements.md
   - specs/archive/human-in-the-loop.md

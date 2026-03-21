@@ -33,7 +33,7 @@ from theforge.config import (
 )
 from theforge.coord_state import CoordinatorState
 from theforge.coordinator import Phase, run_from_review, run_task
-from theforge.task import TaskSpec
+from theforge.task import TaskStory
 
 # ── Local helpers ─────────────────────────────────────────────────────
 
@@ -87,24 +87,24 @@ def _shell_exit_code(pass_on_call: int | None = None, gate_marker: str = "pytest
     return side_effect
 
 
-def _make_task(tmp_path: Path) -> TaskSpec:
+def _make_task(tmp_path: Path) -> TaskStory:
     """Create a test task with a real spec file."""
     spec = tmp_path / "spec.md"
     spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
-        spec_path=spec,
+        story_path=spec,
         slug="test-task",
     )
 
 
-def _make_task_with_gate_override(tmp_path: Path, gate_override: str | None) -> TaskSpec:
+def _make_task_with_gate_override(tmp_path: Path, gate_override: str | None) -> TaskStory:
     """Create a test task with a gate_override set."""
     spec = tmp_path / "spec.md"
     spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-    return TaskSpec(
+    return TaskStory(
         name="Test Task",
-        spec_path=spec,
+        story_path=spec,
         slug="test-task",
         gate_override=gate_override,
     )
@@ -317,9 +317,9 @@ class TestCoordinatorDirtyWorktree:
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-        task = TaskSpec(
+        task = TaskStory(
             name="Test Task",
-            spec_path=spec,
+            story_path=spec,
             slug="test-task",
         )
         workspace = tmp_path / "test-task"
@@ -360,9 +360,9 @@ class TestCoordinatorDirtyWorktree:
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
-        task = TaskSpec(
+        task = TaskStory(
             name="Test Task",
-            spec_path=spec,
+            story_path=spec,
             slug="test-task",
         )
         workspace = tmp_path / "test-task"
@@ -636,7 +636,7 @@ class TestExitCodeGateMode:
 
 
 class TestPytestTargetSubstitution:
-    """Test that {pytest_target} in gate_command is replaced from TaskSpec."""
+    """Test that {pytest_target} in gate_command is replaced from TaskStory."""
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -646,9 +646,9 @@ class TestPytestTargetSubstitution:
         config = _make_exit_code_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test", encoding="utf-8")
-        task = TaskSpec(
+        task = TaskStory(
             name="Test",
-            spec_path=spec,
+            story_path=spec,
             slug="test-task",
             pytest_target="tests/test_specific.py",
         )
@@ -874,7 +874,7 @@ class TestGateOverride:
         assert result.phase == Phase.DONE
 
     def test_gate_override_parsed_from_frontmatter(self, tmp_path):
-        """parse_spec_frontmatter reads 'gate' key and it maps to gate_override on TaskSpec."""
+        """parse_spec_frontmatter reads 'gate' key and it maps to gate_override on TaskStory."""
         from theforge.task import parse_spec_frontmatter
 
         spec = tmp_path / "spec.md"
@@ -886,10 +886,10 @@ class TestGateOverride:
         fm = parse_spec_frontmatter(spec)
         assert fm.get("gate") == "none"
 
-        # Build TaskSpec with the parsed gate value
-        task = TaskSpec(
+        # Build TaskStory with the parsed gate value
+        task = TaskStory(
             name=fm.get("name", "My Spec"),
-            spec_path=spec,
+            story_path=spec,
             slug=fm.get("slug", "my-spec"),
             gate_override=fm.get("gate"),
         )
@@ -1366,8 +1366,8 @@ class TestCreatePR:
                     suggestion="Rename var",
                 )
             ],
-            spec_matches=True,
-            spec_mismatches=[],
+            story_matches=True,
+            story_mismatches=[],
             test_adequate=True,
             test_gaps=[],
             parse_errors=[],
@@ -1382,10 +1382,10 @@ class TestCreatePR:
         config = self._make_pr_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test\n", encoding="utf-8")
-        task = TaskSpec(
+        task = TaskStory(
             name="Test Task",
             slug="test-task",
-            spec_path=spec,
+            story_path=spec,
         )
         state = CoordinatorState()
 
@@ -1422,10 +1422,10 @@ class TestCreatePR:
         config = self._make_pr_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test\n", encoding="utf-8")
-        task = TaskSpec(
+        task = TaskStory(
             name="Test Task",
             slug="test-task",
-            spec_path=spec,
+            story_path=spec,
         )
         state = CoordinatorState()
 
