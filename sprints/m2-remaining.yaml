@@ -1,0 +1,6 @@
+name: m2-remaining
+specs:
+  - specs/backlog/dev-trace-fix-iterations.md
+  - specs/backlog/plan-validation.md
+  - specs/backlog/local-model-support.md
+budget_usd: 50.00
