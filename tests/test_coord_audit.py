@@ -121,7 +121,6 @@ class TestDurationAndCostNoneChecks:
         assert per_reviewer["fast-reviewer"]["cost"] == 0.0
 
 
-
 class TestHasReviewApprove:
     def test_no_history_file(self, tmp_path: Path) -> None:
         """Missing history.jsonl returns False (safe default)."""
@@ -311,3 +310,109 @@ class TestHasReviewApprove:
         # Verify the custom branch pattern was used in the git command
         call_args = mock_run.call_args[0][0]
         assert any("forge/my-spec" in arg for arg in call_args)
+
+
+class TestDevHandoffsInAudit:
+    """dev_handoffs key must appear in audit log and contain per-iteration snapshots."""
+
+    def test_dev_handoffs_in_audit(self, tmp_path: Path) -> None:
+        """Audit log must include dev_handoffs with one entry per dev invocation."""
+        state = CoordinatorState()
+        snap1 = {"gate_decision": "PASS", "dev_notes": "iteration 1 notes"}
+        snap2 = {"gate_decision": "PASS", "dev_notes": "iteration 2 notes"}
+        state.dev_handoff_snapshots.append(snap1)
+        state.dev_handoff_snapshots.append(snap2)
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+
+        assert "dev_handoffs" in log
+        handoffs = log["dev_handoffs"]
+        assert len(handoffs) == 2
+        assert handoffs[0]["iteration"] == 1
+        assert handoffs[0]["handoff"] == snap1
+        assert handoffs[1]["iteration"] == 2
+        assert handoffs[1]["handoff"] == snap2
+
+    def test_dev_handoffs_empty_when_no_dev_calls(self, tmp_path: Path) -> None:
+        """dev_handoffs is an empty list when no dev invocations occurred."""
+        state = CoordinatorState()
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["dev_handoffs"] == []
+
+    def test_dev_handoffs_none_entry_when_handoff_absent(self, tmp_path: Path) -> None:
+        """A None snapshot (handoff file absent) is preserved as None in the audit."""
+        state = CoordinatorState()
+        state.dev_handoff_snapshots.append(None)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+        assert log["dev_handoffs"][0]["handoff"] is None
+
+
+class TestFixPromptDispositions:
+    """build_fix_prompt() must annotate P1 findings with their disposition."""
+
+    def test_fix_prompt_includes_p1_dispositions(self, tmp_path: Path) -> None:
+        """classified_p1s must appear with [disposition] prefix in the fix prompt."""
+
+        from theforge.coord_state import FindingRecord
+        from theforge.task import TaskStory, build_fix_prompt
+
+        task = TaskStory(name="My Task", slug="my-task", story_path=tmp_path / "spec.md")
+        (tmp_path / "spec.md").write_text("# spec", encoding="utf-8")
+
+        p1s = [
+            FindingRecord(
+                finding_id="aaa",
+                cycle_first_seen=1,
+                cycle_last_seen=2,
+                file="src/foo.py",
+                line=42,
+                severity="P1",
+                description="Off by one error",
+                reporter="reviewer",
+                disposition="regression",
+            ),
+            FindingRecord(
+                finding_id="bbb",
+                cycle_first_seen=1,
+                cycle_last_seen=2,
+                file="src/bar.py",
+                line=None,
+                severity="P1",
+                description="Missing validation",
+                reporter="reviewer",
+                disposition="unresolved",
+            ),
+        ]
+
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path,
+            branch_name="feat/my-task",
+            review_findings="Raw findings text here.",
+            gate_command="make gate",
+            classified_p1s=p1s,
+        )
+
+        assert "[regression]" in prompt
+        assert "[unresolved]" in prompt
+        assert "Off by one error" in prompt
+        assert "Missing validation" in prompt
+
+    def test_fix_prompt_no_classified_p1s_uses_review_findings(self, tmp_path: Path) -> None:
+        """When classified_p1s is None, review_findings renders as normal."""
+        from theforge.task import TaskStory, build_fix_prompt
+
+        task = TaskStory(name="My Task", slug="my-task", story_path=tmp_path / "spec.md")
+        (tmp_path / "spec.md").write_text("# spec", encoding="utf-8")
+
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path,
+            branch_name="feat/my-task",
+            review_findings="Some findings.",
+            gate_command="make gate",
+        )
+
+        assert "Some findings." in prompt
+        assert "[regression]" not in prompt
+        assert "[unresolved]" not in prompt
