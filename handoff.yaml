@@ -1,63 +1,69 @@
 dev_notes: |
-  summary: "Hardened the existing OpenAI adapter for local model use (iter 1 review
-    fixes applied). Iter 0: Added four model keys to MODEL_REGISTRY (openai/codestral,
-    openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder) with cost_rank=1
-    and dev_capable=True, routing through the existing OpenAI adapter via base_url.
-    Introduced _is_local_endpoint() and used it in _openai_result() to zero costs
-    for single-shot calls, and in _run_loop_openai to zero costs post-loop. Added
-    BadRequestError catch in _run_loop_openai for tool-not-supported fallback to
-    single-shot mode. Extended cmd_check_providers to label local profiles with
-    [local] and $0.000 cost. Added docs/guides/local-models.md. Iter 1 (review
-    fixes): (1) Replaced substring-based _is_local_endpoint with urlparse-based
-    hostname check to prevent false positives from 'localhost' in URL paths/queries;
-    also added ::1 and 0.0.0.0 detection. (2) Added _zero_cost_if_local() helper
-    and called it in AgentLoopManager._success_result and _failure_result so costs
-    are zeroed at the source, not just in the outer _run_loop_openai wrapper. (3)
-    Fixed BadRequestError propagation: AgentLoopManager.run() now re-raises HTTP 400
-    errors (via status_code attribute check) instead of swallowing them as generic
-    failures, allowing _run_loop_openai's except block to implement the tool-calling
-    fallback. Moved the 'import openai' to the top of _run_loop_openai for clarity.
-    Added 7 new tests (1099 total passing)."
+  summary: "Added plan_validator.py with four advisory checks (AC coverage, step
+    completeness, file validity, dependency ordering). The validator is wired into
+    coordinator.py immediately before _coordinator_loop() (i.e., after PLAN_REVIEW
+    finalizes and before DEV starts). Findings are logged at WARNING level via Python
+    logging and also printed to the coordinator console with a ⚠ prefix. Results are
+    stored on CoordinatorState.plan_validation_findings and emitted to the audit log
+    under the plan_validation key. A helper extract_spec_criteria() parses acceptance
+    criteria from the spec markdown body (- [ ] lines under ## Acceptance Criteria).
+    Validation is skipped entirely when state.plan_structured is None (freeform
+    markdown fallback). 15 new tests cover all four checks and the criteria extractor.
+    All 1167 tests pass."
   commits:
-    - sha: "29d6d31"
-      message: "feat(local-models): validate ollama/vllm via existing OpenAI adapter"
-    - sha: "5da551e"
-      message: "chore(local-models): write dev handoff.yaml"
-    - sha: "3bc5e99"
-      message: "fix(local-model-support): rewrite dev handoff to match schema"
-    - sha: "ed5f338"
-      message: "fix(local-model-support): address review findings (iter 1)"
+    - sha: "700eb5e"
+      message: "feat(plan-validation): add mechanical plan structure validation before DEV"
   acceptance_criteria:
-    - criterion: "OpenAI adapter works with ollama base_url for models with tool support"
+    - criterion: "Mechanical plan validation runs after PLAN, before DEV"
       status: MET
-      notes: "_run_loop_openai passes base_url to openai.OpenAI() via _openai_client(). No change needed for this AC."
-    - criterion: "Graceful fallback when model doesn't support tool calling"
+      notes: "validate_plan() is called immediately before _coordinator_loop() in
+        run_task(), guarded by state.plan_structured is not None."
+    - criterion: "AC coverage check: warns on unmapped acceptance criteria"
       status: MET
-      notes: "AgentLoopManager.run() now re-raises HTTP 400 errors. _run_loop_openai catches BadRequestError with 'tool' in the message and retries via single-shot PROVIDER_RUNNERS['openai'] with a JSON instruction appended."
-    - criterion: "Cost reported as $0.00 for local endpoints"
+      notes: "Check 1 in validate_plan() iterates spec_criteria and warns on any
+        criterion not found in plan criteria_mapping entries."
+    - criterion: "Step completeness check: warns on steps missing description/files/action"
       status: MET
-      notes: "_is_local_endpoint() uses urlparse hostname check. _openai_result() stores 0.0 for single-shot. AgentLoopManager._success_result/_failure_result zero costs via _zero_cost_if_local(). _run_loop_openai also zeroes post-run as a defensive second pass."
-    - criterion: "Common local models added to MODEL_REGISTRY"
+      notes: "Check 2 warns when description is falsy, files list is empty, or action
+        is falsy for any plan step."
+    - criterion: "File validity check: warns on modify/delete for nonexistent files"
       status: MET
-      notes: "Four entries: openai/codestral, openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder. All cost_rank=1, dev_capable=True."
-    - criterion: "forge check-providers tests local endpoints when configured"
+      notes: "Check 3 warns for action=modify or action=delete when the file path
+        does not exist under workspace_path. Skips action=create."
+    - criterion: "Dependency check: warns on invalid step refs or circular deps"
       status: MET
-      notes: "cmd_check_providers detects local profiles via base_url and annotates output with [local] tag and $0.000 cost display."
-    - criterion: "Documentation for local model setup with ollama/vllm"
+      notes: "Check 4 validates all depends_on IDs exist in the step set, then runs
+        DFS cycle detection, emitting one warning if a cycle is found."
+    - criterion: "Validation is advisory — never blocks DEV"
       status: MET
-      notes: "docs/guides/local-models.md covers forge.yaml config, ollama/vllm setup, registry keys, cost tracking, and tool-calling fallback."
+      notes: "No exception raised. Findings are logged and stored; execution always
+        proceeds to _coordinator_loop()."
+    - criterion: "Skipped for freeform markdown plans (no structured data)"
+      status: MET
+      notes: "Guard 'if state.plan_structured is not None' in coordinator.py ensures
+        the validator is never called when plan_structured is None."
+    - criterion: "Findings logged to console and recorded in audit log"
+      status: MET
+      notes: "Each finding is logged via logging.getLogger(__name__).warning() and a
+        summary line is printed via _log(). Findings stored in
+        state.plan_validation_findings and emitted under plan_validation in
+        generate_audit_log()."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1099 tests pass (1078 pre-existing + 21 new)."
-    - criterion: "New tests for local endpoint detection and cost zeroing"
+      notes: "1167 tests pass (1152 pre-existing + 15 new)."
+    - criterion: "New tests for each validation check"
       status: MET
-      notes: "21 new tests: TestIsLocalEndpoint (12 cases incl. ::1, 0.0.0.0, false-positive paths), TestLocalEndpointCostZeroing (5 cases incl. AgentLoopManager direct), TestToolCallingFallback (2 cases), TestLocalModelRegistry (4 cases)."
+      notes: "tests/test_plan_validator.py has 15 tests covering all four checks,
+        the clean-plan baseline, and extract_spec_criteria()."
   spec_deviations:
-    - description: "Fallback call uses 3 args (prompt, profile, secrets), not 4 as plan listed"
-      justification: "_run_openai's actual signature is (prompt, profile, secrets) — no working_dir. Plan had a typo; fixed per plan reviewer P2 note."
-    - description: "No base_url validation for local registry entries at config load time"
-      justification: "Plan reviewer flagged as advisory (P2). Omitted to avoid scope creep; docs/guides/local-models.md clearly warns that base_url is required for local model keys."
+    - description: "task.acceptance_criteria attribute does not exist on TaskSpec"
+      justification: "The plan assumed this attribute existed. Added extract_spec_criteria()
+        helper in plan_validator.py that parses - [ ] lines from the spec markdown body
+        under ## Acceptance Criteria. Called in coordinator.py from spec_content (already
+        loaded). Equivalent to the spec intent."
+    - description: "File validity for delete action"
+      justification: "Plan notes called it ambiguous. Spec AC says 'warns on modify/delete
+        for nonexistent files'. Implemented as warning for both modify and delete,
+        consistent with the spec."
   deferred_items: none
   gate_result: PASS
-gate_decision: PASS
-gate_result: PASS
