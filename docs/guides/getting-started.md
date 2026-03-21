@@ -158,8 +158,10 @@ The implementation lives on a feature branch:
 # See what was created
 git log forge/add-health-check --oneline
 
-# See the full audit trail
+# See the full audit trail (worktree copy)
 cat .forge/worktrees/add-health-check/forge_audit.yaml
+# Or the persistent audit in .forge/audits/
+cat .forge/audits/forge_audit.yaml
 ```
 
 The audit shows:
@@ -297,13 +299,13 @@ your-project/
 │   ├── hooks/                         # USER — lifecycle hook scripts
 │   │   └── post_run.sh                # USER — (from forge init-hooks)
 │   ├── logs/                          # GENERATED — per-run log files
+│   ├── audits/                        # GENERATED — persistent audit trail
+│   │   └── forge_audit.yaml           # GENERATED — latest run audit (overwritten per run)
 │   └── worktrees/                     # GENERATED — managed git worktrees
 │       └── my-feature/                # GENERATED — one per story run
 │           ├── <all repo files>       # GENERATED — full worktree copy on feature branch
-│           ├── forge_audit.yaml       # GENERATED — full run audit trail
+│           ├── forge_audit.yaml       # GENERATED — worktree copy of audit trail
 │           └── handoff.yaml           # GENERATED — gate output (PASS/FAIL + details)
-│
-└── forge_audit.yaml                   # GENERATED — audit trail root copy (per run)
 ```
 
 ### Ownership and lifecycle
@@ -315,9 +317,10 @@ your-project/
 | `.forge/.env` | You | No — contains secrets | — |
 | `.forge/hooks/` | You | Yes | If you don't use hooks |
 | `.forge/logs/` | Generated | Yes | After reviewing |
+| `.forge/audits/forge_audit.yaml` | Generated | Yes | Overwritten each run |
 | `.forge/worktrees/<slug>/` | Generated | Yes | After merge or abandonment |
-| `forge_audit.yaml` (root) | Generated | Yes | Overwritten each run |
-| `handoff.yaml` (root) | Generated | Yes | Overwritten each run |
+| `.forge/worktrees/<slug>/forge_audit.yaml` | Generated | Yes | After merge or abandonment |
+| `.forge/worktrees/<slug>/handoff.yaml` | Generated | Yes | After merge or abandonment |
 
 ### Mental model
 

@@ -128,6 +128,10 @@ stateDiagram-v2
     DEV --> ESCALATE : max iterations exceeded
     DONE --> [*]
     ESCALATE --> [*]
+
+    note right of DEV : ◀ --resume entry (interrupted during DEV)
+    note right of VALIDATE : ◀ --resume entry (gate FAIL or interrupted)
+    note right of REVIEW : ◀ --resume entry (review parse error)
 ```
 
 **The coordinator (pure Python) drives everything.** It creates worktrees, invokes
@@ -188,12 +192,12 @@ your-project/
 │   ├── .env                      # user-authored — API keys (gitignored)
 │   ├── hooks/                    # user-authored — lifecycle hooks
 │   ├── logs/                     # generated — per-run log files
+│   ├── audits/                   # generated — per-run audit trail (persisted)
+│   │   └── forge_audit.yaml      # generated — latest run audit (overwritten each run)
 │   └── worktrees/                # generated — managed git worktrees
 │       └── my-feature/           # ephemeral — safe to delete after merge
-│           ├── forge_audit.yaml  # generated — full run audit trail
-│           └── handoff.yaml      # generated — gate output
-│
-└── forge_audit.yaml              # generated — audit trail (root copy)
+│           ├── forge_audit.yaml  # generated — worktree copy of audit trail
+│           └── handoff.yaml      # generated — gate output (PASS/FAIL + details)
 ```
 
 | Entry | Owner | Safe to delete? | Persists? |
@@ -203,9 +207,10 @@ your-project/
 | `.forge/.env` | You | No | Yes |
 | `.forge/hooks/` | You | No | Yes |
 | `.forge/logs/` | Generated | Yes (after review) | Yes |
+| `.forge/audits/forge_audit.yaml` | Generated | Yes | Overwritten per run |
 | `.forge/worktrees/<slug>/` | Generated | Yes (after merge) | Ephemeral |
-| `forge_audit.yaml` | Generated | Yes | Per-run |
-| `handoff.yaml` | Generated | Yes | Per-run |
+| `.forge/worktrees/<slug>/forge_audit.yaml` | Generated | Yes (after merge) | Ephemeral |
+| `.forge/worktrees/<slug>/handoff.yaml` | Generated | Yes (after merge) | Ephemeral |
 
 > **Mental model:** TheForge is a coordinator, not an autonomous IDE. Each phase
 > has a narrow job. Models produce artifacts — they have no runtime authority.
