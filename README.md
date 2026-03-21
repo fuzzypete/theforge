@@ -134,6 +134,44 @@ stateDiagram-v2
 agents, runs gates, and decides what happens next. Agents only write code and write
 reviews — they make no process decisions.
 
+### Control boundaries
+
+```mermaid
+flowchart LR
+    subgraph Coordinator["Coordinator (Python)"]
+        CE[Phase engine]
+        WM[Worktree manager]
+        VG[Validation gate]
+        RS[Resume state]
+        AL[Audit / log writer]
+    end
+
+    subgraph Models["Models (LLMs)"]
+        PL[Planner]
+        DV[Developer]
+        RP[Review pool]
+    end
+
+    subgraph Repo["Repo / Runtime"]
+        GR[Git repo]
+        TL[Tests / lints]
+        AR[Artifacts]
+    end
+
+    CE -->|invokes| PL
+    CE -->|invokes| DV
+    CE -->|invokes| RP
+    DV -->|writes code to| GR
+    PL -->|writes plan to| AR
+    RP -->|writes review YAML to| AR
+    VG -->|runs| TL
+    TL -->|exit code| VG
+    VG -->|PASS/FAIL| CE
+    RP -->|verdict| CE
+    WM -->|manages| GR
+    CE -->|writes| AL
+```
+
 ---
 
 ## What gets created
