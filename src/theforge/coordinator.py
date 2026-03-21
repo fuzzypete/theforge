@@ -650,7 +650,9 @@ def _run_review_pool(
             r.output or "",
         )
 
-    # Per-profile budget enforcement BEFORE synthesis (original ordering)
+    # Per-profile budget enforcement BEFORE synthesis — exclude over-budget
+    # reviewers from this cycle's results rather than killing the whole run.
+    _budget_excluded: set[str] = set()
     if enforce_budgets:
         for profile in config.review_pool:
             profile_cost = sum(
@@ -659,12 +661,23 @@ def _run_review_pool(
                 if r.profile_name == profile.name
             )
             if profile_cost > profile.budget_usd:
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    f"Review budget exceeded for {profile.name}: "
-                    f"spent ${profile_cost:.4f} (limit ${profile.budget_usd:.4f})"
+                _log(
+                    f"  ⚠ {profile.name} over budget: "
+                    f"${profile_cost:.4f} > ${profile.budget_usd:.4f} — "
+                    f"excluding from this cycle"
                 )
-                return [], [], None, [], []
+                _budget_excluded.add(profile.name)
+
+    if _budget_excluded:
+        pool_results = [r for r in pool_results if r.profile_name not in _budget_excluded]
+        if not pool_results:
+            # All reviewers excluded — escalate
+            state.phase = Phase.ESCALATE
+            _excluded = ", ".join(sorted(_budget_excluded))
+            state.error = (
+                f"All reviewers over budget ({_excluded}) — no reviews to synthesize"
+            )
+            return [], [], None, [], []
 
     successful = [r for r in pool_results if r.success]
     failed_results = [r for r in pool_results if not r.success]

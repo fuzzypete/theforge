@@ -1948,8 +1948,8 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_review_budget_exceeded(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Review agent exceeds per-profile budget → ESCALATE."""
+    def test_review_budget_all_exceeded(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """All reviewers over budget → ESCALATE (no reviews to synthesize)."""
         config = self._make_budget_config(tmp_path, dev_budget=2.00, review_budget=0.40)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -1985,8 +1985,7 @@ class TestCoordinatorBudgetEnforcement:
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert "budget" in result.message.lower()
-        assert "0.5000" in result.message
-        assert "0.4000" in result.message
+        assert "review" in result.message
         assert len(result.state.review_agent_results) == 1
 
 
@@ -2219,8 +2218,8 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_per_profile_budget_enforcement(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """One pool profile over budget → ESCALATE."""
+    def test_per_profile_budget_excludes_reviewer(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """One pool profile over budget → excluded, run continues with rest."""
         tight_profile = _make_review_profile("tight", budget_usd=0.10)
         normal_profile = _make_review_profile("normal", budget_usd=5.00)
         config = _make_pool_config(tmp_path, [tight_profile, normal_profile], SYNTHESIS_PROFILE)
@@ -2229,21 +2228,24 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
-        # tight profile costs $0.50 which exceeds its $0.10 budget
-        mock_pool.return_value = [
+        # tight profile costs $0.50 which exceeds its $0.10 budget;
+        # normal profile's review is synthesised into APPROVE.
+        pool_approve = [
             _make_agent_result(success=True, output="R1", profile_name="tight", cost_usd=0.50),
-            _make_agent_result(success=True, output="R2", profile_name="normal", cost_usd=0.10),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="normal", cost_usd=0.10),
         ]
+        synthesis_approve = _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="synthesis")
+        mock_pool.return_value = pool_approve
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented."),
+            synthesis_approve,
+        )
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "budget" in result.message.lower()
-        assert "tight" in result.message
+        # Run should succeed — over-budget reviewer excluded, not escalated
+        assert result.success is True
+        assert result.phase == Phase.DONE
 
 
 class TestCoordinatorAuditTiming:
