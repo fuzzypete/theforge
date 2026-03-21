@@ -353,6 +353,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             if state.preflight_verdict is not None
             else None
         ),
+        "dev_handoffs": [
+            {"iteration": i + 1, "handoff": snap}
+            for i, snap in enumerate(state.dev_handoff_snapshots)
+        ],
         "reviews": reviews,
         "human_review": (
             {
