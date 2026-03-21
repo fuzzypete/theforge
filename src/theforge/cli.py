@@ -312,6 +312,37 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig":
+    """Override the dev profile with a --dev-model spec.
+
+    Format: provider/model@base_url
+    Examples:
+        openai/qwen2.5-coder:7b@http://localhost:11434/v1
+        anthropic/claude-opus-4-6
+    """
+    from dataclasses import replace
+
+    base_url = None
+    if "@" in spec:
+        spec, base_url = spec.rsplit("@", 1)
+
+    if "/" in spec:
+        provider, model = spec.split("/", 1)
+    else:
+        provider = "openai"
+        model = spec
+
+    new_dev = replace(
+        config.dev_profile,
+        cli=None,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        budget_usd=config.dev_profile.budget_usd,
+    )
+    return replace(config, dev_profile=new_dev)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Execute the dev→review loop for a story file."""
     story_path = Path(args.story).resolve()
@@ -350,6 +381,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         pass  # not a git repo or git not installed — ignore
 
     config = load_config(config_path)
+
+    # --dev-model override: provider/model@base_url
+    if getattr(args, "dev_model", None):
+        config = _apply_dev_model_override(config, args.dev_model)
+
     task = _build_task(story_path, slug=args.slug)
 
     print("TheForge v0.1.0", file=sys.stderr)
@@ -1432,6 +1468,14 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Merge feature branch into base branch after review APPROVE",
+    )
+    run_parser.add_argument(
+        "--dev-model",
+        help=(
+            "Override dev model. Format: provider/model@base_url. "
+            "Examples: openai/qwen2.5-coder:7b@http://localhost:11434/v1, "
+            "anthropic/claude-opus-4-6"
+        ),
     )
     run_parser.add_argument(
         "--verbose",
