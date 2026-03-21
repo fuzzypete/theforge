@@ -100,6 +100,7 @@ class CoordinatorState:
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     review_cycle: int = 0  # which dev→review loop we're on
     dev_iteration: int = 0  # retries within the current review cycle
+    dev_trace_count: int = 0  # monotonically increasing across all cycles; never reset
     dev_results: list[AgentResult] = field(default_factory=list)
     dev_durations: list[float] = field(default_factory=list)  # wall-clock seconds per dev call
     review_agent_results: list[AgentResult] = field(default_factory=list)

@@ -989,6 +989,7 @@ def _coordinator_loop(
             # ── DEV ───────────────────────────────────────────────
             state.phase = Phase.DEV
             state.dev_iteration += 1
+            state.dev_trace_count += 1
             _dev_calls_this_cycle += 1
             escalation = _run_dev_phase(
                 state,

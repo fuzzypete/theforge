@@ -1238,7 +1238,7 @@ def _run_dev_phase(
     state.retry_reason = None  # consumed
 
     write_trace(
-        workspace_path / ".forge/traces" / f"{state.dev_iteration}-dev-prompt.txt",
+        workspace_path / ".forge/traces" / f"{state.dev_trace_count}-dev-prompt.txt",
         prompt,
     )
 
@@ -1271,7 +1271,7 @@ def _run_dev_phase(
     )
     _dev_elapsed = time.monotonic() - _dev_start
     write_trace(
-        workspace_path / ".forge/traces" / f"{state.dev_iteration}-dev-output.txt",
+        workspace_path / ".forge/traces" / f"{state.dev_trace_count}-dev-output.txt",
         dev_result.output,
     )
     # Write dev iteration log to durable story log dir
