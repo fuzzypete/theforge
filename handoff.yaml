@@ -1,61 +1,45 @@
 gate_decision: PASS
-next_recommended_step: review
 dev_notes: |
-  summary: "Four targeted P2 bug fixes across coord_state.py, task.py, and coord_audit.py.
-    (1) Added total_story_validation_cost property to CoordinatorState and included it in
-    total_cost, using explicit is not None checks per the plan reviewer's P2 advisory about
-    the or 0.0 anti-pattern. (2) Replaced lstrip('-') with [3:] in task.py to strip the
-    YAML '---' document marker as a three-character token rather than a character set,
-    preventing corruption of values like '-home'. (3) Removed the inner ternary in
-    coord_audit.py that produced None for an empty findings list — plan_validation now always
-    emits a block when plan_structured is set (skipped=False, findings=[]) rather than None,
-    distinguishing clean pass from validation-not-run. (4) Replaced three or 0.0 sites with
-    explicit is not None checks in coord_audit.py:162, coord_audit.py:187, and
-    coordinator.py:696. One existing test in test_coord_preflight.py was updated to include
-    story_validation cost in its total_cost assertion — the prior assertion was stale."
+  summary: "Implemented three unsatisfied acceptance criteria: (1) dev handoff YAML is now
+    captured per iteration into CoordinatorState.dev_handoff_snapshots and emitted in the
+    audit log under dev_handoffs; (2) build_fix_prompt() now accepts plan_output (str|dict)
+    and re-injects the approved plan with an explicit stay-on-plan instruction; (3)
+    build_fix_prompt() accepts classified_p1s (list[FindingRecord]) and annotates each P1
+    with its disposition ([unresolved], [regression], etc.). The call site in coord_phases.py
+    passes the plan and filtered P1 registry to build_fix_prompt(). Added import yaml to
+    coord_phases.py (was missing). Tests added for iteration-3 trace continuity,
+    handoff-in-audit, and disposition injection."
 
   commits:
-    - sha: "6d45a4a"
-      message: "fix(cost,audit,task): four P2 bug fixes — cost tracking, plan parsing, audit shape"
+    - sha: "da91e4b"
+      message: "feat(observability): dev handoff snapshots, plan anchoring, disposition injection in fix prompts"
 
   acceptance_criteria:
-    - criterion: "total_cost includes spec_validation cost when present"
+    - criterion: "Dev prompt and output traces written for every iteration, not just the first. Filenames include iteration number."
       status: MET
-      notes: "Added total_story_validation_cost property; included in total_cost sum. Uses
-        explicit is not None checks consistent with Step 4 fix (following plan reviewer P2 note)."
-    - criterion: "YAML document marker detection uses string comparison, not lstrip"
+      notes: "Already satisfied before this story; confirmed by existing test_dev_traces_written_for_iteration_2 and new test_dev_traces_written_for_iteration_3."
+    - criterion: "Dev handoff (acceptance criteria status, dev notes) captured in the audit trail per iteration, not just in the worktree file."
       status: MET
-      notes: "task.py: stripped = stripped[3:].strip() — removes exactly three characters.
-        The startswith('---') guard on line 71 already confirms the prefix exists."
-    - criterion: "Plan validation audit block present with empty findings on clean pass, absent only when validation did not run"
+      notes: "dev_handoff_snapshots field added to CoordinatorState; coord_phases.py reads handoff.yaml after each dev call and appends the parsed dict (or None); generate_audit_log() emits dev_handoffs list. Three tests in TestDevHandoffsInAudit."
+    - criterion: "Fix iteration prompts re-inject the approved plan and explicitly instruct the agent to fix within the plan's approach, not redesign."
       status: MET
-      notes: "Removed inner ternary returning None for empty list. When plan_structured is
-        not None the block always emits skipped=False and findings=[]. Outer guard unchanged."
-    - criterion: "Duration fields use is not None checks instead of or 0.0"
+      notes: "build_fix_prompt() now accepts plan_output (str|dict). When provided, renders an Approved Plan section with the same isinstance-based logic as build_dev_prompt(), followed by an explicit do-not-redesign instruction. Call site passes state.plan_structured ?? state.plan_output."
+    - criterion: "Fix iteration prompts list each P1 finding with its disposition (unresolved, regression, new) so the agent knows what to prioritize."
       status: MET
-      notes: "Fixed the three sites flagged in preflight evidence: coord_audit.py:162
-        (reviewer cost accumulation), coord_audit.py:187 (preflight_duration_s in totals),
-        coordinator.py:696 (per-profile budget sum). Additional or 0.0 sites in
-        coord_state.py cost properties were noted by plan reviewer as outside story AC
-        scope; deferred."
-    - criterion: "All existing tests pass"
+      notes: "build_fix_prompt() accepts classified_p1s: list[FindingRecord]. When non-empty, renders a P1 Findings section with [disposition] description (file:line) per entry. Call site passes [r for r in state.finding_registry if r.severity == 'P1'] or None."
+    - criterion: "Audit trail supports post-mortem comparison: P1s sent to dev vs what dev claimed to address vs what reviewer found still broken."
       status: MET
-      notes: "1179 tests pass. One pre-existing test assertion in test_coord_preflight.py
-        updated to account for story_validation cost now correctly included in total_cost."
-    - criterion: "New tests for each fix"
+      notes: "Already satisfied (finding_registry with dispositions + per-cycle findings). dev_handoffs now adds what dev claimed to address per iteration."
+    - criterion: "All existing tests pass."
       status: MET
-      notes: "test_coord_state.py: TestTotalCostIncludesStoryValidation (4 cases including
-        zero and None cost_usd). test_task.py: TestParsePlanOutputYamlMarker (3 cases
-        including dash-in-value regression). test_coord_audit.py: TestPlanValidationAuditBlock
-        (3 cases: clean pass, skipped, populated) + TestDurationAndCostNoneChecks (2 cases:
-        zero duration preserved, zero-cost reviewer appears in per_reviewer)."
+      notes: "1185 tests pass (6 new tests added, 0 failures)."
+    - criterion: "New tests for trace capture on iteration 2+ and handoff in audit."
+      status: MET
+      notes: "test_dev_traces_written_for_iteration_3 in test_traces.py; TestDevHandoffsInAudit (3 tests) and TestFixPromptDispositions (2 tests) in test_coord_audit.py."
 
-  story_deviations: none
+  story_deviations:
+    - "Plan reviewer noted disposition values net_new/corroborated_new vs 'new'. Kept the raw FindingRecord disposition strings in the prompt rather than mapping — the dev agent benefits from the precise classification, and the AC example values (unresolved, regression, new) are illustrative, not exhaustive."
 
-  deferred_items:
-    - description: "coord_state.py total_dev_cost / total_review_cost / total_preflight_cost
-        / total_plan_cost / total_plan_review_cost still use or 0.0"
-      reason: "Story AC scopes fix to 'duration fields'; plan reviewer noted these as P2
-        advisory only. Deferred to a follow-on cleanup story."
+  deferred_items: none
 
   gate_result: PASS
