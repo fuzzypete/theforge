@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 if TYPE_CHECKING:
     from .review import ReviewResult
     from .runner import AgentResult
+    from .spec_validator import SpecValidationResult
 
 # ── Phase enum ────────────────────────────────────────────────────────
 
@@ -160,6 +161,7 @@ class CoordinatorState:
     # to compute git diff --name-only for changed-file correlation.
     escalate_decision: str | None = None  # "approve" | "reject" | "continue"
     escalate_reason: str | None = None  # human-readable escalation reason
+    spec_validation_result: SpecValidationResult | None = None
 
     @property
     def total_dev_cost(self) -> float:

@@ -1,35 +1,58 @@
 gate_decision: PASS
 gate_result: PASS
 dev_notes: |
-  summary: "Added dev_trace_count to CoordinatorState — a monotonically increasing counter
-    that is never reset across review cycles. Updated coord_phases.py to use dev_trace_count
-    for dev trace filenames instead of dev_iteration (which resets to 0 after every
-    REQUEST_CHANGES). Added a coordinator-level test verifying that 2-dev-prompt.txt and
-    2-dev-output.txt are written after a REQUEST_CHANGES cycle with distinct content."
+  summary: >
+    Implemented spec validation: a lightweight advisory pre-PLAN quality check.
+    Added src/theforge/spec_validator.py with validate_spec(), SpecValidationFinding,
+    and SpecValidationResult dataclasses. The coordinator calls validate_spec() after
+    PREFLIGHT and before PLAN using the same guard as should_plan (plan enabled AND
+    complexity medium/large AND no --plan injection). A fast profile is derived from
+    config.dev_profile by substituting sonnet for any model containing 'opus'
+    (case-insensitive) via dataclasses.replace(). On WARN, findings are logged to
+    the console and execution always continues. Fail-safe: any exception or malformed
+    output returns PASS. Results stored on CoordinatorState and written to
+    forge_audit.yaml under spec_validation.findings.
   commits:
-    - sha: "7d02b33"
-      message: "fix(traces): write dev traces for all iterations, not just cycle 1"
-    - sha: "6a729ea"
-      message: "chore(traces): write handoff.yaml for dev-trace-fix-iterations"
+    - sha: "5d9a0ab"
+      message: "feat(spec-validation): add pre-PLAN spec quality check"
   acceptance_criteria:
-    - criterion: "Dev prompt trace written for every DEV iteration, not just first"
+    - criterion: "Spec validation runs after PREFLIGHT, before PLAN"
       status: MET
-      notes: "dev_trace_count increments before every dev call and never resets; coord_phases.py uses it for the prompt trace filename"
-    - criterion: "Dev output trace written for every DEV iteration"
+      notes: "Inserted in coordinator.py at the PROCEED branch, after BLOCKED check, before should_plan block."
+    - criterion: "Validation produces PASS or WARN verdict"
       status: MET
-      notes: "Same dev_trace_count used for the output trace filename"
-    - criterion: "Filenames include iteration number: {iteration}-dev-prompt.txt"
+      notes: "SpecValidationResult.verdict is PASS or WARN; invalid model output coerced to PASS."
+    - criterion: "On WARN, findings are logged to the console before PLAN starts"
       status: MET
-      notes: "Pattern is {dev_trace_count}-dev-prompt.txt and {dev_trace_count}-dev-output.txt; 1-based, monotonically increasing"
-    - criterion: "Existing first-iteration trace behavior unchanged"
+      notes: "_log() called for each finding with category, description, and split suggestions before should_plan block."
+    - criterion: "On WARN, the run continues — validation never blocks execution"
       status: MET
-      notes: "dev_trace_count starts at 0 and is incremented to 1 before the first dev call, producing the same 1-dev-prompt.txt as before"
-    - criterion: "All existing tests pass"
+      notes: "No return or raise on WARN. validate_spec() is fully fail-safe."
+    - criterion: "Validation findings are recorded in forge_audit.yaml under spec_validation.findings"
       status: MET
-      notes: "1078 tests pass"
-    - criterion: "New test verifying traces written on iteration 2+"
+      notes: "coord_audit.py reads state.spec_validation_result and emits spec_validation key with verdict, cost, duration, and findings."
+    - criterion: "Validation is skipped when --plan flag is used"
       status: MET
-      notes: "test_dev_traces_written_for_iteration_2 in tests/test_traces.py drives REQUEST_CHANGES then APPROVE, asserts 1-dev-* and 2-dev-* trace files both exist with distinct content"
-  spec_deviations: none
+      notes: "Guard includes plan_path is None. Verified by test_spec_validation_skipped_on_plan_injection."
+    - criterion: "Validation uses a fast/cheap model (sonnet or equivalent), not opus"
+      status: MET
+      notes: "_make_fast_profile() substitutes model='sonnet' for any model containing 'opus' (case-insensitive substring) using dataclasses.replace()."
+    - criterion: "Scope findings are categorized separately from requirement findings"
+      status: MET
+      notes: "SpecValidationFinding.category is 'requirement' or 'scope'; preserved in audit log."
+    - criterion: "When scope is flagged, the finding includes concrete split suggestions with story names and AC assignments"
+      status: MET
+      notes: "SpecValidationFinding.split_suggestion holds {stories: [{name, acs}]}. Prompt instructs model to populate this for scope findings."
+    - criterion: "Existing tests pass"
+      status: MET
+      notes: "1103 tests pass after all changes."
+    - criterion: "New tests cover: PASS verdict continues to PLAN, WARN verdict logs and continues, skipped on --plan injection, scope WARN with split suggestion"
+      status: MET
+      notes: "21 unit tests in test_spec_validator.py; 5 integration tests in TestSpecValidation class in test_coordinator.py."
+  spec_deviations:
+    - description: "Named SpecValidationFinding (not SpecFinding)"
+      justification: "Plan reviewer P2 note explicitly suggested this to avoid confusion with the review system's Finding class."
+    - description: "validation timeout forced to 120s inside validate_spec()"
+      justification: "Advisory call should be fast; inheriting a dev timeout (up to 10 min) would be surprising for an advisory step."
   deferred_items: none
   gate_result: PASS

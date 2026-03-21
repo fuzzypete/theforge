@@ -1102,6 +1102,256 @@ class TestPlanReview:
         assert mock_human_review.called
 
 
+PREFLIGHT_PROCEED_SMALL = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Spec requirements are not yet implemented."
+criteria_checked: []
+```
+"""
+
+
+class TestSpecValidation:
+    """Tests for spec validation (pre-PLAN quality check)."""
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_spec_validation_pass_continues_to_plan(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_validate,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
+    ):
+        """PASS verdict → run continues to PLAN normally."""
+        from theforge.spec_validator import SpecValidationResult
+
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_validate.return_value = SpecValidationResult(verdict="PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nThe plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.return_value = "approve"
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        mock_validate.assert_called_once()
+        assert result.state.spec_validation_result is not None
+        assert result.state.spec_validation_result.verdict == "PASS"
+        # Plan still ran
+        assert len(result.state.plan_results) == 1
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_spec_validation_warn_logs_and_continues(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_validate,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
+        capsys,
+    ):
+        """WARN verdict → findings logged, run continues to PLAN."""
+        from theforge.spec_validator import SpecValidationFinding, SpecValidationResult
+
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_validate.return_value = SpecValidationResult(
+            verdict="WARN",
+            findings=[
+                SpecValidationFinding(
+                    category="requirement",
+                    description="AC-3 contradicts Requirement-2",
+                    split_suggestion=None,
+                )
+            ],
+        )
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nThe plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.return_value = "approve"
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        # Validation ran and returned WARN
+        assert result.state.spec_validation_result.verdict == "WARN"
+        # Run still continued to PLAN
+        assert len(result.state.plan_results) == 1
+        # Finding was logged
+        captured = capsys.readouterr()
+        assert "AC-3 contradicts Requirement-2" in captured.err
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_spec_validation_skipped_on_plan_injection(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_validate,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
+    ):
+        """validate_spec not called when --plan is injected."""
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        plan_file = tmp_path / "plan.md"
+        plan_file.write_text("# Injected plan\n\nUse this.", encoding="utf-8")
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True, plan_path=plan_file)
+
+        assert result.success is True
+        mock_validate.assert_not_called()
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_spec_validation_skipped_for_small_complexity(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_validate,
+        mock_human_review,
+        tmp_path,
+    ):
+        """validate_spec not called when preflight complexity is small."""
+        config = _make_config(tmp_path)  # plan not enabled → small specs skip plan
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_SMALL, cost_usd=0.05),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        mock_validate.assert_not_called()
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator._plan_review_interactive")
+    @patch("theforge.coordinator.validate_spec")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_spec_validation_warn_scope_appears_in_audit(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_pool,
+        mock_validate,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
+    ):
+        """WARN with scope finding → spec_validation.findings appears in audit log."""
+        from theforge.spec_validator import SpecValidationFinding, SpecValidationResult
+
+        config = _make_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        split = {
+            "stories": [{"name": "Story A", "acs": ["AC1"]}, {"name": "Story B", "acs": ["AC2"]}]
+        }
+        mock_validate.return_value = SpecValidationResult(
+            verdict="WARN",
+            cost_usd=0.005,
+            findings=[
+                SpecValidationFinding(
+                    category="scope",
+                    description="Spec covers two independent subsystems",
+                    split_suggestion=split,
+                )
+            ],
+        )
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            _make_agent_result(success=True, output="# Plan\n\nThe plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_plan_review.return_value = "approve"
+
+        result = run_task(config, task, interactive=True)
+        audit = generate_audit_log(config, task, result)
+
+        assert result.success is True
+        sv = audit["spec_validation"]
+        assert sv is not None
+        assert sv["verdict"] == "WARN"
+        assert sv["cost_usd"] == 0.005
+        assert len(sv["findings"]) == 1
+        f = sv["findings"][0]
+        assert f["category"] == "scope"
+        assert f["split_suggestion"] == split
+
+
 class TestCoordinatorGateFailRetry:
     """Test that gate failure retries the dev agent."""
 
