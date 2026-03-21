@@ -1,24 +1,11 @@
 gate_result: PASS
 dev_notes: |
-  summary: >
-    Implemented per-phase cost, duration, and success tracking end-to-end.
-    Added four new duration-tracking fields to CoordinatorState
-    (preflight_duration_s, plan_durations, plan_review_durations,
-    validate_durations) and populated them at the existing timing sites in
-    coordinator.py and coord_phases.py. Added _build_phases_block() to
-    coord_audit.py which assembles phases + totals sub-dicts from state fields
-    and embeds them into every audit log record via **-unpacking. Added
-    forge telemetry CLI command to cli.py that reads history.jsonl, filters
-    by --since, optionally restricts output to --phase, and prints a run
-    table plus per-phase average cost/duration breakdown. Tests cover the
-    phases block structure in test_generate_audit_log.py (12 new cases) and
-    telemetry CLI aggregation/filters/graceful-handling in test_telemetry.py
-    (18 new cases). All 1077 tests pass.
-
+  summary: "Implemented per-phase cost, duration, and success tracking end-to-end. Added four new duration-tracking fields to CoordinatorState (preflight_duration_s, plan_durations, plan_review_durations, validate_durations) and populated them at the existing timing sites in coordinator.py and coord_phases.py. Added _build_phases_block() to coord_audit.py which assembles phases + totals sub-dicts from state fields and embeds them into every audit log record via **-unpacking. Added forge telemetry CLI command to cli.py that reads history.jsonl, filters by --since, optionally restricts output to --phase, and prints a run table plus per-phase average cost/duration breakdown. Tests cover the phases block structure in test_generate_audit_log.py (12 new cases) and telemetry CLI aggregation/filters/graceful-handling in test_telemetry.py (18 new cases). All 1077 tests pass."
   commits:
     - sha: "70dd6f0"
       message: "feat(telemetry): per-phase cost, duration, and success tracking"
-
+    - sha: "55942a4"
+      message: "chore(telemetry): write handoff.yaml for phase-telemetry"
   acceptance_criteria:
     - criterion: "Audit log gains phases block with per-phase cost, duration, outcome"
       status: MET
@@ -47,14 +34,8 @@ dev_notes: |
     - criterion: "New tests for telemetry aggregation and CLI output formatting"
       status: MET
       notes: "12 new tests in TestPhasesBlock (test_generate_audit_log.py), 18 new tests in test_telemetry.py"
-
   spec_deviations:
-    - deviation: "forge.log cross-referencing not implemented"
-      justification: >
-        The spec mentions reading from both history.jsonl AND forge.log cross-referenced
-        by run_id. The implementation plan (approved) concluded this was unnecessary:
-        phase data is now embedded directly in the audit record, which is simpler and
-        more reliable than log parsing. run_id is not a field in audit records, so
-        cross-referencing would require additional work with no benefit.
-
+    - description: "forge.log cross-referencing not implemented"
+      justification: "The spec mentions reading from both history.jsonl AND forge.log cross-referenced by run_id. The approved implementation plan concluded this was unnecessary: phase data is now embedded directly in the audit record, which is simpler and more reliable than log parsing. run_id is not a field in audit records, so cross-referencing would require additional work with no benefit."
   deferred_items: none
+  gate_result: PASS
