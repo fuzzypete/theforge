@@ -60,11 +60,18 @@ class StructuredLogger:
                     pass  # best-effort; never crash
         else:
             self._log_path = Path("/dev/null")
+        self._last_event: str = ""
+
+    @property
+    def last_event(self) -> str:
+        """The most recently emitted event name, or '' if none yet."""
+        return self._last_event
 
     def emit(self, event: str, **fields: object) -> None:
         """Append one JSON event line to the log file. Never raises."""
         if not self._enabled:
             return
+        self._last_event = event
         try:
             entry = {
                 "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

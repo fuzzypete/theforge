@@ -60,6 +60,7 @@ from .coord_notify import (  # noqa: F401
     _human_review,
     _is_remote_mode,
     _notify,
+    _ntfy_crash_notify,
     _ntfy_done_notify,
     _ntfy_poll_reply,
     _ntfy_publish,
@@ -246,11 +247,35 @@ def _make_sigterm_handler(
     logger: "StructuredLogger",
     tee_state: "tuple[object, object] | None",
     prev_handler: object,
+    state: "CoordinatorState | None" = None,
+    task_start: float = 0.0,
+    task: "TaskSpec | None" = None,
+    config: "ForgeConfig | None" = None,
 ) -> object:
     """Return a SIGTERM handler that emits run_end:crashed, closes the tee, and re-raises."""
 
     def _handler(signum: int, frame: object) -> None:
-        logger._safe_emit("run_end", outcome="crashed")
+        uptime = time.monotonic() - task_start
+        try:
+            sig_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            sig_name = str(signum)
+        extra: dict[str, object] = {
+            "signal": signum,
+            "signal_name": sig_name,
+            "uptime_seconds": round(uptime, 1),
+        }
+        if state is not None:
+            extra["phase_at_crash"] = state.phase.name if state.phase is not None else "UNKNOWN"
+            extra["iteration_at_crash"] = state.dev_iteration
+            extra["cost_at_crash"] = round(state.total_cost, 6)
+        extra["last_event"] = logger.last_event
+        logger._safe_emit("run_end", outcome="crashed", **extra)
+        if state is not None and task is not None and config is not None:
+            try:
+                _ntfy_crash_notify(task, state, config, uptime)
+            except Exception:
+                pass
         _end_run_log_tee(tee_state)
         try:
             signal.signal(signal.SIGTERM, prev_handler or signal.SIG_DFL)
@@ -674,9 +699,7 @@ def _run_review_pool(
             # All reviewers excluded — escalate
             state.phase = Phase.ESCALATE
             _excluded = ", ".join(sorted(_budget_excluded))
-            state.error = (
-                f"All reviewers over budget ({_excluded}) — no reviews to synthesize"
-            )
+            state.error = f"All reviewers over budget ({_excluded}) — no reviews to synthesize"
             return [], [], None, [], []
 
     successful = [r for r in pool_results if r.success]
@@ -1130,7 +1153,15 @@ def run_task(
     if _tee is not None:
         _prev_sigterm = signal.signal(
             signal.SIGTERM,
-            _make_sigterm_handler(logger, _tee, signal.getsignal(signal.SIGTERM)),
+            _make_sigterm_handler(
+                logger,
+                _tee,
+                signal.getsignal(signal.SIGTERM),
+                state=state,
+                task_start=_task_start,
+                task=task,
+                config=config,
+            ),
         )
     try:
         # ── Smart config display ───────────────────────────────────────
@@ -1949,7 +1980,15 @@ def run_from_review(
     if _tee is not None:
         _prev_sigterm = signal.signal(
             signal.SIGTERM,
-            _make_sigterm_handler(logger, _tee, signal.getsignal(signal.SIGTERM)),
+            _make_sigterm_handler(
+                logger,
+                _tee,
+                signal.getsignal(signal.SIGTERM),
+                state=state,
+                task_start=_task_start,
+                task=task,
+                config=config,
+            ),
         )
     try:
         # First iteration starts at REVIEW (skip DEV+VALIDATE for existing worktree).
@@ -2028,7 +2067,15 @@ def run_from_dev(
     if _tee is not None:
         _prev_sigterm = signal.signal(
             signal.SIGTERM,
-            _make_sigterm_handler(logger, _tee, signal.getsignal(signal.SIGTERM)),
+            _make_sigterm_handler(
+                logger,
+                _tee,
+                signal.getsignal(signal.SIGTERM),
+                state=state,
+                task_start=_task_start,
+                task=task,
+                config=config,
+            ),
         )
     try:
         result = _coordinator_loop(

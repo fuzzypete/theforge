@@ -95,6 +95,35 @@ def _escalate_notify(
         pass
 
 
+def _ntfy_crash_notify(
+    task: "TaskSpec",
+    state: "_cs.CoordinatorState",
+    config: "ForgeConfig",
+    uptime_seconds: float,
+) -> None:
+    """Publish an ntfy notification when a task crashes. Fails silently."""
+    if config.notifications.ntfy is None:
+        return
+    ntfy = config.notifications.ntfy
+    phase_name = state.phase.name if state.phase is not None else "UNKNOWN"
+    body = "\n".join(
+        [
+            f"{phase_name} (iter {state.dev_iteration})",
+            f"Cost at crash: ${state.total_cost:.2f}",
+            f"Uptime: {_cu._fmt_duration(uptime_seconds)}",
+        ]
+    )
+    try:
+        _ntfy_publish(
+            ntfy.url,
+            f"TheForge CRASHED \u2014 {task.slug}",
+            body,
+            priority=ntfy.priority,
+        )
+    except Exception:
+        pass
+
+
 def _ntfy_done_notify(
     task: "TaskSpec",
     state: "_cs.CoordinatorState",
