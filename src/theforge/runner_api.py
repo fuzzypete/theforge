@@ -479,6 +479,12 @@ class AgentLoopManager:
         messages = list(initial_messages)
         iterations = 0
         consecutive_malformed = 0
+        _tool_call_counts: dict[str, int] = {}
+
+        label = self._profile.name or f"{self._provider}/{self._profile.model}"
+        tool_names = [s.get("function", {}).get("name") or s.get("name") for s in tool_schemas]
+        tool_names = [n for n in tool_names if n]
+        _log_verbose(f"  [{label}] loop start: {len(tool_names)} tools: {tool_names}")
 
         while iterations < self._max_iterations:
             if self._timed_out():
@@ -492,6 +498,21 @@ class AgentLoopManager:
 
             self._usage.add(turn.usage)
             iterations += 1
+
+            # Log per-turn tool calls at verbose level
+            if turn.tool_calls:
+                turn_call_names = [c.name for c in turn.tool_calls]
+                _log_verbose(
+                    f"  [{label}] iter {iterations}: "
+                    f"{len(turn_call_names)} call(s): {turn_call_names}"
+                )
+                for name in turn_call_names:
+                    _tool_call_counts[name] = _tool_call_counts.get(name, 0) + 1
+
+            # Log text reasoning snippet at verbose level
+            if turn.text_output and turn.text_output.strip():
+                snippet = turn.text_output.strip()[:200]
+                _log_verbose(f'  [{label}] iter {iterations} reasoning: "{snippet}"')
 
             # Check for submit tool call
             for call in turn.tool_calls:
@@ -593,8 +614,10 @@ class AgentLoopManager:
                     )
                     messages = list(messages)
                     messages.append({"role": "user", "content": nudge_msg})
-                    label = self._profile.name or f"{self._provider}/{self._profile.model}"
-                    _log_verbose(f"  ⚠ {label} nudge sent ({remaining_iter} iterations remaining)")
+                    _log(
+                        f"  ⚠ {label} approaching iteration limit "
+                        f"({iterations}/{self._max_iterations}) — nudge sent"
+                    )
 
             # Time-based nudge: when approaching wall-clock deadline
             if not self._time_nudge_sent:
@@ -611,8 +634,18 @@ class AgentLoopManager:
                         )
                         messages = list(messages)
                         messages.append({"role": "user", "content": nudge_msg})
-                        label = self._profile.name or f"{self._provider}/{self._profile.model}"
                         _log_verbose(f"  ⚠ {label} time nudge sent ({remaining_secs}s remaining)")
+
+        # Log iteration summary: tool call counts and whether submit was ever attempted
+        submit_names = _SUBMIT_TOOL_NAMES
+        submit_called = any(n in submit_names for n in _tool_call_counts)
+        submit_status = "submit never called" if not submit_called else "submit called"
+        counts_detail = ", ".join(f"{n}:{c}" for n, c in sorted(_tool_call_counts.items()))
+        total_calls = sum(_tool_call_counts.values())
+        _log(
+            f"  ⚠ {label} max iterations ({iterations}): "
+            f"{total_calls} tool calls [{counts_detail}], {submit_status}"
+        )
 
         return self._finalize_or_timeout(messages, iterations, "max iterations reached")
 

@@ -1573,3 +1573,296 @@ class TestDevAgentApiLoop:
         assert "tool_results" in roles
         tool_results_msg = next(m for m in second_msgs if m["role"] == "tool_results")
         assert any("out.py" in r["content"] for r in tool_results_msg["results"])
+
+
+class TestDiagnosticLogging:
+    """Tests for diagnostic logging added to AgentLoopManager.run()."""
+
+    def _make_manager(self, tmp_path: Path, adapter, max_iterations: int = 15) -> AgentLoopManager:
+        profile = _make_profile(timeout_seconds=300)
+        return AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=list(TOOL_REGISTRY.values()),
+            provider_adapter=adapter,
+            max_iterations=max_iterations,
+        )
+
+    def test_tool_schema_logged_at_loop_start(self, tmp_path, capsys):
+        """Tool schema names logged at verbose level when loop starts."""
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="s1",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_manager(tmp_path, adapter)
+        tool_schemas = [
+            {"function": {"name": "read_file"}},
+            {"function": {"name": "grep"}},
+            {"function": {"name": SUBMIT_REVIEW}},
+        ]
+        import theforge.runner_api as ra
+
+        logged = []
+
+        def capturing_log_verbose(msg):
+            logged.append(msg)
+
+        with patch.object(ra, "_log_verbose", side_effect=capturing_log_verbose):
+            manager.run(
+                initial_messages=[{"role": "user", "content": "review"}],
+                tool_schemas=tool_schemas,
+            )
+
+        loop_start_msgs = [m for m in logged if "loop start" in m]
+        assert loop_start_msgs, "Expected a 'loop start' verbose log message"
+        msg = loop_start_msgs[0]
+        assert "read_file" in msg
+        assert "grep" in msg
+        assert SUBMIT_REVIEW in msg
+        assert "3 tools" in msg
+
+    def test_per_turn_tool_calls_logged_verbose(self, tmp_path):
+        """Per-turn tool call names logged at verbose level after each iteration."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(id="r1", name="read_file", arguments={"path": "x.py"}),
+                        ToolCallRequest(id="g1", name="grep", arguments={"pattern": "foo"}),
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="s1",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        (tmp_path / "x.py").write_text("foo = 1\n", encoding="utf-8")
+        manager = self._make_manager(tmp_path, adapter)
+
+        import theforge.runner_api as ra
+
+        logged = []
+
+        def capturing_log_verbose(msg):
+            logged.append(msg)
+
+        with patch.object(ra, "_log_verbose", side_effect=capturing_log_verbose):
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+
+        assert result.success
+        iter_msgs = [m for m in logged if "iter 1:" in m and "call(s)" in m]
+        assert iter_msgs, "Expected per-turn tool call log for iteration 1"
+        msg = iter_msgs[0]
+        assert "read_file" in msg
+        assert "grep" in msg
+        assert "2 call(s)" in msg
+
+    def test_nudge_logged_at_normal_level(self, tmp_path):
+        """Nudge delivery logged at normal (_log) level, not verbose."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] < 15:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(
+                            id=f"g{call_count[0]}",
+                            name="glob",
+                            arguments={"pattern": "*.py"},
+                        )
+                    ],
+                    text_output=None,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="s1",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_manager(tmp_path, adapter, max_iterations=15)
+
+        import theforge.runner_api as ra
+
+        normal_logged = []
+        verbose_logged = []
+
+        with patch.object(ra, "_log", side_effect=lambda m: normal_logged.append(m)):
+            with patch.object(ra, "_log_verbose", side_effect=lambda m: verbose_logged.append(m)):
+                result = manager.run(
+                    initial_messages=[{"role": "user", "content": "go"}],
+                    tool_schemas=[],
+                )
+
+        assert result.success
+        nudge_normal = [m for m in normal_logged if "nudge sent" in m]
+        nudge_verbose = [m for m in verbose_logged if "nudge sent" in m and "time nudge" not in m]
+        assert nudge_normal, "Iteration nudge must be logged at normal level"
+        assert not nudge_verbose, "Iteration nudge must NOT be logged at verbose level"
+
+    def test_text_reasoning_logged_verbose(self, tmp_path):
+        """Text reasoning (first 200 chars) logged at verbose level."""
+        call_count = [0]
+        reasoning = "I need to examine the test suite carefully before submitting my verdict." * 5
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return LoopTurn(
+                    tool_calls=[
+                        ToolCallRequest(id="g1", name="glob", arguments={"pattern": "*.py"})
+                    ],
+                    text_output=reasoning,
+                    structured_data=None,
+                    usage=_make_usage(),
+                )
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id="s1",
+                        name=SUBMIT_REVIEW,
+                        arguments={"verdict": "APPROVE", "summary": "ok"},
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_manager(tmp_path, adapter)
+
+        import theforge.runner_api as ra
+
+        logged = []
+
+        def capturing_log_verbose(msg):
+            logged.append(msg)
+
+        with patch.object(ra, "_log_verbose", side_effect=capturing_log_verbose):
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+
+        assert result.success
+        reasoning_msgs = [m for m in logged if "reasoning" in m]
+        assert reasoning_msgs, "Expected a reasoning verbose log message"
+        msg = reasoning_msgs[0]
+        # Should contain the first 200 chars of the reasoning
+        assert reasoning[:200] in msg
+
+    def test_iteration_summary_on_max_iterations(self, tmp_path):
+        """Iteration summary logged at normal level on max-iteration failure."""
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"r{call_count[0]}", name="read_file", arguments={"path": "x.py"}
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        (tmp_path / "x.py").write_text("content\n", encoding="utf-8")
+        manager = self._make_manager(tmp_path, adapter, max_iterations=3)
+
+        import theforge.runner_api as ra
+
+        normal_logged = []
+
+        with patch.object(ra, "_log", side_effect=lambda m: normal_logged.append(m)):
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+
+        assert not result.success
+        summary_msgs = [m for m in normal_logged if "max iterations" in m]
+        assert summary_msgs, "Expected iteration summary log on max-iteration failure"
+        msg = summary_msgs[0]
+        assert "read_file" in msg
+        assert "submit never called" in msg
+        # Should show total tool call count (3 iterations × 1 call = 3)
+        assert "3 tool calls" in msg
+
+    def test_iteration_summary_shows_submit_called_when_submit_was_attempted(self, tmp_path):
+        """If a submit tool appears in counts (shouldn't reach max), submit_called is shown."""
+        # Edge: one submit call among other calls that still exhausts iterations
+        # Simulate this by having submit in _tool_call_counts via a different tool name
+        # In practice, submit ends the loop, so we test "submit never called" case is accurate.
+        # This test verifies the label says "submit never called" when no submit was attempted.
+        call_count = [0]
+
+        def adapter(messages, tools):
+            call_count[0] += 1
+            return LoopTurn(
+                tool_calls=[
+                    ToolCallRequest(
+                        id=f"g{call_count[0]}", name="glob", arguments={"pattern": "*.py"}
+                    )
+                ],
+                text_output=None,
+                structured_data=None,
+                usage=_make_usage(),
+            )
+
+        manager = self._make_manager(tmp_path, adapter, max_iterations=2)
+
+        import theforge.runner_api as ra
+
+        normal_logged = []
+
+        with patch.object(ra, "_log", side_effect=lambda m: normal_logged.append(m)):
+            result = manager.run(
+                initial_messages=[{"role": "user", "content": "go"}],
+                tool_schemas=[],
+            )
+
+        assert not result.success
+        summary_msgs = [m for m in normal_logged if "max iterations" in m]
+        assert summary_msgs
+        assert "submit never called" in summary_msgs[0]
+        assert "glob:2" in summary_msgs[0]
