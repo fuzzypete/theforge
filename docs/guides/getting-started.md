@@ -3,6 +3,12 @@
 This guide walks you through your first forge run — from installation to merged
 feature branch.
 
+> **Terminology note:** The primary term is "story" — stories live in `specs/`
+> by convention, but the `specs/` directory name is a filesystem convention, not
+> a different concept. Sprints run multiple stories sequentially. Briefs are
+> free-form ideation inputs (not stories). The review pool is the set of models
+> that review each implementation.
+
 ## What you need
 
 1. **Python 3.11+**
@@ -17,7 +23,7 @@ feature branch.
 ## 1. Install TheForge
 
 ```bash
-git clone https://github.com/pwickersham/theforge.git
+git clone https://github.com/fuzzypete/theforge.git
 cd theforge
 pip install -e .
 ```
@@ -206,7 +212,7 @@ Typical costs per spec (varies by complexity):
 | Large (8+ files) | $3.00-8.00 | $1.00-3.00 | ~$5-12 |
 
 Adding more reviewers increases review cost proportionally but catches more bugs.
-A 4-reviewer pool (Claude + Codex + Gemini + DeepSeek) costs ~$2-4 per review
+A 4-model review pool (Claude + Codex + Gemini + DeepSeek) costs ~$2-4 per review
 but provides excellent cross-model coverage.
 
 ## Lifecycle hooks
@@ -263,8 +269,8 @@ abort the forge run. See `.forge/hooks/README.md` for full documentation.
   review pool setup
 - **Enable plan phase:** For medium/large stories, add `plan:` to forge.yaml
   to have an agent create an implementation plan before dev starts
-- **Generate specs from briefs:** Use `forge ideate "problem description"` to
-  have multiple models collaboratively write a spec
+- **Generate stories from briefs:** Use `forge ideate "problem description"` to
+  have multiple models collaboratively write a story
 - **Check provider health:** Run `forge check-providers` to verify all your
   configured models respond correctly
 - **File findings as issues:** Run `forge init-hooks` to scaffold the GitHub
