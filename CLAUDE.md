@@ -75,9 +75,19 @@ test_coverage:
   gaps: []
 ```
 
-### File scope in TaskSpec
-`file_scope` restricts what the dev agent may modify. Empty list = no restriction.
-The dev prompt will say "(no scope restriction — all project files)" when empty.
+### Writing stories (specs)
+Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.
+
+- **No function names, class names, or file paths** unless the story IS about
+  a specific file (e.g., a refactoring story). The plan agent will find these.
+- **Acceptance criteria describe observable behavior**, not implementation steps.
+  "Warns on unmapped acceptance criteria" ✓. "Calls `validate_plan()` in
+  `coordinator.py` after line 1460" ✗.
+- **If preflight can't understand a story without reading the codebase, the
+  story is too implementation-coupled.** Preflight should be able to classify
+  it from the story text alone.
+- A rename from "spec" to "story" is planned (#67). Until then, the code says
+  `TaskSpec` and `specs/` but the writing convention is "story."
 
 ### Dogfooding config
 `forge.yaml` at the project root configures theforge to develop itself. Worktrees
