@@ -57,7 +57,7 @@ dev_notes: |
       notes: "story_compliance in review YAML example; stale 'rename is planned'
         note replaced with accurate description of TaskSpec compat alias"
 
-  story_deviations:
+  spec_deviations:
     - description: "specs/ directory at repo root was not renamed to stories/"
       justification: "Renaming the directory requires updating every path in all
         sprint manifests and forge.yaml. Doing that in the same commit would
