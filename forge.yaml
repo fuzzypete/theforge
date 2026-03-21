@@ -6,7 +6,7 @@ workspace:
   setup_command: "test -d .venv || (python -m venv .venv && .venv/bin/pip install -e . pytest -q)"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
-  on_approve: merge
+  on_approve: pr
   auto_push: true
 
 validation:
