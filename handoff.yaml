@@ -1,5 +1,3 @@
-gate_decision: PASS
-gate_result: PASS
 dev_notes: |
   summary: "Hardened the existing OpenAI adapter for local model use. Added four
     model keys to MODEL_REGISTRY (openai/codestral, openai/deepseek-coder,
@@ -18,6 +16,8 @@ dev_notes: |
   commits:
     - sha: "29d6d31"
       message: "feat(local-models): validate ollama/vllm via existing OpenAI adapter"
+    - sha: "5da551e"
+      message: "chore(local-models): write dev handoff.yaml"
   acceptance_criteria:
     - criterion: "OpenAI adapter works with ollama base_url for models with tool support"
       status: MET
@@ -44,8 +44,13 @@ dev_notes: |
       status: MET
       notes: "14 new tests added across TestIsLocalEndpoint, TestLocalEndpointCostZeroing, TestToolCallingFallback (test_runner_api.py), and TestLocalModelRegistry (test_config.py)."
   spec_deviations:
-    - "Plan reviewer P2: fallback call uses PROVIDER_RUNNERS['openai'](prompt, profile, secrets) — 3 args, no working_dir, matching _run_openai's actual signature. Plan had a typo listing working_dir."
-    - "Plan reviewer P2: loop cost zeroing also zeros model_usage[].cost_usd entries via dataclasses.replace, not just result.cost_usd, per reviewer recommendation."
-    - "Plan reviewer P2: no base_url validation added for local registry entries at config load time — noted as advisory. The docs warn clearly that base_url is required for local models."
+    - description: "Fallback call uses 3 args (prompt, profile, secrets), not 4"
+      justification: "Plan listed working_dir as a 4th arg but _run_openai's actual signature is (prompt, profile, secrets). Dropped working_dir to match the real signature per plan reviewer P2 note."
+    - description: "Loop cost zeroing also zeros model_usage[].cost_usd entries"
+      justification: "Plan only mentioned zeroing result.cost_usd, but plan reviewer P2 noted stale costs in model_usage. Used dataclasses.replace on each ModelUsage to zero all cost fields consistently."
+    - description: "No base_url validation added for local registry entries at config load time"
+      justification: "Plan reviewer flagged this as advisory (P2). Omitted to avoid scope creep; docs/guides/local-models.md clearly warns that base_url is required for local model keys."
   deferred_items: none
   gate_result: PASS
+gate_decision: PASS
+gate_result: PASS
