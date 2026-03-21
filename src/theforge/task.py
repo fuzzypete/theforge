@@ -841,6 +841,8 @@ def build_fix_prompt(
     cycle_history: list[CycleHistory] | None = None,
     escalation_note: str | None = None,
     handoff_file: str = "handoff.yaml",
+    plan_output: str | dict | None = None,
+    classified_p1s: list | None = None,  # list[FindingRecord]
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -867,6 +869,36 @@ def build_fix_prompt(
 
             {escalation_note}
         """)
+    if plan_output:
+        if isinstance(plan_output, dict):
+            plan_lines = [
+                "## Approved Plan",
+                "",
+                f"**Approach:** {plan_output.get('approach', '')}",
+                "",
+            ]
+            for step in plan_output.get("steps", []):
+                step_id = step.get("id", "?")
+                plan_lines.append(f"Step {step_id}: {step.get('description', '')}")
+                plan_lines.append(f"  Action: {step.get('action', '')}")
+                if "depends_on" in step and step["depends_on"]:
+                    deps = ", ".join(f"Step {d}" for d in step["depends_on"])
+                    plan_lines.append(f"  Depends on: {deps}")
+                plan_lines.append(f"  Details: {step.get('details', '')}")
+                plan_lines.append("")
+            context_sections += "\n" + "\n".join(plan_lines) + "\n"
+        else:
+            context_sections += dedent(f"""\
+
+                ## Approved Plan
+
+                {plan_output}
+            """)
+        context_sections += dedent("""\
+
+            Fix the P1 findings **within this plan's approach**.
+            Do NOT redesign or adopt a different strategy.
+        """)
     if cycle_history:
         history_lines = []
         for h in cycle_history:
@@ -883,6 +915,28 @@ def build_fix_prompt(
 
         """) + "\n".join(history_lines)
 
+    # Build the P1 findings section with disposition annotations if available
+    if classified_p1s:
+        p1_lines = []
+        for r in classified_p1s:
+            loc = f"{r.file}:{r.line}" if r.file else (r.file or "")
+            loc_suffix = f" ({loc})" if loc else ""
+            p1_lines.append(f"- [{r.disposition}] {r.description}{loc_suffix}")
+        p1_section = "\n".join(p1_lines)
+        findings_section = dedent(f"""\
+            ## P1 Findings (with disposition)
+
+            {p1_section}
+
+            ## Full Review Output
+
+            {review_findings}""")
+    else:
+        findings_section = dedent(f"""\
+            ## Review Findings
+
+            {review_findings}""")
+
     return dedent(f"""\
         You are continuing work on **{task.name}** (iteration {iteration}).
 
@@ -893,9 +947,7 @@ def build_fix_prompt(
         You are already in the correct workspace. Do NOT create a new worktree.
         Do NOT switch branches.
         {context_sections}
-        ## Review Findings
-
-        {review_findings}
+        {findings_section}
 
         ## Your Task
 

@@ -159,6 +159,9 @@ class CoordinatorState:
         default_factory=list
     )  # (profile_name, ReviewResult) pairs from the most recent pool run
     finding_registry: list[FindingRecord] = field(default_factory=list)
+    dev_handoff_snapshots: list[dict | None] = field(default_factory=list)
+    # One entry per dev invocation (same index as dev_results).
+    # Each entry is the parsed handoff.yaml dict, or None if absent/unparseable.
     # Stable record of all findings across cycles, classified by finding_classifier
     last_dev_start_commit: str | None = None
     # HEAD commit hash captured before each dev iteration; used by finding_classifier

@@ -102,3 +102,71 @@ def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, t
     out1 = (traces_dir / "1-dev-output.txt").read_text(encoding="utf-8")
     out2 = (traces_dir / "2-dev-output.txt").read_text(encoding="utf-8")
     assert out1 != out2, "iteration-1 and iteration-2 traces must not have the same content"
+
+
+@patch("theforge.coordinator.run_agent_pool")
+@patch("theforge.coordinator.run_agent")
+@patch("theforge.coord_util._run_shell")
+def test_dev_traces_written_for_iteration_3(mock_shell, mock_agent, mock_pool, tmp_path):
+    """After two REQUEST_CHANGES cycles, trace files 1-3 must all exist with distinct content."""
+    from dataclasses import replace
+
+    from theforge.config import DEFAULT_REVIEW_PROFILE, RetryPolicy
+
+    base_config = _make_config(tmp_path)
+    # Use a high-budget review profile so 3 review calls don't hit the budget cap.
+    high_budget_review = replace(DEFAULT_REVIEW_PROFILE, budget_usd=10.00)
+    config = replace(
+        base_config,
+        retry=RetryPolicy(max_dev_iterations=3, max_review_cycles=3),
+        review_pool=[high_budget_review],
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+    mock_agent.side_effect = _preflight_then(
+        _make_agent_result(output="first dev output"),
+        _make_agent_result(output="second dev output"),
+        _make_agent_result(output="third dev output"),
+    )
+
+    pool_calls = {"n": 0}
+
+    def pool_side_effect(**kwargs):
+        pool_calls["n"] += 1
+        if pool_calls["n"] == 1:
+            return [
+                _make_agent_result(
+                    success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                )
+            ]
+        if pool_calls["n"] == 2:
+            return [
+                _make_agent_result(
+                    success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+                )
+            ]
+        return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+    mock_pool.side_effect = pool_side_effect
+
+    result = run_task(config, task)
+
+    assert result.success is True
+
+    traces_dir = workspace / ".forge" / "traces"
+    for i in range(1, 4):
+        assert (traces_dir / f"{i}-dev-prompt.txt").exists(), (
+            f"iteration-{i} prompt trace must exist"
+        )
+        assert (traces_dir / f"{i}-dev-output.txt").exists(), (
+            f"iteration-{i} output trace must exist"
+        )
+
+    out1 = (traces_dir / "1-dev-output.txt").read_text(encoding="utf-8")
+    out2 = (traces_dir / "2-dev-output.txt").read_text(encoding="utf-8")
+    out3 = (traces_dir / "3-dev-output.txt").read_text(encoding="utf-8")
+    assert out1 != out2, "iteration-1 and iteration-2 output traces must differ"
+    assert out2 != out3, "iteration-2 and iteration-3 output traces must differ"

@@ -16,6 +16,8 @@ from enum import Enum, auto
 from pathlib import Path
 from types import ModuleType
 
+import yaml
+
 from . import coord_util as _cu
 from . import finding_classifier as _fc
 from .config import MODEL_REGISTRY, ForgeConfig
@@ -1214,6 +1216,10 @@ def _run_dev_phase(
             cycle_history=state.cycle_history or None,
             escalation_note=state.escalation_note,
             handoff_file=config.validation.handoff_file,
+            plan_output=state.plan_structured
+            if state.plan_structured is not None
+            else state.plan_output,
+            classified_p1s=[r for r in state.finding_registry if r.severity == "P1"] or None,
         )
         state.escalation_note = None  # consumed
     else:
@@ -1284,6 +1290,15 @@ def _run_dev_phase(
         )
     state.dev_results.append(dev_result)
     state.dev_durations.append(_dev_elapsed)
+    # Capture handoff snapshot for audit trail
+    _handoff_snap: dict | None = None
+    if config.validation.handoff_file:
+        try:
+            _handoff_path = workspace_path / config.validation.handoff_file
+            _handoff_snap = yaml.safe_load(_handoff_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    state.dev_handoff_snapshots.append(_handoff_snap)
     state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
