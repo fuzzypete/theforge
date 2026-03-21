@@ -83,3 +83,12 @@ Local profiles are labelled `[local]` in the output and show `$0.000` for cost:
 ```
   local-reviewer         openai     qwen2.5-coder              ✓  2.3s  $0.000 [local]
 ```
+
+---
+
+## See also
+
+- [Provider Setup Guide](choose-your-provider-setup.md) — named patterns including local/privacy-first and hybrid
+- [Getting Started](getting-started.md) — full setup walkthrough
+- [Troubleshooting](troubleshooting.md) — provider auth and connectivity issues
+- [CLI Reference](cli-reference.md) — forge check-providers and secrets-init

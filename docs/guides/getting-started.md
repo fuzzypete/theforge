@@ -3,6 +3,12 @@
 This guide walks you through your first forge run — from installation to merged
 feature branch.
 
+> **Terminology note:** The primary term is "story" — stories live in `specs/`
+> by convention, but the `specs/` directory name is a filesystem convention, not
+> a different concept. Sprints run multiple stories sequentially. Briefs are
+> free-form ideation inputs (not stories). The review pool is the set of models
+> that review each implementation.
+
 ## What you need
 
 1. **Python 3.11+**
@@ -17,7 +23,7 @@ feature branch.
 ## 1. Install TheForge
 
 ```bash
-git clone https://github.com/pwickersham/theforge.git
+git clone https://github.com/fuzzypete/theforge.git
 cd theforge
 pip install -e .
 ```
@@ -152,8 +158,10 @@ The implementation lives on a feature branch:
 # See what was created
 git log forge/add-health-check --oneline
 
-# See the full audit trail
+# See the full audit trail (worktree copy)
 cat .forge/worktrees/add-health-check/forge_audit.yaml
+# Or the persistent audit in .forge/audits/
+cat .forge/audits/forge_audit.yaml
 ```
 
 The audit shows:
@@ -206,7 +214,7 @@ Typical costs per spec (varies by complexity):
 | Large (8+ files) | $3.00-8.00 | $1.00-3.00 | ~$5-12 |
 
 Adding more reviewers increases review cost proportionally but catches more bugs.
-A 4-reviewer pool (Claude + Codex + Gemini + DeepSeek) costs ~$2-4 per review
+A 4-model review pool (Claude + Codex + Gemini + DeepSeek) costs ~$2-4 per review
 but provides excellent cross-model coverage.
 
 ## Lifecycle hooks
@@ -259,13 +267,70 @@ abort the forge run. See `.forge/hooks/README.md` for full documentation.
 
 ## Next steps
 
-- **Add more reviewers:** See [CLI Reference](cli-reference.md) for multi-model
-  review pool setup
+- **Add more reviewers:** See [Provider Setup Guide](choose-your-provider-setup.md) for named patterns
 - **Enable plan phase:** For medium/large stories, add `plan:` to forge.yaml
   to have an agent create an implementation plan before dev starts
-- **Generate specs from briefs:** Use `forge ideate "problem description"` to
-  have multiple models collaboratively write a spec
+- **Generate stories from briefs:** Use `forge ideate "problem description"` to
+  have multiple models collaboratively write a story
 - **Check provider health:** Run `forge check-providers` to verify all your
   configured models respond correctly
 - **File findings as issues:** Run `forge init-hooks` to scaffold the GitHub
   Issues hook
+- **Something went wrong?** See the [Troubleshooting guide](troubleshooting.md)
+- **See a narrated transcript:** Read the [First-Run Walkthrough](first-run-walkthrough.md)
+
+---
+
+## What gets created
+
+A full view of every file TheForge touches and who owns it.
+
+```
+your-project/
+├── forge.yaml                         # USER — project config (models, budgets, gate)
+├── specs/                             # USER — story inputs
+│   ├── TEMPLATE.md                    # USER — annotated story template (from forge init)
+│   └── my-feature.md                  # USER — your stories
+├── sprints/                           # USER — sprint manifests
+├── briefs/                            # USER — ideation inputs for forge ideate
+│
+├── .forge/
+│   ├── .env                           # USER — API keys (auto-gitignored)
+│   ├── hooks/                         # USER — lifecycle hook scripts
+│   │   └── post_run.sh                # USER — (from forge init-hooks)
+│   ├── logs/                          # GENERATED — per-run log files
+│   ├── audits/                        # GENERATED — persistent audit trail
+│   │   └── forge_audit.yaml           # GENERATED — latest run audit (overwritten per run)
+│   └── worktrees/                     # GENERATED — managed git worktrees
+│       └── my-feature/                # GENERATED — one per story run
+│           ├── <all repo files>       # GENERATED — full worktree copy on feature branch
+│           ├── forge_audit.yaml       # GENERATED — worktree copy of audit trail
+│           └── handoff.yaml           # GENERATED — gate output (PASS/FAIL + details)
+```
+
+### Ownership and lifecycle
+
+| Entry | Owner | Safe to delete? | When? |
+|-------|-------|----------------|-------|
+| `forge.yaml` | You | No | — |
+| `specs/`, `sprints/`, `briefs/` | You | No | — |
+| `.forge/.env` | You | No — contains secrets | — |
+| `.forge/hooks/` | You | Yes | If you don't use hooks |
+| `.forge/logs/` | Generated | Yes | After reviewing |
+| `.forge/audits/forge_audit.yaml` | Generated | Yes | Overwritten each run |
+| `.forge/worktrees/<slug>/` | Generated | Yes | After merge or abandonment |
+| `.forge/worktrees/<slug>/forge_audit.yaml` | Generated | Yes | After merge or abandonment |
+| `.forge/worktrees/<slug>/handoff.yaml` | Generated | Yes | After merge or abandonment |
+
+### Mental model
+
+> TheForge is a **coordinator**, not an autonomous IDE.
+
+- **Each phase has a narrow job** — workspace setup, preflight check, dev,
+  validate, review. No phase does more than one thing.
+- **Models produce artifacts, not runtime authority** — the dev agent writes
+  code. The coordinator decides what happens next.
+- **Validation and review are gates, not suggestions** — a FAIL gate stops
+  the run; a P1 finding triggers a retry. This is mechanical, not advisory.
+- **Your repo is always safe** — all agent work happens in a worktree on a
+  feature branch. Main is untouched until you explicitly merge.
