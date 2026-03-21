@@ -1,34 +1,95 @@
 dev_notes: |
-  summary: "Added five diagnostic log points to AgentLoopManager.run() in runner_api.py to make DeepSeek churn diagnosable. (1) Loop start logs tool schema names at verbose level so we can confirm submit_review is in the schema. (2) Per-turn logs list tool call names at verbose level after each iteration. (3) Per-turn logs the first 200 chars of text_output (reasoning) at verbose level. (4) The iteration-limit nudge is now logged at normal (_log) level instead of _log_verbose so it appears in non-verbose runs. (5) When max iterations is reached, a summary is logged at normal level showing total and per-name tool call counts and whether any submit tool was ever called. All changes are additive diagnostics; no loop logic was altered."
+  summary: "Implemented the ESCALATE → HITL gate so that review-related escalations
+    (budget exceeded, all reviewers failed, max cycles exhausted) now pause and
+    present the human with an approve/reject/continue decision instead of exiting
+    immediately. Interactive mode prompts via stderr/stdin; remote mode sends an
+    ntfy notification with Approve/Reject/Continue action buttons and long-polls
+    for a reply. The auto_approve policy short-circuits to approve when gate
+    passed and majority of reviewers approved; the reject policy preserves the
+    existing unconditional exit. On approve, the full _finalize_approve() flow
+    fires (PR/merge + hooks). On continue, review_cycle is decremented and the
+    coordinator loops back to DEV for one more cycle. The decision and reason are
+    stored in CoordinatorState and surfaced in the audit YAML escalation block."
   commits:
-    - sha: "b5eb742"
-      message: "feat(runner_api): add diagnostic logging to AgentLoopManager loop"
+    - sha: "70fc6ca"
+      message: "feat(escalate-hitl): add ESCALATE → HITL gate with approve/reject/continue"
   acceptance_criteria:
-    - criterion: "Tool schema names logged at verbose level when agent loop starts"
+    - criterion: "ESCALATE triggers HITL gate instead of immediate exit"
       status: MET
-      notes: "run() now logs '[label] loop start: N tools: [names]' via _log_verbose before the while loop. tool_names extracted from both OpenAI-style {function: {name}} and flat {name} schema dicts."
-    - criterion: "Per-turn tool call names logged at verbose level after each iteration"
+      notes: "_run_escalate_gate() is called at both review-related escalation
+        points in _run_review_phase(): the all-reviewers-failed/budget-exceeded
+        path and the max-cycles-exhausted non-interactive path. Infrastructure
+        escalations (workspace, preflight, plan) are unchanged."
+    - criterion: "Interactive mode: decision prompt with context (per-reviewer
+        verdicts, gate result, cost, escalation reason)"
       status: MET
-      notes: "After iterations += 1, if turn.tool_calls is non-empty, logs '[label] iter N: M call(s): [names]' via _log_verbose. Counts are also accumulated into _tool_call_counts for the summary."
-    - criterion: "Nudge delivery logged at normal level (not just verbose)"
+      notes: "_escalate_gate_interactive() in coord_notify.py prints reviewer
+        verdicts, gate result, cost, dev/review iteration counts, and escalation
+        reason to stderr before prompting for [a/r/c]."
+    - criterion: "Remote mode: ntfy notification with Approve/Reject/Continue actions"
       status: MET
-      notes: "Line 597 _log_verbose replaced with _log. Message: '⚠ {label} approaching iteration limit ({iter}/{max}) — nudge sent'."
-    - criterion: "Text reasoning snippets (first 200 chars) logged at verbose level"
+      notes: "_escalate_gate_remote() in coord_notify.py publishes an ntfy
+        notification with three action buttons and long-polls _ntfy_poll_escalate_reply()
+        until an explicit decision arrives."
+    - criterion: "escalate_policy: auto_approve auto-approves when gate passed
+        and majority approved"
       status: MET
-      notes: "If turn.text_output is non-empty, logs '[label] iter N reasoning: \"<first 200 chars>\"' via _log_verbose."
-    - criterion: "Iteration summary logged on max-iteration failure (tool call counts by name, whether submit tool was ever called)"
+      notes: "_run_escalate_gate() checks escalate_policy == 'auto_approve' and
+        fires _finalize_approve() when majority of reviewer_verdicts are APPROVE
+        and the last gate_decision contains 'PASS'."
+    - criterion: "escalate_policy: reject preserves current behavior"
       status: MET
-      notes: "After the while loop exhausts, logs '⚠ {label} max iterations (N): M tool calls [name:count, ...], submit never called / submit called' via _log before calling _finalize_or_timeout."
-    - criterion: "All logging uses existing _log() and _log_verbose() — no new logging infrastructure"
+      notes: "When escalate_policy == 'reject', gate immediately sets
+        escalate_decision='reject' and returns a ESCALATE CoordinatorResult
+        without prompting. All existing ntfy tests use escalate_policy='reject'
+        via _make_ntfy_config() in coord_test_helpers.py."
+    - criterion: "On approve: full on_approve flow fires (PR/merge + hook)"
       status: MET
-      notes: "Only _log and _log_verbose (already imported from runner) are used. No new imports or logging setup."
-    - criterion: "No functional changes to the agent loop — diagnostics only"
+      notes: "Gate calls _finalize_approve() with review_cost=state.total_review_cost,
+        review_elapsed=0.0, and parsed_review=state.review_results[-1]. Guards
+        against empty review_results by falling back to reject."
+    - criterion: "On continue: coordinator re-enters REVIEW for one more cycle"
       status: MET
-      notes: "All additions are read-only observations. No branching, return paths, or tool execution logic was changed."
+      notes: "Gate returns None; caller in _run_review_phase() decrements
+        state.review_cycle -= 1 (for the max-cycles path where it was already
+        incremented) and returns RETRY_DEV. For the all-failed path, review_cycle
+        was never incremented so no decrement is needed."
+    - criterion: "On reject: exits as ESCALATE (current behavior)"
+      status: MET
+      notes: "Gate returns CoordinatorResult(success=False, phase=ESCALATE)."
+    - criterion: "escalate_decision and escalate_reason in CoordinatorState"
+      status: MET
+      notes: "Two new fields added to CoordinatorState: escalate_decision:
+        str | None and escalate_reason: str | None."
+    - criterion: "Audit YAML includes escalation section with decision context"
+      status: MET
+      notes: "generate_audit_log() in coord_audit.py emits an 'escalation' block
+        containing reason, reviewer_verdicts, gate_result, human_decision, and
+        waited_seconds when state.escalate_decision is set."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1041 tests pass (1035 pre-existing + 6 new diagnostic tests)."
-  spec_deviations: none
+      notes: "1046 tests pass (939 non-sprint + 107 sprint/ideate). The
+        _make_ntfy_config() helper in coord_test_helpers.py was updated to set
+        escalate_policy='reject' so existing ntfy notification tests are not
+        affected by the new gate."
+    - criterion: "New tests: approve path, reject path, continue path,
+        auto_approve policy, non-interactive reject default"
+      status: MET
+      notes: "TestEscalateGate class in test_coordinator.py adds 5 tests.
+        Direct patching of _run_escalate_gate is used for the approve/reject/continue
+        path tests; the reject-policy test exercises the full stack without mocking
+        the gate."
+  spec_deviations: |
+    - The gate uses sys.stdin.isatty() as proxy for 'interactive' (same pattern
+      as existing _human_review()), rather than threading an explicit 'interactive'
+      parameter, since it's not in CoordinatorState and the existing codebase uses
+      this convention.
+    - When escalate_policy='prompt' and no interaction method is available (no
+      tty, no ntfy), the gate falls through to 'reject' rather than blocking
+      forever, per the plan reviewer's P2 suggestion.
+    - The 'continue' path goes through DEV before re-entering REVIEW (one full
+      cycle) because the coordinator's loop structure does not allow jumping
+      directly to REVIEW without a DEV pass.
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
