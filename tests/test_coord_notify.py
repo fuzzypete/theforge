@@ -253,7 +253,7 @@ class TestNtfyPublish:
             )
 
         assert captured["url"] == "https://ntfy.sh/example-topic"
-        assert captured["timeout"] == 10
+        assert captured["timeout"] == 15
         assert captured["title"] == "TheForge: OK done - demo"
         assert captured["priority"] == "high"
         assert captured["content_type"] == "text/plain; charset=utf-8"
