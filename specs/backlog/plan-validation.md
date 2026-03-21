@@ -13,9 +13,10 @@ files, having steps with no details — and still pass plan review because the
 LLM reviewer focuses on approach quality, not structural coverage. Dev budget
 is then spent on a plan that was mechanically deficient.
 
-Now that structured plan output exists (YAML with steps, criteria_mapping,
-file targets), the coordinator can validate plan structure deterministically
-before DEV runs.
+The codebase already has `PlanData` (TypedDict in task.py) and
+`parse_plan_output()` which parses YAML plans with steps, criteria_mapping,
+and file targets. When the plan agent produces structured YAML, the
+coordinator can validate plan structure deterministically before DEV runs.
 
 ## Solution
 
