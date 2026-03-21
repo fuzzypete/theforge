@@ -5,45 +5,49 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-orange)](CHANGELOG.md)
 
-Deterministic multi-LLM development orchestrator.
+**Deterministic multi-LLM development orchestrator.**
 
 TheForge runs a strict software development pipeline — plan, implement, test,
 review — with **mechanical process control**:
 
-- The coordinator (pure Python) makes all process decisions
-- AI agents write code and write reviews — nothing else
-- Validation gates and schema checks enforce boundaries
-- No LLM decides retries, escalation, or control flow
+- **LLMs generate, not control** — AI agents write code and reviews; the coordinator decides everything else
+- **Phase gates enforce boundaries** — validation runs your test suite before any review
+- **Full audit trail** — every agent call, decision, and cost is logged to `forge_audit.yaml`
+- **Resumable by design** — interrupted runs pick up where they left off
 
-```
-INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE
-```
+## Is TheForge for you?
 
-## Why TheForge
+**Best for:**
+- Bounded feature work and bug fixes with clear acceptance criteria
+- Repos with runnable tests and lints (the gate needs something to run)
+- Teams that want auditability: who changed what, which model approved it, what it cost
+- Cross-model review coverage — different LLMs catch different bugs
 
-Manual multi-agent development is high-friction: repeated copy/paste, inconsistent
-handoffs, skipped process steps, and no audit trail.
+**Not ideal for:**
+- Vague greenfield ideation where requirements aren't yet defined
+- Repos without deterministic validation (no tests, no lint, no gate command)
+- Giant unscoped refactors that span the whole codebase
+- UX-heavy exploratory work where "done" is subjective
 
-TheForge replaces that with a deterministic state machine. Write a story, run
-`forge run`, and the coordinator handles the rest — planning, implementation,
-testing, and multi-model code review. Every decision is logged. Every transition
-is mechanical.
+## 5-Minute Quickstart
 
-## Quickstart
-
-### 1. Install
-
-```bash
-pip install git+https://github.com/fuzzypete/theforge.git
-```
-
-Or for development:
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/fuzzypete/theforge.git
 cd theforge
 pip install -e ".[dev]"
 ```
+
+Or install directly:
+
+```bash
+pip install git+https://github.com/fuzzypete/theforge.git
+```
+
+**Supported:** Python 3.11+ · macOS, Linux
+
+### 2. Check providers
 
 You'll need at least one AI CLI installed:
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`claude`) — recommended to start
@@ -53,64 +57,52 @@ You'll need at least one AI CLI installed:
 > **You don't need all providers.** A single Claude CLI handles both dev and
 > review. Add more models later for cross-model coverage.
 
-**Supported:** Python 3.11+ · macOS, Linux · See [CHANGELOG](CHANGELOG.md) for
-provider/model matrix.
-
-### 2. Initialize your project
+Verify your CLI is working:
 
 ```bash
-cd your-project
-forge init
+claude --version   # or: codex --version / gemini --version
 ```
 
-Creates a starter `forge.yaml` and `specs/TEMPLATE.md`.
+### 3. Run hello-forge
 
-### 3. Write a story
-
-Create `specs/my-feature.md`:
-
-```markdown
----
-name: "Add health check endpoint"
-slug: add-health-check
-pytest_target: tests/
----
-
-# Add Health Check Endpoint
-
-## Problem
-The app has no way to verify it's running.
-
-## Acceptance criteria
-- GET /health returns {"status": "ok"} with HTTP 200
-- A test verifies the response
-- Existing tests continue to pass
-```
-
-### 4. Run
+The canonical first run uses the included example project:
 
 ```bash
-forge run specs/my-feature.md --verbose
+cd examples/hello-forge
+
+# One-time: initialize a git repo for the example
+git init && git add -A && git commit -m "initial"
+mkdir -p src tests
+echo 'def greet(): return "placeholder"' > src/app.py
+echo '' > tests/__init__.py && echo '' > tests/test_placeholder.py
+git add -A && git commit -m "scaffold"
+
+# Run the first spec
+forge run specs/add-greeting.md --verbose
 ```
 
-The coordinator will:
-1. **WORKSPACE** — Create a git worktree
-2. **PREFLIGHT** — Check if already implemented
-3. **PLAN** — Generate an implementation plan (if enabled)
-4. **DEV** — Agent implements the story
-5. **VALIDATE** — Run your test suite
-6. **REVIEW** — Multi-model code review
-7. **DONE** — or loop back to DEV if reviewer requests changes
+### 4. Expected output
 
-### 5. Merge
+```
+[WORKSPACE] Creating worktree at .forge/worktrees/add-greeting/
+[PREFLIGHT] Story not yet implemented — proceeding
+[PLAN]      Generating implementation plan...
+[DEV]       Claude Sonnet implementing story...
+[VALIDATE]  pytest tests/ -q ... PASSED
+[REVIEW]    Claude Opus reviewing implementation...
+[DONE]      Verdict: APPROVE — branch feat/add-greeting ready to merge
+```
+
+Merge the result:
 
 ```bash
-# Auto-merge after approval
-forge run specs/my-feature.md --auto-merge
+forge run specs/add-greeting.md --auto-merge
 
 # Or run multiple stories as a sprint
-forge sprint sprints/my-sprint.yaml --verbose --auto-merge
+forge sprint sprints/hello-sprint.yaml --verbose --auto-merge
 ```
+
+**Cost per spec:** ~$1-3 (Sonnet dev + Opus review) · **Time:** ~5-10 minutes
 
 ## What things cost
 
@@ -122,15 +114,52 @@ forge sprint sprints/my-sprint.yaml --verbose --auto-merge
 
 Budget enforcement is built in — set `budget_usd` per profile to control spend.
 
-## Documentation
+## How it works
 
-| Guide | Description |
-|-------|-------------|
-| [Getting Started](docs/guides/getting-started.md) | Full walkthrough: install → first run → merge |
-| [CLI Reference](docs/guides/cli-reference.md) | All commands, flags, and examples |
-| [Inputs Reference](docs/guides/inputs-reference.md) | Every file format: stories, sprints, config, briefs |
-| [Vision](docs/vision.md) | Architecture philosophy, roadmap, principles |
-| [Example Project](examples/hello-forge/) | Minimal working project you can fork and run |
+TheForge is a deterministic state machine. The coordinator (pure Python) drives
+every transition. No LLM decides whether to retry, escalate, or move on.
+
+```
+INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE
+```
+
+1. **WORKSPACE** — Creates an isolated git worktree for the story
+2. **PREFLIGHT** — Checks if the story is already implemented; skips if so
+3. **PLAN** — Dev agent generates an implementation plan (if enabled)
+4. **PLAN_REVIEW** — Reviewer approves or rejects the plan before any code is written
+5. **DEV** — Dev agent implements the story in the worktree
+6. **VALIDATE** — Runs your gate command (`pytest`, `make test`, etc.)
+7. **REVIEW** — One or more reviewer agents evaluate the diff against the spec
+8. **DONE** — Branch is ready to merge; or loops back to DEV if reviewer requests changes
+9. **ESCALATE** — Surfaced for human attention if iteration limits are exceeded
+
+**Key invariant:** The coordinator is not an LLM. If an LLM is deciding whether
+to retry or escalate, the architecture is wrong.
+
+## What gets created
+
+Running TheForge produces a predictable set of files:
+
+```
+.forge/
+├── worktrees/<slug>/     Git worktree where the agent works (branch: feat/<slug>)
+│                         Safe to delete after merging.
+├── .env                  API keys for API-mode agents (gitignored)
+└── logs/                 Per-run coordinator logs
+
+forge_audit.yaml          Full trace: every agent call, cost, input, output.
+                          User-authored? No — generated per run.
+                          Safe to delete? Yes, but you lose the audit trail.
+
+forge.yaml                Project config — models, budgets, gate command.
+                          User-authored. Checked into your repo.
+
+specs/<slug>.md           Story files describing what to build.
+                          User-authored. Checked into your repo.
+```
+
+**User-authored (check in):** `forge.yaml`, `specs/*.md`, `sprints/*.yaml`
+**Generated (do not check in):** `.forge/worktrees/`, `forge_audit.yaml`, `.forge/.env`
 
 ## Configuration
 
@@ -192,6 +221,16 @@ forge secrets-init              # creates .forge/.env (gitignored)
 
 CLI-mode agents (Claude Code, Codex CLI) handle their own authentication.
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/guides/getting-started.md) | Full walkthrough: install → first run → merge |
+| [CLI Reference](docs/guides/cli-reference.md) | All commands, flags, and examples |
+| [Inputs Reference](docs/guides/inputs-reference.md) | Every file format: stories, sprints, config, briefs |
+| [Vision](docs/vision.md) | Architecture philosophy, roadmap, principles |
+| [Example Project](examples/hello-forge/) | Minimal working project you can fork and run |
+
 ## Architecture
 
 ```
@@ -208,10 +247,6 @@ src/theforge/
 ├── cli.py             forge CLI entry point
 └── ...                Support modules (state, phases, logging, audit)
 ```
-
-**Key invariant:** The coordinator is not an LLM. Every state transition is
-deterministic Python. If an LLM is deciding whether to retry or escalate,
-the architecture is wrong.
 
 ## Development
 
