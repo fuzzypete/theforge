@@ -1,85 +1,61 @@
 gate_decision: PASS
-next_recommended_step: merge
+next_recommended_step: review
 dev_notes: |
-  summary: "Renamed spec → story across the entire codebase: Python types (TaskSpec →
-    TaskStory), CLI help text and error messages, schema keys (story_compliance /
-    story_deviations), sprint manifests, audit records, ideation output, and test
-    suite. Backward-compat aliases and dual-key YAML readers ensure old files and
-    imports continue to work. Review-cycle fixes addressed remaining 'spec' references
-    in CLI --resume help text, CLAUDE.md, coordinator YAML template, runner_api.py
-    prompt strings, sprint user-visible output, coord_phases log messages, sprint
-    internal variable names, and task.py docstring."
+  summary: "Four targeted P2 bug fixes across coord_state.py, task.py, and coord_audit.py.
+    (1) Added total_story_validation_cost property to CoordinatorState and included it in
+    total_cost, using explicit is not None checks per the plan reviewer's P2 advisory about
+    the or 0.0 anti-pattern. (2) Replaced lstrip('-') with [3:] in task.py to strip the
+    YAML '---' document marker as a three-character token rather than a character set,
+    preventing corruption of values like '-home'. (3) Removed the inner ternary in
+    coord_audit.py that produced None for an empty findings list — plan_validation now always
+    emits a block when plan_structured is set (skipped=False, findings=[]) rather than None,
+    distinguishing clean pass from validation-not-run. (4) Replaced three or 0.0 sites with
+    explicit is not None checks in coord_audit.py:162, coord_audit.py:187, and
+    coordinator.py:696. One existing test in test_coord_preflight.py was updated to include
+    story_validation cost in its total_cost assertion — the prior assertion was stale."
 
   commits:
-    - sha: "3ccbacd"
-      message: "feat: rename spec → story throughout the codebase"
-    - sha: "b6395fc"
-      message: "chore: write handoff.yaml — gate PASS, ready for review"
-    - sha: "a6b9cc7"
-      message: "fix(spec-to-story-rename): rewrite dev handoff to match schema"
-    - sha: "918725e"
-      message: "fix(spec-to-story-rename): rewrite dev handoff to match schema"
+    - sha: "6d45a4a"
+      message: "fix(cost,audit,task): four P2 bug fixes — cost tracking, plan parsing, audit shape"
 
   acceptance_criteria:
-    - criterion: "The primary user-facing term is 'story' everywhere: CLI help
-        text, error messages, log output, forge.yaml comments, documentation"
+    - criterion: "total_cost includes spec_validation cost when present"
       status: MET
-      notes: "All CLI argparse help strings updated including --resume flag;
-        error messages say 'Story file not found'; sprint prints 'N stories';
-        log output says 'story written' / 'story override'; CLAUDE.md updated;
-        runner_api.py prompts use story_compliance; coordinator YAML template
-        uses story_compliance"
-    - criterion: "The directory for story files is named to reflect the new terminology"
-      status: PARTIAL
-      notes: "forge init creates stories/ directory. The existing specs/ directory
-        at the repo root was not renamed — requires coordinated path updates across
-        all sprint manifests; noted as deferred follow-on"
-    - criterion: "Sprint manifests use the new key name for listing story files"
+      notes: "Added total_story_validation_cost property; included in total_cost sum. Uses
+        explicit is not None checks consistent with Step 4 fix (following plan reviewer P2 note)."
+    - criterion: "YAML document marker detection uses string comparison, not lstrip"
       status: MET
-      notes: "All 23 sprint YAML manifests updated from specs: to stories:; backward
-        compat preserved in load_sprint_manifest (specs: key still accepted with
-        deprecation warning)"
-    - criterion: "Internal code types and variables reflect the rename"
+      notes: "task.py: stripped = stripped[3:].strip() — removes exactly three characters.
+        The startswith('---') guard on line 71 already confirms the prefix exists."
+    - criterion: "Plan validation audit block present with empty findings on clean pass, absent only when validation did not run"
       status: MET
-      notes: "TaskSpec → TaskStory (story_path field); spec_validator.py →
-        story_validator.py; story_compliance / story_deviations replace old keys;
-        spec_paths variable renamed to story_paths in sprint.py; coord_phases log
-        messages updated to 'story override'; task.py docstring updated"
-    - criterion: "forge init scaffolds with the new naming"
+      notes: "Removed inner ternary returning None for empty list. When plan_structured is
+        not None the block always emits skipped=False and findings=[]. Outer guard unchanged."
+    - criterion: "Duration fields use is not None checks instead of or 0.0"
       status: MET
-      notes: "cmd_init creates stories/ directory and writes TEMPLATE.md there;
-        post-init message references forge run <story-file>"
-    - criterion: "forge ideate output uses the new naming"
+      notes: "Fixed the three sites flagged in preflight evidence: coord_audit.py:162
+        (reviewer cost accumulation), coord_audit.py:187 (preflight_duration_s in totals),
+        coordinator.py:696 (per-profile budget sum). Additional or 0.0 sites in
+        coord_state.py cost properties were noted by plan reviewer as outside story AC
+        scope; deferred."
+    - criterion: "All existing tests pass"
       status: MET
-      notes: "IdeationResult.story_path replaces spec_path; run_ideation uses
-        stories_dir parameter; audit record emits story_path key"
-    - criterion: "Backward compatibility: old key names in forge.yaml and sprint
-        manifests still work (with deprecation warning in logs)"
+      notes: "1179 tests pass. One pre-existing test assertion in test_coord_preflight.py
+        updated to account for story_validation cost now correctly included in total_cost."
+    - criterion: "New tests for each fix"
       status: MET
-      notes: "load_sprint_manifest accepts specs: with deprecation warning;
-        validate_review_yaml and validate_dev_handoff accept both old and new
-        YAML keys; hook payload emits both story and spec fields"
-    - criterion: "All existing tests pass (updated to reflect new names)"
-      status: MET
-      notes: "1167 tests pass; test_spec_validator.py renamed to
-        test_story_validator.py; all test helpers and assertions updated"
-    - criterion: "CLAUDE.md conventions reference 'story' not 'spec'"
-      status: MET
-      notes: "story_compliance in review YAML example; stale terminology removed;
-        'Writing stories (specs)' heading corrected to 'Writing stories'"
+      notes: "test_coord_state.py: TestTotalCostIncludesStoryValidation (4 cases including
+        zero and None cost_usd). test_task.py: TestParsePlanOutputYamlMarker (3 cases
+        including dash-in-value regression). test_coord_audit.py: TestPlanValidationAuditBlock
+        (3 cases: clean pass, skipped, populated) + TestDurationAndCostNoneChecks (2 cases:
+        zero duration preserved, zero-cost reviewer appears in per_reviewer)."
 
-  spec_deviations:
-    - description: "specs/ directory at repo root was not renamed to stories/"
-      justification: "Renaming the directory requires updating every path in all
-        sprint manifests and forge.yaml. Doing that in the same commit would
-        conflate two separate concerns and create a larger blast radius. Noted
-        as deferred follow-on."
+  story_deviations: none
 
   deferred_items:
-    - description: "Rename specs/ directory to stories/"
-      reason: "Requires coordinated path updates across all sprint manifests;
-        deferred to a follow-on story"
-    - description: "SprintResult.specs_failed field rename"
-      reason: "Internal Python field, not user-visible; low priority cleanup"
+    - description: "coord_state.py total_dev_cost / total_review_cost / total_preflight_cost
+        / total_plan_cost / total_plan_review_cost still use or 0.0"
+      reason: "Story AC scopes fix to 'duration fields'; plan reviewer noted these as P2
+        advisory only. Deferred to a follow-on cleanup story."
 
   gate_result: PASS
