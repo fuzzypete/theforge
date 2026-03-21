@@ -1,55 +1,62 @@
 dev_notes: |
-  summary: "Hardened the existing OpenAI adapter for local model use. Added four
-    model keys to MODEL_REGISTRY (openai/codestral, openai/deepseek-coder,
-    openai/llama3.1, openai/qwen2.5-coder) with cost_rank=1 and dev_capable=True,
-    routed through the existing OpenAI adapter via base_url. Introduced
-    _is_local_endpoint() to detect localhost/127.0.0.1 URLs, then used it in
-    _openai_result() to store 0.0 (not None) for single-shot calls, and in
-    _run_loop_openai to zero both result.cost_usd and each ModelUsage.cost_usd
-    after the loop completes. Added a BadRequestError catch in _run_loop_openai
-    that falls back to PROVIDER_RUNNERS['openai'] (single-shot) when the error
-    message contains 'tool', covering models that don't support tool-calling.
-    Extended cmd_check_providers in cli.py to label local profiles with [local]
-    and display $0.000 cost. Added docs/guides/local-models.md. Added 14 new
-    tests covering the helper, cost zeroing in both paths, BadRequestError
-    fallback, and MODEL_REGISTRY entries."
+  summary: "Hardened the existing OpenAI adapter for local model use (iter 1 review
+    fixes applied). Iter 0: Added four model keys to MODEL_REGISTRY (openai/codestral,
+    openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder) with cost_rank=1
+    and dev_capable=True, routing through the existing OpenAI adapter via base_url.
+    Introduced _is_local_endpoint() and used it in _openai_result() to zero costs
+    for single-shot calls, and in _run_loop_openai to zero costs post-loop. Added
+    BadRequestError catch in _run_loop_openai for tool-not-supported fallback to
+    single-shot mode. Extended cmd_check_providers to label local profiles with
+    [local] and $0.000 cost. Added docs/guides/local-models.md. Iter 1 (review
+    fixes): (1) Replaced substring-based _is_local_endpoint with urlparse-based
+    hostname check to prevent false positives from 'localhost' in URL paths/queries;
+    also added ::1 and 0.0.0.0 detection. (2) Added _zero_cost_if_local() helper
+    and called it in AgentLoopManager._success_result and _failure_result so costs
+    are zeroed at the source, not just in the outer _run_loop_openai wrapper. (3)
+    Fixed BadRequestError propagation: AgentLoopManager.run() now re-raises HTTP 400
+    errors (via status_code attribute check) instead of swallowing them as generic
+    failures, allowing _run_loop_openai's except block to implement the tool-calling
+    fallback. Moved the 'import openai' to the top of _run_loop_openai for clarity.
+    Added 7 new tests (1099 total passing)."
   commits:
     - sha: "29d6d31"
       message: "feat(local-models): validate ollama/vllm via existing OpenAI adapter"
     - sha: "5da551e"
       message: "chore(local-models): write dev handoff.yaml"
+    - sha: "3bc5e99"
+      message: "fix(local-model-support): rewrite dev handoff to match schema"
+    - sha: "ed5f338"
+      message: "fix(local-model-support): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "OpenAI adapter works with ollama base_url for models with tool support"
       status: MET
-      notes: "Already satisfied pre-implementation; _run_loop_openai passes base_url to openai.OpenAI() via _openai_client(). No change needed here."
+      notes: "_run_loop_openai passes base_url to openai.OpenAI() via _openai_client(). No change needed for this AC."
     - criterion: "Graceful fallback when model doesn't support tool calling"
       status: MET
-      notes: "BadRequestError with 'tool' in the message triggers single-shot retry via PROVIDER_RUNNERS['openai'] with a JSON instruction appended to the prompt. Errors without 'tool' re-raise normally."
+      notes: "AgentLoopManager.run() now re-raises HTTP 400 errors. _run_loop_openai catches BadRequestError with 'tool' in the message and retries via single-shot PROVIDER_RUNNERS['openai'] with a JSON instruction appended."
     - criterion: "Cost reported as $0.00 for local endpoints"
       status: MET
-      notes: "_is_local_endpoint() checks for localhost/127.0.0.1. _openai_result() stores 0.0 for single-shot; _run_loop_openai zeros both result.cost_usd and model_usage cost entries after manager.run() returns."
+      notes: "_is_local_endpoint() uses urlparse hostname check. _openai_result() stores 0.0 for single-shot. AgentLoopManager._success_result/_failure_result zero costs via _zero_cost_if_local(). _run_loop_openai also zeroes post-run as a defensive second pass."
     - criterion: "Common local models added to MODEL_REGISTRY"
       status: MET
-      notes: "Four entries added: openai/codestral, openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder. All have cost_rank=1 and dev_capable=True."
+      notes: "Four entries: openai/codestral, openai/deepseek-coder, openai/llama3.1, openai/qwen2.5-coder. All cost_rank=1, dev_capable=True."
     - criterion: "forge check-providers tests local endpoints when configured"
       status: MET
       notes: "cmd_check_providers detects local profiles via base_url and annotates output with [local] tag and $0.000 cost display."
     - criterion: "Documentation for local model setup with ollama/vllm"
       status: MET
-      notes: "docs/guides/local-models.md added covering forge.yaml config, ollama/vllm setup, registry keys, cost tracking behavior, and tool-calling fallback."
+      notes: "docs/guides/local-models.md covers forge.yaml config, ollama/vllm setup, registry keys, cost tracking, and tool-calling fallback."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1092 tests pass (1078 pre-existing + 14 new)."
+      notes: "1099 tests pass (1078 pre-existing + 21 new)."
     - criterion: "New tests for local endpoint detection and cost zeroing"
       status: MET
-      notes: "14 new tests added across TestIsLocalEndpoint, TestLocalEndpointCostZeroing, TestToolCallingFallback (test_runner_api.py), and TestLocalModelRegistry (test_config.py)."
+      notes: "21 new tests: TestIsLocalEndpoint (12 cases incl. ::1, 0.0.0.0, false-positive paths), TestLocalEndpointCostZeroing (5 cases incl. AgentLoopManager direct), TestToolCallingFallback (2 cases), TestLocalModelRegistry (4 cases)."
   spec_deviations:
-    - description: "Fallback call uses 3 args (prompt, profile, secrets), not 4"
-      justification: "Plan listed working_dir as a 4th arg but _run_openai's actual signature is (prompt, profile, secrets). Dropped working_dir to match the real signature per plan reviewer P2 note."
-    - description: "Loop cost zeroing also zeros model_usage[].cost_usd entries"
-      justification: "Plan only mentioned zeroing result.cost_usd, but plan reviewer P2 noted stale costs in model_usage. Used dataclasses.replace on each ModelUsage to zero all cost fields consistently."
-    - description: "No base_url validation added for local registry entries at config load time"
-      justification: "Plan reviewer flagged this as advisory (P2). Omitted to avoid scope creep; docs/guides/local-models.md clearly warns that base_url is required for local model keys."
+    - description: "Fallback call uses 3 args (prompt, profile, secrets), not 4 as plan listed"
+      justification: "_run_openai's actual signature is (prompt, profile, secrets) — no working_dir. Plan had a typo; fixed per plan reviewer P2 note."
+    - description: "No base_url validation for local registry entries at config load time"
+      justification: "Plan reviewer flagged as advisory (P2). Omitted to avoid scope creep; docs/guides/local-models.md clearly warns that base_url is required for local model keys."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
