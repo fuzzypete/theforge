@@ -1,15 +1,20 @@
 dev_notes: |
   summary: "Extended _make_sigterm_handler to capture full crash context and emit it
     in the run_end:crashed structured log event. Added a last_event property to
-    StructuredLogger (updated on every emit() call) so the handler can report the
-    final event without I/O. Added _ntfy_crash_notify to coord_notify.py which fires
-    a crash notification when ntfy is configured. All three _make_sigterm_handler
-    call sites in coordinator.py were updated to pass state, task_start, task, and
-    config as closure variables. The handler reads state.phase, state.dev_iteration,
-    and state.total_cost at signal time via the mutable state reference."
+    StructuredLogger (updated under threading.Lock in emit()) so the handler can report
+    the final event without I/O. The last_event property is intentionally lock-free for
+    signal handler safety — CPython's GIL makes string reads atomic, and acquiring a
+    lock inside a signal handler risks deadlock. Added _ntfy_crash_notify to
+    coord_notify.py. All three _make_sigterm_handler call sites were updated to pass
+    state, task_start, task, and config. Iter 1 review fixes: added SIGKILL docstring
+    note (SIGKILL is uninterceptable on POSIX), fixed os.kill to re-raise original
+    signum instead of hardcoded SIGTERM, and improved the no-ntfy test to assert
+    _ntfy_publish is never called end-to-end."
   commits:
     - sha: "65a365f"
       message: "feat(crash-diagnostics): log context and ntfy notification on SIGTERM"
+    - sha: "550be32"
+      message: "fix(crash-diagnostics): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "SIGTERM handler logs signal number and name"
       status: MET
@@ -21,29 +26,32 @@ dev_notes: |
         state closure variable at signal time."
     - criterion: "SIGTERM handler logs accumulated cost at time of crash"
       status: MET
-      notes: "Handler reads state.total_cost (the computed property) at signal time
-        and emits cost_at_crash=round(state.total_cost, 6)."
+      notes: "Handler reads state.total_cost (computed property) at signal time and
+        emits cost_at_crash=round(state.total_cost, 6)."
     - criterion: "SIGTERM handler logs uptime (seconds since run_start)"
       status: MET
-      notes: "uptime = time.monotonic() - task_start is computed in the handler;
-        emitted as uptime_seconds=round(uptime, 1)."
+      notes: "uptime = time.monotonic() - task_start computed in handler; emitted as
+        uptime_seconds=round(uptime, 1)."
     - criterion: "ntfy notification sent on crash (if configured)"
       status: MET
-      notes: "_ntfy_crash_notify() is called from the handler when state, task, and
-        config are all non-None. It guards internally on config.notifications.ntfy
-        being set."
+      notes: "_ntfy_crash_notify() called from handler when state/task/config are
+        non-None; guards internally on config.notifications.ntfy."
     - criterion: "All fields added to the run_end structured log event"
       status: MET
       notes: "signal, signal_name, phase_at_crash, iteration_at_crash, cost_at_crash,
-        last_event, and uptime_seconds are all emitted via _safe_emit."
+        last_event, and uptime_seconds all emitted via _safe_emit."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1049 tests pass after changes."
+      notes: "1049 tests pass after both commits."
     - criterion: "New test for crash handler context capture"
       status: MET
-      notes: "TestSigtermHandler class adds three tests: field capture, ntfy-configured
-        path, and ntfy-absent path."
-  spec_deviations: none
+      notes: "TestSigtermHandler adds three tests: field capture, ntfy-configured path,
+        and no-ntfy end-to-end path (mocking _ntfy_publish)."
+  spec_deviations:
+    - description: "SIGKILL is not handled (spec title mentions SIGTERM/SIGKILL)."
+      justification: "SIGKILL cannot be intercepted by user-space code on any POSIX OS.
+        The acceptance criteria correctly scope to SIGTERM only. The limitation is
+        documented in the _make_sigterm_handler docstring."
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
