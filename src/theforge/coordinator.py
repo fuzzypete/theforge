@@ -252,7 +252,13 @@ def _make_sigterm_handler(
     task: "TaskSpec | None" = None,
     config: "ForgeConfig | None" = None,
 ) -> object:
-    """Return a SIGTERM handler that emits run_end:crashed, closes the tee, and re-raises."""
+    """Return a SIGTERM handler that emits run_end:crashed, closes the tee, and re-raises.
+
+    Note on SIGKILL: SIGKILL (signal 9) cannot be intercepted by user-space code on
+    any POSIX operating system — the kernel delivers it unconditionally without calling
+    signal handlers. Crash diagnostics therefore cover SIGTERM only. SIGKILL kills are
+    not observable by this handler.
+    """
 
     def _handler(signum: int, frame: object) -> None:
         uptime = time.monotonic() - task_start
@@ -277,11 +283,12 @@ def _make_sigterm_handler(
             except Exception:
                 pass
         _end_run_log_tee(tee_state)
+        # Restore the previous handler before re-raising so we don't recurse.
         try:
             signal.signal(signal.SIGTERM, prev_handler or signal.SIG_DFL)
         except Exception:
             pass
-        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signum)
 
     return _handler
 

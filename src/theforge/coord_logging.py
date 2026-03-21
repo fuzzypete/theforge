@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import threading
 from pathlib import Path
 
 
@@ -61,17 +62,29 @@ class StructuredLogger:
         else:
             self._log_path = Path("/dev/null")
         self._last_event: str = ""
+        # Protects _last_event writes in emit() when called from multiple threads.
+        # The last_event property does NOT acquire this lock because it may be read
+        # from a signal handler, and acquiring a lock inside a signal handler can
+        # deadlock if the handler fires while another thread already holds it.
+        # CPython's GIL guarantees that the string read in last_event is atomic.
+        self._last_event_lock: threading.Lock = threading.Lock()
 
     @property
     def last_event(self) -> str:
-        """The most recently emitted event name, or '' if none yet."""
+        """The most recently emitted event name, or '' if none yet.
+
+        Safe to call from a signal handler: reads without acquiring the lock
+        (CPython's GIL makes the string read atomic; acquiring a lock from a
+        signal handler risks deadlock).
+        """
         return self._last_event
 
     def emit(self, event: str, **fields: object) -> None:
         """Append one JSON event line to the log file. Never raises."""
         if not self._enabled:
             return
-        self._last_event = event
+        with self._last_event_lock:
+            self._last_event = event
         try:
             entry = {
                 "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

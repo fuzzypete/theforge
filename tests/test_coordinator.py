@@ -5202,7 +5202,7 @@ class TestSigtermHandler:
         assert call_kwargs[0][2] is config
 
     def test_crash_handler_no_ntfy_when_not_configured(self, tmp_path: Path) -> None:
-        """Handler does NOT call _ntfy_crash_notify when ntfy is absent."""
+        """_ntfy_publish is never called end-to-end when ntfy is not configured."""
         import signal as _signal
 
         from theforge.coord_logging import StructuredLogger
@@ -5234,14 +5234,9 @@ class TestSigtermHandler:
             config=config,
         )
 
-        with (
-            patch("os.kill"),
-            patch("theforge.coordinator._ntfy_crash_notify") as mock_crash_notify,
-        ):
+        with patch("os.kill"), patch("theforge.coord_notify._ntfy_publish") as mock_publish:
             handler(_signal.SIGTERM, None)
 
-        # ntfy not configured, but _ntfy_crash_notify is still called —
-        # it internally guards on config.notifications.ntfy being None.
-        # Here we verify the handler itself calls it regardless;
-        # the guard is inside _ntfy_crash_notify.
-        mock_crash_notify.assert_called_once()
+        # When ntfy is not configured, _ntfy_crash_notify guards internally and
+        # _ntfy_publish must never be called.
+        mock_publish.assert_not_called()
