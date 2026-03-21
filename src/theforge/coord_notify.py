@@ -196,10 +196,10 @@ def _ntfy_publish(
             headers=headers,
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10):
+        with urllib.request.urlopen(req, timeout=15):
             pass
-    except Exception:
-        pass
+    except Exception as exc:
+        _cu._log(f"WARNING: ntfy publish failed (continuing): {exc}")
 
 
 def _ntfy_poll_reply(
