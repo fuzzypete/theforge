@@ -1,96 +1,49 @@
 dev_notes: |
-  summary: "Implemented the ESCALATE → HITL gate so that review-related escalations
-    (budget exceeded, all reviewers failed, max cycles exhausted) now pause and present
-    the human with an approve/reject/continue decision instead of exiting immediately.
-    Interactive mode prompts via stderr/stdin; remote mode sends an ntfy notification
-    with Approve/Reject/Continue action buttons and long-polls for a reply. The
-    auto_approve policy short-circuits to approve when gate passed and majority of
-    reviewers approved; the reject policy preserves the existing unconditional exit.
-    On approve, the full _finalize_approve() flow fires (PR/merge + hooks). On continue,
-    review_cycle is decremented and the coordinator loops back to DEV for one more cycle.
-    The decision and reason are stored in CoordinatorState and surfaced in the audit
-    YAML escalation block."
+  summary: "Extended _make_sigterm_handler to capture full crash context and emit it
+    in the run_end:crashed structured log event. Added a last_event property to
+    StructuredLogger (updated on every emit() call) so the handler can report the
+    final event without I/O. Added _ntfy_crash_notify to coord_notify.py which fires
+    a crash notification when ntfy is configured. All three _make_sigterm_handler
+    call sites in coordinator.py were updated to pass state, task_start, task, and
+    config as closure variables. The handler reads state.phase, state.dev_iteration,
+    and state.total_cost at signal time via the mutable state reference."
   commits:
-    - sha: "70fc6ca"
-      message: "feat(escalate-hitl): add ESCALATE → HITL gate with approve/reject/continue"
-    - sha: "3e275c9"
-      message: "chore(escalate-hitl): write dev_notes handoff for escalate-hitl"
+    - sha: "65a365f"
+      message: "feat(crash-diagnostics): log context and ntfy notification on SIGTERM"
   acceptance_criteria:
-    - criterion: "ESCALATE triggers HITL gate instead of immediate exit"
+    - criterion: "SIGTERM handler logs signal number and name"
       status: MET
-      notes: "_run_escalate_gate() is called at both review-related escalation points
-        in _run_review_phase(): the all-reviewers-failed/budget-exceeded path and the
-        max-cycles-exhausted non-interactive path. Infrastructure escalations (workspace,
-        preflight, plan) are unchanged."
-    - criterion: "Interactive mode: decision prompt with context (per-reviewer verdicts,
-        gate result, cost, escalation reason)"
+      notes: "Handler emits signal=signum and signal_name=signal.Signals(signum).name
+        (with ValueError fallback to str(signum)) in the run_end:crashed event."
+    - criterion: "SIGTERM handler logs phase and iteration at time of crash"
       status: MET
-      notes: "_escalate_gate_interactive() in coord_notify.py prints reviewer verdicts,
-        gate result, cost, dev/review iteration counts, and escalation reason to stderr
-        before prompting for [a/r/c]."
-    - criterion: "Remote mode: ntfy notification with Approve/Reject/Continue actions"
+      notes: "Handler reads state.phase.name and state.dev_iteration via the mutable
+        state closure variable at signal time."
+    - criterion: "SIGTERM handler logs accumulated cost at time of crash"
       status: MET
-      notes: "_escalate_gate_remote() in coord_notify.py publishes an ntfy notification
-        with three action buttons and long-polls _ntfy_poll_escalate_reply() until an
-        explicit decision arrives."
-    - criterion: "escalate_policy: auto_approve auto-approves when gate passed and majority approved"
+      notes: "Handler reads state.total_cost (the computed property) at signal time
+        and emits cost_at_crash=round(state.total_cost, 6)."
+    - criterion: "SIGTERM handler logs uptime (seconds since run_start)"
       status: MET
-      notes: "_run_escalate_gate() checks escalate_policy == 'auto_approve' and fires
-        _finalize_approve() when majority of reviewer_verdicts are APPROVE and the last
-        gate_decision contains 'PASS'."
-    - criterion: "escalate_policy: reject preserves current behavior"
+      notes: "uptime = time.monotonic() - task_start is computed in the handler;
+        emitted as uptime_seconds=round(uptime, 1)."
+    - criterion: "ntfy notification sent on crash (if configured)"
       status: MET
-      notes: "When escalate_policy == 'reject', gate immediately sets escalate_decision='reject'
-        and returns an ESCALATE CoordinatorResult without prompting. All existing ntfy tests
-        use escalate_policy='reject' via _make_ntfy_config() in coord_test_helpers.py."
-    - criterion: "On approve: full on_approve flow fires (PR/merge + hook)"
+      notes: "_ntfy_crash_notify() is called from the handler when state, task, and
+        config are all non-None. It guards internally on config.notifications.ntfy
+        being set."
+    - criterion: "All fields added to the run_end structured log event"
       status: MET
-      notes: "Gate calls _finalize_approve() with review_cost=state.total_review_cost,
-        review_elapsed=0.0, and parsed_review=state.review_results[-1]. Guards against
-        empty review_results by falling back to reject."
-    - criterion: "On continue: coordinator re-enters REVIEW for one more cycle"
-      status: MET
-      notes: "Gate returns None; caller in _run_review_phase() decrements state.review_cycle -= 1
-        (for the max-cycles path where it was already incremented) and returns RETRY_DEV.
-        For the all-failed path, review_cycle was never incremented so no decrement is needed."
-    - criterion: "On reject: exits as ESCALATE (current behavior)"
-      status: MET
-      notes: "Gate returns CoordinatorResult(success=False, phase=ESCALATE)."
-    - criterion: "escalate_decision and escalate_reason in CoordinatorState"
-      status: MET
-      notes: "Two new fields added to CoordinatorState: escalate_decision: str | None
-        and escalate_reason: str | None."
-    - criterion: "Audit YAML includes escalation section with decision context"
-      status: MET
-      notes: "generate_audit_log() in coord_audit.py emits an 'escalation' block containing
-        reason, reviewer_verdicts, gate_result, human_decision, and waited_seconds when
-        state.escalate_decision is set."
+      notes: "signal, signal_name, phase_at_crash, iteration_at_crash, cost_at_crash,
+        last_event, and uptime_seconds are all emitted via _safe_emit."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1046 tests pass (939 non-sprint + 107 sprint/ideate). The _make_ntfy_config()
-        helper in coord_test_helpers.py was updated to set escalate_policy='reject' so
-        existing ntfy notification tests are not affected by the new gate."
-    - criterion: "New tests: approve path, reject path, continue path, auto_approve policy,
-        non-interactive reject default"
+      notes: "1049 tests pass after changes."
+    - criterion: "New test for crash handler context capture"
       status: MET
-      notes: "TestEscalateGate class in test_coordinator.py adds 5 tests. Direct patching
-        of _run_escalate_gate is used for the approve/reject/continue path tests; the
-        reject-policy test exercises the full stack without mocking the gate."
-  spec_deviations:
-    - description: "Gate uses sys.stdin.isatty() as proxy for 'interactive' rather than
-        threading an explicit interactive parameter."
-      justification: "The existing _human_review() uses the same pattern; the interactive
-        flag is not in CoordinatorState and following the established convention is less
-        disruptive than adding a new parameter."
-    - description: "When escalate_policy='prompt' and no interaction method is available
-        (no tty, no ntfy), the gate falls through to 'reject' rather than blocking forever."
-      justification: "Per the plan reviewer's P2 suggestion; blocking indefinitely in
-        non-interactive environments is not useful behavior."
-    - description: "The 'continue' path goes through DEV before re-entering REVIEW (one
-        full cycle) rather than jumping directly to REVIEW."
-      justification: "The coordinator's loop structure does not allow jumping directly to
-        REVIEW without a DEV pass; going through DEV is the only option without restructuring
-        the main loop."
+      notes: "TestSigtermHandler class adds three tests: field capture, ntfy-configured
+        path, and ntfy-absent path."
+  spec_deviations: none
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
