@@ -1,4 +1,43 @@
-deferred_followups: []
 gate_decision: PASS
 next_recommended_step: merge
-scope_completed: []
+scope_completed:
+  - Renamed TaskSpec → TaskStory; TaskSpec kept as backward-compat alias
+  - spec_path → story_path field on TaskStory (all sites updated)
+  - story_validator.py is the new module; spec_validator.py is a shim
+  - story_compliance / story_deviations replace old keys in review + handoff YAML
+    (both old and new keys accepted for backward compat)
+  - Sprint manifests: specs: → stories: (all 23 manifest files updated;
+    specs: key still accepted with deprecation warning from load_sprint_manifest)
+  - forge init creates stories/ directory instead of specs/
+  - forge ideate writes to stories/<slug>.md by default
+  - Hook payloads emit both story and spec keys for backward compat
+  - CLAUDE.md updated: story_compliance in schema example, removed stale
+    "rename is planned" note
+  - test_spec_validator.py → test_story_validator.py
+  - All 1167 tests pass; make gate PASS; make lint clean
+
+deferred_followups:
+  - specs/ directory at the repo root still contains story files (backlog/done) —
+    renaming the directory to stories/ was out of scope for this rename story
+    (it would require updating all spec path references in sprint manifests and
+    forge.yaml). A follow-on story can tackle the directory rename once the
+    terminology rename has been reviewed.
+  - SprintResult.specs_failed field was not renamed (it's internal Python only,
+    not user-visible). Can be cleaned up in a future refactor story.
+  - IdeationResult audit record now emits story_path key; old audits using
+    spec_path key are handled by backward compat in _cmd_audit_ideate.
+
+dev_notes: |
+  Backward compat strategy used throughout:
+  - YAML readers (schemas.py, devhandoff.py, sprint.py) accept both old and new
+    key names so existing files keep working.
+  - Python aliases (TaskSpec = TaskStory, load_spec = load_story, etc.) let any
+    external code that imports the old names continue to work without changes.
+  - Hook payload emits both "story" and "spec" keys so user hook scripts aren't
+    silently broken.
+
+  The rename was applied in 13 logical steps tracking the dependency graph:
+  task.py → story_validator.py → plan_validator.py → schemas.py → review.py →
+  devhandoff.py → coord_state.py → coord_hooks.py → coord_audit.py →
+  coord_phases.py → coordinator.py → sprint.py → cli.py → ideate.py →
+  sprint manifests → tests.
