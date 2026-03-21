@@ -265,8 +265,7 @@ abort the forge run. See `.forge/hooks/README.md` for full documentation.
 
 ## Next steps
 
-- **Add more reviewers:** See [CLI Reference](cli-reference.md) for multi-model
-  review pool setup
+- **Add more reviewers:** See [Provider Setup Guide](choose-your-provider-setup.md) for named patterns
 - **Enable plan phase:** For medium/large stories, add `plan:` to forge.yaml
   to have an agent create an implementation plan before dev starts
 - **Generate stories from briefs:** Use `forge ideate "problem description"` to
@@ -275,6 +274,8 @@ abort the forge run. See `.forge/hooks/README.md` for full documentation.
   configured models respond correctly
 - **File findings as issues:** Run `forge init-hooks` to scaffold the GitHub
   Issues hook
+- **Something went wrong?** See the [Troubleshooting guide](troubleshooting.md)
+- **See a narrated transcript:** Read the [First-Run Walkthrough](first-run-walkthrough.md)
 
 ---
 
