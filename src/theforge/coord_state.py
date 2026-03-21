@@ -189,6 +189,16 @@ class CoordinatorState:
         return sum(r.cost_usd or 0.0 for r in self.plan_review_results)
 
     @property
+    def total_story_validation_cost(self) -> float:
+        if self.story_validation_result is None:
+            return 0.0
+        return (
+            self.story_validation_result.cost_usd
+            if self.story_validation_result.cost_usd is not None
+            else 0.0
+        )
+
+    @property
     def total_cost(self) -> float:
         return (
             self.total_dev_cost
@@ -196,6 +206,7 @@ class CoordinatorState:
             + self.total_preflight_cost
             + self.total_plan_cost
             + self.total_plan_review_cost
+            + self.total_story_validation_cost
         )
 
 

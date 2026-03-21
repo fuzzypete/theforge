@@ -159,7 +159,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
         for r in state.review_agent_results:
             if r.profile_name and r.profile_name != "synthesis":
                 _reviewer_costs[r.profile_name] = _reviewer_costs.get(r.profile_name, 0.0) + (
-                    r.cost_usd or 0.0
+                    r.cost_usd if r.cost_usd is not None else 0.0
                 )
         per_reviewer = {
             name: {
@@ -184,7 +184,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 
     # ── totals ────────────────────────────────────────────────────────────────
     all_durations = [
-        state.preflight_duration_s or 0.0,
+        state.preflight_duration_s if state.preflight_duration_s is not None else 0.0,
         sum(state.plan_durations),
         sum(state.plan_review_durations),
         sum(state.dev_durations),
@@ -389,15 +389,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
         "plan_validation": (
             {"skipped": True, "findings": [], "finding_count": 0}
             if state.plan_structured is None
-            else (
-                {
-                    "skipped": False,
-                    "findings": state.plan_validation_findings,
-                    "finding_count": len(state.plan_validation_findings),
-                }
-                if state.plan_validation_findings
-                else None
-            )
+            else {
+                "skipped": False,
+                "findings": state.plan_validation_findings,
+                "finding_count": len(state.plan_validation_findings),
+            }
         ),
         "merge": result.merge,
         "escalation": (

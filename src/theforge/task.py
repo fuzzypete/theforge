@@ -69,7 +69,7 @@ def parse_plan_output(text: str) -> PlanData | None:
 
     # Strip YAML document markers if present
     if stripped.startswith("---"):
-        stripped = stripped.lstrip("-").strip()
+        stripped = stripped[3:].strip()
 
     try:
         data = yaml.safe_load(stripped)
