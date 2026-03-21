@@ -2,4 +2,5 @@ name: m1-remaining
 specs:
   - specs/backlog/escalate-hitl.md
   - specs/backlog/crash-diagnostics.md
+  - specs/backlog/workspace-branch-collision.md
 budget_usd: 50.00
