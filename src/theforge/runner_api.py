@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -757,6 +758,13 @@ class AgentLoopManager:
 # ── OpenAI client helpers ─────────────────────────────────────────────
 
 
+def _is_local_endpoint(base_url: str | None) -> bool:
+    """Return True if *base_url* points to a local machine (ollama/vllm etc.)."""
+    if not base_url:
+        return False
+    return "localhost" in base_url or "127.0.0.1" in base_url
+
+
 def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = None):  # type: ignore[return]
     """Build an OpenAI client from profile + secrets."""
     import httpx
@@ -796,8 +804,8 @@ def _openai_result(
 ) -> AgentResult:
     """Build AgentResult from parsed OpenAI-compatible response fields."""
     cost = _estimate_cost(provider, profile.model, input_tokens, output_tokens)
-    if profile.base_url:
-        cost = None
+    if _is_local_endpoint(profile.base_url):
+        cost = 0.0
     model_usage = ModelUsage(
         model=profile.model,
         input_tokens=input_tokens,
@@ -1915,10 +1923,36 @@ def _run_loop_openai(
         provider_adapter=adapter,
         finalizer=finalizer,
     )
-    return manager.run(
-        initial_messages=[{"role": "user", "content": prompt}],
-        tool_schemas=tool_schemas,
-    )
+    try:
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": prompt}],
+            tool_schemas=tool_schemas,
+        )
+    except Exception as exc:
+        import openai
+
+        if isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
+            # Local model doesn't support tool calling — fall back to single-shot text mode.
+            _log(
+                f"  ⚠ {profile.name or profile.model} tool-call 400 — "
+                "falling back to single-shot text mode"
+            )
+            fallback_prompt = (
+                prompt
+                + "\n\n[SYSTEM] Respond with a JSON object matching the review output schema. "
+                "Do not use tool calls."
+            )
+            return PROVIDER_RUNNERS["openai"](fallback_prompt, profile, secrets)
+        raise
+
+    # Zero cost for local endpoints — token counts are meaningless for self-hosted models.
+    if _is_local_endpoint(profile.base_url):
+        zeroed_usage = tuple(
+            dataclasses.replace(u, cost_usd=0.0) for u in (result.model_usage or ())
+        )
+        result = dataclasses.replace(result, cost_usd=0.0, model_usage=zeroed_usage)
+
+    return result
 
 
 def _run_loop_anthropic(

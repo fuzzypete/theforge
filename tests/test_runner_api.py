@@ -7,8 +7,10 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from theforge.config import ModelProfile
-from theforge.runner import ModelUsage
+from theforge.runner import AgentResult, ModelUsage
 from theforge.runner_api import (
     SUBMIT_PLAN_REVIEW,
     SUBMIT_REVIEW,
@@ -16,9 +18,12 @@ from theforge.runner_api import (
     LoopTurn,
     ToolCallRequest,
     _deepseek_client,
+    _is_local_endpoint,
     _is_reasoning_model,
     _make_google_adapter,
+    _openai_result,
     _run_deepseek,
+    _run_loop_openai,
     run_api_agent,
 )
 from theforge.tool_runtime import TOOL_REGISTRY
@@ -1866,3 +1871,197 @@ class TestDiagnosticLogging:
         assert summary_msgs
         assert "submit never called" in summary_msgs[0]
         assert "glob:2" in summary_msgs[0]
+
+
+# ── Local endpoint: cost zeroing and tool-calling fallback ────────────
+
+
+def _make_local_profile(
+    model: str = "codestral",
+    base_url: str = "http://localhost:11434/v1",
+    allowed_tools: tuple[str, ...] = (),
+) -> ModelProfile:
+    return ModelProfile(
+        name="local-dev",
+        provider="openai",
+        cli=None,
+        model=model,
+        budget_usd=0.0,
+        timeout_seconds=60,
+        allowed_tools=allowed_tools,
+        base_url=base_url,
+    )
+
+
+class TestIsLocalEndpoint:
+    """Unit tests for _is_local_endpoint helper."""
+
+    def test_localhost_is_local(self):
+        assert _is_local_endpoint("http://localhost:11434/v1") is True
+
+    def test_127_is_local(self):
+        assert _is_local_endpoint("http://127.0.0.1:8080/v1") is True
+
+    def test_remote_is_not_local(self):
+        assert _is_local_endpoint("https://api.openai.com/v1") is False
+
+    def test_none_is_not_local(self):
+        assert _is_local_endpoint(None) is False
+
+    def test_empty_string_is_not_local(self):
+        assert _is_local_endpoint("") is False
+
+
+class TestLocalEndpointCostZeroing:
+    """Cost must be $0.00 for localhost endpoints."""
+
+    def _valid_review_json(self) -> str:
+        return json.dumps(
+            {
+                "verdict": "APPROVE",
+                "summary": "ok",
+                "findings": [],
+                "spec_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+
+    def test_single_shot_localhost_cost_is_zero(self):
+        """_openai_result sets cost=0.0 when base_url is localhost."""
+        profile = _make_local_profile(base_url="http://localhost:11434/v1")
+        result = _openai_result(
+            profile,
+            self._valid_review_json(),
+            input_tokens=100,
+            output_tokens=50,
+            raw={},
+        )
+        assert result.cost_usd == 0.0
+        assert result.model_usage[0].cost_usd == 0.0
+
+    def test_single_shot_non_localhost_cost_not_forced_zero(self):
+        """_openai_result does NOT force 0.0 for a non-localhost base_url."""
+        profile = _make_local_profile(base_url="https://api.openai.com/v1")
+        result = _openai_result(
+            profile,
+            self._valid_review_json(),
+            input_tokens=100,
+            output_tokens=50,
+            raw={},
+        )
+        # For unknown model "codestral" there's no PRICING_TABLE entry → None
+        assert result.cost_usd is None
+
+    def test_loop_mode_localhost_cost_is_zero(self, tmp_path):
+        """_run_loop_openai zeros cost on result when base_url is localhost."""
+        import sys
+
+        profile = _make_local_profile(
+            base_url="http://localhost:11434/v1", allowed_tools=("read_file",)
+        )
+        non_zero_usage = ModelUsage(
+            model="codestral",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+            cost_usd=0.05,
+        )
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.05,
+            exit_code=0,
+            raw={},
+            profile_name="local-dev",
+            model_usage=(non_zero_usage,),
+        )
+
+        mock_openai = MagicMock()
+        mock_httpx = MagicMock()
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runner_api.AgentLoopManager") as MockManager,
+        ):
+            MockManager.return_value.run.return_value = mock_result
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result.cost_usd == 0.0
+        assert all(u.cost_usd == 0.0 for u in result.model_usage)
+
+
+class TestToolCallingFallback:
+    """When AgentLoopManager raises BadRequestError with 'tool' in the message,
+    _run_loop_openai falls back to single-shot via PROVIDER_RUNNERS["openai"]."""
+
+    def _valid_review_json(self) -> str:
+        return json.dumps(
+            {
+                "verdict": "APPROVE",
+                "summary": "ok",
+                "findings": [],
+                "spec_compliance": {"matches_spec": True, "mismatches": []},
+                "test_coverage": {"adequate": True, "gaps": []},
+            }
+        )
+
+    def _make_mock_openai_module(self):
+        """Build a sys.modules-compatible mock openai with a real BadRequestError subclass."""
+
+        # Create a real exception class so isinstance() checks work
+        class FakeBadRequestError(Exception):
+            pass
+
+        mock_openai = MagicMock()
+        mock_openai.BadRequestError = FakeBadRequestError
+        mock_httpx = MagicMock()
+        return mock_openai, mock_httpx, FakeBadRequestError
+
+    def test_bad_request_with_tool_keyword_triggers_fallback(self, tmp_path):
+        """BadRequestError mentioning 'tool' triggers single-shot retry."""
+        import sys
+
+        profile = _make_local_profile(
+            base_url="http://localhost:11434/v1", allowed_tools=("read_file",)
+        )
+        review_json = self._valid_review_json()
+        fallback_result = MagicMock()
+        fallback_result.success = True
+        fallback_result.cost_usd = 0.0
+        fallback_result.output = review_json
+
+        mock_openai, mock_httpx, FakeBadRequestError = self._make_mock_openai_module()
+        bad_request = FakeBadRequestError("model does not support tools")
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runner_api.AgentLoopManager") as MockManager,
+            patch.dict(
+                "theforge.runner_api.PROVIDER_RUNNERS",
+                {"openai": MagicMock(return_value=fallback_result)},
+            ),
+        ):
+            MockManager.return_value.run.side_effect = bad_request
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result.success
+        assert result is fallback_result
+
+    def test_bad_request_without_tool_keyword_reraises(self, tmp_path):
+        """BadRequestError without 'tool' in message propagates (not a tool-call issue)."""
+        import sys
+
+        profile = _make_local_profile(
+            base_url="http://localhost:11434/v1", allowed_tools=("read_file",)
+        )
+        mock_openai, mock_httpx, FakeBadRequestError = self._make_mock_openai_module()
+        bad_request = FakeBadRequestError("model not found")
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runner_api.AgentLoopManager") as MockManager,
+        ):
+            MockManager.return_value.run.side_effect = bad_request
+            with pytest.raises(FakeBadRequestError):
+                _run_loop_openai("prompt", profile, tmp_path, secrets=None)

@@ -10,6 +10,7 @@ from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_WORKSPACE,
+    MODEL_REGISTRY,
     SUPPORTED_CLIS,
     _auto_assign_models,
     _resolve_model_info,
@@ -1412,3 +1413,31 @@ class TestProjectSecrets:
             config = load_config(config_path)
         assert config.notifications.ntfy is None
         assert any("no URL" in r.message for r in caplog.records)
+
+
+class TestLocalModelRegistry:
+    """The four local model keys must be present in MODEL_REGISTRY with correct metadata."""
+
+    LOCAL_KEYS = [
+        "openai/codestral",
+        "openai/deepseek-coder",
+        "openai/llama3.1",
+        "openai/qwen2.5-coder",
+    ]
+
+    def test_all_local_keys_present(self):
+        for key in self.LOCAL_KEYS:
+            assert key in MODEL_REGISTRY, f"Missing local model key: {key}"
+
+    def test_local_models_cost_rank_one(self):
+        for key in self.LOCAL_KEYS:
+            assert MODEL_REGISTRY[key].cost_rank == 1, f"{key} should have cost_rank=1"
+
+    def test_local_models_dev_capable(self):
+        for key in self.LOCAL_KEYS:
+            assert MODEL_REGISTRY[key].dev_capable is True, f"{key} should be dev_capable"
+
+    def test_local_models_provider_prefix_is_openai(self):
+        """'openai/' prefix ensures routing through the existing OpenAI adapter."""
+        for key in self.LOCAL_KEYS:
+            assert key.startswith("openai/"), f"{key} must use 'openai/' prefix"
