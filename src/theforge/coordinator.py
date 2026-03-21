@@ -123,6 +123,7 @@ from .review import (  # noqa: F401
 )
 from .runner import LogLevel, log_agent_result, run_agent, run_agent_pool
 from .sessions import load_sessions, save_sessions
+from .spec_validator import validate_spec
 from .task import (  # noqa: F401
     TaskSpec,
     build_dev_prompt,
@@ -1424,6 +1425,34 @@ def run_task(
             )
 
         # verdict == "PROCEED" — continue to DEV (possibly via PLAN)
+
+        # ── SPEC VALIDATION ───────────────────────────────────────────
+        _should_validate_spec = (
+            plan_path is None
+            and config.plan.enabled
+            and state.preflight_complexity in ("medium", "large")
+        )
+        if _should_validate_spec:
+            _fast_profile = (
+                dataclasses.replace(config.dev_profile, model="sonnet")
+                if "opus" in config.dev_profile.model.lower()
+                else config.dev_profile
+            )
+            _sv_result = validate_spec(
+                spec_content=spec_content,
+                profile=_fast_profile,
+                working_dir=workspace_path,
+                secrets=config.secrets,
+            )
+            state.spec_validation_result = _sv_result
+            if _sv_result.verdict == "WARN":
+                _log("⚠  Spec validation: WARN — review findings before planning")
+                for _finding in _sv_result.findings:
+                    _log(f"   [{_finding.category}] {_finding.description}")
+                    if _finding.split_suggestion:
+                        _stories = _finding.split_suggestion.get("stories") or []
+                        for _story in _stories:
+                            _log(f"     → {_story.get('name', '?')}")
 
         # ── PLAN ──────────────────────────────────────────────────────
         should_plan = (

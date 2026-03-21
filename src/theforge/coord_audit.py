@@ -407,6 +407,23 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             else None
         ),
         "error": state.error,
+        "spec_validation": (
+            {
+                "verdict": state.spec_validation_result.verdict,
+                "cost_usd": state.spec_validation_result.cost_usd,
+                "duration_s": state.spec_validation_result.duration_s,
+                "findings": [
+                    {
+                        "category": f.category,
+                        "description": f.description,
+                        "split_suggestion": f.split_suggestion,
+                    }
+                    for f in state.spec_validation_result.findings
+                ],
+            }
+            if state.spec_validation_result is not None
+            else None
+        ),
         "finding_registry": [
             {
                 "finding_id": r.finding_id,
