@@ -133,6 +133,7 @@ from .task import (  # noqa: F401
     build_preflight_prompt,
     build_review_prompt,
     load_spec,
+    parse_plan_output,
 )
 from .traces import write_trace
 
@@ -1267,6 +1268,7 @@ def run_task(
             plan_text = plan_path.read_text(encoding="utf-8")
             (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
             state.plan_output = plan_text
+            state.plan_structured = parse_plan_output(plan_text)
             _log(f"  ✓ PLAN   (injected from {plan_path.name})")
             if config.plan_review.enabled:
                 _log("  ℹ PLAN_REVIEW   skipped (plan injected)")
@@ -1480,6 +1482,7 @@ def run_task(
                 plan_text = plan_result.output
                 (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
                 state.plan_output = plan_text
+                state.plan_structured = parse_plan_output(plan_text)
                 _log(
                     f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}"
                 )
@@ -1515,7 +1518,7 @@ def run_task(
                         pr_prompt = build_plan_review_prompt(
                             task,
                             story_content=spec_content,
-                            plan_content=plan_text,
+                            plan_content=state.plan_structured or plan_text,
                             mode=par_profiles[0].mode,
                             preflight_output=(
                                 preflight_result.output if preflight_result.success else None
@@ -1748,6 +1751,7 @@ def run_task(
                         plan_text = plan_result.output
                         (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
                         state.plan_output = plan_text
+                        state.plan_structured = parse_plan_output(plan_text)
                         _log(
                             "  ✓ PLAN (regenerated)  "
                             f"{_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}"
@@ -1789,6 +1793,7 @@ def run_task(
                                     message=state.error,
                                 )
                             state.plan_output = updated
+                            state.plan_structured = parse_plan_output(updated)
                             plan_text = updated
                             write_trace(workspace_path / ".forge/traces" / "plan.txt", updated)
                             _log(
@@ -1874,6 +1879,7 @@ def run_task(
                                 plan_text, encoding="utf-8"
                             )
                             state.plan_output = plan_text
+                            state.plan_structured = parse_plan_output(plan_text)
                             _log(
                                 "  ✓ PLAN (regenerated)  "
                                 f"{_fmt_cost(plan_result.cost_usd)}"

@@ -1226,7 +1226,9 @@ def _run_dev_phase(
             review_findings=state.last_review_findings,
             human_feedback=state.human_feedback,
             preflight_output=(state.preflight_result.output if state.preflight_result else None),
-            plan_output=state.plan_output,
+            plan_output=state.plan_structured
+            if state.plan_structured is not None
+            else state.plan_output,
             plan_review_advisory=state.plan_agent_review_findings,
             iteration=state.dev_iteration,
             escalation_note=state.escalation_note,

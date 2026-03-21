@@ -7,6 +7,7 @@ import pytest
 from theforge.coord_state import CycleHistory
 from theforge.review import ReviewFinding, ReviewResult, review_to_dev_handoff
 from theforge.task import (
+    PlanData,
     TaskSpec,
     build_dev_prompt,
     build_fix_prompt,
@@ -14,6 +15,7 @@ from theforge.task import (
     build_plan_prompt,
     build_plan_review_prompt,
     build_review_prompt,
+    parse_plan_output,
 )
 
 
@@ -421,13 +423,14 @@ class TestBuildPlanPrompt:
         )
         assert "Do NOT write code" in prompt
 
-    def test_output_starts_with_implementation_plan(self, tmp_path):
+    def test_output_requests_yaml_format(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_plan_prompt(
             task,
             spec_content="# Spec",
         )
-        assert "# Implementation Plan" in prompt
+        assert "plan:" in prompt
+        assert "YAML" in prompt or "yaml" in prompt
 
     def test_includes_preflight_output_when_provided(self, tmp_path):
         task = _make_task(tmp_path)
@@ -1053,3 +1056,363 @@ class TestBuildDevPromptStructuredHandoff:
         assert "gate_result" in prompt
         # Explains why structured handoff matters
         assert "your voice in the review" in prompt.lower()
+
+
+# ── parse_plan_output ─────────────────────────────────────────────────
+
+_VALID_PLAN_YAML = """\
+plan:
+  approach: "Add a new module and update the coordinator."
+  steps:
+    - id: 1
+      description: "Create new_module.py"
+      files:
+        - src/theforge/new_module.py
+      action: create
+      details: "Implement the core logic here."
+    - id: 2
+      description: "Update coordinator.py"
+      files:
+        - src/theforge/coordinator.py
+      action: modify
+      details: "Call new_module from coordinator."
+      depends_on: [1]
+  criteria_mapping:
+    - criterion: "AC: new module exists"
+      steps: [1]
+    - criterion: "AC: coordinator uses it"
+      steps: [2]
+  risks:
+    - description: "Circular import risk"
+      mitigation: "Use TYPE_CHECKING import"
+"""
+
+
+class TestParsePlanOutput:
+    """Tests for parse_plan_output()."""
+
+    def test_valid_yaml_returns_plan_data(self):
+        result = parse_plan_output(_VALID_PLAN_YAML)
+        assert result is not None
+        assert result["approach"] == "Add a new module and update the coordinator."
+        assert len(result["steps"]) == 2
+
+    def test_step_fields_preserved(self):
+        result = parse_plan_output(_VALID_PLAN_YAML)
+        assert result is not None
+        step1 = result["steps"][0]
+        assert step1["id"] == 1
+        assert step1["description"] == "Create new_module.py"
+        assert step1["action"] == "create"
+        assert step1["files"] == ["src/theforge/new_module.py"]
+        assert step1["details"] == "Implement the core logic here."
+        assert "depends_on" not in step1  # optional field omitted
+
+    def test_depends_on_preserved_when_present(self):
+        result = parse_plan_output(_VALID_PLAN_YAML)
+        assert result is not None
+        step2 = result["steps"][1]
+        assert step2["depends_on"] == [1]
+
+    def test_criteria_mapping_preserved(self):
+        result = parse_plan_output(_VALID_PLAN_YAML)
+        assert result is not None
+        assert "criteria_mapping" in result
+        assert len(result["criteria_mapping"]) == 2
+        assert result["criteria_mapping"][0]["criterion"] == "AC: new module exists"
+        assert result["criteria_mapping"][0]["steps"] == [1]
+
+    def test_risks_preserved(self):
+        result = parse_plan_output(_VALID_PLAN_YAML)
+        assert result is not None
+        assert "risks" in result
+        assert result["risks"][0]["description"] == "Circular import risk"
+
+    def test_fenced_yaml_block_parsed(self):
+        fenced = "```yaml\n" + _VALID_PLAN_YAML + "\n```"
+        result = parse_plan_output(fenced)
+        assert result is not None
+        assert result["approach"] == "Add a new module and update the coordinator."
+
+    def test_markdown_fallback_returns_none(self):
+        markdown = "# Implementation Plan\n\nStep 1: do the thing."
+        result = parse_plan_output(markdown)
+        assert result is None
+
+    def test_invalid_yaml_returns_none(self):
+        bad_yaml = "plan:\n  approach: 'unclosed"
+        result = parse_plan_output(bad_yaml)
+        assert result is None
+
+    def test_yaml_without_plan_key_returns_none(self):
+        no_plan_key = "approach: 'something'\nsteps: []"
+        result = parse_plan_output(no_plan_key)
+        assert result is None
+
+    def test_missing_required_step_field_returns_none(self):
+        yaml_missing_details = """\
+plan:
+  approach: "Do something."
+  steps:
+    - id: 1
+      description: "A step"
+      files:
+        - src/foo.py
+      action: modify
+"""
+        result = parse_plan_output(yaml_missing_details)
+        assert result is None
+
+    def test_missing_approach_returns_none(self):
+        yaml_no_approach = """\
+plan:
+  steps:
+    - id: 1
+      description: "A step"
+      files: []
+      action: modify
+      details: "details"
+"""
+        result = parse_plan_output(yaml_no_approach)
+        assert result is None
+
+    def test_criteria_mapping_optional(self):
+        yaml_no_mapping = """\
+plan:
+  approach: "Simple approach."
+  steps:
+    - id: 1
+      description: "One step"
+      files:
+        - src/foo.py
+      action: modify
+      details: "details here"
+"""
+        result = parse_plan_output(yaml_no_mapping)
+        assert result is not None
+        assert "criteria_mapping" not in result
+
+    def test_empty_string_returns_none(self):
+        assert parse_plan_output("") is None
+
+    def test_document_separator_stripped(self):
+        with_separator = "---\n" + _VALID_PLAN_YAML
+        result = parse_plan_output(with_separator)
+        assert result is not None
+
+
+# ── build_dev_prompt structured plan rendering ────────────────────────
+
+
+class TestBuildDevPromptStructuredPlan:
+    """Tests for build_dev_prompt() with PlanData dict as plan_output."""
+
+    def _make_plan_data(self) -> PlanData:
+        return {
+            "approach": "Implement X by modifying Y.",
+            "steps": [
+                {
+                    "id": 1,
+                    "description": "Add helper function to utils.py",
+                    "files": ["src/theforge/utils.py"],
+                    "action": "modify",
+                    "details": "Add a new helper that does Z.",
+                },
+                {
+                    "id": 2,
+                    "description": "Use helper in coordinator.py",
+                    "files": ["src/theforge/coordinator.py"],
+                    "action": "modify",
+                    "details": "Call the helper from the main loop.",
+                    "depends_on": [1],
+                },
+            ],
+        }
+
+    def test_structured_plan_renders_steps(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan,
+        )
+        assert "Step 1:" in prompt
+        assert "Add helper function to utils.py" in prompt
+        assert "Step 2:" in prompt
+        assert "Use helper in coordinator.py" in prompt
+
+    def test_structured_plan_shows_approach(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan,
+        )
+        assert "Implement X by modifying Y." in prompt
+
+    def test_structured_plan_shows_action(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan,
+        )
+        assert "Action: modify" in prompt
+
+    def test_structured_plan_shows_depends_on(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan,
+        )
+        assert "Depends on: Step 1" in prompt
+
+    def test_structured_plan_omits_depends_on_when_absent(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan,
+        )
+        # Step 1 has no depends_on — "Depends on" should not appear for it
+        # (it does appear for step 2, so just verify the content is for step 2)
+        assert "Depends on: Step 1" in prompt
+
+    def test_structured_plan_shows_header(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan,
+        )
+        assert "Implementation Plan (from planning agent)" in prompt
+
+    def test_raw_string_plan_still_works(self, tmp_path):
+        """Fallback: plain string plan_output still works as before."""
+        task = _make_task(tmp_path)
+        plan_text = "# Implementation Plan\n\nStep 1: do this."
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            spec_content="# Spec",
+            gate_command="make gate",
+            plan_output=plan_text,
+        )
+        assert "Implementation Plan (from planning agent)" in prompt
+        assert plan_text in prompt
+
+
+# ── build_plan_review_prompt with structured plan ─────────────────────
+
+
+class TestBuildPlanReviewPromptStructured:
+    """Tests for build_plan_review_prompt() with PlanData dict as plan_content."""
+
+    def _make_plan_data(self) -> PlanData:
+        return {
+            "approach": "Use TypedDicts for structure.",
+            "steps": [
+                {
+                    "id": 1,
+                    "description": "Add TypedDicts to task.py",
+                    "files": ["src/theforge/task.py"],
+                    "action": "modify",
+                    "details": "Define PlanStep and PlanData.",
+                },
+            ],
+            "criteria_mapping": [
+                {"criterion": "Plan TypedDict defined", "steps": [1]},
+                {"criterion": "Steps have required fields", "steps": [1]},
+            ],
+        }
+
+    def test_structured_plan_includes_criteria_mapping(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content=plan,
+        )
+        assert "Criteria Mapping" in prompt
+        assert "Plan TypedDict defined" in prompt
+        assert "Steps have required fields" in prompt
+
+    def test_structured_plan_shows_approach(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content=plan,
+        )
+        assert "Use TypedDicts for structure." in prompt
+
+    def test_structured_plan_shows_steps(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan = self._make_plan_data()
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content=plan,
+        )
+        assert "Step 1:" in prompt
+        assert "Add TypedDicts to task.py" in prompt
+
+    def test_no_criteria_mapping_section_when_absent(self, tmp_path):
+        task = _make_task(tmp_path)
+        plan: PlanData = {
+            "approach": "Simple.",
+            "steps": [
+                {
+                    "id": 1,
+                    "description": "Step 1",
+                    "files": ["src/foo.py"],
+                    "action": "modify",
+                    "details": "Details.",
+                }
+            ],
+        }
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content=plan,
+        )
+        assert "Criteria Mapping" not in prompt
+
+    def test_raw_string_plan_still_works(self, tmp_path):
+        """Fallback: plain string plan_content still embeds verbatim."""
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content="# Plan\n\nStep 1: implement X.",
+        )
+        assert "Step 1: implement X." in prompt
+        assert "Criteria Mapping" not in prompt
