@@ -494,6 +494,10 @@ class AgentLoopManager:
             try:
                 turn = self._call_with_retry(messages, tool_schemas)
             except Exception as exc:
+                # Re-raise HTTP 400 errors so callers (e.g. _run_loop_openai) can
+                # implement provider-specific fallbacks (e.g. tool-not-supported).
+                if getattr(exc, "status_code", None) == 400:
+                    raise
                 _log_verbose(traceback.format_exc())
                 return self._failure_result(f"Provider API error: {exc}")
 
@@ -719,13 +723,20 @@ class AgentLoopManager:
         )
         return new_messages
 
+    def _zero_cost_if_local(self, usage: ModelUsage) -> tuple[ModelUsage, float | None]:
+        """Return (usage, cost) with costs zeroed for local endpoints."""
+        if _is_local_endpoint(self._profile.base_url):
+            return dataclasses.replace(usage, cost_usd=0.0), 0.0
+        return usage, usage.cost_usd
+
     def _success_result(self, *, output: str, structured_data: dict | None) -> AgentResult:
         usage = self._usage.to_model_usage(self._profile.model, self._provider)
+        usage, cost = self._zero_cost_if_local(usage)
         return AgentResult(
             success=True,
             output=output,
             session_id=None,
-            cost_usd=usage.cost_usd,
+            cost_usd=cost,
             exit_code=0,
             raw={},
             profile_name=self._profile.name,
@@ -735,11 +746,12 @@ class AgentLoopManager:
 
     def _failure_result(self, reason: str) -> AgentResult:
         usage = self._usage.to_model_usage(self._profile.model, self._provider)
+        usage, cost = self._zero_cost_if_local(usage)
         return AgentResult(
             success=False,
             output=reason,
             session_id=None,
-            cost_usd=usage.cost_usd,
+            cost_usd=cost,
             exit_code=1,
             raw={},
             profile_name=self._profile.name,
@@ -759,10 +771,20 @@ class AgentLoopManager:
 
 
 def _is_local_endpoint(base_url: str | None) -> bool:
-    """Return True if *base_url* points to a local machine (ollama/vllm etc.)."""
+    """Return True if *base_url* points to a local machine (ollama/vllm etc.).
+
+    Uses urlparse to inspect only the hostname, avoiding false positives from
+    'localhost' appearing in URL paths or query parameters.
+    """
     if not base_url:
         return False
-    return "localhost" in base_url or "127.0.0.1" in base_url
+    from urllib.parse import urlparse
+
+    try:
+        hostname = urlparse(base_url).hostname or ""
+    except Exception:
+        return False
+    return hostname in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
 def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = None):  # type: ignore[return]
@@ -1899,6 +1921,8 @@ def _run_loop_openai(
     secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run OpenAI provider in agent loop mode."""
+    import openai
+
     tools = _build_registry_tools(profile)
     is_responses = profile.model in _RESPONSES_API_MODELS
 
@@ -1929,8 +1953,6 @@ def _run_loop_openai(
             tool_schemas=tool_schemas,
         )
     except Exception as exc:
-        import openai
-
         if isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
             # Local model doesn't support tool calling — fall back to single-shot text mode.
             _log(

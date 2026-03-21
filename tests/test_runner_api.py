@@ -1902,6 +1902,12 @@ class TestIsLocalEndpoint:
     def test_127_is_local(self):
         assert _is_local_endpoint("http://127.0.0.1:8080/v1") is True
 
+    def test_ipv6_localhost_is_local(self):
+        assert _is_local_endpoint("http://[::1]:11434/v1") is True
+
+    def test_all_interfaces_is_local(self):
+        assert _is_local_endpoint("http://0.0.0.0:11434/v1") is True
+
     def test_remote_is_not_local(self):
         assert _is_local_endpoint("https://api.openai.com/v1") is False
 
@@ -1910,6 +1916,18 @@ class TestIsLocalEndpoint:
 
     def test_empty_string_is_not_local(self):
         assert _is_local_endpoint("") is False
+
+    def test_localhost_in_path_is_not_local(self):
+        """'localhost' in the URL path must not be a false positive."""
+        assert _is_local_endpoint("https://api.example.com/proxy/localhost/v1") is False
+
+    def test_localhost_in_query_is_not_local(self):
+        """'localhost' in a query parameter must not be a false positive."""
+        assert _is_local_endpoint("https://api.example.com/v1?target=localhost") is False
+
+    def test_127_in_path_is_not_local(self):
+        """'127.0.0.1' in the URL path must not be a false positive."""
+        assert _is_local_endpoint("https://api.example.com/redirect/127.0.0.1") is False
 
 
 class TestLocalEndpointCostZeroing:
@@ -1989,6 +2007,36 @@ class TestLocalEndpointCostZeroing:
 
         assert result.cost_usd == 0.0
         assert all(u.cost_usd == 0.0 for u in result.model_usage)
+
+    def test_agent_loop_manager_success_result_zeros_cost_for_local(self, tmp_path):
+        """AgentLoopManager._success_result zeroes costs for localhost profiles."""
+        profile = _make_local_profile(base_url="http://localhost:11434/v1")
+        adapter = MagicMock()
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=[],
+            provider_adapter=adapter,
+        )
+        result = manager._success_result(output="{}", structured_data=None)
+        assert result.cost_usd == 0.0
+        assert result.model_usage[0].cost_usd == 0.0
+
+    def test_agent_loop_manager_failure_result_zeros_cost_for_local(self, tmp_path):
+        """AgentLoopManager._failure_result zeroes costs for localhost profiles."""
+        profile = _make_local_profile(base_url="http://localhost:11434/v1")
+        adapter = MagicMock()
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="openai",
+            working_dir=tmp_path,
+            tools=[],
+            provider_adapter=adapter,
+        )
+        result = manager._failure_result("something went wrong")
+        assert result.cost_usd == 0.0
+        assert result.model_usage[0].cost_usd == 0.0
 
 
 class TestToolCallingFallback:
