@@ -288,7 +288,7 @@ def _make_ntfy_config(tmp_path: Path, timeout: int = 60) -> ForgeConfig:
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2, escalate_policy="reject"),
         notifications=NotificationConfig(
             backend="ntfy",
             ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),

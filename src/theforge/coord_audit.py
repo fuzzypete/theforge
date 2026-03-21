@@ -261,6 +261,25 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             else None
         ),
         "merge": result.merge,
+        "escalation": (
+            {
+                "reason": state.escalate_reason,
+                "reviewer_verdicts": (
+                    {name: rr.verdict for name, rr in state.last_cycle_reviewer_results}
+                    if state.last_cycle_reviewer_results
+                    else {}
+                ),
+                "gate_result": state.gate_decisions[-1] if state.gate_decisions else None,
+                "human_decision": state.escalate_decision,
+                "waited_seconds": (
+                    round(state.human_review_waited_seconds, 1)
+                    if state.human_review_waited_seconds is not None
+                    else None
+                ),
+            }
+            if state.escalate_decision is not None
+            else None
+        ),
         "error": state.error,
         "finding_registry": [
             {

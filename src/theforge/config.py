@@ -162,6 +162,7 @@ class RetryPolicy:
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
     max_handoff_retries: int = 2  # dev handoff rewrite retries after gate passes
     max_plan_regen_attempts: int = 3  # plan review rejection → regen cycles before escalating
+    escalate_policy: str = "prompt"  # "prompt" | "auto_approve" | "reject"
 
 
 @dataclass(frozen=True)
@@ -746,6 +747,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
         max_handoff_retries=int(retry_data.get("max_handoff_retries", 2)),
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
+        escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
     )
 
     # Notifications
