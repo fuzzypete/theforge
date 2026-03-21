@@ -1,57 +1,68 @@
 dev_notes: |
-  summary: "Extended _make_sigterm_handler to capture full crash context and emit it
-    in the run_end:crashed structured log event. Added a last_event property to
-    StructuredLogger (updated under threading.Lock in emit()) so the handler can report
-    the final event without I/O. The last_event property is intentionally lock-free for
-    signal handler safety — CPython's GIL makes string reads atomic, and acquiring a
-    lock inside a signal handler risks deadlock. Added _ntfy_crash_notify to
-    coord_notify.py. All three _make_sigterm_handler call sites were updated to pass
-    state, task_start, task, and config. Iter 1 review fixes: added SIGKILL docstring
-    note (SIGKILL is uninterceptable on POSIX), fixed os.kill to re-raise original
-    signum instead of hardcoded SIGTERM, and improved the no-ntfy test to assert
-    _ntfy_publish is never called end-to-end."
+  summary: "Replaced freeform markdown plan output with structured YAML. Added PlanStep
+    and PlanData TypedDicts to task.py, plus parse_plan_output() which validates the
+    plan: YAML schema and returns None on failure (fallback). build_plan_prompt() now
+    requests YAML output. build_dev_prompt() detects PlanData dict and renders a numbered
+    step checklist; raw string path preserved as fallback. build_plan_review_prompt()
+    accepts str|PlanData and appends a Criteria Mapping section when criteria_mapping
+    is present. CoordinatorState gains plan_structured: PlanData|None alongside the
+    existing plan_output raw string (for audit). coordinator.py calls parse_plan_output()
+    at all 5 plan assignment sites. coord_phases.py passes plan_structured (preferred)
+    or plan_output (fallback) to build_dev_prompt(). Fenced code blocks (```yaml) are
+    handled transparently in the parser. 101 new tests added; 1075 total pass."
   commits:
-    - sha: "65a365f"
-      message: "feat(crash-diagnostics): log context and ntfy notification on SIGTERM"
-    - sha: "550be32"
-      message: "fix(crash-diagnostics): address review findings (iter 1)"
+    - sha: "5f19085"
+      message: "feat(plan): structured YAML plan output with step-by-step checklist"
   acceptance_criteria:
-    - criterion: "SIGTERM handler logs signal number and name"
+    - criterion: "Plan agent prompt updated to request YAML output format"
       status: MET
-      notes: "Handler emits signal=signum and signal_name=signal.Signals(signum).name
-        (with ValueError fallback to str(signum)) in the run_end:crashed event."
-    - criterion: "SIGTERM handler logs phase and iteration at time of crash"
+      notes: "build_plan_prompt() Output Format section now requests YAML starting with
+        'plan:' key, with full schema example including steps, criteria_mapping, risks."
+    - criterion: "Plan output parsed as YAML in coordinator; stored as structured dict"
       status: MET
-      notes: "Handler reads state.phase.name and state.dev_iteration via the mutable
-        state closure variable at signal time."
-    - criterion: "SIGTERM handler logs accumulated cost at time of crash"
+      notes: "parse_plan_output() in task.py validates and returns PlanData dict.
+        coordinator.py stores result in state.plan_structured at all plan assignment sites."
+    - criterion: "Fallback: freeform markdown still accepted (no crash on non-YAML output)"
       status: MET
-      notes: "Handler reads state.total_cost (computed property) at signal time and
-        emits cost_at_crash=round(state.total_cost, 6)."
-    - criterion: "SIGTERM handler logs uptime (seconds since run_start)"
+      notes: "parse_plan_output() returns None when text does not start with 'plan:' or
+        '---'. Coordinator uses plan_structured when not None, falls back to plan_output
+        string otherwise. No crash path exists."
+    - criterion: "build_dev_prompt() renders structured plan as step-by-step checklist"
       status: MET
-      notes: "uptime = time.monotonic() - task_start computed in handler; emitted as
-        uptime_seconds=round(uptime, 1)."
-    - criterion: "ntfy notification sent on crash (if configured)"
+      notes: "When plan_output is a PlanData dict, renders numbered steps with Action,
+        Depends on, and Details lines. String input renders verbatim as before."
+    - criterion: "build_plan_review_prompt() includes criteria_mapping for reviewers"
       status: MET
-      notes: "_ntfy_crash_notify() called from handler when state/task/config are
-        non-None; guards internally on config.notifications.ntfy."
-    - criterion: "All fields added to the run_end structured log event"
+      notes: "When plan_content is a PlanData dict with criteria_mapping, a 'Criteria
+        Mapping' section is appended showing each criterion mapped to step IDs."
+    - criterion: "Plan dataclass or TypedDict defined for type safety"
       status: MET
-      notes: "signal, signal_name, phase_at_crash, iteration_at_crash, cost_at_crash,
-        last_event, and uptime_seconds all emitted via _safe_emit."
+      notes: "PlanStep (with required _PlanStepRequired base and optional depends_on) and
+        PlanData (with optional criteria_mapping and risks) TypedDicts in task.py."
+    - criterion: "Steps have: id, description, files, action, details, optional depends_on"
+      status: MET
+      notes: "PlanStep TypedDict enforces all required fields. parse_plan_output()
+        validates each step has id, description, files, action, details."
+    - criterion: "criteria_mapping traces ACs to step IDs"
+      status: MET
+      notes: "criteria_mapping is preserved in PlanData when present. Validated as list.
+        Treated as optional — plans without it still parse successfully."
+    - criterion: "Plan stored in coordinator state for audit trail"
+      status: MET
+      notes: "state.plan_output (raw string) unchanged — forge_plan.md still written.
+        state.plan_structured added as separate field for structured data."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1049 tests pass after both commits."
-    - criterion: "New test for crash handler context capture"
+      notes: "1075 tests pass. Updated one existing test (test_output_starts_with_
+        implementation_plan → test_output_requests_yaml_format) that correctly reflects
+        the new YAML output format."
+    - criterion: "New tests for YAML plan parsing, fallback to markdown, dev prompt rendering"
       status: MET
-      notes: "TestSigtermHandler adds three tests: field capture, ntfy-configured path,
-        and no-ntfy end-to-end path (mocking _ntfy_publish)."
-  spec_deviations:
-    - description: "SIGKILL is not handled (spec title mentions SIGTERM/SIGKILL)."
-      justification: "SIGKILL cannot be intercepted by user-space code on any POSIX OS.
-        The acceptance criteria correctly scope to SIGTERM only. The limitation is
-        documented in the _make_sigterm_handler docstring."
+      notes: "Added TestParsePlanOutput (14 tests), TestBuildDevPromptStructuredPlan (8
+        tests), TestBuildPlanReviewPromptStructured (5 tests). Covers valid YAML, invalid
+        YAML fallback, fenced blocks, missing fields, optional fields, and both prompt
+        rendering paths."
+  spec_deviations: none
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS
