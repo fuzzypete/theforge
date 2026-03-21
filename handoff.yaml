@@ -1,41 +1,31 @@
 gate_result: PASS
 dev_notes: |
-  summary: "Implemented per-phase cost, duration, and success tracking end-to-end. Added four new duration-tracking fields to CoordinatorState (preflight_duration_s, plan_durations, plan_review_durations, validate_durations) and populated them at the existing timing sites in coordinator.py and coord_phases.py. Added _build_phases_block() to coord_audit.py which assembles phases + totals sub-dicts from state fields and embeds them into every audit log record via **-unpacking. Added forge telemetry CLI command to cli.py that reads history.jsonl, filters by --since, optionally restricts output to --phase, and prints a run table plus per-phase average cost/duration breakdown. Tests cover the phases block structure in test_generate_audit_log.py (12 new cases) and telemetry CLI aggregation/filters/graceful-handling in test_telemetry.py (18 new cases). All 1077 tests pass."
+  summary: "Added dev_trace_count to CoordinatorState — a monotonically increasing counter
+    that is never reset across review cycles. Updated coord_phases.py to use dev_trace_count
+    for dev trace filenames instead of dev_iteration (which resets to 0 after every
+    REQUEST_CHANGES). Added a coordinator-level test verifying that 2-dev-prompt.txt and
+    2-dev-output.txt are written after a REQUEST_CHANGES cycle with distinct content."
   commits:
-    - sha: "70dd6f0"
-      message: "feat(telemetry): per-phase cost, duration, and success tracking"
-    - sha: "55942a4"
-      message: "chore(telemetry): write handoff.yaml for phase-telemetry"
+    - sha: "7d02b33"
+      message: "fix(traces): write dev traces for all iterations, not just cycle 1"
   acceptance_criteria:
-    - criterion: "Audit log gains phases block with per-phase cost, duration, outcome"
+    - criterion: "Dev prompt trace written for every DEV iteration, not just first"
       status: MET
-      notes: "_build_phases_block() builds all six phase entries; embedded via ** in generate_audit_log return dict"
-    - criterion: "Per-reviewer cost breakdown in review phase"
+      notes: "dev_trace_count increments before every dev call and never resets; coord_phases.py uses it for the prompt trace filename"
+    - criterion: "Dev output trace written for every DEV iteration"
       status: MET
-      notes: "phases.review.per_reviewer groups review_agent_results by profile (excluding synthesis), cross-refs last_cycle_reviewer_results for verdict"
-    - criterion: "forge telemetry CLI command reads history and displays summary table"
+      notes: "Same dev_trace_count used for the output trace filename"
+    - criterion: "Filenames include iteration number: {iteration}-dev-prompt.txt"
       status: MET
-      notes: "cmd_telemetry() reads .forge/audits/history.jsonl, prints run table with slug/cost/time/iterations/outcome"
-    - criterion: "Phase breakdown shows average cost and duration across runs"
+      notes: "Pattern is {dev_trace_count}-dev-prompt.txt and {dev_trace_count}-dev-output.txt; 1-based, monotonically increasing"
+    - criterion: "Existing first-iteration trace behavior unchanged"
       status: MET
-      notes: "Phase breakdown averages cost and duration from phases key across all records with phase data"
-    - criterion: "--since date filter"
-      status: MET
-      notes: "Parses ISO date, filters records by timing.started_at"
-    - criterion: "--phase filter to show single phase detail"
-      status: MET
-      notes: "When --phase is set, run table is suppressed and only that phase row is shown in breakdown"
-    - criterion: "Handles missing/partial data gracefully (old runs without phase data)"
-      status: MET
-      notes: "Records without phases key are counted in run table but skipped for phase averages; prints explanatory message when no phase data exists"
+      notes: "dev_trace_count starts at 0 and is incremented to 1 before the first dev call, producing the same 1-dev-prompt.txt as before"
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1077 tests pass (1035 pre-existing + 42 new)"
-    - criterion: "New tests for telemetry aggregation and CLI output formatting"
+      notes: "1078 tests pass"
+    - criterion: "New test verifying traces written on iteration 2+"
       status: MET
-      notes: "12 new tests in TestPhasesBlock (test_generate_audit_log.py), 18 new tests in test_telemetry.py"
-  spec_deviations:
-    - description: "forge.log cross-referencing not implemented"
-      justification: "The spec mentions reading from both history.jsonl AND forge.log cross-referenced by run_id. The approved implementation plan concluded this was unnecessary: phase data is now embedded directly in the audit record, which is simpler and more reliable than log parsing. run_id is not a field in audit records, so cross-referencing would require additional work with no benefit."
+      notes: "test_dev_traces_written_for_iteration_2 in tests/test_traces.py drives REQUEST_CHANGES then APPROVE, asserts 1-dev-* and 2-dev-* trace files both exist with distinct content"
+  spec_deviations: none
   deferred_items: none
-  gate_result: PASS
