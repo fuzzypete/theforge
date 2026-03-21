@@ -386,6 +386,19 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             if state.plan_review_decision is not None
             else None
         ),
+        "plan_validation": (
+            {"skipped": True, "findings": [], "finding_count": 0}
+            if state.plan_structured is None
+            else (
+                {
+                    "skipped": False,
+                    "findings": state.plan_validation_findings,
+                    "finding_count": len(state.plan_validation_findings),
+                }
+                if state.plan_validation_findings
+                else None
+            )
+        ),
         "merge": result.merge,
         "escalation": (
             {
