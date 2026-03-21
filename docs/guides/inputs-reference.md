@@ -343,3 +343,12 @@ test_coverage:
 - `APPROVE` with any P1 → overridden to `REQUEST_CHANGES`
 - `REQUEST_CHANGES` with no P1 → schema error
 - Invalid YAML → treated as `REQUEST_CHANGES`
+
+---
+
+## See also
+
+- [Getting Started](getting-started.md) — full setup walkthrough including config examples
+- [CLI Reference](cli-reference.md) — all commands and flags
+- [Provider Setup Guide](choose-your-provider-setup.md) — forge.yaml profiles for different scenarios
+- [Troubleshooting](troubleshooting.md) — common errors and fixes

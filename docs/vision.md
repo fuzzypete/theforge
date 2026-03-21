@@ -167,7 +167,7 @@ list and aggregate budget ceiling. Budget enforcement is Claude-only
 individual spec failures. ALREADY_DONE specs counted as skipped.
 Writes `sprint-audit.yaml` with per-spec outcomes and costs.
 
-**Spec:** `specs/backlog/archive/campaign-mode.md`
+**Story:** `specs/backlog/archive/campaign-mode.md`
 
 ---
 
@@ -418,7 +418,7 @@ IDEATE produces structured ideas/constraints, not code.
 **Relationship to DECOMPOSE (Phase 11):** IDEATE is DECOMPOSE done
 right. Instead of one LLM splitting a spec, the deliberation protocol
 runs on "what are the sub-problems", converges, then emits the spec
-list for the campaign runner. The coordinator remains deterministic —
+list for the sprint runner. The coordinator remains deterministic —
 only the ideation agents are LLMs.
 
 ---
