@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from .config import ForgeConfig
-from .coord_state import CoordinatorResult
+from .coord_state import CoordinatorResult, CoordinatorState
 from .task import TaskSpec
 
 
@@ -83,6 +83,132 @@ def has_review_approve(
     except OSError:
         pass
     return False
+
+
+def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
+    """Build the phases + totals block for the audit log.
+
+    Each phase entry is None when the phase did not run (e.g. preflight skipped).
+    dev_durations and review_durations already exist on CoordinatorState and are
+    populated by coordinator.py — no additional tracking needed for those two phases.
+    """
+    # ── preflight ─────────────────────────────────────────────────────────────
+    preflight_block: dict | None = None
+    if state.preflight_verdict is not None:
+        preflight_block = {
+            "cost_usd": round(state.total_preflight_cost, 6),
+            "duration_s": round(state.preflight_duration_s, 2)
+            if state.preflight_duration_s is not None
+            else None,
+            "outcome": state.preflight_verdict.lower() if state.preflight_verdict else None,
+        }
+
+    # ── plan ──────────────────────────────────────────────────────────────────
+    plan_block: dict | None = None
+    if state.plan_results:
+        plan_block = {
+            "cost_usd": round(state.total_plan_cost, 6),
+            "duration_s": round(sum(state.plan_durations), 2) if state.plan_durations else None,
+            "outcome": "success",
+        }
+
+    # ── plan_review ───────────────────────────────────────────────────────────
+    plan_review_block: dict | None = None
+    if state.plan_review_decision is not None:
+        plan_review_block = {
+            "cost_usd": round(state.total_plan_review_cost, 6),
+            "duration_s": round(sum(state.plan_review_durations), 2)
+            if state.plan_review_durations
+            else None,
+            "iterations": len(state.plan_review_results),
+            "outcome": state.plan_review_decision,
+        }
+
+    # ── dev ───────────────────────────────────────────────────────────────────
+    dev_block: dict | None = None
+    if state.dev_results:
+        dev_block = {
+            "cost_usd": round(state.total_dev_cost, 6),
+            "duration_s": round(sum(state.dev_durations), 2) if state.dev_durations else None,
+            "iterations": len(state.dev_results),
+            "outcome": "success",
+        }
+
+    # ── validate ──────────────────────────────────────────────────────────────
+    validate_block: dict | None = None
+    if state.gate_decisions:
+        validate_block = {
+            "cost_usd": 0.0,
+            "duration_s": round(sum(state.validate_durations), 2)
+            if state.validate_durations
+            else None,
+            "outcome": state.gate_decisions[-1].lower() if state.gate_decisions else None,
+        }
+
+    # ── review ────────────────────────────────────────────────────────────────
+    review_block: dict | None = None
+    if state.review_agent_results:
+        # Build per_reviewer: non-synthesis agents, summing cost, cross-referencing
+        # last_cycle_reviewer_results for verdict. Note: last_cycle_reviewer_results
+        # only holds the final review cycle — reviewers absent from the last cycle
+        # will have no verdict entry. This matches the spec's intent (final state).
+        _last_verdicts: dict[str, str] = {
+            name: rr.verdict for name, rr in state.last_cycle_reviewer_results
+        }
+        _reviewer_costs: dict[str, float] = {}
+        for r in state.review_agent_results:
+            if r.profile_name and r.profile_name != "synthesis":
+                _reviewer_costs[r.profile_name] = _reviewer_costs.get(r.profile_name, 0.0) + (
+                    r.cost_usd or 0.0
+                )
+        per_reviewer = {
+            name: {
+                "cost": round(cost, 6),
+                "verdict": _last_verdicts.get(name),
+            }
+            for name, cost in _reviewer_costs.items()
+        }
+        # Final verdict from most recent review cycle
+        _final_verdict: str | None = None
+        if state.review_results:
+            _final_verdict = state.review_results[-1].verdict.lower()
+        review_block = {
+            "cost_usd": round(state.total_review_cost, 6),
+            "duration_s": round(sum(state.review_durations), 2)
+            if state.review_durations
+            else None,
+            "cycles": state.review_cycle,
+            "outcome": _final_verdict,
+            "per_reviewer": per_reviewer,
+        }
+
+    # ── totals ────────────────────────────────────────────────────────────────
+    all_durations = [
+        state.preflight_duration_s or 0.0,
+        sum(state.plan_durations),
+        sum(state.plan_review_durations),
+        sum(state.dev_durations),
+        sum(state.validate_durations),
+        sum(state.review_durations),
+    ]
+    totals = {
+        "cost_usd": round(state.total_cost, 6),
+        "duration_s": round(sum(all_durations), 2),
+        "dev_iterations": state.dev_iteration,
+        "review_cycles": state.review_cycle,
+    }
+
+    return {
+        "phases": {
+            "preflight": preflight_block,
+            "plan": plan_block,
+            "plan_review": plan_review_block,
+            "dev": dev_block,
+            "validate": validate_block,
+            "review": review_block,
+        },
+        "totals": totals,
+    }
 
 
 def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorResult) -> dict:
@@ -308,4 +434,5 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             for r in state.finding_registry
             if r.severity == "P1" and r.disposition == "net_new"
         ],
+        **_build_phases_block(state, config),
     }

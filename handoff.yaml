@@ -1,57 +1,41 @@
+gate_result: PASS
 dev_notes: |
-  summary: "Extended _make_sigterm_handler to capture full crash context and emit it
-    in the run_end:crashed structured log event. Added a last_event property to
-    StructuredLogger (updated under threading.Lock in emit()) so the handler can report
-    the final event without I/O. The last_event property is intentionally lock-free for
-    signal handler safety — CPython's GIL makes string reads atomic, and acquiring a
-    lock inside a signal handler risks deadlock. Added _ntfy_crash_notify to
-    coord_notify.py. All three _make_sigterm_handler call sites were updated to pass
-    state, task_start, task, and config. Iter 1 review fixes: added SIGKILL docstring
-    note (SIGKILL is uninterceptable on POSIX), fixed os.kill to re-raise original
-    signum instead of hardcoded SIGTERM, and improved the no-ntfy test to assert
-    _ntfy_publish is never called end-to-end."
+  summary: "Implemented per-phase cost, duration, and success tracking end-to-end. Added four new duration-tracking fields to CoordinatorState (preflight_duration_s, plan_durations, plan_review_durations, validate_durations) and populated them at the existing timing sites in coordinator.py and coord_phases.py. Added _build_phases_block() to coord_audit.py which assembles phases + totals sub-dicts from state fields and embeds them into every audit log record via **-unpacking. Added forge telemetry CLI command to cli.py that reads history.jsonl, filters by --since, optionally restricts output to --phase, and prints a run table plus per-phase average cost/duration breakdown. Tests cover the phases block structure in test_generate_audit_log.py (12 new cases) and telemetry CLI aggregation/filters/graceful-handling in test_telemetry.py (18 new cases). All 1077 tests pass."
   commits:
-    - sha: "65a365f"
-      message: "feat(crash-diagnostics): log context and ntfy notification on SIGTERM"
-    - sha: "550be32"
-      message: "fix(crash-diagnostics): address review findings (iter 1)"
+    - sha: "70dd6f0"
+      message: "feat(telemetry): per-phase cost, duration, and success tracking"
+    - sha: "55942a4"
+      message: "chore(telemetry): write handoff.yaml for phase-telemetry"
   acceptance_criteria:
-    - criterion: "SIGTERM handler logs signal number and name"
+    - criterion: "Audit log gains phases block with per-phase cost, duration, outcome"
       status: MET
-      notes: "Handler emits signal=signum and signal_name=signal.Signals(signum).name
-        (with ValueError fallback to str(signum)) in the run_end:crashed event."
-    - criterion: "SIGTERM handler logs phase and iteration at time of crash"
+      notes: "_build_phases_block() builds all six phase entries; embedded via ** in generate_audit_log return dict"
+    - criterion: "Per-reviewer cost breakdown in review phase"
       status: MET
-      notes: "Handler reads state.phase.name and state.dev_iteration via the mutable
-        state closure variable at signal time."
-    - criterion: "SIGTERM handler logs accumulated cost at time of crash"
+      notes: "phases.review.per_reviewer groups review_agent_results by profile (excluding synthesis), cross-refs last_cycle_reviewer_results for verdict"
+    - criterion: "forge telemetry CLI command reads history and displays summary table"
       status: MET
-      notes: "Handler reads state.total_cost (computed property) at signal time and
-        emits cost_at_crash=round(state.total_cost, 6)."
-    - criterion: "SIGTERM handler logs uptime (seconds since run_start)"
+      notes: "cmd_telemetry() reads .forge/audits/history.jsonl, prints run table with slug/cost/time/iterations/outcome"
+    - criterion: "Phase breakdown shows average cost and duration across runs"
       status: MET
-      notes: "uptime = time.monotonic() - task_start computed in handler; emitted as
-        uptime_seconds=round(uptime, 1)."
-    - criterion: "ntfy notification sent on crash (if configured)"
+      notes: "Phase breakdown averages cost and duration from phases key across all records with phase data"
+    - criterion: "--since date filter"
       status: MET
-      notes: "_ntfy_crash_notify() called from handler when state/task/config are
-        non-None; guards internally on config.notifications.ntfy."
-    - criterion: "All fields added to the run_end structured log event"
+      notes: "Parses ISO date, filters records by timing.started_at"
+    - criterion: "--phase filter to show single phase detail"
       status: MET
-      notes: "signal, signal_name, phase_at_crash, iteration_at_crash, cost_at_crash,
-        last_event, and uptime_seconds all emitted via _safe_emit."
+      notes: "When --phase is set, run table is suppressed and only that phase row is shown in breakdown"
+    - criterion: "Handles missing/partial data gracefully (old runs without phase data)"
+      status: MET
+      notes: "Records without phases key are counted in run table but skipped for phase averages; prints explanatory message when no phase data exists"
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1049 tests pass after both commits."
-    - criterion: "New test for crash handler context capture"
+      notes: "1077 tests pass (1035 pre-existing + 42 new)"
+    - criterion: "New tests for telemetry aggregation and CLI output formatting"
       status: MET
-      notes: "TestSigtermHandler adds three tests: field capture, ntfy-configured path,
-        and no-ntfy end-to-end path (mocking _ntfy_publish)."
+      notes: "12 new tests in TestPhasesBlock (test_generate_audit_log.py), 18 new tests in test_telemetry.py"
   spec_deviations:
-    - description: "SIGKILL is not handled (spec title mentions SIGTERM/SIGKILL)."
-      justification: "SIGKILL cannot be intercepted by user-space code on any POSIX OS.
-        The acceptance criteria correctly scope to SIGTERM only. The limitation is
-        documented in the _make_sigterm_handler docstring."
+    - description: "forge.log cross-referencing not implemented"
+      justification: "The spec mentions reading from both history.jsonl AND forge.log cross-referenced by run_id. The approved implementation plan concluded this was unnecessary: phase data is now embedded directly in the audit record, which is simpler and more reliable than log parsing. run_id is not a field in audit records, so cross-referencing would require additional work with no benefit."
   deferred_items: none
   gate_result: PASS
-gate_decision: PASS
