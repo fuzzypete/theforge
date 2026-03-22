@@ -1126,6 +1126,8 @@ def run_task(
     plan_path: Path | None = None,
     sprint_name: str | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
+    start_phase: Phase | None = None,
+    stop_phase: Phase | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 

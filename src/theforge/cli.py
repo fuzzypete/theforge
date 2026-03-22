@@ -21,12 +21,12 @@ from pathlib import Path
 import yaml
 
 from .config import PROVIDER_API_KEY_MAP, ForgeConfig, generate_default_config, load_config
+from .coord_state import parse_phase_name
 from .coordinator import (
     CoordinatorResult,
     Phase,
     _fmt_duration,
     generate_audit_log,
-    parse_phase_name,
     run_from_review,
     run_task,
 )
