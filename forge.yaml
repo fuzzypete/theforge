@@ -134,6 +134,20 @@ plan_agent_review:
         - Grep
 
 agents:
+  - name: sonnet-cli
+    cli: claude
+    model: sonnet
+    budget_usd: 5.00
+    timeout_seconds: 900
+    tier: mid
+    strengths: [code, tools, general]
+  - name: opus-cli
+    cli: claude
+    model: opus
+    budget_usd: 8.00
+    timeout_seconds: 1200
+    tier: strong
+    strengths: [architecture, review, complex-logic]
   - name: haiku
     provider: anthropic
     model: claude-haiku-4-5-20251001

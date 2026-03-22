@@ -79,11 +79,12 @@ class AgentDef:
     """An agent available in the pool for adaptive model assignment."""
 
     name: str
-    provider: str
+    provider: str | None  # "anthropic", "openai", etc. — None for CLI agents
     model: str
     budget_usd: float
     timeout_seconds: int
     tier: str  # "cheap" | "mid" | "strong"
+    cli: str | None = None  # "claude", "codex", etc. — set for CLI agents
     strengths: tuple[str, ...] = ()
 
     def to_model_profile(self, *, allowed_tools: tuple[str, ...] = ()) -> "ModelProfile":
@@ -956,10 +957,15 @@ def load_config(config_path: Path) -> ForgeConfig:
                 f"Agent {agent_name!r}: tier must be one of {sorted(_VALID_TIERS)}, "
                 f"got {agent_tier!r}"
             )
+        agent_cli = agent_data.get("cli")
+        agent_provider = agent_data.get("provider")
+        if not agent_cli and not agent_provider:
+            agent_provider = "anthropic"  # default for backward compat
         agents_list.append(
             AgentDef(
                 name=str(agent_name),
-                provider=str(agent_data.get("provider", "anthropic")),
+                cli=str(agent_cli) if agent_cli else None,
+                provider=str(agent_provider) if agent_provider else None,
                 model=str(agent_data.get("model", "sonnet")),
                 budget_usd=float(agent_data.get("budget_usd", 1.0)),
                 timeout_seconds=int(agent_data.get("timeout_seconds", 300)),

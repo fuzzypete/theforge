@@ -8,6 +8,7 @@ which are called only by the coordinator.
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,12 +19,27 @@ from .config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
+    PROVIDER_API_KEY_MAP,
     AgentDef,
     AssignmentConfig,
     ModelProfile,
 )
 
 log = logging.getLogger(__name__)
+
+
+def _has_auth(agent: AgentDef) -> bool:
+    """Return True if the agent's provider has usable auth.
+
+    CLI agents (provider is None) always have auth (the CLI handles its own).
+    API agents need their provider's API key in the environment.
+    """
+    if not agent.provider:
+        return True  # CLI agent — auth handled by the CLI binary
+    key_var = PROVIDER_API_KEY_MAP.get(agent.provider)
+    if not key_var:
+        return True  # Unknown provider — assume OK
+    return bool(os.getenv(key_var))
 
 
 # ── Data classes ───────────────────────────────────────────────────────
@@ -98,8 +114,13 @@ def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
 
 
 def _pick_agent(agents: list[AgentDef], tier: str) -> AgentDef | None:
-    """Pick cheapest agent of the given tier; None if pool is empty."""
-    candidates = _agents_by_tier(agents, tier)
+    """Pick cheapest agent of the given tier that has usable auth.
+
+    Skips API agents whose provider key is missing from the environment.
+    """
+    candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a)]
+    if not candidates:
+        log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
 
 
@@ -297,7 +318,7 @@ def _agent_to_profile(
             allowed_tools = DEFAULT_REVIEW_PROFILE.allowed_tools
     return ModelProfile(
         name=agent.name,
-        cli=None,
+        cli=agent.cli,
         provider=agent.provider,
         model=agent.model,
         budget_usd=agent.budget_usd,
@@ -363,9 +384,14 @@ def assign_models(
 
         dev_agent = _pick_agent(agents, effective_dev_tier)
         if dev_agent is None:
-            # Fall back to any agent
-            dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
-            rationale["dev"] += " (fallback: cheapest available)"
+            # Fall back to any authed agent
+            authed = [a for a in agents if _has_auth(a)]
+            if authed:
+                dev_agent = sorted(authed, key=lambda a: a.budget_usd)[0]
+                rationale["dev"] += " (fallback: cheapest authed)"
+            else:
+                dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
+                rationale["dev"] += " (fallback: cheapest, no auth checked)"
         dev_profile = _agent_to_profile(dev_agent, role="dev")
 
     # ── Preflight ──────────────────────────────────────────────────────
