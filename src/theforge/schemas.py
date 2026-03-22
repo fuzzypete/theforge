@@ -13,6 +13,48 @@ VALID_VERDICTS = ("APPROVE", "REQUEST_CHANGES")
 VALID_SEVERITIES = ("P1", "P2")
 
 
+def repair_review_yaml(data: Any) -> Any:
+    """Best-effort repair of common review YAML issues before validation.
+
+    Fixes predictable errors from models that struggle with the schema
+    (especially DeepSeek): missing sections, verdict/finding contradictions,
+    findings as string instead of list. Mutates and returns the dict.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # ── findings: string → wrap in list ─────────────────────────
+    findings = data.get("findings")
+    if isinstance(findings, str):
+        data["findings"] = []
+    elif findings is None:
+        data["findings"] = []
+
+    # ── story_compliance / spec_compliance: fill if missing ─────
+    if "story_compliance" not in data and "spec_compliance" not in data:
+        verdict = data.get("verdict", "")
+        data["story_compliance"] = {
+            "matches_spec": verdict == "APPROVE",
+            "mismatches": [],
+        }
+
+    # ── test_coverage: fill if missing ──────────────────────────
+    if "test_coverage" not in data:
+        data["test_coverage"] = {"adequate": True, "gaps": []}
+
+    # ── APPROVE + P1 → flip verdict ────────────────────────────
+    findings = data.get("findings", [])
+    if isinstance(findings, list):
+        p1_count = sum(1 for f in findings if isinstance(f, dict) and f.get("severity") == "P1")
+        if data.get("verdict") == "APPROVE" and p1_count > 0:
+            data["verdict"] = "REQUEST_CHANGES"
+        # REQUEST_CHANGES + zero P1 → flip to APPROVE
+        if data.get("verdict") == "REQUEST_CHANGES" and p1_count == 0:
+            data["verdict"] = "APPROVE"
+
+    return data
+
+
 def validate_review_yaml(data: Any) -> list[str]:
     """Validate review YAML structure. Returns list of errors (empty = valid).
 

@@ -2019,10 +2019,10 @@ class TestCoordinatorSchemaErrorOverride:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
 
-        # Review YAML that says APPROVE but is missing required fields
+        # Review YAML with invalid verdict — repair layer can't fix this
         malformed_approve = """\
 ```yaml
-verdict: APPROVE
+verdict: MAYBE
 summary: "Looks good."
 findings: []
 ```
@@ -2928,12 +2928,12 @@ PARSE_ERROR_OUTPUT = "this is not valid yaml: {{{ completely broken"
 
 SCHEMA_ERROR_OUTPUT = """\
 ```yaml
-verdict: APPROVE
+verdict: MAYBE
 summary: "Looks good."
 findings: []
 ```
 """
-# Missing story_compliance and test_coverage → schema errors
+# Invalid verdict "MAYBE" → schema error (repair layer can't fix this)
 
 
 class TestReviewParseRetry:

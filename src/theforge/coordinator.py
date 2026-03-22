@@ -37,17 +37,6 @@ import signal
 import subprocess
 import sys as _sys
 import threading
-
-
-def _safe_signal(signum, handler):
-    """Register a signal handler only from the main thread.
-
-    Worker threads (e.g. parallel sprint) cannot register signal handlers.
-    Returns the previous handler if registered, or None if skipped.
-    """
-    if threading.current_thread() is threading.main_thread():
-        return signal.signal(signum, handler)
-    return None
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -155,6 +144,17 @@ from .task import (
 from .traces import write_trace
 
 # ── Story log directory helpers ───────────────────────────────────────
+
+
+def _safe_signal(signum, handler):
+    """Register a signal handler only from the main thread.
+
+    Worker threads (e.g. parallel sprint) cannot register signal handlers.
+    Returns the previous handler if registered, or None if skipped.
+    """
+    if threading.current_thread() is threading.main_thread():
+        return signal.signal(signum, handler)
+    return None
 
 
 def _make_story_log_dir(

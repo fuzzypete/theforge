@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from .schemas import validate_review_yaml
+from .schemas import repair_review_yaml, validate_review_yaml
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,8 @@ def parse_review_json(data: dict) -> ReviewResult:
     This path is used for API-based reviewers that return structured JSON.
     The cross-validation rules are the same as the YAML path.
     """
-    # Validate schema (re-using the YAML validator which works on dicts)
+    # Best-effort repair before strict validation
+    repair_review_yaml(data)
     schema_errors = validate_review_yaml(data)
 
     # Extract findings
@@ -151,7 +152,8 @@ def parse_review_output(agent_output: str) -> ReviewResult:
             raw_yaml={},
         )
 
-    # Validate schema
+    # Best-effort repair before strict validation
+    repair_review_yaml(data)
     schema_errors = validate_review_yaml(data)
 
     # Extract findings

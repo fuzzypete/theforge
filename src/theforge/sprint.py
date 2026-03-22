@@ -713,6 +713,7 @@ def run_sprint(
 
     with ThreadPoolExecutor(max_workers=manifest.max_parallel) as pool:
         while not dag.is_done():
+            _log(f"[debug] loop: active={list(active.keys())} fin={dag._finished}")
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
@@ -767,6 +768,7 @@ def run_sprint(
                 )
                 active[task.slug] = fut
 
+            _log(f"[debug] post-submit: active={list(active.keys())}")
             if not active:
                 # Deadlock: remaining tasks have unmet or budget-blocked deps
                 for t in dag.remaining():
@@ -780,7 +782,9 @@ def run_sprint(
                     specs_skipped += 1
                 break
 
+            _log(f"[debug] calling wait() with {len(active)} active futures")
             done_futs, _ = wait(list(active.values()), return_when=FIRST_COMPLETED, timeout=3600)
+            _log(f"[debug] wait() returned: {len(done_futs)} done")
             batch_number += 1
 
             if not done_futs:

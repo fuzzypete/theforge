@@ -1,6 +1,6 @@
 """Tests for review YAML schema validation."""
 
-from theforge.schemas import validate_review_yaml
+from theforge.schemas import repair_review_yaml, validate_review_yaml
 
 
 def _valid_review() -> dict:
@@ -145,3 +145,69 @@ class TestValidateReviewYaml:
         ]
         errors = validate_review_yaml(data)
         assert errors == []
+
+
+# ── repair_review_yaml tests ────────────────────────────────────────
+
+
+class TestRepairReviewYaml:
+    def test_fills_missing_story_compliance(self):
+        data = _valid_review()
+        del data["story_compliance"]
+        repair_review_yaml(data)
+        assert data["story_compliance"] == {"matches_spec": True, "mismatches": []}
+
+    def test_fills_missing_test_coverage(self):
+        data = _valid_review()
+        del data["test_coverage"]
+        repair_review_yaml(data)
+        assert data["test_coverage"] == {"adequate": True, "gaps": []}
+
+    def test_flips_approve_with_p1(self):
+        data = _valid_review()
+        data["findings"] = [{"severity": "P1", "file": "foo.py", "line": 10, "description": "bug"}]
+        repair_review_yaml(data)
+        assert data["verdict"] == "REQUEST_CHANGES"
+
+    def test_flips_request_changes_without_p1(self):
+        data = _valid_review()
+        data["verdict"] = "REQUEST_CHANGES"
+        data["findings"] = [
+            {"severity": "P2", "file": "foo.py", "line": 10, "description": "style"}
+        ]
+        repair_review_yaml(data)
+        assert data["verdict"] == "APPROVE"
+
+    def test_findings_string_becomes_empty_list(self):
+        data = _valid_review()
+        data["findings"] = "No issues found"
+        repair_review_yaml(data)
+        assert data["findings"] == []
+
+    def test_preserves_valid_data(self):
+        data = _valid_review()
+        original = dict(data)
+        repair_review_yaml(data)
+        assert data["verdict"] == original["verdict"]
+        assert data["story_compliance"] == original["story_compliance"]
+        assert data["test_coverage"] == original["test_coverage"]
+
+    def test_repaired_data_passes_validation(self):
+        """DeepSeek-style output: APPROVE + P1 + missing sections."""
+        data = {
+            "verdict": "APPROVE",
+            "summary": "Looks good",
+            "findings": [
+                {
+                    "severity": "P1",
+                    "file": "x.py",
+                    "line": 5,
+                    "description": "bug",
+                    "suggestion": "fix",
+                }
+            ],
+        }
+        repair_review_yaml(data)
+        errors = validate_review_yaml(data)
+        assert errors == [], f"Repaired data should validate clean: {errors}"
+        assert data["verdict"] == "REQUEST_CHANGES"

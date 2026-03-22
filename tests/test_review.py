@@ -271,8 +271,8 @@ class TestTryParseReview:
         result = _try_parse_review("not valid yaml {{{")
         assert result is None
 
-    def test_schema_error_returns_none(self):
-        # Valid YAML but missing required fields
+    def test_schema_error_repaired_successfully(self):
+        # Valid YAML but missing required fields — repair layer fills them
         bad = """\
 ```yaml
 verdict: APPROVE
@@ -281,7 +281,10 @@ findings: []
 ```
 """
         result = _try_parse_review(bad)
-        assert result is None
+        assert result is not None
+        assert result.verdict == "APPROVE"
+        assert result.story_matches is True  # inferred from verdict
+        assert result.test_adequate is True  # default
 
     def test_structured_data_path(self):
         data = {
@@ -295,11 +298,12 @@ findings: []
         assert result is not None
         assert result.verdict == "APPROVE"
 
-    def test_structured_data_with_schema_error_returns_none(self):
-        # Missing required fields
+    def test_structured_data_with_missing_fields_repaired(self):
+        # Missing required fields — repair layer fills them
         data = {"verdict": "APPROVE", "summary": "ok", "findings": []}
         result = _try_parse_review("", structured_data=data)
-        assert result is None
+        assert result is not None
+        assert result.verdict == "APPROVE"
 
 
 # ── Tests: _best_individual_result ───────────────────────────────────
