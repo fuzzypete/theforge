@@ -1,33 +1,69 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Fixed two unsatisfied acceptance criteria in coord_notify.py: raised the
-    urlopen timeout in _ntfy_publish from 10s to 15s (now within the 15-30s required range),
-    and replaced the bare except pass with a warning log via _cu._log so notification
-    failures are visible in the forge output. Updated the one test that was asserting
-    timeout==10 to assert timeout==15. No new dependencies introduced. All other ACs
-    (gh subprocess timeout, PR failure logging) were already satisfied per preflight."
+  summary: >
+    Extended `_create_workspace` in `coord_workspace.py` to recover gracefully when
+    `git worktree add -b <branch>` fails because the branch already exists. Added a
+    new helper `_find_worktree_for_branch` that parses `git worktree list --porcelain`
+    to detect registered-but-possibly-stale worktrees. The failure-recovery block
+    checks four cases in order: (1) registered worktree dir exists → reuse; (2)
+    registered worktree dir missing → prune then fall through; (3) branch has commits
+    ahead of base → reattach with `git worktree add` (no -b); (4) branch has 0 commits
+    ahead → delete stale branch and re-run the original create_command. Each path emits
+    a distinct ↻ or ⚠ WORKSPACE log prefix. Four new tests in
+    `TestWorkspaceBranchCollision` cover each scenario.
   commits:
-    - sha: "55a2abc"
-      message: "fix(coord_notify): raise ntfy timeout to 15s and log failures as warnings"
+    - sha: "f7ee1d1"
+      message: "feat(workspace): handle branch-collision in _create_workspace"
   acceptance_criteria:
-    - criterion: "All urllib.request.urlopen calls in coord_notify.py have an explicit timeout= parameter (connect + read, 15-30s)"
+    - criterion: "forge run succeeds when feat/<slug> branch already exists"
       status: MET
-      notes: "coord_notify.py line 199 now uses timeout=15. Lines 217, 265, 315 already used timeout=15."
-    - criterion: "_ntfy_publish is wrapped in try/except so notification failures log a warning and continue — never block the sprint"
+      notes: >
+        All four collision scenarios now succeed instead of escalating. The
+        create_command failure is intercepted, branch existence is confirmed via
+        `git branch --list`, and the appropriate recovery path runs.
+    - criterion: "Existing worktree with commits: reused (resume behavior)"
       status: MET
-      notes: "except clause now calls _cu._log(f'WARNING: ntfy publish failed (continuing): {exc}') then falls through. Pipeline continues."
-    - criterion: "Any subprocess calls to gh (PR creation, issue filing) have a timeout"
+      notes: >
+        When `_find_worktree_for_branch` returns a path whose directory exists, the
+        function returns that path immediately with the log "↻ WORKSPACE reusing
+        existing worktree (registered)". Covered by test_existing_worktree_directory_reused.
+    - criterion: "Existing worktree directory missing: pruned and recreated"
       status: MET
-      notes: "Already satisfied (coord_phases.py:212-218 uses timeout=60). No changes needed."
-    - criterion: "Notification and PR creation failures are logged at WARNING level with the error detail, then the pipeline continues"
+      notes: >
+        When the registered path does not exist, `git worktree prune` runs before
+        falling through to the commits-ahead check. With 0 commits the branch is
+        deleted and the create_command is retried. Covered by
+        test_missing_directory_pruned_and_recreated.
+    - criterion: "Branch exists with unmerged commits, no worktree: reattach worktree"
       status: MET
-      notes: "ntfy: now logs via _cu._log with 'WARNING:' prefix and exc detail. PR creation: coord_phases.py already used _pr_log.warning() with error detail."
-    - criterion: "No new dependencies introduced"
+      notes: >
+        When no worktree is registered and `git log base..branch` has entries,
+        `git worktree add <path> <branch>` (without -b) is run. Covered by
+        test_branch_with_commits_reattached.
+    - criterion: "Branch exists with 0 commits ahead: delete branch, create fresh"
       status: MET
-      notes: "Only stdlib and existing _cu._log used."
-    - criterion: "Existing tests pass"
+      notes: >
+        When no worktree is registered and commits_ahead is empty, `git branch -D`
+        runs followed by a retry of the original create_command. Covered by
+        test_stale_branch_deleted_and_recreated.
+    - criterion: "Log messages clearly indicate which path was taken"
       status: MET
-      notes: "1189 tests pass (1 test updated to reflect new timeout value)."
+      notes: >
+        Each recovery path emits a distinct prefix: "↻ WORKSPACE reusing existing
+        worktree (registered)", "⚠ WORKSPACE linked worktree directory missing —
+        pruning", "↻ WORKSPACE branch has commits, reattaching worktree", or
+        "⚠ WORKSPACE stale branch with 0 commits — deleting and recreating".
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: >
+        1193 tests pass. The existing test_workspace_creation_fails test continues to
+        pass because its mock returns (False, ...) for all shell calls including
+        `git branch --list`, which triggers `not ok_branch` and falls through to the
+        original error return.
+    - criterion: "New tests for each collision scenario"
+      status: MET
+      notes: >
+        TestWorkspaceBranchCollision adds four tests, one per scenario.
   story_deviations: none
   deferred_items: none
   gate_result: PASS
