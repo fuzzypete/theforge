@@ -1,0 +1,49 @@
+dev_notes: |
+  summary: "Implemented parallel sprint execution by adding max_parallel to SprintManifest, a StoryDAG class for dependency-aware scheduling, and replacing run_sprint()'s sequential for-loop with a ThreadPoolExecutor while-loop. Iter 1 review added four P1 fixes: build_dag now validates all depends_on slugs exist in the manifest and detects circular dependencies via DFS; worker exceptions from fut.result() are caught, the story is marked failed, and the sprint continues; wait() has a 3600s timeout so hanging workers are cancelled and marked failed rather than deadlocking. Also fixed P2: pending_merges insertion is guarded by result.success. Budget is pooled across workers via a threading.Lock. max_parallel=1 (default) produces identical behavior to the old sequential runner."
+  commits:
+    - sha: "b7cfe07"
+      message: "fix(sprint): address review findings (iter 1)"
+    - sha: "a049436"
+      message: "feat(sprint): parallel story execution with dependency-aware DAG scheduling"
+  acceptance_criteria:
+    - criterion: "max_parallel in sprint manifest controls concurrency (default 1 = sequential)"
+      status: MET
+      notes: "SprintManifest.max_parallel field added (default 1). load_sprint_manifest() validates it is an integer >= 1. ThreadPoolExecutor uses max_workers=manifest.max_parallel."
+    - criterion: "Stories with no depends_on launch immediately up to max_parallel"
+      status: MET
+      notes: "StoryDAG.ready() returns all tasks whose deps are in _completed; the main loop caps submission at max_parallel concurrently active workers."
+    - criterion: "Stories with depends_on wait for dependencies to complete"
+      status: MET
+      notes: "DAG.ready() only returns a task when all its depends_on slugs are in _completed. mark_complete is called only on merged/ALREADY_DONE outcomes."
+    - criterion: "Failed/escalated dependencies cause dependents to skip"
+      status: MET
+      notes: "Failed/unmerged stories call dag.mark_skipped() (not mark_complete), so their dependents are never returned by ready(). Worker exceptions also call mark_skipped, blocking dependents."
+    - criterion: "Budget check before each story launch"
+      status: MET
+      notes: "Budget check (with cost_lock) happens before each pool.submit(). Exceeded budget marks the story skipped immediately without submitting."
+    - criterion: "Merge ordering respects dependency order when on_approve: merge"
+      status: MET
+      notes: "In parallel mode with auto_merge=True, completed successful stories go into pending_merges. A flush loop calls _merge_branch only when all depends_on slugs are in merged_slugs. Tested with max_parallel=2 in TestParallelMergeOrderingParallelMode."
+    - criterion: "Sprint status shows all active workers with current phase"
+      status: MET
+      notes: "_print_worker_status() prints one line per active worker plus a summary of waiting/ready stories. Called after each completed future."
+    - criterion: "Sprint audit includes per-story start/end times and parallel batch info"
+      status: MET
+      notes: "story_times dict tracks (started_at, finished_at) per story slug. batch_assignments tracks which scheduling batch each story was submitted in. Both written into per-spec audit entries."
+    - criterion: "Fallback: max_parallel=1 produces identical behavior to current sequential runner"
+      status: MET
+      notes: "With max_parallel=1, the ThreadPoolExecutor submits only one story at a time. All 95 sprint tests pass."
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "95 sprint tests pass (87 original + 8 new from iter 1)."
+    - criterion: "New tests for DAG scheduling, dependency gating, budget pooling, merge ordering"
+      status: MET
+      notes: "Original: TestMaxParallelManifest (5), TestStoryDAGUnit (9), TestParallelIndependentStories (2), TestParallelDependencyGating (3), TestParallelBudgetPooling (2), TestClassifyAndRecord (4), TestMergeOrdering (1), TestMaxParallel1Fallback (2). Iter 1 additions: TestBuildDagValidation (5), TestWorkerExceptionHandling (2), TestParallelMergeOrderingParallelMode (1)."
+  story_deviations:
+    - description: "_merge_branch imported directly from coord_workspace (private API). Plan reviewer flagged this as P2."
+      justification: "Did not promote to public API to avoid scope creep; the function is in the same package. Can be promoted in a follow-up story if needed."
+    - description: "_print_worker_status uses DAG.remaining() (added as public method per reviewer suggestion) instead of accessing private dag._tasks attributes."
+      justification: "This is a refinement over the plan that addresses the P2 reviewer note, not a regression."
+  deferred_items: none
+  gate_result: PASS
+gate_decision: PASS
