@@ -42,15 +42,17 @@ def repair_review_yaml(data: Any) -> Any:
     if "test_coverage" not in data:
         data["test_coverage"] = {"adequate": True, "gaps": []}
 
-    # ── APPROVE + P1 → flip verdict ────────────────────────────
+    # ── APPROVE + P1 → flip verdict to REQUEST_CHANGES ─────────
+    # This is a safe repair: the reviewer found blocking issues but
+    # contradicted itself. Flipping to REQUEST_CHANGES is conservative.
+    # We do NOT flip REQUEST_CHANGES→APPROVE (zero P1) because that
+    # would silently turn a rejection into approval — a schema integrity
+    # violation that should trigger retry, not be papered over.
     findings = data.get("findings", [])
     if isinstance(findings, list):
         p1_count = sum(1 for f in findings if isinstance(f, dict) and f.get("severity") == "P1")
         if data.get("verdict") == "APPROVE" and p1_count > 0:
             data["verdict"] = "REQUEST_CHANGES"
-        # REQUEST_CHANGES + zero P1 → flip to APPROVE
-        if data.get("verdict") == "REQUEST_CHANGES" and p1_count == 0:
-            data["verdict"] = "APPROVE"
 
     return data
 

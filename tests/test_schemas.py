@@ -169,14 +169,19 @@ class TestRepairReviewYaml:
         repair_review_yaml(data)
         assert data["verdict"] == "REQUEST_CHANGES"
 
-    def test_flips_request_changes_without_p1(self):
+    def test_does_not_flip_request_changes_without_p1(self):
+        """REQUEST_CHANGES with zero P1s is a schema error, not repaired.
+
+        Flipping a rejection to approval would silently relax the integrity
+        boundary. This should stay as REQUEST_CHANGES and fail validation.
+        """
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"
         data["findings"] = [
             {"severity": "P2", "file": "foo.py", "line": 10, "description": "style"}
         ]
         repair_review_yaml(data)
-        assert data["verdict"] == "APPROVE"
+        assert data["verdict"] == "REQUEST_CHANGES"  # NOT flipped
 
     def test_findings_string_becomes_empty_list(self):
         data = _valid_review()

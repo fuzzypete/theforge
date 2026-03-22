@@ -143,8 +143,11 @@ def _select_reviewers(
     If prefer_cross_provider, greedily pick from different providers.
     """
     # Build candidate list: prefer strong, fall back to requested tier
-    strong = _agents_by_tier(agents, "strong")
-    tier_agents = _agents_by_tier(agents, tier) if tier != "strong" else []
+    # Filter by auth availability — skip agents whose API key is missing
+    strong = [a for a in _agents_by_tier(agents, "strong") if _has_auth(a)]
+    tier_agents = (
+        [a for a in _agents_by_tier(agents, tier) if _has_auth(a)] if tier != "strong" else []
+    )
     # Merge: strong first, then same-tier, deduplicated
     seen_names: set[str] = set()
     candidates: list[AgentDef] = []
@@ -402,7 +405,8 @@ def assign_models(
         tier = PHASE_TIER["preflight"][norm_complexity]
         agent = _pick_agent(agents, tier)
         if agent is None:
-            agent = sorted(agents, key=lambda a: a.budget_usd)[0]
+            authed = [a for a in agents if _has_auth(a)]
+            agent = sorted(authed or agents, key=lambda a: a.budget_usd)[0]
         preflight_profile = _agent_to_profile(
             agent,
             role="preflight",
@@ -418,7 +422,8 @@ def assign_models(
         tier = PHASE_TIER["plan"][norm_complexity]
         agent = _pick_agent(agents, tier)
         if agent is None:
-            agent = sorted(agents, key=lambda a: -a.budget_usd)[0]
+            authed = [a for a in agents if _has_auth(a)]
+            agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
         planner_profile = _agent_to_profile(agent, role="review")
         rationale["planner"] = f"tier {tier} (${agent.budget_usd:.2f})"
 

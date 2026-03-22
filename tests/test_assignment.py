@@ -2,17 +2,7 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
-# Ensure _has_auth passes for test agents using provider="anthropic"
-_AUTH_ENV = {
-    "ANTHROPIC_API_KEY": "test-key",
-    "OPENAI_API_KEY": "test-key",
-    "GOOGLE_API_KEY": "test-key",
-    "DEEPSEEK_API_KEY": "test-key",
-}
-os.environ.update(_AUTH_ENV)
+import pytest
 
 from theforge.assignment import (
     PHASE_TIER,
@@ -24,6 +14,16 @@ from theforge.assignment import (
     assign_models,
 )
 from theforge.config import AgentDef
+
+
+@pytest.fixture(autouse=True)
+def _mock_api_keys(monkeypatch):
+    """Ensure _has_auth() passes for all test agents."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
 
 # ── Fixtures ───────────────────────────────────────────────────────────
 
