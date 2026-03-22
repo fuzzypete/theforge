@@ -22,8 +22,8 @@
   <rect x="28" y="28" width="904" height="894" rx="30" fill="url(#bg)"/>
 
   <text x="72" y="88" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="32" font-weight="700">TheForge keeps control deterministic</text>
-  <text x="72" y="124" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">Python owns orchestration. Models stay inside bounded artifact roles.</text>
-  <text x="72" y="148" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">The repository stays gated, inspectable, and merge-safe.</text>
+  <text x="72" y="124" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">Python owns orchestration. Models produce artifacts.</text>
+  <text x="72" y="146" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">Your repo stays gated and inspectable.</text>
 
   <g filter="url(#shadow)">
     <rect x="100" y="196" width="760" height="174" rx="28" fill="#FFFFFF"/>
@@ -64,6 +64,6 @@
     <text x="156" y="775" fill="#15803D" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Inspectable output</text>
   </g>
 
-  <rect x="220" y="874" width="520" height="40" rx="20" fill="#0F172A"/>
-  <text x="260" y="899" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">Validation outcomes and review verdicts flow back to the coordinator</text>
+  <rect x="280" y="874" width="400" height="40" rx="20" fill="#0F172A"/>
+  <text x="320" y="899" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">Results flow back to the coordinator</text>
 </svg>
