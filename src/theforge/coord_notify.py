@@ -418,12 +418,20 @@ def _escalate_gate_remote(
     _ntfy_publish(ntfy.url, title, body, priority=ntfy.priority, actions=actions)
 
     _poll_start = time.monotonic()
-    # Poll indefinitely until an explicit decision arrives
+    # Poll with mandatory timeout — never block indefinitely
     while True:
         decision = _ntfy_poll_escalate_reply(reply_url, since_ts, _BLOCKING_POLL_CHUNK)
         if decision != "timeout":
             break
-        elapsed = _cu._fmt_duration(time.monotonic() - _poll_start)
+        waited_so_far = time.monotonic() - _poll_start
+        if timeout_seconds > 0 and waited_so_far >= timeout_seconds:
+            _cu._log(
+                f"  ESCALATE gate timed out after {_cu._fmt_duration(waited_so_far)}"
+                " — auto-escalating"
+            )
+            decision = "timeout"
+            break
+        elapsed = _cu._fmt_duration(waited_so_far)
         _cu._log(f"  ESCALATE gate still waiting for decision (elapsed {elapsed})")
 
     waited = time.monotonic() - _poll_start
@@ -491,13 +499,20 @@ def _plan_review_remote(
             state.plan_review_mode = "advisory-timeout"
             return "approve"
     else:
-        # Blocking: poll indefinitely until an explicit human decision arrives
+        # Blocking: poll with mandatory timeout
         while True:
             decision = _ntfy_poll_plan_reply(reply_url, since_ts, _BLOCKING_POLL_CHUNK)
             if decision != "timeout":
                 break
-            # Still waiting — log progress and resume polling from original cursor
-            elapsed = _cu._fmt_duration(time.monotonic() - _pr_start)
+            waited_so_far = time.monotonic() - _pr_start
+            if timeout_seconds > 0 and waited_so_far >= timeout_seconds:
+                _cu._log(
+                    f"  PLAN_REVIEW gate timed out after {_cu._fmt_duration(waited_so_far)}"
+                    " — auto-approving"
+                )
+                decision = "approve"
+                break
+            elapsed = _cu._fmt_duration(waited_so_far)
             _cu._log(f"  PLAN_REVIEW   still waiting for decision (elapsed {elapsed})")
         state.plan_review_waited_seconds = time.monotonic() - _pr_start
 

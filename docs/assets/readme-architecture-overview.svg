@@ -1,71 +1,69 @@
-<svg width="1200" height="640" viewBox="0 0 1200 640" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+<svg width="960" height="950" viewBox="0 0 960 950" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">TheForge architecture overview</title>
-  <desc id="desc">A high-level diagram showing the coordinator controlling lifecycle and state, models producing plans code and reviews, and the repository runtime providing codebase tests and artifacts.</desc>
+  <desc id="desc">A high-level diagram showing the coordinator controlling the workflow, models producing plans code and reviews, and the repository runtime providing source tests and artifacts. Validation and review results flow back to the coordinator.</desc>
   <defs>
-    <linearGradient id="bg" x1="80" y1="70" x2="1120" y2="570" gradientUnits="userSpaceOnUse">
+    <linearGradient id="bg" x1="60" y1="56" x2="900" y2="890" gradientUnits="userSpaceOnUse">
       <stop stop-color="#F7F4EC"/>
-      <stop offset="1" stop-color="#EEF1F4"/>
+      <stop offset="1" stop-color="#EEF2F6"/>
     </linearGradient>
-    <linearGradient id="header" x1="0" y1="0" x2="1" y2="1">
-      <stop stop-color="#1F2937"/>
-      <stop offset="1" stop-color="#374151"/>
+    <linearGradient id="dark" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#111827"/>
+      <stop offset="1" stop-color="#334155"/>
     </linearGradient>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#1F2937" flood-opacity="0.12"/>
+      <feDropShadow dx="0" dy="8" stdDeviation="14" flood-color="#0F172A" flood-opacity="0.12"/>
     </filter>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0 0L10 5L0 10V0Z" fill="#475569"/>
     </marker>
   </defs>
 
-  <rect x="0" y="0" width="1200" height="640" fill="#FBFCFD"/>
-  <rect x="36" y="36" width="1128" height="568" rx="32" fill="url(#bg)"/>
+  <rect width="960" height="950" fill="#FBFCFD"/>
+  <rect x="28" y="28" width="904" height="894" rx="30" fill="url(#bg)"/>
 
-  <text x="80" y="100" fill="#111827" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="34" font-weight="700">TheForge keeps control deterministic</text>
-  <text x="80" y="136" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="19">Python owns orchestration, models stay inside bounded artifact-producing roles, and your repo remains gated and inspectable.</text>
-
-  <g filter="url(#shadow)">
-    <rect x="80" y="180" width="340" height="330" rx="26" fill="#FFFFFF"/>
-    <rect x="80" y="180" width="340" height="72" rx="26" fill="url(#header)"/>
-    <text x="112" y="224" fill="#F9FAFB" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="700">Coordinator</text>
-    <text x="112" y="286" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="600">Controls</text>
-    <text x="112" y="320" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">State machine and phase transitions</text>
-    <text x="112" y="352" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Worktree creation and branch isolation</text>
-    <text x="112" y="384" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Validation gates and retry limits</text>
-    <text x="112" y="416" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Resume points, audits, and logs</text>
-    <rect x="112" y="450" width="140" height="36" rx="18" fill="#E5EEF7"/>
-    <text x="137" y="473" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">Deterministic</text>
-  </g>
+  <text x="72" y="88" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="32" font-weight="700">TheForge keeps control deterministic</text>
+  <text x="72" y="124" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">Python owns orchestration. Models produce artifacts.</text>
+  <text x="72" y="146" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16">Your repo stays gated and inspectable.</text>
 
   <g filter="url(#shadow)">
-    <rect x="430" y="180" width="340" height="330" rx="26" fill="#FFFFFF"/>
-    <rect x="430" y="180" width="340" height="72" rx="26" fill="#7C2D12"/>
-    <text x="462" y="224" fill="#FFF7ED" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="700">Models</text>
-    <text x="462" y="286" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="600">Produce</text>
-    <text x="462" y="320" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Plans for medium and large stories</text>
-    <text x="462" y="352" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Code and tests inside the worktree</text>
-    <text x="462" y="384" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Structured review findings and verdicts</text>
-    <text x="462" y="416" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Nothing about process control or escalation</text>
-    <rect x="462" y="450" width="162" height="36" rx="18" fill="#FDEAD7"/>
-    <text x="483" y="473" fill="#C2410C" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">Artifact roles only</text>
+    <rect x="100" y="196" width="760" height="174" rx="28" fill="#FFFFFF"/>
+    <rect x="100" y="196" width="760" height="64" rx="28" fill="url(#dark)"/>
+    <text x="134" y="236" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="700">Coordinator</text>
+    <text x="134" y="296" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="600">Controls</text>
+    <text x="134" y="328" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">State machine, phase transitions, worktree creation, retries, resume points,</text>
+    <text x="134" y="354" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">audit output, and escalation decisions.</text>
+    <rect x="134" y="276" width="112" height="34" rx="17" fill="#E5EEF7"/>
+    <text x="154" y="299" fill="#1D4ED8" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Deterministic</text>
   </g>
+
+  <path d="M480 370V418" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <text x="506" y="403" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="600">invokes</text>
 
   <g filter="url(#shadow)">
-    <rect x="780" y="180" width="340" height="330" rx="26" fill="#FFFFFF"/>
-    <rect x="780" y="180" width="340" height="72" rx="26" fill="#14532D"/>
-    <text x="812" y="224" fill="#F0FDF4" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="700">Repo / Runtime</text>
-    <text x="812" y="286" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="600">Provides</text>
-    <text x="812" y="320" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Source tree and git history</text>
-    <text x="812" y="352" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Tests, lints, and gate commands</text>
-    <text x="812" y="384" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Audit files, handoff output, and logs</text>
-    <text x="812" y="416" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18">Merge remains explicit and user-controlled</text>
-    <rect x="812" y="450" width="170" height="36" rx="18" fill="#DCFCE7"/>
-    <text x="836" y="473" fill="#15803D" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">Inspectable output</text>
+    <rect x="100" y="434" width="760" height="174" rx="28" fill="#FFFFFF"/>
+    <rect x="100" y="434" width="760" height="64" rx="28" fill="#7C2D12"/>
+    <text x="134" y="474" fill="#FFF7ED" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="700">Models</text>
+    <text x="134" y="534" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="600">Produce</text>
+    <text x="134" y="566" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">Plans for medium and large stories, code and tests inside the worktree,</text>
+    <text x="134" y="592" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">and structured review findings and verdicts. They do not control the process.</text>
+    <rect x="134" y="514" width="132" height="34" rx="17" fill="#FDEAD7"/>
+    <text x="154" y="537" fill="#C2410C" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Artifact roles</text>
   </g>
 
-  <path d="M420 345H430" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
-  <path d="M770 345H780" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <path d="M480 608V656" stroke="#475569" stroke-width="4" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <text x="506" y="641" fill="#475569" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="600">writes into</text>
 
-  <rect x="470" y="536" width="260" height="48" rx="24" fill="#111827"/>
-  <text x="516" y="566" fill="#F9FAFB" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="700">Gated by validate and review</text>
+  <g filter="url(#shadow)">
+    <rect x="100" y="672" width="760" height="174" rx="28" fill="#FFFFFF"/>
+    <rect x="100" y="672" width="760" height="64" rx="28" fill="#14532D"/>
+    <text x="134" y="712" fill="#F0FDF4" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="26" font-weight="700">Repo / Runtime</text>
+    <text x="134" y="772" fill="#0F172A" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="18" font-weight="600">Provides</text>
+    <text x="134" y="804" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">Source files, git history, test and lint gates, handoff output, logs, and audit</text>
+    <text x="134" y="830" fill="#334155" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="17">artifacts. Main stays untouched until you explicitly merge.</text>
+    <rect x="134" y="752" width="154" height="34" rx="17" fill="#DCFCE7"/>
+    <text x="156" y="775" fill="#15803D" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="15" font-weight="700">Inspectable output</text>
+  </g>
+
+  <rect x="280" y="874" width="400" height="40" rx="20" fill="#0F172A"/>
+  <text x="320" y="899" fill="#F8FAFC" font-family="ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="16" font-weight="700">Results flow back to the coordinator</text>
 </svg>

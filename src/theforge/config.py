@@ -135,7 +135,7 @@ class NotificationConfig:
     ntfy: NtfyConfig | None = None
     email: EmailConfig | None = None  # reserved for future use
     script: str | None = None  # path to custom notification script
-    human_review_timeout_seconds: int = 14400  # 4 hours
+    human_review_timeout_seconds: int = 600  # 10 minutes — never block indefinitely
 
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}

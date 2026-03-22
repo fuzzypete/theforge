@@ -12,8 +12,6 @@ the process and models stay inside bounded roles: plan, implement, validate,
 review. Every state transition is mechanical. Every run is auditable, resumable,
 and isolated in a git worktree until you decide to merge.
 
-![TheForge architecture overview](docs/assets/readme-architecture-overview.svg)
-
 - LLMs generate artifacts, not process decisions
 - Validation and review act as mechanical gates
 - Work happens on feature branches in managed worktrees
@@ -102,13 +100,34 @@ Expected shape of a successful run:
 The public-facing lifecycle is intentionally simple:
 
 ```text
-INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW -> DEV -> VALIDATE -> REVIEW -> DONE/ESCALATE
+INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW
+  -> DEV -> VALIDATE -> REVIEW -> DONE / ESCALATE
 ```
 
 The coordinator creates a worktree, invokes the configured agents, runs your
 gate command, parses structured review output, and decides what happens next.
 Models do the planning, coding, and reviewing, but they do not decide whether
-to retry, pass a gate, or escalate.
+to retry, pass a gate, or escalate. When validation fails or review requests
+changes, the run can loop back to `DEV` before it finishes.
+
+```mermaid
+stateDiagram-v2
+    [*] --> WORKSPACE
+    WORKSPACE --> PREFLIGHT
+    PREFLIGHT --> PLAN
+    PREFLIGHT --> DONE : already done
+    PLAN --> PLAN_REVIEW
+    PLAN_REVIEW --> DEV
+    DEV --> VALIDATE
+    VALIDATE --> DEV : FAIL (retry)
+    VALIDATE --> REVIEW : PASS
+    REVIEW --> DEV : REQUEST_CHANGES
+    REVIEW --> DONE : APPROVE
+    REVIEW --> ESCALATE : max cycles
+    DEV --> ESCALATE : max iterations
+    DONE --> [*]
+    ESCALATE --> [*]
+```
 
 ## What gets created
 
@@ -143,6 +162,28 @@ full ownership and cleanup breakdown.
 
 See [Provider Setup Guide](docs/guides/choose-your-provider-setup.md) for
 recommended patterns.
+
+## Minimal config
+
+This is the smallest useful mental model for `forge.yaml`:
+
+```yaml
+profiles:
+  dev:
+    cli: claude
+    model: sonnet
+  review_pool:
+    - name: claude-reviewer
+      cli: claude
+      model: opus
+
+validation:
+  gate_command: "pytest tests/"
+```
+
+Add more reviewers for cross-model coverage, or switch to API-mode profiles
+when you want hosted providers and tool-runtime control. The full schema lives
+in [Inputs Reference](docs/guides/inputs-reference.md).
 
 ## What things cost
 
@@ -181,10 +222,22 @@ make test
 make gate
 ```
 
-Core modules live in `src/theforge/`, with the coordinator in
-`src/theforge/coordinator.py`, subprocess runners in `src/theforge/runner.py`
-and `src/theforge/runner_api.py`, and review/schema boundaries in
-`src/theforge/review.py` and `src/theforge/schemas.py`.
+Core modules:
+
+```text
+src/theforge/
+|- coordinator.py   deterministic state machine
+|- runner.py        CLI agent subprocess runner
+|- runner_api.py    API-mode agent runner
+|- config.py        forge.yaml parsing and profiles
+|- task.py          prompt builders
+|- review.py        review parsing and normalization
+|- schemas.py       review schema validation
+`- cli.py           forge CLI entry point
+```
+
+Key invariant: the coordinator is not an LLM. If a model is deciding whether
+to retry, pass a gate, or escalate, the architecture is wrong.
 
 ## License
 
