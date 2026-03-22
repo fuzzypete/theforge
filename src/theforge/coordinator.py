@@ -36,6 +36,18 @@ import os
 import signal
 import subprocess
 import sys as _sys
+import threading
+
+
+def _safe_signal(signum, handler):
+    """Register a signal handler only from the main thread.
+
+    Worker threads (e.g. parallel sprint) cannot register signal handlers.
+    Returns the previous handler if registered, or None if skipped.
+    """
+    if threading.current_thread() is threading.main_thread():
+        return signal.signal(signum, handler)
+    return None
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -291,7 +303,7 @@ def _make_sigterm_handler(
         _end_run_log_tee(tee_state)
         # Restore the previous handler before re-raising so we don't recurse.
         try:
-            signal.signal(signal.SIGTERM, prev_handler or signal.SIG_DFL)
+            _safe_signal(signal.SIGTERM, prev_handler or signal.SIG_DFL)
         except Exception:
             pass
         os.kill(os.getpid(), signum)
@@ -1177,7 +1189,7 @@ def run_task(
     _prev_sigterm: object = None
     _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     if _tee is not None:
-        _prev_sigterm = signal.signal(
+        _prev_sigterm = _safe_signal(
             signal.SIGTERM,
             _make_sigterm_handler(
                 logger,
@@ -2153,7 +2165,7 @@ def run_task(
         _end_run_log_tee(_tee)
         if _prev_sigterm is not None:
             try:
-                signal.signal(signal.SIGTERM, _prev_sigterm)
+                _safe_signal(signal.SIGTERM, _prev_sigterm)
             except Exception:
                 pass
 
@@ -2205,7 +2217,7 @@ def run_from_review(
     _prev_sigterm: object = None
     _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     if _tee is not None:
-        _prev_sigterm = signal.signal(
+        _prev_sigterm = _safe_signal(
             signal.SIGTERM,
             _make_sigterm_handler(
                 logger,
@@ -2245,7 +2257,7 @@ def run_from_review(
         _end_run_log_tee(_tee)
         if _prev_sigterm is not None:
             try:
-                signal.signal(signal.SIGTERM, _prev_sigterm)
+                _safe_signal(signal.SIGTERM, _prev_sigterm)
             except Exception:
                 pass
 
@@ -2294,7 +2306,7 @@ def run_from_dev(
     _prev_sigterm: object = None
     _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
     if _tee is not None:
-        _prev_sigterm = signal.signal(
+        _prev_sigterm = _safe_signal(
             signal.SIGTERM,
             _make_sigterm_handler(
                 logger,
@@ -2333,7 +2345,7 @@ def run_from_dev(
         _end_run_log_tee(_tee)
         if _prev_sigterm is not None:
             try:
-                signal.signal(signal.SIGTERM, _prev_sigterm)
+                _safe_signal(signal.SIGTERM, _prev_sigterm)
             except Exception:
                 pass
 
