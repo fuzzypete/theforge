@@ -1,0 +1,5 @@
+name: "M2 final — adaptive routing + coordinator hardening"
+budget_usd: 30
+stories:
+  - stories/backlog/coordinator-http-timeout.md
+  - stories/backlog/adaptive-model-assignment.md

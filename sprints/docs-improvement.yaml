@@ -1,0 +1,14 @@
+name: "Documentation improvement — from architecture to operator confidence"
+budget_usd: 50
+specs:
+  - stories/backlog/docs-readme-restructure.md
+  - stories/backlog/docs-terminology-consistency.md
+  - stories/backlog/docs-hello-forge-golden-path.md
+  - stories/backlog/docs-troubleshooting-guide.md
+  - stories/backlog/docs-first-run-walkthrough.md
+  - stories/backlog/docs-cli-use-this-when.md
+  - stories/backlog/docs-runtime-artifacts.md
+  - stories/backlog/docs-resume-semantics.md
+  - stories/backlog/docs-provider-setup-chooser.md
+  - stories/backlog/docs-diagrams.md
+  - stories/backlog/docs-cross-linking.md

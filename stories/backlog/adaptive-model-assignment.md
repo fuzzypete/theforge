@@ -2,7 +2,7 @@
 name: "Adaptive model assignment — complexity-driven routing with escalation learning"
 slug: adaptive-model-assignment
 pytest_target: tests/
-depends_on: [smart-defaults, api-mode-dev]
+depends_on: [api-mode-dev]
 ---
 
 # Adaptive Model Assignment

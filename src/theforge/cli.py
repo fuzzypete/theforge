@@ -1435,6 +1435,13 @@ def cmd_telemetry(args: argparse.Namespace) -> int:
 
 
 def main() -> None:
+    # Global socket timeout safety net — prevents any HTTP call (ntfy, GitHub,
+    # etc.) from blocking the process indefinitely if the OS-level connect or
+    # read hangs despite per-call timeout arguments.
+    import socket
+
+    socket.setdefaulttimeout(60)
+
     parser = argparse.ArgumentParser(
         prog="forge",
         description="TheForge — Deterministic multi-LLM development orchestrator",
