@@ -37,6 +37,7 @@ import signal
 import subprocess
 import sys as _sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import yaml
@@ -966,6 +967,7 @@ def _coordinator_loop(
     skip_dev_first_iter: bool = False,
     notify: bool = False,
     logger: StructuredLogger | None = None,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> CoordinatorResult:
     """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
@@ -993,6 +995,14 @@ def _coordinator_loop(
         if not _skip_dev:
             # ── DEV ───────────────────────────────────────────────
             state.phase = Phase.DEV
+            if state_update_fn is not None:
+                state_update_fn(
+                    {
+                        "phase": "DEV",
+                        "iteration": state.dev_iteration,
+                        "cost_usd": state.total_cost,
+                    }
+                )
             state.dev_iteration += 1
             state.dev_trace_count += 1
             _dev_calls_this_cycle += 1
@@ -1115,6 +1125,7 @@ def run_task(
     run_id: str | None = None,
     plan_path: Path | None = None,
     sprint_name: str | None = None,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -1242,6 +1253,8 @@ def run_task(
 
         # ── WORKSPACE ─────────────────────────────────────────────────
         state.phase = Phase.WORKSPACE
+        if state_update_fn is not None:
+            state_update_fn({"phase": "WORKSPACE", "iteration": 0, "cost_usd": 0.0})
         _log_phase(state.phase, task.slug)
         logger._safe_emit("phase_start", phase="WORKSPACE", iteration=0)
 
@@ -1280,6 +1293,8 @@ def run_task(
 
         # ── PREFLIGHT ──────────────────────────────────────────────────
         state.phase = Phase.PREFLIGHT
+        if state_update_fn is not None:
+            state_update_fn({"phase": "PREFLIGHT", "iteration": 0, "cost_usd": state.total_cost})
         preflight_profile = config.preflight_profile
         _log_phase(state.phase, preflight_profile.model)
         logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
@@ -1473,6 +1488,7 @@ def run_task(
                     skip_dev_first_iter=True,
                     notify=notify,
                     logger=logger,
+                    state_update_fn=state_update_fn,
                 )
                 logger._safe_emit(
                     "run_end",
@@ -1564,6 +1580,14 @@ def run_task(
         )
         if should_plan:
             state.phase = Phase.PLAN
+            if state_update_fn is not None:
+                state_update_fn(
+                    {
+                        "phase": "PLAN",
+                        "iteration": 0,
+                        "cost_usd": state.total_cost,
+                    }
+                )
             _plan_timeout = resolve_timeout(
                 config.plan.timeout,
                 config.plan.timeout_medium,
@@ -2084,6 +2108,7 @@ def run_task(
             auto_merge=auto_merge,
             notify=notify,
             logger=logger,
+            state_update_fn=state_update_fn,
         )
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
@@ -2144,6 +2169,7 @@ def run_from_review(
     notify: bool = False,
     run_id: str | None = None,
     sprint_name: str | None = None,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -2202,6 +2228,7 @@ def run_from_review(
             skip_dev_first_iter=True,
             notify=notify,
             logger=logger,
+            state_update_fn=state_update_fn,
         )
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
@@ -2234,6 +2261,7 @@ def run_from_dev(
     notify: bool = False,
     run_id: str | None = None,
     sprint_name: str | None = None,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -2288,6 +2316,7 @@ def run_from_dev(
             skip_dev_first_iter=False,
             notify=notify,
             logger=logger,
+            state_update_fn=state_update_fn,
         )
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)

@@ -38,6 +38,9 @@ campaign-audit.yaml
 .claude/settings.local.json
 .claude/worktrees/
 
+# Test artifacts (MagicMock path materialization when log_file is a MagicMock)
+MagicMock/
+
 # OS
 .DS_Store
 .forge/.env

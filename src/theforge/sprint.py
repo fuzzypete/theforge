@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -324,6 +325,7 @@ def run_sprint(
     interactive: bool = False,
     notify: bool = False,
     resume: bool = False,
+    state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint manifest sequentially.
 
@@ -462,6 +464,10 @@ def run_sprint(
         # auto_merge so the merged code is on main before the dependent starts.
         effective_auto_merge = auto_merge or (task.slug in dependent_slugs)
 
+        # Notify daemon of starting spec
+        if state_update_fn is not None:
+            state_update_fn({"spec": task.slug, "phase": "STARTING"})
+
         # Choose entry point based on triage
         if resume:
             triage = triages.get(spec_str)
@@ -475,6 +481,7 @@ def run_sprint(
                     notify=notify,
                     run_id=_sprint_run_id,
                     sprint_name=manifest.name,
+                    state_update_fn=state_update_fn,
                 )
             elif triage and triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -486,6 +493,7 @@ def run_sprint(
                     notify=notify,
                     run_id=_sprint_run_id,
                     sprint_name=manifest.name,
+                    state_update_fn=state_update_fn,
                 )
             else:
                 result = run_task(
@@ -496,6 +504,7 @@ def run_sprint(
                     notify=notify,
                     run_id=_sprint_run_id,
                     sprint_name=manifest.name,
+                    state_update_fn=state_update_fn,
                 )
         else:
             result = run_task(
@@ -506,6 +515,7 @@ def run_sprint(
                 notify=notify,
                 run_id=_sprint_run_id,
                 sprint_name=manifest.name,
+                state_update_fn=state_update_fn,
             )
         _spec_elapsed = (
             datetime.datetime.now(datetime.timezone.utc) - _spec_start

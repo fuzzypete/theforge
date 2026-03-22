@@ -662,6 +662,8 @@ def cmd_review(args: argparse.Namespace) -> int:
 
 def cmd_sprint(args: argparse.Namespace) -> int:
     """Run multiple stories sequentially via a sprint manifest."""
+    from . import daemon as _daemon
+
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():
         print(f"Sprint manifest not found: {manifest_path}", file=sys.stderr)
@@ -692,6 +694,27 @@ def cmd_sprint(args: argparse.Namespace) -> int:
     interactive = getattr(args, "interactive", False)
     resume = getattr(args, "resume", False)
 
+    # If daemon is running, submit to it instead of running directly
+    if _daemon.is_daemon_running(config.project_root):
+        sprint_args: dict = {
+            "auto_merge": auto_merge,
+            "notify": not args.no_notify,
+            "resume": resume,
+            "config": str(config_path),
+        }
+        response = _daemon.submit_sprint(config.project_root, str(manifest_path), sprint_args)
+        if response.get("ok"):
+            slug = response.get("queued", manifest_path.stem)
+            pos = response.get("position", 1)
+            print(f"[daemon] Queued '{slug}' (position {pos})")
+            if not getattr(args, "detach", False):
+                print("[daemon] Use 'forge status' to monitor progress.")
+            return 0
+        else:
+            err = response.get("error", "unknown error")
+            print(f"[daemon] Submit failed: {err}", file=sys.stderr)
+            return 1
+
     try:
         result = run_sprint(
             config,
@@ -706,6 +729,152 @@ def cmd_sprint(args: argparse.Namespace) -> int:
         return 1
 
     return 0 if result.specs_failed == 0 else 1
+
+
+def cmd_daemon(args: argparse.Namespace) -> int:
+    """Manage the forge daemon (start/stop/status/install/uninstall)."""
+    from . import daemon as _daemon
+
+    subcommand = getattr(args, "daemon_subcommand", None)
+
+    if subcommand == "start":
+        config_path = _find_config()
+        if config_path is None or not config_path.exists():
+            print(
+                "forge.yaml not found. Run 'forge init' to create one.",
+                file=sys.stderr,
+            )
+            return 1
+        config = load_config(config_path)
+        if _daemon.is_daemon_running(config.project_root):
+            state = _daemon.get_daemon_status(config.project_root)
+            pid = state.get("pid", "?")
+            print(f"Daemon already running (PID {pid})")
+            return 0
+        print(f"Starting daemon for project: {config.project_root}")
+        print("  PID file: .forge/daemon.pid")
+        print("  Socket:   .forge/daemon.sock")
+        print("  Log:      .forge/logs/daemon.log")
+        print("  Tip: 'forge daemon install' for launchd auto-start (macOS)")
+        try:
+            _daemon.start_daemon(config, no_daemonize=getattr(args, "no_daemonize", False))
+        except RuntimeError as exc:
+            print(f"[daemon] Error: {exc}", file=sys.stderr)
+            return 1
+        # If we reach here, we're still the parent process (child daemonized)
+        return 0
+
+    elif subcommand == "stop":
+        config_path = _find_config()
+        if config_path is None or not config_path.exists():
+            print("forge.yaml not found.", file=sys.stderr)
+            return 1
+        config = load_config(config_path)
+        if not _daemon.is_daemon_running(config.project_root):
+            print("No daemon running.")
+            return 0
+        try:
+            _daemon.stop_daemon(config.project_root)
+            print("Daemon stopped.")
+        except RuntimeError as exc:
+            print(f"[daemon] Error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    elif subcommand == "status":
+        config_path = _find_config()
+        if config_path is None or not config_path.exists():
+            print("forge.yaml not found.", file=sys.stderr)
+            return 1
+        config = load_config(config_path)
+        state = _daemon.get_daemon_status(config.project_root)
+        _print_daemon_status(state)
+        return 0
+
+    elif subcommand == "install":
+        import shutil
+
+        config_path = _find_config()
+        if config_path is None or not config_path.exists():
+            print("forge.yaml not found.", file=sys.stderr)
+            return 1
+        config = load_config(config_path)
+        forge_bin = shutil.which("forge")
+        if forge_bin is None:
+            print("'forge' binary not found in PATH.", file=sys.stderr)
+            return 1
+        try:
+            plist_path = _daemon.install_launchd(config.project_root, Path(forge_bin))
+            print(f"Installed launchd plist: {plist_path}")
+            print("Daemon will start automatically on login.")
+        except RuntimeError as exc:
+            print(f"[daemon] Error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    elif subcommand == "uninstall":
+        try:
+            _daemon.uninstall_launchd()
+            print("Launchd plist removed.")
+        except Exception as exc:
+            print(f"[daemon] Error: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    else:
+        print(f"Unknown daemon subcommand: {subcommand}", file=sys.stderr)
+        return 1
+
+
+def _print_daemon_status(state: dict) -> None:
+    """Print daemon status in a human-readable format."""
+    running = state.get("running", False)
+    pid = state.get("pid")
+    started_at = state.get("started_at", "")
+
+    if running:
+        print(f"Daemon: RUNNING  (PID {pid}, started {started_at})")
+    else:
+        print("Daemon: NOT RUNNING")
+
+    current = state.get("current_sprint")
+    if current:
+        spec = current.get("spec", "?")
+        phase = current.get("phase", "?")
+        iteration = current.get("iteration", 0)
+        cost = current.get("cost_usd", 0.0)
+        print(f"  Running: {spec}  phase={phase}  iter={iteration}  cost=${cost:.2f}")
+    else:
+        print("  Running: (none)")
+
+    queue = state.get("queue", [])
+    if queue:
+        print(f"  Queue: {', '.join(str(q) for q in queue)}")
+    else:
+        print("  Queue: (empty)")
+
+    completed = state.get("completed", [])
+    if completed:
+        print(f"  Recent completions ({len(completed)}):")
+        for entry in completed[-5:]:
+            spec = entry.get("spec", "?")
+            outcome = entry.get("outcome", "?")
+            cost = entry.get("cost_usd", 0.0)
+            print(f"    {spec}  {outcome}  ${cost:.2f}")
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Show daemon status and recent run history."""
+    from . import daemon as _daemon
+
+    config_path = _find_config()
+    if config_path is None or not config_path.exists():
+        print("forge.yaml not found.", file=sys.stderr)
+        return 1
+    config = load_config(config_path)
+    state = _daemon.get_daemon_status(config.project_root)
+    _print_daemon_status(state)
+    return 0
 
 
 def cmd_ideate(args: argparse.Namespace) -> int:
@@ -1721,6 +1890,12 @@ def main() -> None:
         default=False,
         help="Auto-triage failed stories and pick optimal re-entry point",
     )
+    sprint_parser.add_argument(
+        "--detach",
+        action="store_true",
+        default=False,
+        help="When daemon is running, submit and return immediately without tailing logs",
+    )
 
     # forge ideate
     ideate_parser = subparsers.add_parser(
@@ -1805,6 +1980,33 @@ def main() -> None:
         help="Path to forge.yaml (default: auto-detect)",
     )
 
+    # forge daemon
+    daemon_parser = subparsers.add_parser(
+        "daemon",
+        help="Manage the forge daemon (persistent background sprint runner)",
+    )
+    daemon_parser.add_argument(
+        "daemon_subcommand",
+        choices=["start", "stop", "status", "install", "uninstall"],
+        help="Daemon subcommand",
+    )
+    daemon_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+    daemon_parser.add_argument(
+        "--no-daemonize",
+        action="store_true",
+        default=False,
+        help="Run in foreground (skip double-fork); used by launchd",
+    )
+
+    # forge status
+    subparsers.add_parser(
+        "status",
+        help="Show daemon status and recent run history",
+    )
+
     args = parser.parse_args()
 
     commands = {
@@ -1818,6 +2020,8 @@ def main() -> None:
         "check-providers": cmd_check_providers,
         "audit": cmd_audit,
         "telemetry": cmd_telemetry,
+        "daemon": cmd_daemon,
+        "status": cmd_status,
     }
 
     try:
