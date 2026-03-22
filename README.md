@@ -112,6 +112,46 @@ changes, the run can loop back to `DEV` before it finishes.
 
 <a href="docs/vision.md"><img src="docs/assets/readme-architecture-overview.svg" alt="TheForge architecture overview" width="620"></a>
 
+```mermaid
+graph TD
+    %% Entry Point
+    Start((SPEC.md)) -->|forge run| Coord
+    subgraph Coordinator ["CORE COORDINATOR (Deterministic Python)"]
+        direction TB
+        Coord[State Machine & Process Control]
+        Audit[(Audit Trail & Decision Log)]
+        Secrets[Secret Injection & Env Management]
+    end
+    %% Phase Loop
+    subgraph Pipeline ["MECHANICAL PIPELINE"]
+        direction LR
+        PLAN[PLAN] --> PRE[PREFLIGHT]
+        PRE --> DEV[DEV]
+        DEV --> VAL[VALIDATE]
+        VAL --> REV[REVIEW]
+    end
+    %% Tool/Agent Layer
+    subgraph Agents ["AI AGENT POOL (Stateless Workers)"]
+        direction TB
+        Claude[Claude Code / CLI Mode]
+        OpenAI[Codex / API Mode]
+        Gemini[Gemini / API Mode]
+    end
+    %% Connections
+    Coord <==> Audit
+    Coord -->|Step 1: Orchestrate| Pipeline
+    Pipeline <-->|Task Dispatch| Agents
+    VAL -->|Gate Command| Results{Pass?}
+    Results -- FAIL -->|Max Retries| DEV
+    Results -- PASS --> REV
+    REV -->|P1 Found| DEV
+    REV -->|P2 Only / Approve| Done((DONE))
+    %% Styling
+    style Coordinator fill:#f9f,stroke:#333,stroke-width:2px
+    style Pipeline fill:#bbf,stroke:#333,stroke-width:1px
+    style Agents fill:#dfd,stroke:#333,stroke-width:1px
+```
+
 ## What gets created
 
 ```text
