@@ -1318,6 +1318,91 @@ def run_task(
             if config.smart_config_models is not None:
                 config = _apply_complexity_adaptation(config, complexity)
 
+            # ── Adaptive assignment ────────────────────────────────────
+            if config.assignment.enabled and config.agents:
+                from .assignment import (
+                    PHASE_TIER as _PHASE_TIER,
+                )
+                from .assignment import (
+                    _normalize_complexity as _norm_complexity,
+                )
+                from .assignment import (
+                    _pick_agent as _pick_agt,
+                )
+                from .assignment import (
+                    _promote_tier as _prom_tier,
+                )
+                from .assignment import (
+                    assign_models as _assign_models,
+                )
+                from .assignment import (
+                    load_escalation_history as _load_esc_history,
+                )
+
+                _history_path = config.project_root / ".forge" / "assignment_history.yaml"
+                _esc_history = _load_esc_history(_history_path)
+
+                # Build explicit_profiles from profiles: key (non-adaptive overrides)
+                # Profiles that were explicitly set in forge.yaml are kept as-is.
+                _explicit: dict[str, ModelProfile] = {}
+                if not config.agents:
+                    # No agents pool means explicit profiles only
+                    _explicit["dev"] = config.dev_profile
+                    _explicit["preflight"] = config.preflight_profile
+
+                _decision = _assign_models(
+                    config.agents,
+                    config.assignment,
+                    complexity,
+                    _esc_history,
+                    _explicit if _explicit else None,
+                    state.sprint_promotions,
+                )
+
+                # Update config with adaptive assignments
+                import dataclasses as _dc
+
+                config = _dc.replace(
+                    config,
+                    dev_profile=_decision.dev,
+                    preflight_profile=_decision.preflight,
+                    review_pool=_decision.code_reviewers
+                    if _decision.code_reviewers
+                    else config.review_pool,
+                )
+
+                # Update sprint_promotions if promotion occurred
+                _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
+                _dev_agent = _pick_agt(config.agents, _dev_base_tier)
+                _dev_name = _dev_agent.name if _dev_agent else ""
+                if (
+                    _dev_name
+                    and "dev" not in _explicit
+                    and complexity not in state.sprint_promotions
+                ):
+                    from .assignment import _check_promotion as _chk_prom
+
+                    _prom = _chk_prom(
+                        _norm_complexity(complexity),
+                        _dev_name,
+                        _esc_history,
+                        state.sprint_promotions,
+                    )
+                    if _prom is not None:
+                        _promoted_tier = _prom_tier(_dev_base_tier)
+                        state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
+                        _log_verbose(
+                            f"[adaptive] {_norm_complexity(complexity)} dev promoted "
+                            f"{_dev_name} → tier {_promoted_tier} (sticky for sprint)"
+                        )
+
+                # Log all rationale lines at verbose
+                _log_verbose(
+                    f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)"
+                )
+                for _phase, _reason in _decision.rationale.items():
+                    _log_verbose(f"[adaptive] {_phase}: {_reason}")
+
         _log(f"  ✓ PREFLIGHT   {verdict}")
         _log_verbose(f"  Reason: {reason}")
         logger._safe_emit(
@@ -1997,6 +2082,34 @@ def run_task(
             total_cost_usd=round(state.total_cost, 6),
             total_duration_s=round(_total_elapsed, 2),
         )
+
+        # ── Adaptive escalation memory ─────────────────────────────────
+        if config.assignment.escalation_memory and config.agents and state.preflight_complexity:
+            from .assignment import (
+                EscalationRecord as _EscRec,
+            )
+            from .assignment import (
+                append_escalation_record as _append_esc,
+            )
+
+            _esc_path = config.project_root / ".forge" / "assignment_history.yaml"
+            _esc_outcome = "DONE" if result.success else "ESCALATE"
+            _esc_record = _EscRec(
+                story=task.slug,
+                complexity=state.preflight_complexity.upper()
+                if state.preflight_complexity in ("small", "medium", "large")
+                else state.preflight_complexity,
+                dev_model=config.dev_profile.name,
+                outcome=_esc_outcome,
+                reason=state.escalation_note or "",
+                timestamp=datetime.datetime.utcnow().isoformat() + "Z",
+            )
+            _append_esc(_esc_path, _esc_record)
+            _log_verbose(
+                f"[adaptive] Wrote escalation record: story={task.slug} "
+                f"complexity={_esc_record.complexity} outcome={_esc_outcome}"
+            )
+
         return result
     finally:
         _end_run_log_tee(_tee)

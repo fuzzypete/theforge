@@ -133,6 +133,37 @@ plan_agent_review:
         - Glob
         - Grep
 
+agents:
+  - name: haiku
+    provider: anthropic
+    model: claude-haiku-4-5-20251001
+    budget_usd: 1.00
+    timeout_seconds: 300
+    tier: cheap
+    strengths: [fast, triage]
+  - name: sonnet
+    provider: anthropic
+    model: claude-sonnet-4-6
+    budget_usd: 5.00
+    timeout_seconds: 900
+    tier: mid
+    strengths: [code, tools, general]
+  - name: opus
+    provider: anthropic
+    model: claude-opus-4-6
+    budget_usd: 8.00
+    timeout_seconds: 1200
+    tier: strong
+    strengths: [architecture, review, complex-logic]
+
+assignment:
+  enabled: false  # keep CI unaffected; enable per-story to opt in
+  min_reviewers: 1
+  max_reviewers: 3
+  prefer_cross_provider: true
+  budget_per_story_usd: 15.00
+  escalation_memory: true
+
 hooks:
   post_run: .forge/hooks/post_run.sh
   timeout_seconds: 30

@@ -170,6 +170,9 @@ class CoordinatorState:
     escalate_reason: str | None = None  # human-readable escalation reason
     story_validation_result: StoryValidationResult | None = None
     plan_validation_findings: list[dict] = field(default_factory=list)
+    sprint_promotions: dict[str, str] = field(default_factory=dict)
+    # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
+    # Sticky within a sprint (single forge process lifetime); resets on process exit.
 
     @property
     def total_dev_cost(self) -> float:
