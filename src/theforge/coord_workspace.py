@@ -268,6 +268,21 @@ def _remove_worktree(path: Path, branch: str, project_root: Path, info_line: str
         _cu._log(f"  Deleted branch {branch}")
 
 
+def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
+    """Return the registered worktree path for branch, or None if not found."""
+    ok, output = _cu._run_shell("git worktree list --porcelain", project_root)
+    if not ok:
+        return None
+    current_path: Path | None = None
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            current_path = Path(line[len("worktree ") :])
+        elif line.startswith("branch ") and current_path is not None:
+            if line[len("branch ") :] == f"refs/heads/{branch}":
+                return current_path
+    return None
+
+
 def _create_workspace(
     config: ForgeConfig, task: TaskSpec
 ) -> tuple[Path | None, str | None, str | None]:
@@ -292,7 +307,64 @@ def _create_workspace(
     _cu._log(f"Creating workspace: {cmd}")
     ok, output = _cu._run_shell(cmd, config.project_root)
     if not ok:
-        return None, None, f"Failed to create workspace: {output}"
+        # Check if a branch collision caused the failure
+        ok_branch, branch_out = _cu._run_shell(
+            f"git branch --list {branch_name}", config.project_root
+        )
+        if not ok_branch or not branch_out.strip():
+            return None, None, f"Failed to create workspace: {output}"
+
+        # Branch exists — find registered worktree
+        existing_wt = _find_worktree_for_branch(branch_name, config.project_root)
+
+        if existing_wt is not None:
+            if existing_wt.exists():
+                _cu._log(f"↻ WORKSPACE  reusing existing worktree (registered): {existing_wt}")
+                if config.workspace.setup_command:
+                    _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+                    ok_s, out_s = _cu._run_shell(config.workspace.setup_command, existing_wt)
+                    if not ok_s:
+                        return None, None, f"Workspace setup command failed: {out_s}"
+                return existing_wt, branch_name, None
+            else:
+                _cu._log("⚠ WORKSPACE  linked worktree directory missing — pruning")
+                _cu._run_shell("git worktree prune", config.project_root)
+
+        # Check commits ahead of base
+        ok_log, log_out = _cu._run_shell(
+            f"git log {config.workspace.base_branch}..{branch_name} --oneline",
+            config.project_root,
+        )
+        commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
+
+        if commits_ahead:
+            _cu._log(f"↻ WORKSPACE  branch has commits, reattaching worktree: {branch_name}")
+            ok_add, add_out = _cu._run_shell(
+                f"git worktree add {workspace_path} {branch_name}", config.project_root
+            )
+            if not ok_add:
+                return None, None, f"Failed to reattach worktree: {add_out}"
+            if config.workspace.setup_command:
+                _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+                ok_s, out_s = _cu._run_shell(config.workspace.setup_command, workspace_path)
+                if not ok_s:
+                    return None, None, f"Workspace setup command failed: {out_s}"
+            return workspace_path, branch_name, None
+        else:
+            _cu._log(
+                f"⚠ WORKSPACE  stale branch with 0 commits — deleting and recreating:"
+                f" {branch_name}"
+            )
+            ok_del, del_out = _cu._run_shell(f"git branch -D {branch_name}", config.project_root)
+            if not ok_del:
+                return None, None, f"Failed to delete stale branch: {del_out}"
+            ok2, output2 = _cu._run_shell(cmd, config.project_root)
+            if not ok2:
+                return (
+                    None,
+                    None,
+                    f"Failed to create workspace (retry after branch delete): {output2}",
+                )
 
     if not workspace_path.exists():
         return None, None, f"Workspace path does not exist after creation: {workspace_path}"

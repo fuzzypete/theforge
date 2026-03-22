@@ -30,6 +30,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coord_workspace import _create_workspace
 from theforge.coordinator import (
     Phase,
     _is_stale_worktree,
@@ -1077,3 +1078,155 @@ class TestConflictResolution:
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
+
+
+# ── Branch collision recovery ──────────────────────────────────────
+
+
+class TestWorkspaceBranchCollision:
+    """Test _create_workspace branch-collision recovery paths."""
+
+    def _porcelain_for(self, wt_path: Path, branch: str) -> str:
+        return f"worktree {wt_path}\nHEAD abc123\nbranch refs/heads/{branch}\n\n"
+
+    @patch("theforge.coord_util._run_shell")
+    def test_existing_worktree_directory_reused(self, mock_shell, tmp_path, capsys):
+        """create_command fails, worktree is registered and directory exists → reuse."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        # workspace_path (path_pattern="{slug}") does NOT exist on disk — only the branch
+        # is registered in git at a different (real) directory.
+        registered_wt = tmp_path / "registered_wt"
+        registered_wt.mkdir()  # the registered worktree directory exists
+
+        branch = config.workspace.branch_pattern.format(slug=task.slug)
+
+        def side_effect(cmd, cwd, **kwargs):
+            if "mkdir" in cmd:
+                return (False, "fatal: branch already exists")
+            if "git branch --list" in cmd:
+                return (True, f"  {branch}")
+            if "git worktree list" in cmd:
+                return (True, self._porcelain_for(registered_wt, branch))
+            return (True, "")
+
+        mock_shell.side_effect = side_effect
+
+        path, returned_branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == registered_wt
+        assert returned_branch == branch
+        captured = capsys.readouterr()
+        assert "↻ WORKSPACE" in captured.err
+        assert "reusing existing worktree (registered)" in captured.err
+
+    @patch("theforge.coord_util._run_shell")
+    def test_missing_directory_pruned_and_recreated(self, mock_shell, tmp_path, capsys):
+        """create_command fails, worktree registered but dir missing → prune then recreate."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace_path = tmp_path / task.slug
+        branch = config.workspace.branch_pattern.format(slug=task.slug)
+        call_count = {"mkdir": 0}
+
+        def side_effect(cmd, cwd, **kwargs):
+            if "mkdir" in cmd:
+                if call_count["mkdir"] == 0:
+                    call_count["mkdir"] += 1
+                    return (False, "fatal: branch already exists")
+                workspace_path.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            if "git branch --list" in cmd:
+                return (True, f"  {branch}")
+            if "git worktree list" in cmd:
+                # worktree registered but directory does not exist (not created yet)
+                return (True, self._porcelain_for(workspace_path, branch))
+            if "git worktree prune" in cmd:
+                return (True, "")
+            if "git log" in cmd:
+                return (True, "")  # 0 commits ahead
+            if "git branch -D" in cmd:
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = side_effect
+
+        path, returned_branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace_path
+        assert returned_branch == branch
+        captured = capsys.readouterr()
+        assert "⚠ WORKSPACE" in captured.err
+        assert "pruning" in captured.err
+
+    @patch("theforge.coord_util._run_shell")
+    def test_branch_with_commits_reattached(self, mock_shell, tmp_path, capsys):
+        """create_command fails, no worktree registered, branch has commits → reattach."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace_path = tmp_path / task.slug
+        branch = config.workspace.branch_pattern.format(slug=task.slug)
+
+        def side_effect(cmd, cwd, **kwargs):
+            if "mkdir" in cmd:
+                return (False, "fatal: branch already exists")
+            if "git branch --list" in cmd:
+                return (True, f"  {branch}")
+            if "git worktree list" in cmd:
+                return (True, "worktree /main/path\nHEAD abc\nbranch refs/heads/main\n\n")
+            if "git log" in cmd:
+                return (True, "abc123 feat: some work\n")  # has commits
+            if "git worktree add" in cmd and "-b" not in cmd:
+                workspace_path.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = side_effect
+
+        path, returned_branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace_path
+        assert returned_branch == branch
+        captured = capsys.readouterr()
+        assert "↻ WORKSPACE" in captured.err
+        assert "reattaching worktree" in captured.err
+
+    @patch("theforge.coord_util._run_shell")
+    def test_stale_branch_deleted_and_recreated(self, mock_shell, tmp_path, capsys):
+        """create_command fails, no worktree registered, 0 commits ahead → delete + recreate."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace_path = tmp_path / task.slug
+        branch = config.workspace.branch_pattern.format(slug=task.slug)
+        call_count = {"mkdir": 0}
+
+        def side_effect(cmd, cwd, **kwargs):
+            if "mkdir" in cmd:
+                if call_count["mkdir"] == 0:
+                    call_count["mkdir"] += 1
+                    return (False, "fatal: branch already exists")
+                workspace_path.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            if "git branch --list" in cmd:
+                return (True, f"  {branch}")
+            if "git worktree list" in cmd:
+                return (True, "worktree /main/path\nHEAD abc\nbranch refs/heads/main\n\n")
+            if "git log" in cmd:
+                return (True, "")  # 0 commits ahead
+            if "git branch -D" in cmd:
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = side_effect
+
+        path, returned_branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace_path
+        assert returned_branch == branch
+        captured = capsys.readouterr()
+        assert "⚠ WORKSPACE" in captured.err
+        assert "stale branch" in captured.err
