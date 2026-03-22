@@ -12,8 +12,6 @@ the process and models stay inside bounded roles: plan, implement, validate,
 review. Every state transition is mechanical. Every run is auditable, resumable,
 and isolated in a git worktree until you decide to merge.
 
-[![TheForge architecture overview](docs/assets/readme-architecture-overview.svg)](docs/vision.md)
-
 - LLMs generate artifacts, not process decisions
 - Validation and review act as mechanical gates
 - Work happens on feature branches in managed worktrees
@@ -111,6 +109,8 @@ gate command, parses structured review output, and decides what happens next.
 Models do the planning, coding, and reviewing, but they do not decide whether
 to retry, pass a gate, or escalate. When validation fails or review requests
 changes, the run can loop back to `DEV` before it finishes.
+
+<a href="docs/vision.md"><img src="docs/assets/readme-architecture-overview.svg" alt="TheForge architecture overview" width="620"></a>
 
 ## What gets created
 
