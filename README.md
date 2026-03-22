@@ -110,42 +110,23 @@ Models do the planning, coding, and reviewing, but they do not decide whether
 to retry, pass a gate, or escalate. When validation fails or review requests
 changes, the run can loop back to `DEV` before it finishes.
 
-<a href="docs/vision.md"><img src="docs/assets/readme-architecture-overview.svg" alt="TheForge architecture overview" width="620"></a>
-
 ```mermaid
-graph TD
-    Start((SPEC.md)) -->|forge run| Coord
-    subgraph Coordinator ["CORE COORDINATOR · Deterministic Python"]
-        direction TB
-        Coord[State Machine · Process Control]
-        Audit[(Audit Trail · Decision Log)]
-        Secrets[Secret Injection · Env Management]
-    end
-    subgraph Pipeline ["MECHANICAL PIPELINE"]
-        direction LR
-        PLAN[PLAN] --> PRE[PREFLIGHT]
-        PRE --> DEV[DEV]
-        DEV --> VAL[VALIDATE]
-        VAL --> REV[REVIEW]
-    end
-    subgraph Agents ["AI AGENT POOL · Stateless Workers"]
-        direction TB
-        Claude[Claude Code · CLI Mode]
-        OpenAI[Codex · API Mode]
-        Gemini[Gemini · API Mode]
-    end
-    Coord --- Audit
-    Coord -->|Orchestrate| Pipeline
-    Pipeline -->|Task Dispatch| Agents
-    Agents -->|Artifacts| Pipeline
-    VAL -->|Gate Command| Results{Pass?}
-    Results -->|FAIL · retries left| DEV
-    Results -->|PASS| REV
-    REV -->|P1 Found| DEV
-    REV -->|Approve| Done((DONE))
-    style Coordinator fill:#f9f,stroke:#333,stroke-width:2px
-    style Pipeline fill:#bbf,stroke:#333,stroke-width:1px
-    style Agents fill:#dfd,stroke:#333,stroke-width:1px
+stateDiagram-v2
+    [*] --> WORKSPACE
+    WORKSPACE --> PREFLIGHT
+    PREFLIGHT --> PLAN
+    PREFLIGHT --> DONE : already done
+    PLAN --> PLAN_REVIEW
+    PLAN_REVIEW --> DEV
+    DEV --> VALIDATE
+    VALIDATE --> DEV : FAIL (retry)
+    VALIDATE --> REVIEW : PASS
+    REVIEW --> DEV : REQUEST_CHANGES
+    REVIEW --> DONE : APPROVE
+    REVIEW --> ESCALATE : max cycles
+    DEV --> ESCALATE : max iterations
+    DONE --> [*]
+    ESCALATE --> [*]
 ```
 
 ## What gets created
