@@ -1,24 +1,31 @@
 # Hello Forge
 
-A self-contained example project for TheForge. Run one command and watch the
-full pipeline — plan, implement, test, review — complete from start to finish.
+The canonical first-run example for TheForge.
+
+Use this example to answer three questions quickly:
+
+- Does my provider setup actually work?
+- What does a successful run look like?
+- What files and branches should I expect afterward?
 
 ## Prerequisites
 
-- **Python 3.11+**
-- **Claude Code CLI** installed and authenticated (`claude --version`)
-- **TheForge** installed (`pip install -e /path/to/theforge`)
-- **pytest** installed (`pip install pytest`)
+- Python 3.11+
+- Claude Code CLI installed and authenticated
+- TheForge installed from the repo root
+- `pytest` available
 
-Verify your providers are ready:
+Quick checks:
 
 ```bash
+claude --version
+forge --help
 forge check-providers
 ```
 
-## Setup (one time)
+## One-time setup
 
-After cloning the theforge repo, initialize this example as its own git repository:
+Initialize the example as its own git repository:
 
 ```bash
 cd examples/hello-forge
@@ -27,113 +34,100 @@ git add -A
 git commit -m "initial: hello-forge scaffold"
 ```
 
-This is the only manual setup step. All source files, tests, and configuration
-are already in place — no scaffolding needed.
-
-## Run the example
+## Run it
 
 ```bash
 forge run specs/add-greeting.md --verbose
 ```
 
-**What to expect:**
+Expected shape of a successful run:
 
-```
+```text
 [forge] ▸ WORKSPACE   add-greeting
 [forge]   Created worktree: .forge/worktrees/add-greeting
 [forge] ▸ PREFLIGHT   sonnet
 [forge]   Verdict: PROCEED
 [forge] ▸ DEV         sonnet  iter 1
-[forge]   ↳ Read: src/app.py
-[forge]   ↳ Read: tests/test_app.py
 [forge]   ↳ Edit: src/app.py
 [forge]   ↳ Write: tests/test_greet.py
 [forge] ▸ VALIDATE    pytest
-[forge]   Gate: PASS (4 passed in 0.3s)
+[forge]   Gate: PASS
 [forge] ▸ REVIEW      opus
-[forge]   ✓ REVIEW   APPROVE  0 P1  $1.10  4m 12s
+[forge]   ✓ REVIEW   APPROVE
 [forge] ▸ DONE        add-greeting
 ```
 
-See [EXPECTED_OUTPUT.md](EXPECTED_OUTPUT.md) for a complete, realistic terminal
-transcript including what failed validation and a review request-changes look like.
+For a more complete transcript, including retry behavior, see
+[EXPECTED_OUTPUT.md](EXPECTED_OUTPUT.md).
 
-## What changes after a successful run
+## What success looks like
 
-- A new branch `forge/add-greeting` is created
-- `src/app.py` is extended with the greeting feature
-- New tests are added in the worktree
-- `.forge/worktrees/add-greeting/forge_audit.yaml` contains the full run trace
+After a successful run you should have:
 
-**Verify success:**
+- A new branch: `forge/add-greeting`
+- A managed worktree: `.forge/worktrees/add-greeting`
+- A changed implementation in `src/app.py`
+- New test coverage for the greeting behavior
+- An audit trail in `.forge/worktrees/add-greeting/forge_audit.yaml`
+
+Useful verification commands:
 
 ```bash
-# Check the branch was created
-git log forge/add-greeting --oneline
-
-# Inspect the audit trail
-cat .forge/worktrees/add-greeting/forge_audit.yaml
-
-# Run tests on the feature branch manually
+git log forge/add-greeting --oneline -1
+git diff --stat HEAD..forge/add-greeting
 cd .forge/worktrees/add-greeting
 python -m pytest tests/ -v
 ```
 
-## Merge the result
+## Merge or inspect
+
+Auto-merge on the run:
 
 ```bash
-# Auto-merge (re-run with --auto-merge)
 forge run specs/add-greeting.md --auto-merge
+```
 
-# Or manually
+Or inspect and merge manually:
+
+```bash
+git diff HEAD..forge/add-greeting
 git merge forge/add-greeting
 ```
 
-## Run a sprint (both stories)
+## Reset and rerun
+
+```bash
+git worktree remove .forge/worktrees/add-greeting --force
+git branch -D forge/add-greeting
+forge run specs/add-greeting.md --verbose
+```
+
+## Run the sprint
 
 ```bash
 forge sprint sprints/hello-sprint.yaml --verbose --auto-merge
 ```
 
-Runs `add-greeting` then `add-farewell` sequentially.
+This runs `add-greeting` and `add-farewell` sequentially.
 
-## Reset and rerun
+## Files in this example
 
-```bash
-# Remove the worktree and branch to start fresh
-git worktree remove .forge/worktrees/add-greeting --force
-git branch -D forge/add-greeting
-
-# Then rerun
-forge run specs/add-greeting.md --verbose
-```
-
-## Files explained
-
-```
-forge.yaml                    # Project config — models, budgets, gate command
-src/
-  app.py                      # Minimal app — forge extends this
-  __init__.py
-tests/
-  test_app.py                 # Baseline tests — pass before forge runs
-  __init__.py
+```text
+forge.yaml
 specs/
-  add-greeting.md             # Story 1: what to build + acceptance criteria
-  add-farewell.md             # Story 2: another feature
+  add-greeting.md
+  add-farewell.md
 sprints/
-  hello-sprint.yaml           # Sprint: run both stories sequentially
-EXPECTED_OUTPUT.md            # Realistic terminal transcript of a successful run
+  hello-sprint.yaml
+src/
+  app.py
+tests/
+  test_app.py
+EXPECTED_OUTPUT.md
 ```
-
-## What things cost
-
-- **Single story (add-greeting):** ~$1-3 (Sonnet dev + Opus review)
-- **Time:** ~5-10 minutes per story
-- **Budget cap:** Set in forge.yaml — hard-stops if exceeded
 
 ## See also
 
-- [Getting Started](../../docs/guides/getting-started.md) — full setup walkthrough
-- [First-Run Walkthrough](../../docs/guides/first-run-walkthrough.md) — narrated transcript
-- [CLI Reference](../../docs/guides/cli-reference.md) — all commands and flags
+- [Getting Started](../../docs/guides/getting-started.md)
+- [First-Run Walkthrough](../../docs/guides/first-run-walkthrough.md)
+- [CLI Reference](../../docs/guides/cli-reference.md)
