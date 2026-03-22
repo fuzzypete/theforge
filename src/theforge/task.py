@@ -1278,11 +1278,13 @@ def build_review_prompt(
           previous review cycle.
         - This review may be merged with other reviewers' outputs. One speculative
           P1 from you blocks the entire pipeline. Be precise.
-        - **Spec-to-runtime traceability**: For each AC the developer claims as
-          MET, verify BOTH layers: (a) the logic exists in the codebase, AND
-          (b) it is actually invoked at runtime by the coordinator/runner/CLI.
-          Code that produces correct output but is never called does NOT satisfy
-          the AC. A selector that returns a value the caller ignores is a P1.
+        - **Spec-to-runtime traceability**: For each AC in the spec, verify
+          BOTH layers: (a) the logic exists in the codebase, AND (b) it is
+          actually invoked at runtime by the coordinator/runner/CLI. Code that
+          produces correct output but is never called does NOT satisfy the AC.
+          When an AC depends on a function's output being consumed by its
+          caller, verify the caller actually uses it — unused return values
+          that are required to satisfy an AC are P1.
         - **YAML safety**: In `description` and `suggestion` fields, do NOT use
           backslashes or double-quote characters inside double-quoted strings —
           they break YAML parsing. Use single quotes or paraphrase instead.
