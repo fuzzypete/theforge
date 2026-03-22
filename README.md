@@ -102,7 +102,8 @@ Expected shape of a successful run:
 The public-facing lifecycle is intentionally simple:
 
 ```text
-INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW -> DEV -> VALIDATE -> REVIEW -> DONE/ESCALATE
+INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW
+  -> DEV -> VALIDATE -> REVIEW -> DONE / ESCALATE
 ```
 
 The coordinator creates a worktree, invokes the configured agents, runs your
