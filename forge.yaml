@@ -157,7 +157,7 @@ agents:
     strengths: [architecture, review, complex-logic]
 
 assignment:
-  enabled: false  # keep CI unaffected; enable per-story to opt in
+  enabled: true  # M2: complexity-driven model routing
   min_reviewers: 1
   max_reviewers: 3
   prefer_cross_provider: true
