@@ -23,8 +23,10 @@ import yaml
 from .config import PROVIDER_API_KEY_MAP, ForgeConfig, generate_default_config, load_config
 from .coordinator import (
     CoordinatorResult,
+    Phase,
     _fmt_duration,
     generate_audit_log,
+    parse_phase_name,
     run_from_review,
     run_task,
 )
@@ -395,6 +397,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     if getattr(args, "dev_model", None):
         config = _apply_dev_model_override(config, args.dev_model)
 
+    # --reviewers N: trim review pool for this run (never mutates forge.yaml)
+    if getattr(args, "reviewers", None) is not None:
+        n = args.reviewers
+        if n < 1:
+            print(f"--reviewers must be >= 1, got {n}", file=sys.stderr)
+            return 1
+        trimmed_pool = config.review_pool[:n]
+        new_synth = None if len(trimmed_pool) <= 1 else config.synthesis_profile
+        config = dataclasses.replace(config, review_pool=trimmed_pool, synthesis_profile=new_synth)
+
+    # --max-cycles N: cap review cycles for this run (never mutates forge.yaml)
+    if getattr(args, "max_cycles", None) is not None:
+        n = args.max_cycles
+        if n < 1:
+            print(f"--max-cycles must be >= 1, got {n}", file=sys.stderr)
+            return 1
+        new_retry = dataclasses.replace(config.retry, max_review_cycles=n)
+        config = dataclasses.replace(config, retry=new_retry)
+
     task = _build_task(story_path, slug=args.slug)
 
     print("TheForge v0.1.0", file=sys.stderr)
@@ -425,6 +446,82 @@ def cmd_run(args: argparse.Namespace) -> int:
     auto_merge = getattr(args, "auto_merge", False)
     plan_path = Path(args.plan).resolve() if args.plan else None
     resume = getattr(args, "resume", False)
+
+    # ── Parse --until / --from phase flags ────────────────────────────
+    stop_phase: Phase | None = None
+    start_phase: Phase | None = None
+    _explicit_from = bool(getattr(args, "from_phase", None))
+
+    if getattr(args, "until", None):
+        try:
+            stop_phase = parse_phase_name(args.until)
+        except ValueError as exc:
+            print(f"✗ --until: {exc}", file=sys.stderr)
+            return 1
+
+    if _explicit_from:
+        try:
+            start_phase = parse_phase_name(args.from_phase)
+        except ValueError as exc:
+            print(f"✗ --from: {exc}", file=sys.stderr)
+            return 1
+
+    # --plan without explicit --from: sugar for --from dev when worktree already exists.
+    # On fresh runs (no worktree), --plan keeps old behavior (WORKSPACE is created, PLAN skipped).
+    if plan_path is not None and start_phase is None:
+        _wt_for_plan = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+        if _wt_for_plan.exists():
+            start_phase = Phase.DEV
+
+    # ── Phase ordering validation ──────────────────────────────────────
+    if start_phase is not None and stop_phase is not None:
+        if start_phase.value > stop_phase.value:
+            print(
+                f"✗ --from {args.from_phase} comes after --until {args.until} in the pipeline; "
+                "nothing would run.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # ── --from / --until incompatible with --resume ────────────────────
+    if resume and (start_phase is not None or stop_phase is not None):
+        print(
+            "✗ --from and --until are not compatible with --resume. Use one or the other.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # ── Precondition validation for explicit --from ────────────────────
+    if _explicit_from and start_phase is not None:
+        expected_wt = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+        if not expected_wt.exists():
+            print(
+                f"✗ --from {args.from_phase}: worktree not found at {expected_wt}",
+                file=sys.stderr,
+            )
+            return 1
+
+        if start_phase == Phase.DEV and plan_path is None:
+            # forge_plan.md must exist in worktree (or --plan provided)
+            plan_in_wt = expected_wt / "forge_plan.md"
+            if not plan_in_wt.exists():
+                print(
+                    f"✗ --from dev: forge_plan.md not found in worktree ({plan_in_wt}). "
+                    "Provide --plan <file> to inject a plan.",
+                    file=sys.stderr,
+                )
+                return 1
+
+        if start_phase == Phase.REVIEW:
+            # Dev handoff must exist
+            handoff_in_wt = expected_wt / "handoff.yaml"
+            if not handoff_in_wt.exists():
+                print(
+                    f"✗ --from review: handoff.yaml not found in worktree ({handoff_in_wt}). "
+                    "Run dev + validate first.",
+                    file=sys.stderr,
+                )
+                return 1
 
     if resume:
         triage = _triage_spec(str(story_path), config, config.project_root)
@@ -473,6 +570,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             auto_merge=auto_merge,
             notify=not args.no_notify,
             plan_path=plan_path,
+            start_phase=start_phase,
+            stop_phase=stop_phase,
         )
 
     # Write audit log
@@ -1517,6 +1616,41 @@ def main() -> None:
         action="store_true",
         default=False,
         help="Triage existing worktree and resume from correct phase (REVIEW/DEV/full)",
+    )
+    run_parser.add_argument(
+        "--until",
+        metavar="PHASE",
+        default=None,
+        help=(
+            "Stop pipeline after specified phase. "
+            "Valid phases: init, workspace, preflight, plan, plan-review, "
+            "dev, validate, review. Worktree preserved on stop. Exit code 0."
+        ),
+    )
+    run_parser.add_argument(
+        "--from",
+        dest="from_phase",
+        metavar="PHASE",
+        default=None,
+        help=(
+            "Resume pipeline from specified phase, skipping earlier phases. "
+            "Requires an existing worktree. "
+            "Valid phases: dev, review (and others)."
+        ),
+    )
+    run_parser.add_argument(
+        "--reviewers",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Limit review pool to first N reviewers for this run (does not modify forge.yaml)",
+    )
+    run_parser.add_argument(
+        "--max-cycles",
+        metavar="N",
+        type=int,
+        default=None,
+        help="Cap review→dev cycles to N for this run (does not modify forge.yaml)",
     )
 
     # forge review

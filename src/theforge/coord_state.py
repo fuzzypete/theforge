@@ -36,6 +36,34 @@ class Phase(Enum):
     ESCALATE = auto()
 
 
+_PHASE_NAME_MAP: dict[str, Phase] = {
+    "init": Phase.INIT,
+    "workspace": Phase.WORKSPACE,
+    "preflight": Phase.PREFLIGHT,
+    "plan": Phase.PLAN,
+    "plan-review": Phase.PLAN_REVIEW,
+    "dev": Phase.DEV,
+    "validate": Phase.VALIDATE,
+    "review": Phase.REVIEW,
+    "human-review": Phase.HUMAN_REVIEW,
+}
+
+
+def parse_phase_name(name: str) -> Phase:
+    """Parse a lowercase hyphenated phase name into a Phase enum value.
+
+    Accepted names: init, workspace, preflight, plan, plan-review, dev,
+    validate, review, human-review.
+
+    Raises ValueError with valid names on unknown input.
+    """
+    result = _PHASE_NAME_MAP.get(name.lower())
+    if result is None:
+        valid = ", ".join(sorted(_PHASE_NAME_MAP))
+        raise ValueError(f"Unknown phase name {name!r}. Valid names: {valid}")
+    return result
+
+
 # ── Disposition enum ──────────────────────────────────────────────────
 
 
@@ -173,6 +201,8 @@ class CoordinatorState:
     sprint_promotions: dict[str, str] = field(default_factory=dict)
     # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
     # Sticky within a sprint (single forge process lifetime); resets on process exit.
+    start_phase: Phase | None = None  # --from <phase>: skip phases before this
+    stop_phase: Phase | None = None  # --until <phase>: stop after this phase
 
     @property
     def total_dev_cost(self) -> float:

@@ -14,6 +14,7 @@ from theforge.cli import (
     _parse_story_frontmatter,
     cmd_check_providers,
     cmd_init_hooks,
+    cmd_run,
     cmd_secrets_init,
 )
 from theforge.config import (
@@ -25,6 +26,8 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coord_state import CoordinatorState
+from theforge.coordinator import CoordinatorResult, Phase
 from theforge.runner import AgentResult
 
 # ── Helpers (kept for TestBuildTask / TestFindConfig) ─────────────────
@@ -599,3 +602,279 @@ class TestApplyDevModelOverride:
             cfg, "ollama/qwen2.5-coder:7b@http://localhost:11434/v1"
         )
         assert result.dev_profile.mode == "api"
+
+
+# ── Stage-aware pipeline CLI tests ───────────────────────────────────
+
+
+def _make_run_args(
+    tmp_path,
+    *,
+    plan: str | None = None,
+    from_phase: str | None = None,
+    until: str | None = None,
+    reviewers: int | None = None,
+    max_cycles: int | None = None,
+    slug: str | None = None,
+    resume: bool = False,
+    dev_model: str | None = None,
+    dry_run: bool = False,
+) -> argparse.Namespace:
+    """Build a minimal argparse.Namespace for cmd_run tests."""
+    story = tmp_path / "story.md"
+    story.write_text("# Story\nDo the thing.\n", encoding="utf-8")
+    # Create a dummy forge.yaml so _find_config succeeds (load_config is mocked).
+    forge_yaml = tmp_path / "forge.yaml"
+    if not forge_yaml.exists():
+        forge_yaml.write_text("project:\n  root: .\n", encoding="utf-8")
+    return argparse.Namespace(
+        story=str(story),
+        slug=slug,
+        config=str(forge_yaml),
+        plan=plan,
+        from_phase=from_phase,
+        until=until,
+        reviewers=reviewers,
+        max_cycles=max_cycles,
+        resume=resume,
+        dev_model=dev_model,
+        dry_run=dry_run,
+        interactive=False,
+        auto_merge=False,
+        verbose=False,
+        no_notify=True,
+    )
+
+
+def _stub_result(phase: Phase = Phase.DONE, success: bool = True) -> CoordinatorResult:
+    return CoordinatorResult(
+        success=success,
+        phase=phase,
+        state=CoordinatorState(),
+        message="ok",
+    )
+
+
+class TestCmdRunUntilFlag:
+    """--until flag parsing and wiring."""
+
+    def test_until_plan_parsed_and_passed_to_run_task(self, tmp_path):
+        """--until plan passes stop_phase=Phase.PLAN to run_task."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, until="plan")
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 0
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("stop_phase") == Phase.PLAN
+
+    def test_until_unknown_phase_returns_1(self, tmp_path):
+        """--until with invalid phase name returns exit code 1."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, until="bogus-phase")
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task") as mock_run,
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 1
+        mock_run.assert_not_called()
+
+    def test_start_phase_none_when_no_from(self, tmp_path):
+        """When neither --from nor --plan is given, start_phase=None."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 0
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("start_phase") is None
+
+
+class TestCmdRunFromFlag:
+    """--from flag precondition validation."""
+
+    def test_from_dev_no_worktree_returns_1(self, tmp_path):
+        """--from dev when worktree does not exist → exit code 1."""
+        config = _make_forge_config(tmp_path)
+        slug = "story"
+        args = _make_run_args(tmp_path, from_phase="dev", slug=slug)
+
+        # Worktree does NOT exist
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task") as mock_run,
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 1
+        mock_run.assert_not_called()
+
+    def test_from_dev_no_plan_md_returns_1(self, tmp_path):
+        """--from dev with worktree but no forge_plan.md → exit code 1."""
+        config = _make_forge_config(tmp_path)
+        slug = "story"
+        args = _make_run_args(tmp_path, from_phase="dev", slug=slug)
+
+        # Create worktree without forge_plan.md
+        wt = tmp_path / slug
+        wt.mkdir()
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task") as mock_run,
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 1
+        mock_run.assert_not_called()
+
+    def test_from_review_no_handoff_returns_1(self, tmp_path):
+        """--from review with worktree but no handoff.yaml → exit code 1."""
+        config = _make_forge_config(tmp_path)
+        slug = "story"
+        args = _make_run_args(tmp_path, from_phase="review", slug=slug)
+
+        # Create worktree without handoff.yaml
+        wt = tmp_path / slug
+        wt.mkdir()
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task") as mock_run,
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 1
+        mock_run.assert_not_called()
+
+    def test_from_dev_with_plan_md_succeeds(self, tmp_path):
+        """--from dev with worktree + forge_plan.md passes preconditions."""
+        config = _make_forge_config(tmp_path)
+        slug = "story"
+        args = _make_run_args(tmp_path, from_phase="dev", slug=slug)
+
+        # Create worktree with forge_plan.md
+        wt = tmp_path / slug
+        wt.mkdir()
+        (wt / "forge_plan.md").write_text("# Plan", encoding="utf-8")
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 0
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("start_phase") == Phase.DEV
+
+
+class TestCmdRunConfigOverrides:
+    """--reviewers and --max-cycles override flags."""
+
+    def test_reviewers_trims_pool(self, tmp_path):
+        """--reviewers 1 passes a review_pool of length 1 to run_task."""
+        config = _make_forge_config(tmp_path)
+        assert len(config.review_pool) == 2  # fixture has 2 reviewers
+        args = _make_run_args(tmp_path, reviewers=1)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            cmd_run(args)
+
+        passed_config = mock_run.call_args.args[0]
+        assert len(passed_config.review_pool) == 1
+        assert passed_config.review_pool[0] == config.review_pool[0]
+
+    def test_max_cycles_override(self, tmp_path):
+        """--max-cycles 1 passes config.retry.max_review_cycles==1 to run_task."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, max_cycles=1)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            cmd_run(args)
+
+        passed_config = mock_run.call_args.args[0]
+        assert passed_config.retry.max_review_cycles == 1
+
+    def test_override_flags_not_persisted_to_yaml(self, tmp_path):
+        """Config overrides do not write to forge.yaml."""
+        config = _make_forge_config(tmp_path)
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project: test\n", encoding="utf-8")
+        yaml_before = forge_yaml.read_text(encoding="utf-8")
+
+        args = _make_run_args(tmp_path, reviewers=1, max_cycles=1)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()),
+            patch("theforge.cli._write_audit"),
+        ):
+            cmd_run(args)
+
+        assert forge_yaml.read_text(encoding="utf-8") == yaml_before
+
+    def test_plan_flag_with_existing_worktree_implies_from_dev(self, tmp_path):
+        """--plan with existing worktree sets start_phase=Phase.DEV."""
+        config = _make_forge_config(tmp_path)
+        slug = "story"
+
+        # Create existing worktree
+        wt = tmp_path / slug
+        wt.mkdir()
+
+        plan_file = tmp_path / "plan.md"
+        plan_file.write_text("# My Plan\n", encoding="utf-8")
+        args = _make_run_args(tmp_path, plan=str(plan_file), slug=slug)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            cmd_run(args)
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("start_phase") == Phase.DEV
+
+    def test_plan_flag_without_worktree_no_start_phase(self, tmp_path):
+        """--plan on a fresh run (no worktree) does NOT set start_phase."""
+        config = _make_forge_config(tmp_path)
+        # No worktree directory created
+        plan_file = tmp_path / "plan.md"
+        plan_file.write_text("# My Plan\n", encoding="utf-8")
+        args = _make_run_args(tmp_path, plan=str(plan_file))
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            cmd_run(args)
+
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs.get("start_phase") is None

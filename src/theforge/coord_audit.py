@@ -321,6 +321,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorR
             "success": result.success,
             "final_phase": result.phase.name,
             "message": result.message,
+            "start_phase": state.start_phase.name if state.start_phase else None,
+            "stop_phase": state.stop_phase.name if state.stop_phase else None,
         },
         "timing": {
             "started_at": state.started_at,

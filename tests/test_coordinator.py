@@ -33,6 +33,7 @@ from theforge.config import (
 from theforge.coordinator import (
     Phase,
     generate_audit_log,
+    parse_phase_name,
     run_from_review,
     run_review_only,
     run_task,
@@ -529,7 +530,7 @@ class TestCoordinatorHappyPath:
         assert result.success is True
         assert result.phase == Phase.DONE
         assert result.state.review_cycle == 1
-        assert result.state.dev_iteration == 1
+        assert result.state.dev_trace_count == 1
         assert len(result.state.dev_results) == 1
         assert len(result.state.review_results) == 1
 
@@ -3458,7 +3459,7 @@ class TestRunFromReview:
         assert result.phase == Phase.DONE
         assert result.state.review_cycle == 2
         # One dev iteration ran
-        assert result.state.dev_iteration == 1
+        assert result.state.dev_trace_count == 1
         assert len(result.state.dev_results) == 1
         # preflight was skipped
         assert result.state.preflight_verdict == "SKIPPED"
@@ -5490,3 +5491,244 @@ class TestSigtermHandler:
         # When ntfy is not configured, _ntfy_crash_notify guards internally and
         # _ntfy_publish must never be called.
         mock_publish.assert_not_called()
+
+
+# ── Stage-aware pipeline tests ────────────────────────────────────────
+
+
+class TestParsePhaseNameUtility:
+    """Unit tests for parse_phase_name()."""
+
+    def test_all_valid_names(self):
+        expected = {
+            "init": Phase.INIT,
+            "workspace": Phase.WORKSPACE,
+            "preflight": Phase.PREFLIGHT,
+            "plan": Phase.PLAN,
+            "plan-review": Phase.PLAN_REVIEW,
+            "dev": Phase.DEV,
+            "validate": Phase.VALIDATE,
+            "review": Phase.REVIEW,
+            "human-review": Phase.HUMAN_REVIEW,
+        }
+        for name, phase in expected.items():
+            assert parse_phase_name(name) == phase
+
+    def test_case_insensitive(self):
+        assert parse_phase_name("DEV") == Phase.DEV
+        assert parse_phase_name("Plan-Review") == Phase.PLAN_REVIEW
+
+    def test_unknown_raises(self):
+        with pytest.raises(ValueError, match="Unknown phase name"):
+            parse_phase_name("unknown-phase")
+
+    def test_phase_ordering(self):
+        """Phase enum values must be ordered INIT < WORKSPACE < ... < REVIEW."""
+        phases = [
+            Phase.INIT,
+            Phase.WORKSPACE,
+            Phase.PREFLIGHT,
+            Phase.PLAN,
+            Phase.PLAN_REVIEW,
+            Phase.DEV,
+            Phase.VALIDATE,
+            Phase.REVIEW,
+        ]
+        for i in range(len(phases) - 1):
+            assert phases[i].value < phases[i + 1].value, (
+                f"{phases[i].name}.value ({phases[i].value}) should be < "
+                f"{phases[i + 1].name}.value ({phases[i + 1].value})"
+            )
+
+
+class TestUntilPhaseStop:
+    """Tests for --until phase stop behaviour."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_until_preflight_stops_after_preflight(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--until preflight: run PREFLIGHT, then stop without entering DEV."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.return_value = _make_agent_result(success=True, output=PREFLIGHT_PROCEED)
+
+        result = run_task(config, task, stop_phase=Phase.PREFLIGHT)
+
+        assert result.success is True
+        assert result.message == "Stopped at --until preflight"
+        assert result.phase == Phase.PREFLIGHT
+        # DEV agent should NOT have been called (only preflight)
+        assert result.state.dev_iteration == 0
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_until_validate_stops_after_validate(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--until validate: run DEV+VALIDATE, then stop without REVIEW."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+
+        result = run_task(config, task, stop_phase=Phase.VALIDATE)
+
+        assert result.success is True
+        assert result.message == "Stopped at --until validate"
+        assert result.phase == Phase.VALIDATE
+        assert result.state.dev_trace_count == 1
+        # REVIEW should NOT have been called
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_until_review_stops_after_first_review(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """--until review: run DEV+VALIDATE+REVIEW, then stop (no retry on REQUEST_CHANGES)."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        # Return REQUEST_CHANGES — without --until, this would retry DEV
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, stop_phase=Phase.REVIEW)
+
+        assert result.success is True
+        assert result.message == "Stopped at --until review"
+        assert result.phase == Phase.REVIEW
+        # Only one DEV call — did not loop back (dev_iteration resets after review)
+        assert result.state.dev_trace_count == 1
+
+
+class TestFromPhaseSkip:
+    """Tests for --from phase skip behaviour."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_from_dev_skips_preflight_and_plan(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """--from dev: WORKSPACE is reused, PREFLIGHT/PLAN skipped, DEV runs."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        # Put forge_plan.md so the coordinator doesn't complain
+        (workspace / "forge_plan.md").write_text("# Plan\n- step 1", encoding="utf-8")
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        # Only dev agent and review pool should be called
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, start_phase=Phase.DEV)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Preflight verdict should be SKIPPED
+        assert result.state.preflight_verdict == "SKIPPED"
+        # run_agent called only once (for dev, not preflight)
+        assert mock_agent.call_count == 1
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_from_dev_until_validate_combined(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """--from dev --until validate: DEV→VALIDATE then stop."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        (workspace / "forge_plan.md").write_text("# Plan\n", encoding="utf-8")
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        result = run_task(config, task, start_phase=Phase.DEV, stop_phase=Phase.VALIDATE)
+
+        assert result.success is True
+        assert result.message == "Stopped at --until validate"
+        assert result.phase == Phase.VALIDATE
+        assert result.state.preflight_verdict == "SKIPPED"
+        mock_pool.assert_not_called()
+
+
+class TestAuditStartStopPhase:
+    """Audit log records start/stop phases."""
+
+    def test_audit_records_start_stop_phase(self, tmp_path):
+        from theforge.coord_state import CoordinatorState
+
+        state = CoordinatorState()
+        state.start_phase = Phase.DEV
+        state.stop_phase = Phase.VALIDATE
+
+        from theforge.coord_audit import generate_audit_log
+        from theforge.coordinator import CoordinatorResult
+
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.VALIDATE,
+            state=state,
+            message="Stopped at --until validate",
+        )
+        task = _make_task(tmp_path)
+        audit = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert audit["outcome"]["start_phase"] == "DEV"
+        assert audit["outcome"]["stop_phase"] == "VALIDATE"
+
+    def test_audit_none_start_stop_when_unset(self, tmp_path):
+        from theforge.coord_state import CoordinatorState
+
+        state = CoordinatorState()
+
+        from theforge.coord_audit import generate_audit_log
+        from theforge.coordinator import CoordinatorResult
+
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+        )
+        task = _make_task(tmp_path)
+        audit = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert audit["outcome"]["start_phase"] is None
+        assert audit["outcome"]["stop_phase"] is None
