@@ -203,6 +203,8 @@ class CoordinatorState:
     # Sticky within a sprint (single forge process lifetime); resets on process exit.
     start_phase: Phase | None = None  # --from <phase>: skip phases before this
     stop_phase: Phase | None = None  # --until <phase>: stop after this phase
+    _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
+    _explicit_roles: set = field(default_factory=set)  # roles with explicit forge.yaml config
 
     @property
     def total_dev_cost(self) -> float:

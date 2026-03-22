@@ -59,7 +59,12 @@ class EscalationRecord:
 
 @dataclass
 class AssignmentDecision:
-    """Model selections for every phase of a story run."""
+    """Model selections for every phase of a story run.
+
+    Note: preflight runs BEFORE assignment is computed, so the preflight
+    decision only takes effect if the coordinator stores it for future use
+    (e.g. sprint-level config). It does not affect the current run's preflight.
+    """
 
     preflight: ModelProfile
     planner: ModelProfile

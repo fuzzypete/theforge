@@ -1384,11 +1384,19 @@ def run_task(
                 )
 
                 _explicit: dict[str, ModelProfile] = {}
+                _explicit_roles: set[str] = set()
                 if config.smart_config_models is None:
                     if config.dev_profile is not _DEF_DEV:
                         _explicit["dev"] = config.dev_profile
+                        _explicit_roles.add("dev")
                     if config.preflight_profile is not _DEF_PRE:
                         _explicit["preflight"] = config.preflight_profile
+                        _explicit_roles.add("preflight")
+                    # Detect explicit review pool and plan review config
+                    if config.review_pool:
+                        _explicit_roles.add("review_pool")
+                    if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
+                        _explicit_roles.add("plan_agent_review")
 
                 _decision = _assign_models(
                     config.agents,
@@ -1402,14 +1410,20 @@ def run_task(
                 # Update config with adaptive assignments
                 import dataclasses as _dc
 
-                config = _dc.replace(
-                    config,
-                    dev_profile=_decision.dev,
-                    preflight_profile=_decision.preflight,
-                    review_pool=_decision.code_reviewers
-                    if _decision.code_reviewers
-                    else config.review_pool,
-                )
+                _replace_kwargs: dict = {
+                    "dev_profile": _decision.dev,
+                    "preflight_profile": _decision.preflight,
+                }
+                if _decision.code_reviewers:
+                    if "review_pool" not in _explicit_roles:
+                        _replace_kwargs["review_pool"] = _decision.code_reviewers
+                    else:
+                        _log("  [adaptive] review_pool: explicit override preserved")
+                config = _dc.replace(config, **_replace_kwargs)
+
+                # Stash adaptive decisions for PLAN and PLAN_REVIEW phases
+                state._adaptive_decision = _decision
+                state._explicit_roles = _explicit_roles
 
                 # Update sprint_promotions if promotion occurred
                 _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
@@ -1617,14 +1631,22 @@ def run_task(
                 _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
             else:
                 _log(f"  Plan timeout: {_plan_timeout}s")
-            plan_profile = ModelProfile(
-                name="plan",
-                cli=config.plan.model,
-                model=config.plan.model_name,
-                budget_usd=config.plan.budget_usd,
-                timeout_seconds=_plan_timeout,
-                allowed_tools=config.preflight_profile.allowed_tools,
-            )
+            # Use adaptive planner if available, otherwise static config
+            _adaptive = getattr(state, "_adaptive_decision", None)
+            if _adaptive is not None and _adaptive.planner is not None:
+                plan_profile = _adaptive.planner
+                # Preserve timeout from plan config (complexity-aware)
+                plan_profile = _dc.replace(plan_profile, timeout_seconds=_plan_timeout)
+                _log(f"  [adaptive] planner: {plan_profile.model}")
+            else:
+                plan_profile = ModelProfile(
+                    name="plan",
+                    cli=config.plan.model,
+                    model=config.plan.model_name,
+                    budget_usd=config.plan.budget_usd,
+                    timeout_seconds=_plan_timeout,
+                    allowed_tools=config.preflight_profile.allowed_tools,
+                )
             _log_phase(state.phase, plan_profile.model)
             logger._safe_emit("phase_start", phase="PLAN", iteration=0)
 
@@ -1667,7 +1689,19 @@ def run_task(
                     # ── Agent plan review (pool) ───────────────────────
                     state.phase = Phase.PLAN_REVIEW
                     state.plan_review_mode = "agent"
-                    par_profiles = config.plan_agent_review.profiles
+                    _adaptive = getattr(state, "_adaptive_decision", None)
+                    if (
+                        _adaptive is not None
+                        and _adaptive.plan_reviewers
+                        and "plan_agent_review" not in state._explicit_roles
+                    ):
+                        par_profiles = _adaptive.plan_reviewers
+                        _log(
+                            f"  [adaptive] plan_reviewers: "
+                            f"{', '.join(p.model for p in par_profiles)}"
+                        )
+                    else:
+                        par_profiles = config.plan_agent_review.profiles
                     _pool_names = [p.name for p in par_profiles]
                     _pool_label = "+".join(p.model for p in par_profiles)
                     if config.plan_review.enabled:
