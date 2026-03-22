@@ -1,88 +1,62 @@
 gate_decision: PASS
 dev_notes: |
-  summary: >
-    Implemented adaptive model assignment from scratch. Added AgentDef and AssignmentConfig
-    dataclasses to config.py with full forge.yaml parsing. Created src/theforge/assignment.py
-    as a pure, deterministic module containing assign_models() (no LLM, no I/O), plus two
-    I/O helpers (load_escalation_history, append_escalation_record) used only by the
-    coordinator. Added sprint_promotions to CoordinatorState. Wired assign_models() into
-    coordinator.py after preflight complexity parsing — when assignment.enabled is True and
-    agents pool is non-empty, the returned AssignmentDecision replaces config profiles.
-    Escalation records are written to .forge/assignment_history.yaml when a story reaches
-    DONE or ESCALATE. forge.yaml updated with haiku/sonnet/opus agent pool (assignment.enabled=false
-    to keep CI unaffected). 29 new pure unit tests cover all required scenarios.
-
+  summary: "Implemented adaptive model assignment from scratch. Added AgentDef and AssignmentConfig dataclasses to config.py with full forge.yaml parsing. Created src/theforge/assignment.py as a pure, deterministic module containing assign_models() (no LLM, no I/O), plus two I/O helpers (load_escalation_history, append_escalation_record) used only by the coordinator. Added sprint_promotions to CoordinatorState. Wired assign_models() into coordinator.py after preflight complexity parsing — when assignment.enabled is True and agents pool is non-empty, the returned AssignmentDecision replaces config profiles. Escalation records are written to .forge/assignment_history.yaml when a story reaches DONE or ESCALATE. forge.yaml updated with haiku/sonnet/opus agent pool (assignment.enabled=false to keep CI unaffected). 29 new pure unit tests cover all required scenarios."
   commits:
     - sha: "82121ef"
       message: "feat(assignment): adaptive model assignment with complexity-driven routing and escalation learning"
-
+    - sha: "921b3dd"
+      message: "chore: write handoff.yaml for adaptive-model-assignment"
   acceptance_criteria:
     - criterion: "agents: key in forge.yaml defines the available model pool with tier + strengths"
       status: MET
       notes: "forge.yaml now has agents: block with haiku/sonnet/opus. config.py parses into list[AgentDef] with tier/strengths/budget_usd/timeout_seconds."
-
     - criterion: "assignment: key configures bounds and behavior"
       status: MET
       notes: "forge.yaml has assignment: block; parsed into AssignmentConfig dataclass in config.py."
-
     - criterion: "assign_models() is a pure function — deterministic, no LLM, no I/O"
       status: MET
       notes: "assignment.py:assign_models() performs zero I/O and no LLM calls. test_deterministic verifies same inputs produce same outputs."
-
     - criterion: "Complexity LOW/MEDIUM/HIGH maps to tier selection per the table above"
       status: MET
       notes: "PHASE_TIER constant in assignment.py encodes the full spec table. _normalize_complexity maps small/medium/large to LOW/MEDIUM/HIGH. Tests confirm correct tier per complexity."
-
     - criterion: "Review pools prefer cross-provider diversity when pool allows"
       status: MET
       notes: "_select_reviewers greedy picks from different providers first; falls back to same-provider if pool too small. test_cross_provider_preference and test_cross_provider_fallback cover both paths."
-
     - criterion: "Explicit profiles: config overrides adaptive for that specific role"
       status: MET
       notes: "assign_models() accepts explicit_profiles dict keyed by role; these win over pool selection. test_explicit_override verifies this."
-
     - criterion: "Escalation history tracked in .forge/assignment_history.yaml"
       status: MET
       notes: "append_escalation_record() writes YAML to .forge/assignment_history.yaml. Coordinator calls this when a story finishes (DONE or ESCALATE) if assignment.escalation_memory is True."
-
     - criterion: "Auto-promotion fires after 2+ escalations in last 10 runs for a tier"
       status: MET
       notes: "_check_promotion() inspects last 10 matching history records; promotes if escalation_count >= 2. test_escalation_promotion verifies promotion; test_no_escalation_below_threshold verifies no promotion at 1."
-
     - criterion: "Auto-promotion logged with clear rationale"
       status: MET
-      notes: "Coordinator logs '[adaptive] MEDIUM dev promoted ... (tier mid → strong) — N/10 recent MEDIUM stories escalated' at verbose level. Rationale also stored in AssignmentDecision.rationale dict."
-
+      notes: "Coordinator logs '[adaptive] MEDIUM dev promoted ... (tier mid to strong) — N/10 recent MEDIUM stories escalated' at verbose level. Rationale also stored in AssignmentDecision.rationale dict."
     - criterion: "Auto-promotion is sticky per sprint, resets between sprints"
       status: MET
-      notes: "sprint_promotions: dict[str, str] added to CoordinatorState (in-memory, process lifetime). _check_promotion() checks this cache first; coordinator updates it on promotion. test_sprint_promotions_cached verifies cache is respected."
-
+      notes: "sprint_promotions dict[str,str] added to CoordinatorState (in-memory, process lifetime). _check_promotion() checks this cache first; coordinator updates it on promotion. test_sprint_promotions_cached verifies cache is respected."
     - criterion: "Budget cap (budget_per_story_usd) enforced — downgrade model before exceeding"
       status: MET
       notes: "_enforce_budget() iteratively downgrades highest-cost non-preflight profile to next cheaper tier (trying all tiers below), then removes code reviewers (min 1), then warns if still over cap. test_budget_cap_enforcement and test_budget_cap_downgrade_dev cover this."
-
     - criterion: "All assignment decisions logged at verbose level"
       status: MET
       notes: "Coordinator logs '[adaptive] Complexity: ...' then iterates AssignmentDecision.rationale and logs '[adaptive] phase: reason' for each phase."
-
     - criterion: "Deterministic: same inputs = same outputs every time"
       status: MET
       notes: "Pure function with sorted/deterministic operations throughout. test_deterministic calls assign_models twice with same args and asserts field equality."
-
     - criterion: "Tests cover: tier selection per complexity, cross-provider preference, escalation promotion, explicit override, budget cap enforcement"
       status: MET
       notes: "29 tests in tests/test_assignment.py covering all required scenarios plus extras (phase_tier_table_completeness, reviewer_count, sprint_promotions caching, determinism)."
-
   story_deviations:
-    - deviation: "_check_promotion() returns the cached sprint_promotions tier string directly (if already promoted this sprint), or 'promoted' string to signal promotion needed; caller computes promoted tier via _promote_tier(). This is cleaner than embedding tier computation in _check_promotion."
-      justification: "Equivalent behavior; caller reconstructs effective tier from _promote_tier()."
-    - deviation: "Escalation record complexity field stores uppercase (LOW/MEDIUM/HIGH) normalized from preflight output (small/medium/large)."
-      justification: "Spec normalizes to LOW/MEDIUM/HIGH throughout; consistency required for _check_promotion() to match history correctly."
-
+    - description: "_check_promotion() returns the cached sprint_promotions tier string directly (if already promoted this sprint), or 'promoted' string to signal promotion needed; caller computes promoted tier via _promote_tier() rather than _check_promotion() returning the final tier directly."
+      justification: "Equivalent behavior; caller reconstructs effective tier from _promote_tier(). Cleaner separation of concerns."
+    - description: "Escalation record complexity field stores uppercase (LOW/MEDIUM/HIGH) normalized from preflight output (small/medium/large) before writing to assignment_history.yaml."
+      justification: "Spec normalizes to LOW/MEDIUM/HIGH throughout; consistency required for _check_promotion() to match history records correctly."
   deferred_items:
-    - item: "Preflight domain tags (domains, estimated_files) from the spec's 'future extension' section"
+    - description: "Preflight domain tags (domains, estimated_files) from the spec future extension section — not implemented."
       reason: "Spec explicitly marks this as future/additive; assignment works without domains using complexity alone."
-    - item: "Planner profile from AssignmentDecision is computed but not wired into plan phase config (PlanConfig uses scalar model/model_name fields, not ModelProfile). Plan phase still uses config.plan.model/model_name."
+    - description: "Planner profile from AssignmentDecision is computed but not wired into plan phase config (PlanConfig uses scalar model/model_name fields, not ModelProfile). Plan phase still uses config.plan.model/model_name."
       reason: "PlanConfig is a different dataclass from ModelProfile; wiring would require a larger refactor of the plan phase. AssignmentDecision.planner is available for future integration. No AC explicitly requires planner wiring."
-
   gate_result: PASS
