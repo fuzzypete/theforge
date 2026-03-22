@@ -1435,6 +1435,36 @@ class TestParallelIndependentStories:
         assert sprint.specs_failed == 0
         assert sprint.specs_skipped == 0
         assert sprint.total_cost_usd == pytest.approx(3.0)
+        # outcome: done requires no failures and no early-stop reason
+        assert sprint.stopped_reason is None
+
+    def test_parallel_one_fail_others_complete(self, tmp_path: Path) -> None:
+        """One story fails — the other two still run and are counted correctly."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        _make_spec_file(tmp_path, "Story C", "story-c")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md", "story-c.md"],
+            budget=10.0,
+            max_parallel=3,
+        )
+        config = _make_config(tmp_path)
+
+        results = [
+            _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE),
+            _make_coordinator_result(success=True, cost=1.0),
+            _make_coordinator_result(success=True, cost=1.0),
+        ]
+
+        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 3
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 0
+        assert sprint.total_cost_usd == pytest.approx(3.0)
 
     def test_parallel_auto_merge_false_in_worker(self, tmp_path: Path) -> None:
         """With max_parallel>1, workers run with auto_merge=False."""

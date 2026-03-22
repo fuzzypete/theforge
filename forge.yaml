@@ -148,27 +148,8 @@ agents:
     timeout_seconds: 1200
     tier: strong
     strengths: [architecture, review, complex-logic]
-  - name: haiku
-    provider: anthropic
-    model: claude-haiku-4-5-20251001
-    budget_usd: 1.00
-    timeout_seconds: 300
-    tier: cheap
-    strengths: [fast, triage]
-  - name: sonnet
-    provider: anthropic
-    model: claude-sonnet-4-6
-    budget_usd: 5.00
-    timeout_seconds: 900
-    tier: mid
-    strengths: [code, tools, general]
-  - name: opus
-    provider: anthropic
-    model: claude-opus-4-6
-    budget_usd: 8.00
-    timeout_seconds: 1200
-    tier: strong
-    strengths: [architecture, review, complex-logic]
+  # API agents removed — this project uses Claude CLI (Max auth), not API keys.
+  # Add API agents here only if ANTHROPIC_API_KEY is set in .forge/.env.
 
 assignment:
   enabled: true  # M2: complexity-driven model routing

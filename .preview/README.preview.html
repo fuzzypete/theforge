@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <base href="../">
+  <title>TheForge README Preview</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.8.1/github-markdown.min.css">
+  <style>
+    body {
+      box-sizing: border-box;
+      min-width: 200px;
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 32px;
+      background: #f6f8fa;
+    }
+    .markdown-body {
+      box-sizing: border-box;
+      min-width: 200px;
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 45px;
+      background: white;
+      border: 1px solid #d0d7de;
+      border-radius: 12px;
+    }
+    @media (max-width: 767px) {
+      body { padding: 16px; }
+      .markdown-body { padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <article class="markdown-body">
+<h1 dir="auto">TheForge</h1>
+<p dir="auto"><a href="https://github.com/fuzzypete/theforge/actions/workflows/ci.yml"><img src="https://github.com/fuzzypete/theforge/actions/workflows/ci.yml/badge.svg" alt="CI" style="max-width: 100%;"></a><br>
+<a href="https://www.python.org" rel="nofollow"><img src="https://camo.githubusercontent.com/23b639181075ba5ffe31a53c6e4b5668ebf2dc7ff043ffb7491be7182ba8d68a/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f707974686f6e2d332e3131253230253743253230332e3132253230253743253230332e31332d626c7565" alt="Python 3.11+" data-canonical-src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue" style="max-width: 100%;"></a><br>
+<a href="LICENSE"><img src="https://camo.githubusercontent.com/8bb50fd2278f18fc326bf71f6e88ca8f884f72f179d3e555e20ed30157190d0d/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f6c6963656e73652d4d49542d677265656e2e737667" alt="License: MIT" data-canonical-src="https://img.shields.io/badge/license-MIT-green.svg" style="max-width: 100%;"></a><br>
+<a href="CHANGELOG.md"><img src="https://camo.githubusercontent.com/380c38421a611d29ae9f8182f8f5a008e641e8ba8c2b8e45f6a1b7f7cd29d14d/68747470733a2f2f696d672e736869656c64732e696f2f62616467652f76657273696f6e2d302e312e302d6f72616e6765" alt="Version" data-canonical-src="https://img.shields.io/badge/version-0.1.0-orange" style="max-width: 100%;"></a></p>
+<p dir="auto"><strong>Deterministic multi-LLM development orchestrator.</strong></p>
+<p dir="auto">TheForge runs a strict software development pipeline where Python coordinates<br>
+the process and models stay inside bounded roles: plan, implement, validate,<br>
+review. Every state transition is mechanical. Every run is auditable, resumable,<br>
+and isolated in a git worktree until you decide to merge.</p>
+<p dir="auto"><a target="_blank" rel="noopener noreferrer" href="docs/assets/readme-architecture-overview.svg"><img src="docs/assets/readme-architecture-overview.svg" alt="TheForge architecture overview" style="max-width: 100%;"></a></p>
+<ul dir="auto">
+<li>LLMs generate artifacts, not process decisions</li>
+<li>Validation and review act as mechanical gates</li>
+<li>Work happens on feature branches in managed worktrees</li>
+<li>Logs, audits, and review output make every run inspectable</li>
+</ul>
+<h2 dir="auto">Why TheForge</h2>
+<ul dir="auto">
+<li>Keep orchestration deterministic even when model behavior is not</li>
+<li>Separate coding from control flow, retries, and escalation</li>
+<li>Add cross-model review without manual copy/paste loops</li>
+<li>Leave a concrete audit trail behind every story run</li>
+</ul>
+<h2 dir="auto">Is this for you?</h2>
+<p dir="auto"><strong>Best fit</strong></p>
+<ul dir="auto">
+<li>Bounded feature work and bug fixes with clear acceptance criteria</li>
+<li>Repos with a runnable test or lint gate</li>
+<li>Teams that want auditability, resumability, and explicit review loops</li>
+<li>People who want multi-model review without giving models runtime authority</li>
+</ul>
+<p dir="auto"><strong>Poor fit</strong></p>
+<ul dir="auto">
+<li>Vague exploratory work without a clear done condition</li>
+<li>Repos with no deterministic validation step</li>
+<li>Huge refactors whose scope is still moving</li>
+<li>Design-heavy work where correctness is mostly subjective</li>
+</ul>
+<h2 dir="auto">5-minute quickstart</h2>
+<h3 dir="auto">1. Install</h3>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">pip install git+https://github.com/fuzzypete/theforge.git</pre></div>
+<p dir="auto">For development:</p>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">git clone https://github.com/fuzzypete/theforge.git
+<span class="pl-c1">cd</span> theforge
+pip install -e <span class="pl-s"><span class="pl-pds">"</span>.[dev]<span class="pl-pds">"</span></span></pre></div>
+<p dir="auto">You need at least one AI CLI. Starting with Claude Code is the simplest path.</p>
+<h3 dir="auto">2. Check provider health</h3>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">forge check-providers</pre></div>
+<h3 dir="auto">3. Run the canonical example</h3>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate"><span class="pl-c1">cd</span> examples/hello-forge
+forge run specs/add-greeting.md --verbose</pre></div>
+<p dir="auto">Start with <a href="examples/hello-forge/README.md">examples/hello-forge/README.md</a> if<br>
+you want the fastest proof that your setup is sane before pointing TheForge at<br>
+a real repository.</p>
+<h3 dir="auto">4. Run your own story</h3>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate"><span class="pl-c1">cd</span> your-project
+forge init
+forge run specs/my-feature.md --verbose</pre></div>
+<p dir="auto">Expected shape of a successful run:</p>
+<pre lang="text" class="notranslate"><code class="notranslate">[forge] ▸ WORKSPACE   my-feature
+[forge] ▸ PREFLIGHT   sonnet
+[forge]   Verdict: PROCEED
+[forge] ▸ DEV         sonnet  iter 1
+[forge] ▸ VALIDATE    pytest
+[forge]   Gate: PASS
+[forge] ▸ REVIEW      opus
+[forge]   ✓ REVIEW   APPROVE
+[forge] ▸ DONE        my-feature
+</code></pre>
+<h2 dir="auto">How a run works</h2>
+<p dir="auto">The public-facing lifecycle is intentionally simple:</p>
+<pre lang="text" class="notranslate"><code class="notranslate">INIT -&gt; WORKSPACE -&gt; PREFLIGHT -&gt; PLAN -&gt; PLAN_REVIEW -&gt; DEV -&gt; VALIDATE -&gt; REVIEW -&gt; DONE/ESCALATE
+</code></pre>
+<p dir="auto">The coordinator creates a worktree, invokes the configured agents, runs your<br>
+gate command, parses structured review output, and decides what happens next.<br>
+Models do the planning, coding, and reviewing, but they do not decide whether<br>
+to retry, pass a gate, or escalate.</p>
+<h2 dir="auto">What gets created</h2>
+<pre lang="text" class="notranslate"><code class="notranslate">your-project/
+|- forge.yaml
+|- specs/
+|- sprints/
+`- .forge/
+   |- .env
+   |- hooks/
+   |- logs/
+   |- audits/
+   `- worktrees/
+</code></pre>
+<ul dir="auto">
+<li><code class="notranslate">forge.yaml</code>, <code class="notranslate">specs/</code>, <code class="notranslate">sprints/</code>, and <code class="notranslate">.forge/.env</code> are yours.</li>
+<li><code class="notranslate">.forge/logs/</code>, <code class="notranslate">.forge/audits/</code>, and <code class="notranslate">.forge/worktrees/</code> are generated by TheForge.</li>
+<li>Worktrees are where agent edits happen, so your main branch stays untouched until you merge.</li>
+<li>The latest persistent audit lands in <code class="notranslate">.forge/audits/forge_audit.yaml</code>.</li>
+</ul>
+<p dir="auto">See <a href="docs/guides/getting-started.md#what-gets-created">Getting Started</a> for the<br>
+full ownership and cleanup breakdown.</p>
+<h2 dir="auto">Choose your setup</h2>
+<markdown-accessiblity-table><table role="table">
+<thead>
+<tr>
+<th>Setup</th>
+<th>Best for</th>
+<th>Tradeoff</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single CLI</td>
+<td>Fastest first run</td>
+<td>Fewer comparison angles in review</td>
+</tr>
+<tr>
+<td>Multi-CLI review</td>
+<td>Cross-model review coverage</td>
+<td>More local setup friction</td>
+</tr>
+<tr>
+<td>API reviewers/runtime</td>
+<td>Fine-grained control and hosted providers</td>
+<td>More env and secret management</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">See <a href="docs/guides/choose-your-provider-setup.md">Provider Setup Guide</a> for<br>
+recommended patterns.</p>
+<h2 dir="auto">What things cost</h2>
+<markdown-accessiblity-table><table role="table">
+<thead>
+<tr>
+<th>Complexity</th>
+<th>Dev (Sonnet)</th>
+<th>Review (Opus)</th>
+<th>Total</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Small (1-2 files)</td>
+<td>$0.50-1.50</td>
+<td>$0.30-0.80</td>
+<td>~$1-2</td>
+</tr>
+<tr>
+<td>Medium (3-8 files)</td>
+<td>$1.50-4.00</td>
+<td>$0.50-1.50</td>
+<td>~$2-6</td>
+</tr>
+<tr>
+<td>Large (8+ files)</td>
+<td>$3.00-8.00</td>
+<td>$1.00-3.00</td>
+<td>~$5-12</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<p dir="auto">Actual cost varies a lot with repo shape, validation runtime, diff size, prompt<br>
+volume, and the number of review loops. Budget enforcement is built in via<br>
+<code class="notranslate">budget_usd</code>.</p>
+<h2 dir="auto">Start here</h2>
+<markdown-accessiblity-table><table role="table">
+<thead>
+<tr>
+<th>Guide</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="docs/guides/getting-started.md">Getting Started</a></td>
+<td>Full first-run walkthrough from install to merge</td>
+</tr>
+<tr>
+<td><a href="examples/hello-forge/">Example Project</a></td>
+<td>Canonical proof path for a fresh setup</td>
+</tr>
+<tr>
+<td><a href="docs/guides/first-run-walkthrough.md">First-Run Walkthrough</a></td>
+<td>Narrated phase-by-phase terminal transcript</td>
+</tr>
+<tr>
+<td><a href="docs/guides/troubleshooting.md">Troubleshooting</a></td>
+<td>Recovery guidance for setup, gate, and worktree issues</td>
+</tr>
+<tr>
+<td><a href="docs/guides/cli-reference.md">CLI Reference</a></td>
+<td>Commands, flags, and when to use them</td>
+</tr>
+<tr>
+<td><a href="docs/guides/inputs-reference.md">Inputs Reference</a></td>
+<td>Story, sprint, config, and brief file formats</td>
+</tr>
+<tr>
+<td><a href="docs/guides/choose-your-provider-setup.md">Provider Setup Guide</a></td>
+<td>Choosing between CLI and API patterns</td>
+</tr>
+<tr>
+<td><a href="docs/guides/local-models.md">Local Models</a></td>
+<td>Ollama and vLLM setup for private or offline use</td>
+</tr>
+<tr>
+<td><a href="docs/vision.md">Vision</a></td>
+<td>Philosophy, architecture principles, and roadmap</td>
+</tr>
+</tbody>
+</table></markdown-accessiblity-table>
+<h2 dir="auto">Developing TheForge</h2>
+<p dir="auto">The repo configures TheForge to develop itself. The most useful local commands are:</p>
+<div class="highlight highlight-source-shell" dir="auto"><pre class="notranslate">make fmt
+make lint
+make <span class="pl-c1">test</span>
+make gate</pre></div>
+<p dir="auto">Core modules live in <code class="notranslate">src/theforge/</code>, with the coordinator in<br>
+<code class="notranslate">src/theforge/coordinator.py</code>, subprocess runners in <code class="notranslate">src/theforge/runner.py</code><br>
+and <code class="notranslate">src/theforge/runner_api.py</code>, and review/schema boundaries in<br>
+<code class="notranslate">src/theforge/review.py</code> and <code class="notranslate">src/theforge/schemas.py</code>.</p>
+<h2 dir="auto">License</h2>
+<p dir="auto"><a href="LICENSE">MIT</a></p>
+  </article>
+</body>
+</html>
