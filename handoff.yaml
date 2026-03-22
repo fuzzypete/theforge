@@ -1,0 +1,47 @@
+dev_notes: |
+  summary: "Implemented parallel sprint execution by adding max_parallel to SprintManifest, introducing a StoryDAG class for dependency-aware scheduling, and replacing run_sprint()'s sequential for-loop with a ThreadPoolExecutor while-loop. The DAG uses two distinct sets: _completed (stories that merged/ALREADY_DONE, satisfying downstream deps) and _finished (all processed stories). Workers always run with effective_auto_merge=False in parallel mode; merging is deferred to a dependency-ordered flush loop in the main thread via _merge_branch. Budget is pooled across workers via a threading.Lock. max_parallel=1 (default) produces identical behavior to the old sequential runner via the same code path."
+  commits:
+    - sha: "a049436"
+      message: "feat(sprint): parallel story execution with dependency-aware DAG scheduling"
+  acceptance_criteria:
+    - criterion: "max_parallel in sprint manifest controls concurrency (default 1 = sequential)"
+      status: MET
+      notes: "SprintManifest.max_parallel field added (default 1). load_sprint_manifest() validates it is an integer >= 1. ThreadPoolExecutor uses max_workers=manifest.max_parallel."
+    - criterion: "Stories with no depends_on launch immediately up to max_parallel"
+      status: MET
+      notes: "StoryDAG.ready() returns all tasks whose deps are in _completed; the main loop caps submission at max_parallel concurrently active workers."
+    - criterion: "Stories with depends_on wait for dependencies to complete"
+      status: MET
+      notes: "DAG.ready() only returns a task when all its depends_on slugs are in _completed. mark_complete is called only on merged/ALREADY_DONE outcomes, ensuring downstream tasks only start when predecessors truly satisfy deps."
+    - criterion: "Failed/escalated dependencies cause dependents to skip"
+      status: MET
+      notes: "Failed/unmerged stories call dag.mark_skipped() (not mark_complete), so their dependents are never returned by ready(). The deadlock-detection block in the main loop sweeps remaining blocked tasks and logs the unmet deps before marking them skipped."
+    - criterion: "Budget check before each story launch"
+      status: MET
+      notes: "Budget check (with cost_lock) happens before each pool.submit(). Exceeded budget marks the story skipped immediately without submitting. stopped_reason is set on first budget skip."
+    - criterion: "Merge ordering respects dependency order when on_approve: merge"
+      status: MET
+      notes: "In parallel mode with auto_merge=True, completed stories go into pending_merges. A flush loop after each wait() batch iterates pending_merges and calls _merge_branch only when all depends_on slugs are in merged_slugs, enforcing dependency ordering."
+    - criterion: "Sprint status shows all active workers with current phase"
+      status: MET
+      notes: "_print_worker_status() prints one line per active worker (phase from worker_phases dict, updated thread-safely via _make_worker_phase_fn) plus a summary of waiting/ready stories. Called after each completed future."
+    - criterion: "Sprint audit includes per-story start/end times and parallel batch info"
+      status: MET
+      notes: "story_times dict tracks (started_at, finished_at) per story slug. batch_assignments tracks which scheduling batch each story was submitted in. Both are passed to _write_sprint_audit() and _write_sprint_summary() and written into per-spec entries (started_at, finished_at, batch fields)."
+    - criterion: "Fallback: max_parallel=1 produces identical behavior to current sequential runner"
+      status: MET
+      notes: "With max_parallel=1, the ThreadPoolExecutor submits only one story at a time (capped by len(active) >= max_parallel). Eager merge and dep-checking logic is identical to the old code. All 1280 existing tests pass."
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "1280 passed, 5 skipped (pre-existing skips unrelated to this story)."
+    - criterion: "New tests for DAG scheduling, dependency gating, budget pooling, merge ordering"
+      status: MET
+      notes: "Added TestMaxParallelManifest (5 tests), TestStoryDAGUnit (9 tests), TestParallelIndependentStories (2 tests), TestParallelDependencyGating (3 tests), TestParallelBudgetPooling (2 tests), TestClassifyAndRecord (4 tests), TestMergeOrdering (1 test), TestMaxParallel1Fallback (2 tests)."
+  story_deviations:
+    - description: "_merge_branch imported directly from coord_workspace (private API). Plan reviewer flagged this as P2."
+      justification: "Did not promote to public API to avoid scope creep; the function is in the same package and the import is explicit. Can be promoted in a follow-up story if needed."
+    - description: "_print_worker_status uses DAG.remaining() (added as public method per reviewer suggestion) instead of accessing private dag._tasks attributes."
+      justification: "This is a refinement over the plan that addresses the P2 reviewer note, not a regression. The plan suggested accessing private attrs; added a public method instead."
+  deferred_items: none
+  gate_result: PASS
+gate_decision: PASS
