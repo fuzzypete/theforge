@@ -108,7 +108,8 @@ INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW -> DEV -> VALIDATE -> REVI
 The coordinator creates a worktree, invokes the configured agents, runs your
 gate command, parses structured review output, and decides what happens next.
 Models do the planning, coding, and reviewing, but they do not decide whether
-to retry, pass a gate, or escalate.
+to retry, pass a gate, or escalate. When validation fails or review requests
+changes, the run can loop back to `DEV` before it finishes.
 
 ## What gets created
 

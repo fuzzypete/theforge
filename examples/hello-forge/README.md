@@ -110,6 +110,9 @@ forge sprint sprints/hello-sprint.yaml --verbose --auto-merge
 
 This runs `add-greeting` and `add-farewell` sequentially.
 
+Typical expectation for this example: about $1-3 and roughly 5-10 minutes per
+story, depending on review loops and provider latency.
+
 ## Files in this example
 
 ```text
