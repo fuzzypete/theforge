@@ -26,9 +26,12 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.sprint import (
+    StoryDAG,
     StoryTriage,
     _build_task_from_story,
+    _classify_and_record,
     _triage_spec,
+    build_dag,
     load_sprint_manifest,
     run_sprint,
 )
@@ -1223,3 +1226,502 @@ class TestSprintDependencies:
         assert result.specs_skipped == 1  # spec-a counted as skipped (ALREADY_DONE)
         assert result.specs_succeeded == 1  # spec-b succeeded
         assert result.stopped_reason is None  # no halt
+
+
+# ── max_parallel manifest parsing ────────────────────────────────────────────
+
+
+class TestMaxParallelManifest:
+    def test_parses_max_parallel(self, tmp_path: Path) -> None:
+        """load_sprint_manifest parses max_parallel=3 correctly."""
+        path = tmp_path / "sprint.yaml"
+        path.write_text(
+            yaml.dump({"name": "X", "budget_usd": 5.0, "stories": ["a.md"], "max_parallel": 3}),
+            encoding="utf-8",
+        )
+        manifest = load_sprint_manifest(path)
+        assert manifest.max_parallel == 3
+
+    def test_defaults_to_1_when_absent(self, tmp_path: Path) -> None:
+        """max_parallel defaults to 1 when not specified."""
+        path = tmp_path / "sprint.yaml"
+        path.write_text(
+            yaml.dump({"name": "X", "budget_usd": 5.0, "stories": ["a.md"]}),
+            encoding="utf-8",
+        )
+        manifest = load_sprint_manifest(path)
+        assert manifest.max_parallel == 1
+
+    def test_rejects_max_parallel_zero(self, tmp_path: Path) -> None:
+        """max_parallel=0 is rejected with ValueError."""
+        path = tmp_path / "sprint.yaml"
+        path.write_text(
+            yaml.dump({"name": "X", "budget_usd": 5.0, "stories": ["a.md"], "max_parallel": 0}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="max_parallel"):
+            load_sprint_manifest(path)
+
+    def test_rejects_max_parallel_negative(self, tmp_path: Path) -> None:
+        """max_parallel=-1 is rejected with ValueError."""
+        path = tmp_path / "sprint.yaml"
+        path.write_text(
+            yaml.dump({"name": "X", "budget_usd": 5.0, "stories": ["a.md"], "max_parallel": -1}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="max_parallel"):
+            load_sprint_manifest(path)
+
+    def test_rejects_max_parallel_non_integer(self, tmp_path: Path) -> None:
+        """max_parallel as float string is rejected."""
+        path = tmp_path / "sprint.yaml"
+        path.write_text(
+            'name: X\nbudget_usd: 5.0\nstories: [a.md]\nmax_parallel: "2"\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="max_parallel"):
+            load_sprint_manifest(path)
+
+
+# ── StoryDAG unit tests ───────────────────────────────────────────────────────
+
+
+def _make_task(
+    slug: str, depends_on: list[str] | None = None, tmp_path: Path | None = None
+) -> "TaskSpec":  # noqa: F821
+    from theforge.task import TaskStory
+
+    path = (tmp_path or Path("/tmp")) / f"{slug}.md"
+    return TaskStory(
+        name=slug.replace("-", " ").title(),
+        story_path=path,
+        slug=slug,
+        depends_on=depends_on or [],
+    )
+
+
+class TestStoryDAGUnit:
+    def test_no_dep_stories_immediately_ready(self) -> None:
+        """Stories with no depends_on are ready immediately."""
+        a = _make_task("a")
+        b = _make_task("b")
+        dag = StoryDAG([a, b])
+        ready_slugs = {t.slug for t in dag.ready()}
+        assert ready_slugs == {"a", "b"}
+
+    def test_marking_complete_unlocks_dependent(self) -> None:
+        """Marking a story complete makes its dependents ready."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+
+        assert {t.slug for t in dag.ready()} == {"a"}
+        dag.mark_complete("a")
+        assert {t.slug for t in dag.ready()} == {"b"}
+
+    def test_marking_skipped_does_not_unlock_dependent(self) -> None:
+        """Marking a story skipped does NOT make its dependents ready."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+
+        dag.mark_skipped("a")
+        assert dag.ready() == []
+
+    def test_is_done_false_until_all_finished(self) -> None:
+        """is_done() is False until every task has been finished."""
+        a = _make_task("a")
+        b = _make_task("b")
+        dag = StoryDAG([a, b])
+
+        assert not dag.is_done()
+        dag.mark_complete("a")
+        assert not dag.is_done()
+        dag.mark_skipped("b")
+        assert dag.is_done()
+
+    def test_is_done_true_with_mix_of_complete_and_skipped(self) -> None:
+        """is_done() considers both completed and skipped as finished."""
+        tasks = [_make_task(s) for s in ["a", "b", "c"]]
+        dag = StoryDAG(tasks)
+        dag.mark_complete("a")
+        dag.mark_skipped("b")
+        dag.mark_skipped("c")
+        assert dag.is_done()
+
+    def test_unmet_deps_returns_missing_completed_deps(self) -> None:
+        """unmet_deps returns deps not yet completed."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a", "c"])
+        dag = StoryDAG([a, b])
+        dag.mark_complete("a")
+        assert dag.unmet_deps("b") == ["c"]
+
+    def test_remaining_excludes_finished(self) -> None:
+        """remaining() returns only tasks not yet finished."""
+        tasks = [_make_task(s) for s in ["a", "b", "c"]]
+        dag = StoryDAG(tasks)
+        dag.mark_complete("a")
+        dag.mark_skipped("b")
+        remaining_slugs = {t.slug for t in dag.remaining()}
+        assert remaining_slugs == {"c"}
+
+    def test_multi_dep_unlocked_only_when_all_complete(self) -> None:
+        """Story with multiple deps only becomes ready when ALL deps complete."""
+        a = _make_task("a")
+        b = _make_task("b")
+        c = _make_task("c", depends_on=["a", "b"])
+        dag = StoryDAG([a, b, c])
+
+        dag.mark_complete("a")
+        assert "c" not in {t.slug for t in dag.ready()}
+        dag.mark_complete("b")
+        assert "c" in {t.slug for t in dag.ready()}
+
+    def test_build_dag_returns_story_dag(self) -> None:
+        """build_dag() returns a properly initialized StoryDAG."""
+        a = _make_task("a")
+        dag = build_dag([a])
+        assert isinstance(dag, StoryDAG)
+        assert {t.slug for t in dag.ready()} == {"a"}
+
+
+# ── Parallel sprint execution tests ──────────────────────────────────────────
+
+
+def _make_manifest_parallel(
+    tmp_path: Path, specs: list[str], budget: float = 10.0, max_parallel: int = 1
+) -> Path:
+    manifest_path = tmp_path / "sprint.yaml"
+    manifest_path.write_text(
+        yaml.dump(
+            {
+                "name": "Parallel Sprint",
+                "budget_usd": budget,
+                "stories": specs,
+                "max_parallel": max_parallel,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+class TestParallelIndependentStories:
+    def test_parallel_3_independent_all_succeed(self, tmp_path: Path) -> None:
+        """max_parallel=3, 3 independent stories — all run, all counted."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        _make_spec_file(tmp_path, "Story C", "story-c")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md", "story-c.md"],
+            budget=10.0,
+            max_parallel=3,
+        )
+        config = _make_config(tmp_path)
+
+        results = [
+            _make_coordinator_result(success=True, cost=1.0),
+            _make_coordinator_result(success=True, cost=1.0),
+            _make_coordinator_result(success=True, cost=1.0),
+        ]
+
+        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 3
+        assert sprint.specs_succeeded == 3
+        assert sprint.specs_failed == 0
+        assert sprint.specs_skipped == 0
+        assert sprint.total_cost_usd == pytest.approx(3.0)
+
+    def test_parallel_auto_merge_false_in_worker(self, tmp_path: Path) -> None:
+        """With max_parallel>1, workers run with auto_merge=False."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        results = [
+            _make_coordinator_result(success=True, cost=1.0),
+            _make_coordinator_result(success=True, cost=1.0),
+        ]
+
+        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+            run_sprint(config, manifest_path, auto_merge=True)
+
+        # In parallel mode, workers get auto_merge=False; merging is done in main thread
+        for call in mock_run.call_args_list:
+            assert call.kwargs["auto_merge"] is False
+
+
+class TestParallelDependencyGating:
+    def test_dependency_blocks_until_predecessor_completes(self, tmp_path: Path) -> None:
+        """Story B (depends on A) is skipped when A doesn't merge."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # A succeeds but does NOT merge → B should be skipped
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 1  # only A ran
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_skipped == 1
+
+    def test_dependency_satisfied_by_merge_unlocks_dependent(self, tmp_path: Path) -> None:
+        """Story B runs after A merges (in max_parallel=1 mode with eager merge)."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        result_b = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert mock_run.call_count == 2
+        assert sprint.specs_succeeded == 2
+
+    def test_failed_dep_causes_dependent_to_skip(self, tmp_path: Path) -> None:
+        """When A fails, B (dep: A) is marked skipped."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 1
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
+
+
+class TestParallelBudgetPooling:
+    def test_budget_pooled_across_workers(self, tmp_path: Path) -> None:
+        """Third story is skipped once accumulated cost reaches budget.
+
+        With max_parallel=2, A and B are submitted simultaneously.  Each costs
+        1.0 against a budget of 1.0.  After the first story completes the
+        accumulated cost is >= budget, so C is budget-skipped on the next
+        scheduling pass regardless of whether B has also finished yet.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        _make_spec_file(tmp_path, "Story C", "story-c")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md", "story-c.md"],
+            budget=1.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # A and B each cost 1.0 against budget=1.0.  After at least one
+        # completes, accumulated_cost >= 1.0 so C is budget-skipped.
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+        result_b = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        # C was budget-skipped; A and B both ran (both submitted before cost accumulated)
+        assert mock_run.call_count == 2
+        assert sprint.specs_skipped == 1
+        assert sprint.stopped_reason is not None
+        assert "budget" in sprint.stopped_reason.lower()
+
+    def test_max_parallel_1_budget_sequential(self, tmp_path: Path) -> None:
+        """With max_parallel=1, budget check works story-by-story."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=1.5,
+            max_parallel=1,
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=True, cost=1.5)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 1
+        assert sprint.specs_skipped == 1
+
+
+class TestClassifyAndRecord:
+    """Unit tests for _classify_and_record helper."""
+
+    def test_success_no_merge_skips_for_dag(self) -> None:
+        """Success without merge → specs_succeeded, dag.mark_skipped (not complete)."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 1
+        assert df == 0
+        assert dsk == 0
+        assert "a" not in merged_slugs
+        # B still not ready (a not completed)
+        assert dag.ready() == []
+
+    def test_success_with_merge_completes_for_dag(self) -> None:
+        """Success with merge → specs_succeeded, dag.mark_complete (unlocks deps)."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 1
+        assert "a" in merged_slugs
+        # B now ready (a completed)
+        assert {t.slug for t in dag.ready()} == {"b"}
+
+    def test_already_done_completes_for_dag(self) -> None:
+        """ALREADY_DONE → specs_skipped, dag.mark_complete (satisfies deps)."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(
+            success=True, cost=0.0, preflight_verdict="ALREADY_DONE", phase=Phase.DONE
+        )
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 0
+        assert dsk == 1
+        assert "a" in merged_slugs
+        assert {t.slug for t in dag.ready()} == {"b"}
+
+    def test_failure_skips_for_dag(self) -> None:
+        """Failure → specs_failed, dag.mark_skipped."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert df == 1
+        assert "a" not in merged_slugs
+        assert dag.ready() == []
+
+
+class TestMergeOrdering:
+    def test_merge_ordering_deferred_parallel(self, tmp_path: Path) -> None:
+        """auto_merge=True, max_parallel=2, B depends_on A: merge happens in dep order."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=1,  # sequential to keep test deterministic
+        )
+        config = _make_config(tmp_path)
+
+        # A merges, then B has satisfied dep, can be merged
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert mock_run.call_count == 2
+        assert sprint.specs_succeeded == 2
+
+
+class TestMaxParallel1Fallback:
+    def test_max_parallel_1_sequential_behavior(self, tmp_path: Path) -> None:
+        """max_parallel=1 produces identical outcome to the original sequential runner."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        _make_spec_file(tmp_path, "Story C", "story-c")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md", "story-c.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        config = _make_config(tmp_path)
+
+        results = [
+            _make_coordinator_result(success=True, cost=1.0),
+            _make_coordinator_result(success=False, cost=0.5, phase=Phase.ESCALATE),
+            _make_coordinator_result(success=True, cost=2.0),
+        ]
+
+        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 3
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 0
+        assert sprint.total_cost_usd == pytest.approx(3.5)
+        assert sprint.stopped_reason is None
+
+    def test_max_parallel_1_dep_check_same_as_sequential(self, tmp_path: Path) -> None:
+        """Dependency gating works correctly with max_parallel=1."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        config = _make_config(tmp_path)
+
+        # A succeeds but does NOT merge → B should be skipped (same as old behavior)
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 1
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_skipped == 1
+        assert sprint.stopped_reason is None

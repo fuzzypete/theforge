@@ -9,7 +9,9 @@ from __future__ import annotations
 import datetime
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,6 +19,7 @@ import yaml
 
 from .config import ForgeConfig
 from .coord_audit import has_review_approve
+from .coord_workspace import _merge_branch
 from .coordinator import (
     CoordinatorResult,
     StructuredLogger,
@@ -41,6 +44,7 @@ class SprintManifest:
     name: str
     budget_usd: float
     stories: list[str]  # relative paths to story files
+    max_parallel: int = 1
 
 
 @dataclass
@@ -86,6 +90,13 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
     if budget_usd <= 0:
         raise ValueError(f"Sprint 'budget_usd' must be > 0, got {budget_usd}")
 
+    max_parallel_raw = raw.get("max_parallel", 1)
+    if not isinstance(max_parallel_raw, int):
+        raise ValueError(f"Sprint 'max_parallel' must be an integer, got {max_parallel_raw!r}")
+    if max_parallel_raw < 1:
+        raise ValueError(f"Sprint 'max_parallel' must be >= 1, got {max_parallel_raw}")
+    max_parallel = max_parallel_raw
+
     # Accept both 'stories' (new) and 'specs' (deprecated) keys
     stories = raw.get("stories")
     if stories is None:
@@ -102,7 +113,9 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
     if not all(isinstance(s, str) for s in stories):
         raise ValueError("All entries in 'stories' must be strings (file paths)")
 
-    return SprintManifest(name=name, budget_usd=budget_usd, stories=stories)
+    return SprintManifest(
+        name=name, budget_usd=budget_usd, stories=stories, max_parallel=max_parallel
+    )
 
 
 def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[Path]:
@@ -177,6 +190,214 @@ class StoryTriage:
     reason: str
     worktree_path: Path | None = None
     slug: str = ""
+
+
+class StoryDAG:
+    """Dependency-aware scheduler for concurrent story execution.
+
+    Tracks two distinct states per story:
+    - _completed: stories that satisfied their dependencies (merged or ALREADY_DONE).
+      Used to unlock downstream stories in ready().
+    - _finished: all stories that are done processing (any outcome).
+      Used by is_done() to detect completion.
+
+    mark_complete() adds to both sets (story ran and satisfied deps).
+    mark_skipped() adds only to _finished (story is done but deps not satisfied).
+    """
+
+    def __init__(self, tasks: list[TaskSpec]) -> None:
+        self._tasks: dict[str, TaskSpec] = {t.slug: t for t in tasks}
+        self._deps: dict[str, set[str]] = {t.slug: set(t.depends_on) for t in tasks}
+        self._completed: set[str] = set()  # satisfied: merged or ALREADY_DONE
+        self._finished: set[str] = set()  # all done: any outcome
+
+    def ready(self) -> list[TaskSpec]:
+        """Return tasks that are not finished and whose deps are all completed."""
+        return [
+            task
+            for slug, task in self._tasks.items()
+            if slug not in self._finished
+            and all(dep in self._completed for dep in self._deps[slug])
+        ]
+
+    def mark_complete(self, slug: str) -> None:
+        """Story satisfied deps (merged / ALREADY_DONE). Unlocks dependents."""
+        self._completed.add(slug)
+        self._finished.add(slug)
+
+    def mark_skipped(self, slug: str) -> None:
+        """Story finished without satisfying deps (failed / budget / blocked)."""
+        self._finished.add(slug)
+
+    def is_done(self) -> bool:
+        """True when every task has been finished (any outcome)."""
+        return len(self._finished) == len(self._tasks)
+
+    def unmet_deps(self, slug: str) -> list[str]:
+        """Dependency slugs that are not yet completed (for skip messages)."""
+        return [dep for dep in self._deps[slug] if dep not in self._completed]
+
+    def remaining(self) -> list[TaskSpec]:
+        """Tasks not yet finished (not in _finished)."""
+        return [task for slug, task in self._tasks.items() if slug not in self._finished]
+
+
+def build_dag(tasks: list[TaskSpec]) -> StoryDAG:
+    """Build a StoryDAG from a list of TaskSpec objects."""
+    return StoryDAG(tasks)
+
+
+def _run_single_story(
+    config: ForgeConfig,
+    task: TaskSpec,
+    triage: "StoryTriage | None",
+    sprint_run_id: str,
+    sprint_name: str,
+    interactive: bool,
+    notify: bool,
+    resume: bool,
+    effective_auto_merge: bool,
+    state_update_fn: "Callable[[dict], None] | None",
+) -> "tuple[TaskSpec, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
+    """Execute a single story and return (task, result, elapsed, started_at, finished_at).
+
+    Designed to run in a worker thread. Dispatches to run_task / run_from_review /
+    run_from_dev based on triage (resume mode) or always run_task (fresh mode).
+    """
+    started_at = datetime.datetime.now(datetime.timezone.utc)
+
+    if state_update_fn is not None:
+        state_update_fn({"spec": task.slug, "phase": "STARTING"})
+
+    if resume and triage is not None:
+        if triage.action == "review" and triage.worktree_path is not None:
+            result = run_from_review(
+                config,
+                task,
+                triage.worktree_path,
+                interactive=interactive,
+                auto_merge=effective_auto_merge,
+                notify=notify,
+                run_id=sprint_run_id,
+                sprint_name=sprint_name,
+                state_update_fn=state_update_fn,
+            )
+        elif triage.action == "dev" and triage.worktree_path is not None:
+            result = run_from_dev(
+                config,
+                task,
+                triage.worktree_path,
+                interactive=interactive,
+                auto_merge=effective_auto_merge,
+                notify=notify,
+                run_id=sprint_run_id,
+                sprint_name=sprint_name,
+                state_update_fn=state_update_fn,
+            )
+        else:
+            result = run_task(
+                config,
+                task,
+                interactive=interactive,
+                auto_merge=effective_auto_merge,
+                notify=notify,
+                run_id=sprint_run_id,
+                sprint_name=sprint_name,
+                state_update_fn=state_update_fn,
+            )
+    else:
+        result = run_task(
+            config,
+            task,
+            interactive=interactive,
+            auto_merge=effective_auto_merge,
+            notify=notify,
+            run_id=sprint_run_id,
+            sprint_name=sprint_name,
+            state_update_fn=state_update_fn,
+        )
+
+    finished_at = datetime.datetime.now(datetime.timezone.utc)
+    elapsed = (finished_at - started_at).total_seconds()
+    return task, result, elapsed, started_at, finished_at
+
+
+def _make_worker_phase_fn(
+    slug: str,
+    worker_phases: dict[str, str],
+    phase_lock: threading.Lock,
+    outer_fn: "Callable[[dict], None] | None",
+) -> "Callable[[dict], None]":
+    """Return a thread-safe state_update_fn wrapper that tracks per-worker phase.
+
+    Updates worker_phases[slug] from updates["phase"] and (under lock) forwards
+    updates to the outer daemon state_update_fn if provided.
+    """
+
+    def _update(updates: dict) -> None:
+        phase = updates.get("phase", "")
+        with phase_lock:
+            if phase:
+                worker_phases[slug] = phase
+            if outer_fn is not None:
+                outer_fn(updates)
+
+    return _update
+
+
+def _print_worker_status(
+    active: "dict[str, Future[object]]",
+    worker_phases: dict[str, str],
+    dag: StoryDAG,
+    total: int,
+) -> None:
+    """Print one status line per active worker, plus a summary of waiting stories."""
+    if not active:
+        return
+    lines = []
+    for slug in sorted(active):
+        phase = worker_phases.get(slug, "RUNNING")
+        lines.append(f"  [{slug}] {phase}")
+    waiting = dag.remaining()
+    waiting_active = [t for t in waiting if t.slug not in active]
+    if waiting_active:
+        names = ", ".join(t.slug for t in waiting_active[:5])
+        suffix = f" (+{len(waiting_active) - 5} more)" if len(waiting_active) > 5 else ""
+        lines.append(f"  waiting: {names}{suffix}")
+    if lines:
+        print("\n".join(lines), file=sys.stderr, flush=True)
+
+
+def _classify_and_record(
+    task: TaskSpec,
+    result: CoordinatorResult,
+    dag: StoryDAG,
+    merged_slugs: set[str],
+) -> tuple[int, int, int]:
+    """Classify result and update DAG state. Returns (succeeded, failed, skipped) deltas."""
+    preflight_verdict = result.state.preflight_verdict
+    delta_succeeded = 0
+    delta_failed = 0
+    delta_skipped = 0
+
+    if preflight_verdict == "ALREADY_DONE":
+        delta_skipped = 1
+    elif result.success:
+        delta_succeeded = 1
+    else:
+        delta_failed = 1
+
+    # DAG: mark_complete (satisfies deps) only when merged or ALREADY_DONE
+    if preflight_verdict == "ALREADY_DONE" or (
+        result.merge is not None and result.merge.get("merged", False)
+    ):
+        merged_slugs.add(task.slug)
+        dag.mark_complete(task.slug)
+    else:
+        # Story finished but deps not satisfied for downstream scheduling
+        dag.mark_skipped(task.slug)
+
+    return delta_succeeded, delta_failed, delta_skipped
 
 
 def _triage_spec(
@@ -327,10 +548,14 @@ def run_sprint(
     resume: bool = False,
     state_update_fn: "Callable[[dict], None] | None" = None,
 ) -> SprintResult:
-    """Run all stories in a sprint manifest sequentially.
+    """Run all stories in a sprint manifest with optional concurrency.
 
-    Budget enforcement tracks Claude costs only; Codex/Gemini invocations
-    report $0.00 and do not count toward the ceiling.
+    When max_parallel > 1, stories with no unmet dependencies are launched
+    concurrently up to max_parallel. Budget is pooled across all workers.
+    Merge ordering respects dependency order when auto_merge is True.
+
+    When max_parallel == 1 (default), behavior is identical to the original
+    sequential runner.
 
     Args:
         config: Loaded ForgeConfig for the project.
@@ -349,7 +574,8 @@ def run_sprint(
     total = len(story_paths)
     noun = "stories" if total != 1 else "story"
     print(
-        f'[sprint] "{manifest.name}"  {total} {noun}  budget=${manifest.budget_usd:.2f}',
+        f'[sprint] "{manifest.name}"  {total} {noun}  budget=${manifest.budget_usd:.2f}'
+        f"  parallel={manifest.max_parallel}",
         file=sys.stderr,
         flush=True,
     )
@@ -369,6 +595,7 @@ def run_sprint(
         "run_start",
         stories=manifest.stories,
         budget_usd=manifest.budget_usd,
+        max_parallel=manifest.max_parallel,
         resume=resume,
     )
 
@@ -389,11 +616,13 @@ def run_sprint(
     stopped_reason: str | None = None
     merged_slugs: set[str] = set()
 
-    # Pre-scan: parse all TaskSpecs once and build dependent_slugs.
-    # Caching avoids re-reading story files in the main loop.
-    # We collect all dependents regardless of manifest ordering — merging earlier
-    # is safe and simpler than strict look-ahead filtering.
-    _parsed_tasks: dict[Path, object] = {_sp: _build_task_from_story(_sp) for _sp in story_paths}
+    # Pre-scan: parse all TaskSpecs once and build maps.
+    _parsed_tasks: dict[Path, TaskSpec] = {_sp: _build_task_from_story(_sp) for _sp in story_paths}
+    slug_to_spec: dict[str, str] = {}
+    for spec_str, story_path in zip(manifest.stories, story_paths):
+        task = _parsed_tasks[story_path]
+        slug_to_spec[task.slug] = spec_str
+
     dependent_slugs: set[str] = set()
     for _t in _parsed_tasks.values():
         dependent_slugs.update(_t.depends_on)  # type: ignore[union-attr]
@@ -411,170 +640,185 @@ def run_sprint(
             action_label = triage.action.upper().replace("_", " ")
             _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
 
-    for idx, story_path in enumerate(story_paths, start=1):
-        spec_str = manifest.stories[idx - 1]
-        task = _parsed_tasks[story_path]  # type: ignore[assignment]
+    # Build DAG
+    dag = build_dag(list(_parsed_tasks.values()))
 
-        # Resume mode: skip already-merged or already-approved stories before budget check.
-        # These represent completed work; not subject to budget enforcement.
-        if resume:
+    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
+    if resume:
+        for spec_str in manifest.stories:
             triage = triages.get(spec_str)
-            if triage and triage.action == "skip_merged":
-                _log(f"[{idx}/{total}] SKIP {task.slug} ({triage.reason})")
+            if triage and triage.action in ("skip_merged", "skip"):
+                # Look up task by spec_str
+                story_path = (config.project_root / spec_str).resolve()
+                task = _parsed_tasks.get(story_path)
+                if task is None:
+                    continue
+                slug = task.slug
+                action_label = triage.action.upper().replace("_", " ")
+                _log(f"SKIP {slug} ({triage.reason})")
                 specs_succeeded += 1
-                merged_slugs.add(task.slug)
-                continue
-            if triage and triage.action == "skip":
-                _log(f"[{idx}/{total}] SKIP {task.slug} — already approved ({triage.reason})")
-                specs_succeeded += 1
-                # A prior APPROVE means the work is done and satisfies downstream deps,
-                # even if it was never merged to main (e.g. auto_merge=False previously).
-                merged_slugs.add(task.slug)
-                continue
+                merged_slugs.add(slug)
+                dag.mark_complete(slug)
 
-        # Budget check before starting (cumulative: prior + current run)
-        cumulative_cost = prior_cost + accumulated_cost
-        if cumulative_cost >= manifest.budget_usd:
-            acc = cumulative_cost
-            bud = manifest.budget_usd
-            _log(f"[{idx}/{total}] SKIPPED (budget exhausted: ${acc:.2f} >= ${bud:.2f})")
-            specs_skipped += 1
-            stopped_reason = f"Budget exhausted (${acc:.2f} >= ${bud:.2f})"
-            # Mark remaining stories as skipped too
-            for remaining_idx in range(idx + 1, total + 1):
-                _log(f"[{remaining_idx}/{total}] SKIPPED (budget exhausted)")
-                specs_skipped += 1
-            break
+    # Parallel scheduling state
+    active: dict[str, Future[object]] = {}
+    cost_lock = threading.Lock()
+    story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
+    batch_assignments: dict[str, int] = {}
+    batch_number = 0
+    worker_phases: dict[str, str] = {}
+    phase_lock = threading.Lock()
+    pending_merges: dict[str, tuple[TaskSpec, CoordinatorResult]] = {}
+    _submission_counter = [0]  # mutable for closure capture; counts submitted stories
 
-        # Dependency check: all depends_on slugs must have merged.
-        # Only this story is skipped — independent stories continue.
-        missing_deps = [dep for dep in task.depends_on if dep not in merged_slugs]
-        if missing_deps:
-            dep_list = ", ".join(missing_deps)
-            _log(f"[{idx}/{total}] SKIPPED {task.slug} (dependency failed: {dep_list})")
-            specs_skipped += 1
-            continue
+    with ThreadPoolExecutor(max_workers=manifest.max_parallel) as pool:
+        while not dag.is_done():
+            ready = [t for t in dag.ready() if t.slug not in active]
 
-        # Emit story header banner
-        print(_story_header(idx, total, task.slug), file=sys.stderr, flush=True)
+            for task in ready:
+                # Cap concurrent submissions at max_parallel
+                if len(active) >= manifest.max_parallel:
+                    break
 
-        _spec_start = datetime.datetime.now(datetime.timezone.utc)
+                with cost_lock:
+                    cumulative = prior_cost + accumulated_cost
+                if cumulative >= manifest.budget_usd:
+                    dag.mark_skipped(task.slug)
+                    specs_skipped += 1
+                    if stopped_reason is None:
+                        stopped_reason = (
+                            f"Budget exhausted (${cumulative:.2f} >= ${manifest.budget_usd:.2f})"
+                        )
+                    _log(f"SKIPPED {task.slug} (budget exhausted)")
+                    continue
 
-        # Eager merge: if any later story declares this slug as a dependency, force
-        # auto_merge so the merged code is on main before the dependent starts.
-        effective_auto_merge = auto_merge or (task.slug in dependent_slugs)
+                # Eager merge for sequential mode; disabled in parallel mode
+                effective_am = (
+                    False
+                    if manifest.max_parallel > 1
+                    else (auto_merge or task.slug in dependent_slugs)
+                )
 
-        # Notify daemon of starting spec
-        if state_update_fn is not None:
-            state_update_fn({"spec": task.slug, "phase": "STARTING"})
+                spec_str = slug_to_spec[task.slug]
+                triage = triages.get(spec_str) if resume else None
+                batch_assignments[task.slug] = batch_number
+                _submission_counter[0] += 1
+                print(
+                    _story_header(_submission_counter[0], total, task.slug),
+                    file=sys.stderr,
+                    flush=True,
+                )
 
-        # Choose entry point based on triage
-        if resume:
-            triage = triages.get(spec_str)
-            if triage and triage.action == "review" and triage.worktree_path is not None:
-                result = run_from_review(
+                state_fn = _make_worker_phase_fn(
+                    task.slug, worker_phases, phase_lock, state_update_fn
+                )
+                fut = pool.submit(
+                    _run_single_story,
                     config,
                     task,
-                    triage.worktree_path,
-                    interactive=interactive,
-                    auto_merge=effective_auto_merge,
-                    notify=notify,
-                    run_id=_sprint_run_id,
-                    sprint_name=manifest.name,
-                    state_update_fn=state_update_fn,
+                    triage,
+                    _sprint_run_id,
+                    manifest.name,
+                    interactive,
+                    notify,
+                    resume,
+                    effective_am,
+                    state_fn,
                 )
-            elif triage and triage.action == "dev" and triage.worktree_path is not None:
-                result = run_from_dev(
-                    config,
-                    task,
-                    triage.worktree_path,
-                    interactive=interactive,
-                    auto_merge=effective_auto_merge,
-                    notify=notify,
-                    run_id=_sprint_run_id,
-                    sprint_name=manifest.name,
-                    state_update_fn=state_update_fn,
+                active[task.slug] = fut
+
+            if not active:
+                # Deadlock: remaining tasks have unmet or budget-blocked deps
+                for t in dag.remaining():
+                    unmet = dag.unmet_deps(t.slug)
+                    if unmet:
+                        dep_list = ", ".join(unmet)
+                        _log(f"SKIPPED {t.slug} (dependency failed: {dep_list})")
+                    else:
+                        _log(f"SKIPPED {t.slug} (blocked)")
+                    dag.mark_skipped(t.slug)
+                    specs_skipped += 1
+                break
+
+            done_futs, _ = wait(list(active.values()), return_when=FIRST_COMPLETED)
+            batch_number += 1
+
+            for slug, fut in list(active.items()):
+                if fut not in done_futs:
+                    continue
+                task, result, elapsed, t0, t1 = fut.result()  # type: ignore[misc]
+                del active[slug]
+                story_times[slug] = (t0, t1)
+
+                with cost_lock:
+                    accumulated_cost += result.state.total_cost
+
+                spec_str = slug_to_spec[slug]
+                results.append((spec_str, result))
+
+                # Write per-spec audit to worktree for diagnostics
+                workspace_path = config.project_root / config.workspace.path_pattern.format(
+                    slug=slug
                 )
-            else:
-                result = run_task(
-                    config,
-                    task,
-                    interactive=interactive,
-                    auto_merge=effective_auto_merge,
-                    notify=notify,
-                    run_id=_sprint_run_id,
-                    sprint_name=manifest.name,
-                    state_update_fn=state_update_fn,
-                )
-        else:
-            result = run_task(
-                config,
-                task,
-                interactive=interactive,
-                auto_merge=effective_auto_merge,
-                notify=notify,
-                run_id=_sprint_run_id,
-                sprint_name=manifest.name,
-                state_update_fn=state_update_fn,
-            )
-        _spec_elapsed = (
-            datetime.datetime.now(datetime.timezone.utc) - _spec_start
-        ).total_seconds()
-        results.append((spec_str, result))
+                if workspace_path.exists():
+                    audit_data = generate_audit_log(config, task, result)
+                    audit_path = workspace_path / "forge_audit.yaml"
+                    with open(audit_path, "w", encoding="utf-8") as f:
+                        yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+                    _log(f"Per-story audit written: {audit_path}")
+                # Copy audit to durable per-story log dir
+                if result.state.log_dir is not None:
+                    try:
+                        audit_data = generate_audit_log(config, task, result)
+                        _story_audit_path = result.state.log_dir / "audit.yaml"
+                        _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
+                        with open(_story_audit_path, "w", encoding="utf-8") as f:
+                            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+                    except Exception:
+                        pass  # best-effort
 
-        # Write per-spec audit to worktree for diagnostics
-        workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
-        if workspace_path.exists():
-            audit = generate_audit_log(config, task, result)
-            audit_path = workspace_path / "forge_audit.yaml"
-            with open(audit_path, "w", encoding="utf-8") as f:
-                yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-            _log(f"[{idx}/{total}] Per-story audit written: {audit_path}")
-        # Copy audit to durable per-story log dir
-        if result.state.log_dir is not None:
-            try:
-                audit = generate_audit_log(config, task, result)
-                _story_audit_path = result.state.log_dir / "audit.yaml"
-                _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(_story_audit_path, "w", encoding="utf-8") as f:
-                    yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-            except Exception:
-                pass  # best-effort
+                spec_cost = result.state.total_cost
+                icon = "✓" if result.success else "✗"
+                dur = _fmt_duration(elapsed)
+                _log(f"{icon} {slug}   ${spec_cost:.2f}  {dur}")
 
-        spec_cost = result.state.total_cost
-        accumulated_cost += spec_cost
+                ds, df, dsk = _classify_and_record(task, result, dag, merged_slugs)
+                specs_succeeded += ds
+                specs_failed += df
+                specs_skipped += dsk
 
-        # Classify outcome
-        preflight_verdict = result.state.preflight_verdict
-        if preflight_verdict == "ALREADY_DONE":
-            specs_skipped += 1
-        elif result.success:
-            specs_succeeded += 1
-        else:
-            specs_failed += 1
+                # Parallel merge ordering: queue for dependency-ordered merge
+                if manifest.max_parallel > 1 and auto_merge:
+                    pending_merges[slug] = (task, result)
 
-        # Track merged slugs for dependency checking.
-        # ALREADY_DONE means the spec's changes are already on main, so it satisfies deps.
-        if preflight_verdict == "ALREADY_DONE" or (
-            result.merge is not None and result.merge.get("merged", False)
-        ):
-            merged_slugs.add(task.slug)
+                _print_worker_status(active, worker_phases, dag, total)
 
-        # Emit story completion summary
-        icon = "✓" if result.success else "✗"
-        dur = _fmt_duration(_spec_elapsed)
-        _log(f"[{idx}/{total}] {icon} {task.slug}   ${spec_cost:.2f}  {dur}")
-
-        # Stop sprint if budget exceeded after this run (cumulative)
-        if (prior_cost + accumulated_cost) >= manifest.budget_usd and idx < total:
-            acc = prior_cost + accumulated_cost
-            bud = manifest.budget_usd
-            stopped_reason = f"Budget exceeded after story {idx} (${acc:.2f} >= ${bud:.2f})"
-            for remaining_idx in range(idx + 1, total + 1):
-                _log(f"[{remaining_idx}/{total}] SKIPPED (budget exceeded)")
-                specs_skipped += 1
-            _log(f"Stopping sprint: {stopped_reason}")
-            break
+            # Flush pending merges in dependency order (parallel mode only)
+            if manifest.max_parallel > 1 and auto_merge and pending_merges:
+                changed = True
+                while changed:
+                    changed = False
+                    for slug, (task, result) in list(pending_merges.items()):
+                        if result.success and all(d in merged_slugs for d in task.depends_on):
+                            branch = config.workspace.branch_pattern.format(slug=slug)
+                            wt = config.project_root / config.workspace.path_pattern.format(
+                                slug=slug
+                            )
+                            merge_info = _merge_branch(
+                                config.project_root,
+                                config.workspace.base_branch,
+                                branch,
+                                slug,
+                                wt,
+                                config=config,
+                                task_name=task.name,
+                            )
+                            if merge_info.get("merged"):
+                                merged_slugs.add(slug)
+                                # Re-classify in DAG since we now know it merged
+                                dag.mark_complete(slug)
+                            del pending_merges[slug]
+                            changed = True
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     duration = (finished_at - started_at).total_seconds()
@@ -628,6 +872,13 @@ def run_sprint(
                 priority=config.notifications.ntfy.priority,
             )
 
+    # Build slug map for audit writers
+    slug_map: dict[str, str] = {}
+    for spec_str, sp in zip(manifest.stories, story_paths):
+        t = _parsed_tasks.get(sp)
+        if t is not None:
+            slug_map[spec_str] = t.slug
+
     # Write sprint-audit.yaml (existing format; kept for backward compatibility)
     _write_sprint_audit(
         manifest=manifest,
@@ -637,6 +888,9 @@ def run_sprint(
         finished_at=finished_at,
         duration=duration,
         project_root=config.project_root,
+        story_times=story_times,
+        batch_assignments=batch_assignments,
+        slug_map=slug_map,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -649,6 +903,9 @@ def run_sprint(
             finished_at=finished_at,
             duration=duration,
             sprint_log_dir=_sprint_log_dir,
+            story_times=story_times,
+            batch_assignments=batch_assignments,
+            slug_map=slug_map,
         )
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
@@ -705,8 +962,15 @@ def _write_sprint_audit(
     finished_at: datetime.datetime,
     duration: float,
     project_root: Path,
+    story_times: "dict[str, tuple[datetime.datetime, datetime.datetime]] | None" = None,
+    batch_assignments: "dict[str, int] | None" = None,
+    slug_map: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
+    story_times = story_times or {}
+    batch_assignments = batch_assignments or {}
+    slug_map = slug_map or {}
+
     # Build per-spec entries
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
@@ -735,7 +999,8 @@ def _write_sprint_audit(
                     cycle_entry["p2_count"] = sum(1 for f in r.findings if f.severity == "P2")
                 reviews_summary.append(cycle_entry)
 
-            entry = {
+            slug = slug_map.get(spec_str, story_path.stem)
+            entry: dict = {
                 "path": spec_str,
                 "outcome": outcome,
                 "cost_usd": round(res.state.total_cost, 4),
@@ -743,8 +1008,15 @@ def _write_sprint_audit(
                 "merge": res.merge is not None and res.merge.get("merged", False),
                 "reviews": reviews_summary,
             }
+            if slug in story_times:
+                entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
+                entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                entry["started_at"] = None
+                entry["finished_at"] = None
+            entry["batch"] = batch_assignments.get(slug, 0)
         else:
-            # Skipped due to budget
+            # Skipped due to budget or pre-skip (resume)
             entry = {
                 "path": spec_str,
                 "outcome": "SKIPPED",
@@ -752,6 +1024,9 @@ def _write_sprint_audit(
                 "preflight": None,
                 "merge": False,
                 "reviews": [],
+                "started_at": None,
+                "finished_at": None,
+                "batch": batch_assignments.get(slug_map.get(spec_str, story_path.stem), 0),
             }
         spec_entries.append(entry)
 
@@ -759,6 +1034,7 @@ def _write_sprint_audit(
         "sprint": {
             "name": manifest.name,
             "budget_usd": manifest.budget_usd,
+            "max_parallel": manifest.max_parallel,
             "total_cost_usd": round(result.total_cost_usd, 4),
             "budget_note": "Costs reflect Claude invocations only; Codex/Gemini report $0.00",
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -798,12 +1074,20 @@ def _write_sprint_summary(
     finished_at: datetime.datetime,
     duration: float,
     sprint_log_dir: Path,
+    story_times: "dict[str, tuple[datetime.datetime, datetime.datetime]] | None" = None,
+    batch_assignments: "dict[str, int] | None" = None,
+    slug_map: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/."""
+    story_times = story_times or {}
+    batch_assignments = batch_assignments or {}
+    slug_map = slug_map or {}
+
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
     for spec_str, story_path in zip(manifest.stories, story_paths):
+        slug = slug_map.get(spec_str, story_path.stem)
         if spec_str in results_by_spec:
             res = results_by_spec[spec_str]
             preflight = res.state.preflight_verdict or "PROCEED"
@@ -813,24 +1097,29 @@ def _write_sprint_summary(
                 last_verdict = res.state.review_results[-1].verdict
             elif res.success:
                 last_verdict = "APPROVE"
-            entry = {
+            entry: dict = {
                 "path": spec_str,
-                "slug": story_path.stem,
+                "slug": slug,
                 "outcome": outcome,
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
                 "merge": res.merge is not None and res.merge.get("merged", False),
             }
+            if slug in story_times:
+                entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
+                entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
+            entry["batch"] = batch_assignments.get(slug, 0)
         else:
             entry = {
                 "path": spec_str,
-                "slug": Path(spec_str).stem,
+                "slug": slug,
                 "outcome": "SKIPPED",
                 "verdict": None,
                 "cost_usd": 0.0,
                 "preflight": None,
                 "merge": False,
+                "batch": batch_assignments.get(slug, 0),
             }
         spec_entries.append(entry)
 
@@ -838,6 +1127,7 @@ def _write_sprint_summary(
         "sprint": {
             "name": manifest.name,
             "budget_usd": manifest.budget_usd,
+            "max_parallel": manifest.max_parallel,
             "total_cost_usd": round(result.total_cost_usd, 4),
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
