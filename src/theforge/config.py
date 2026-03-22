@@ -75,6 +75,43 @@ _PROVIDER_CLI_MAP: dict[str, str] = {
 
 
 @dataclass(frozen=True)
+class AgentDef:
+    """An agent available in the pool for adaptive model assignment."""
+
+    name: str
+    provider: str
+    model: str
+    budget_usd: float
+    timeout_seconds: int
+    tier: str  # "cheap" | "mid" | "strong"
+    strengths: tuple[str, ...] = ()
+
+    def to_model_profile(self, *, allowed_tools: tuple[str, ...] = ()) -> "ModelProfile":
+        """Convert to a ModelProfile for use in coordinator config."""
+        return ModelProfile(
+            name=self.name,
+            cli=None,
+            provider=self.provider,
+            model=self.model,
+            budget_usd=self.budget_usd,
+            timeout_seconds=self.timeout_seconds,
+            allowed_tools=allowed_tools,
+        )
+
+
+@dataclass(frozen=True)
+class AssignmentConfig:
+    """Configuration for adaptive model assignment."""
+
+    enabled: bool = False
+    min_reviewers: int = 1
+    max_reviewers: int = 3
+    prefer_cross_provider: bool = True
+    budget_per_story_usd: float = 15.0
+    escalation_memory: bool = True
+
+
+@dataclass(frozen=True)
 class NtfyConfig:
     """Configuration for ntfy.sh push notifications."""
 
@@ -286,6 +323,8 @@ class ForgeConfig:
     log: LogConfig = field(default_factory=LogConfig)
     hooks: HooksConfig | None = None
     secrets: dict[str, str] = field(default_factory=dict)
+    agents: list[AgentDef] = field(default_factory=list)
+    assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -901,6 +940,45 @@ def load_config(config_path: Path) -> ForgeConfig:
             timeout_seconds=int(hooks_data.get("timeout_seconds", 30)),
         )
 
+    # Agents pool (for adaptive model assignment)
+    agents_raw = raw.get("agents", [])
+    agents_list: list[AgentDef] = []
+    _VALID_TIERS = {"cheap", "mid", "strong"}
+    for agent_data in agents_raw:
+        if not isinstance(agent_data, dict):
+            raise ValueError(f"Each 'agents' entry must be a dict, got {type(agent_data)}")
+        agent_name = agent_data.get("name")
+        if not agent_name:
+            raise ValueError("Each 'agents' entry must have a 'name' field")
+        agent_tier = str(agent_data.get("tier", "mid"))
+        if agent_tier not in _VALID_TIERS:
+            raise ValueError(
+                f"Agent {agent_name!r}: tier must be one of {sorted(_VALID_TIERS)}, "
+                f"got {agent_tier!r}"
+            )
+        agents_list.append(
+            AgentDef(
+                name=str(agent_name),
+                provider=str(agent_data.get("provider", "anthropic")),
+                model=str(agent_data.get("model", "sonnet")),
+                budget_usd=float(agent_data.get("budget_usd", 1.0)),
+                timeout_seconds=int(agent_data.get("timeout_seconds", 300)),
+                tier=agent_tier,
+                strengths=tuple(agent_data.get("strengths", [])),
+            )
+        )
+
+    # Assignment config
+    assignment_raw = raw.get("assignment", {})
+    assignment_cfg = AssignmentConfig(
+        enabled=bool(assignment_raw.get("enabled", False)),
+        min_reviewers=int(assignment_raw.get("min_reviewers", 1)),
+        max_reviewers=int(assignment_raw.get("max_reviewers", 3)),
+        prefer_cross_provider=bool(assignment_raw.get("prefer_cross_provider", True)),
+        budget_per_story_usd=float(assignment_raw.get("budget_per_story_usd", 15.0)),
+        escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
+    )
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -919,6 +997,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         log=log_cfg,
         hooks=hooks_cfg,
         secrets=secrets,
+        agents=agents_list,
+        assignment=assignment_cfg,
     )
 
 

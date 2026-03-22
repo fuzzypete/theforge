@@ -1,33 +1,66 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Fixed two unsatisfied acceptance criteria in coord_notify.py: raised the
-    urlopen timeout in _ntfy_publish from 10s to 15s (now within the 15-30s required range),
-    and replaced the bare except pass with a warning log via _cu._log so notification
-    failures are visible in the forge output. Updated the one test that was asserting
-    timeout==10 to assert timeout==15. No new dependencies introduced. All other ACs
-    (gh subprocess timeout, PR failure logging) were already satisfied per preflight."
+  summary: "Implemented adaptive model assignment, then fixed two P1 review findings. The original implementation added AgentDef/AssignmentConfig to config.py, created assignment.py with a pure assign_models() function, wired it into the coordinator after preflight complexity parsing, and wrote escalation records to .forge/assignment_history.yaml on story completion. Iter 1 fixed: (1) dead code in coordinator that made _explicit always empty, so explicit profiles from profiles: key now correctly override adaptive assignment by comparing against DEFAULT_DEV_PROFILE/DEFAULT_PREFLIGHT_PROFILE by identity; (2) _enforce_budget now handles profiles not in agent_by_name (explicit overrides) by falling back to any cheaper-by-budget agent from the pool. Also fixed P2: rationale escalation count now uses the same filtered matching slice as _check_promotion."
   commits:
-    - sha: "55a2abc"
-      message: "fix(coord_notify): raise ntfy timeout to 15s and log failures as warnings"
+    - sha: "d2650a7"
+      message: "fix(assignment): address review findings (iter 1)"
+    - sha: "7a61deb"
+      message: "fix(adaptive-model-assignment): rewrite dev handoff to match schema"
+    - sha: "921b3dd"
+      message: "chore: write handoff.yaml for adaptive-model-assignment"
+    - sha: "82121ef"
+      message: "feat(assignment): adaptive model assignment with complexity-driven routing and escalation learning"
   acceptance_criteria:
-    - criterion: "All urllib.request.urlopen calls in coord_notify.py have an explicit timeout= parameter (connect + read, 15-30s)"
+    - criterion: "agents: key in forge.yaml defines the available model pool with tier + strengths"
       status: MET
-      notes: "coord_notify.py line 199 now uses timeout=15. Lines 217, 265, 315 already used timeout=15."
-    - criterion: "_ntfy_publish is wrapped in try/except so notification failures log a warning and continue — never block the sprint"
+      notes: "forge.yaml has agents: block with haiku/sonnet/opus. config.py parses into list[AgentDef] with tier/strengths/budget_usd/timeout_seconds."
+    - criterion: "assignment: key configures bounds and behavior"
       status: MET
-      notes: "except clause now calls _cu._log(f'WARNING: ntfy publish failed (continuing): {exc}') then falls through. Pipeline continues."
-    - criterion: "Any subprocess calls to gh (PR creation, issue filing) have a timeout"
+      notes: "forge.yaml has assignment: block; parsed into AssignmentConfig dataclass in config.py."
+    - criterion: "assign_models() is a pure function — deterministic, no LLM, no I/O"
       status: MET
-      notes: "Already satisfied (coord_phases.py:212-218 uses timeout=60). No changes needed."
-    - criterion: "Notification and PR creation failures are logged at WARNING level with the error detail, then the pipeline continues"
+      notes: "assignment.py:assign_models() performs zero I/O and no LLM calls. test_deterministic verifies same inputs produce same outputs."
+    - criterion: "Complexity LOW/MEDIUM/HIGH maps to tier selection per the table above"
       status: MET
-      notes: "ntfy: now logs via _cu._log with 'WARNING:' prefix and exc detail. PR creation: coord_phases.py already used _pr_log.warning() with error detail."
-    - criterion: "No new dependencies introduced"
+      notes: "PHASE_TIER constant in assignment.py encodes the full spec table. _normalize_complexity maps small/medium/large to LOW/MEDIUM/HIGH."
+    - criterion: "Review pools prefer cross-provider diversity when pool allows"
       status: MET
-      notes: "Only stdlib and existing _cu._log used."
-    - criterion: "Existing tests pass"
+      notes: "_select_reviewers greedy picks from different providers first; falls back to same-provider if pool too small."
+    - criterion: "Explicit profiles: config overrides adaptive for that specific role"
       status: MET
-      notes: "1189 tests pass (1 test updated to reflect new timeout value)."
-  story_deviations: none
-  deferred_items: none
+      notes: "Fixed in iter 1: coordinator now compares dev_profile/preflight_profile against DEFAULT singletons by identity to detect explicitly-set profiles (classic profiles: path) and passes them as explicit_profiles to assign_models()."
+    - criterion: "Escalation history tracked in .forge/assignment_history.yaml"
+      status: MET
+      notes: "append_escalation_record() writes YAML on story completion (DONE or ESCALATE) if assignment.escalation_memory is True."
+    - criterion: "Auto-promotion fires after 2+ escalations in last 10 runs for a tier"
+      status: MET
+      notes: "_check_promotion() inspects last 10 matching history records; promotes if escalation_count >= 2."
+    - criterion: "Auto-promotion logged with clear rationale"
+      status: MET
+      notes: "Coordinator logs '[adaptive] complexity dev promoted name (tier X to Y) — N/10 recent stories escalated' at verbose."
+    - criterion: "Auto-promotion is sticky per sprint, resets between sprints"
+      status: MET
+      notes: "sprint_promotions dict[str,str] in CoordinatorState (in-memory, process lifetime). _check_promotion() checks cache first."
+    - criterion: "Budget cap (budget_per_story_usd) enforced — downgrade model before exceeding"
+      status: MET
+      notes: "Fixed in iter 1: _enforce_budget now handles explicit profiles not in agent pool by finding any cheaper-by-budget agent. All dev and code_reviewer profiles are candidates regardless of pool membership."
+    - criterion: "All assignment decisions logged at verbose level"
+      status: MET
+      notes: "Coordinator logs '[adaptive] Complexity: ...' then '[adaptive] phase: reason' for each phase from AssignmentDecision.rationale."
+    - criterion: "Deterministic: same inputs = same outputs every time"
+      status: MET
+      notes: "Pure function with sorted/deterministic operations. test_deterministic verifies same inputs give same outputs."
+    - criterion: "Tests cover: tier selection per complexity, cross-provider preference, escalation promotion, explicit override, budget cap enforcement"
+      status: MET
+      notes: "29 tests in tests/test_assignment.py covering all required scenarios."
+  story_deviations:
+    - description: "_check_promotion() returns 'promoted' string (not the promoted tier directly) to signal promotion; caller computes promoted tier via _promote_tier(). Consistent return for cached promotions (returns tier string from sprint_promotions) vs new promotions ('promoted' sentinel)."
+      justification: "Equivalent behavior; separates the promotion signal from tier computation. Flagged as P2 deviation in review but not required to change."
+    - description: "Escalation record complexity field stores uppercase (LOW/MEDIUM/HIGH) normalized from preflight output (small/medium/large)."
+      justification: "Consistency required for _check_promotion() history matching."
+  deferred_items:
+    - description: "Preflight domain tags (domains, estimated_files) from the spec future extension section — not implemented."
+      reason: "Spec explicitly marks this as future/additive; assignment works without domains using complexity alone."
+    - description: "Planner profile from AssignmentDecision is computed but not wired into plan phase config (PlanConfig uses scalar model/model_name fields, not ModelProfile)."
+      reason: "PlanConfig is a different dataclass from ModelProfile; wiring requires a larger refactor. No AC explicitly requires planner wiring."
   gate_result: PASS
