@@ -1725,3 +1725,132 @@ class TestMaxParallel1Fallback:
         assert sprint.specs_succeeded == 1
         assert sprint.specs_skipped == 1
         assert sprint.stopped_reason is None
+
+
+# ── TestBuildDagValidation ────────────────────────────────────────────────────
+
+
+class TestBuildDagValidation:
+    def test_missing_dep_raises_value_error(self) -> None:
+        """build_dag raises ValueError when depends_on references a slug not in the manifest."""
+        a = _make_task("story-a")
+        b = _make_task("story-b", depends_on=["nonexistent-slug"])
+        with pytest.raises(ValueError, match="unknown slug"):
+            build_dag([a, b])
+
+    def test_circular_dependency_raises_value_error(self) -> None:
+        """build_dag raises ValueError on circular dependency (A → B → A)."""
+        a = _make_task("story-a", depends_on=["story-b"])
+        b = _make_task("story-b", depends_on=["story-a"])
+        with pytest.raises(ValueError, match="[Cc]ircular"):
+            build_dag([a, b])
+
+    def test_self_dependency_raises_value_error(self) -> None:
+        """build_dag raises ValueError when a story depends on itself."""
+        a = _make_task("story-a", depends_on=["story-a"])
+        with pytest.raises(ValueError, match="[Cc]ircular"):
+            build_dag([a])
+
+    def test_valid_dag_no_error(self) -> None:
+        """build_dag does not raise for a valid linear dependency chain."""
+        a = _make_task("story-a")
+        b = _make_task("story-b", depends_on=["story-a"])
+        c = _make_task("story-c", depends_on=["story-b"])
+        dag = build_dag([a, b, c])
+        assert dag.ready() == [a]
+
+    def test_three_way_cycle_raises_value_error(self) -> None:
+        """build_dag raises ValueError for a 3-story cycle (A → B → C → A)."""
+        a = _make_task("story-a", depends_on=["story-c"])
+        b = _make_task("story-b", depends_on=["story-a"])
+        c = _make_task("story-c", depends_on=["story-b"])
+        with pytest.raises(ValueError, match="[Cc]ircular"):
+            build_dag([a, b, c])
+
+
+# ── TestWorkerExceptionHandling ───────────────────────────────────────────────
+
+
+class TestWorkerExceptionHandling:
+    def test_worker_exception_marks_story_failed_sprint_continues(self, tmp_path: Path) -> None:
+        """Worker exception from run_task is caught; story is marked failed; sprint finishes."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        config = _make_config(tmp_path)
+
+        result_b = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch(
+            "theforge.sprint.run_task",
+            side_effect=[RuntimeError("agent crashed"), result_b],
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # A failed via exception → counted as failed; B still ran
+        assert sprint.specs_failed == 1
+        assert sprint.specs_succeeded == 1
+
+    def test_worker_exception_dependent_is_skipped(self, tmp_path: Path) -> None:
+        """When a worker raises, the story is marked skipped in the DAG so dependents skip too."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=1,
+        )
+        config = _make_config(tmp_path)
+
+        with patch(
+            "theforge.sprint.run_task",
+            side_effect=[RuntimeError("agent crashed")],
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # A raises → failed; B dep-skipped (A never completed)
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
+
+
+# ── TestParallelMergeOrderingParallelMode ─────────────────────────────────────
+
+
+class TestParallelMergeOrderingParallelMode:
+    def test_merge_ordering_parallel_pending_merges(self, tmp_path: Path) -> None:
+        """auto_merge=True, max_parallel=2, B depends_on A: _merge_branch called for A then B."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        # Both complete successfully (no real merge needed in test)
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        merge_calls: list[str] = []
+
+        def _fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            merge_calls.append(slug)
+            return {"merged": True}
+
+        with (
+            patch("theforge.sprint.run_task", side_effect=[result_a, result_b]),
+            patch("theforge.sprint._merge_branch", side_effect=_fake_merge),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 2
+        # A must be merged before B (dependency order)
+        assert merge_calls.index("story-a") < merge_calls.index("story-b")

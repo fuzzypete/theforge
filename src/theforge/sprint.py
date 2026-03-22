@@ -22,6 +22,8 @@ from .coord_audit import has_review_approve
 from .coord_workspace import _merge_branch
 from .coordinator import (
     CoordinatorResult,
+    CoordinatorState,
+    Phase,
     StructuredLogger,
     _fmt_duration,
     _generate_run_id,
@@ -243,7 +245,45 @@ class StoryDAG:
 
 
 def build_dag(tasks: list[TaskSpec]) -> StoryDAG:
-    """Build a StoryDAG from a list of TaskSpec objects."""
+    """Build a StoryDAG from a list of TaskSpec objects.
+
+    Raises ValueError if:
+    - any depends_on slug references a story not present in the manifest
+    - circular dependencies are detected
+    """
+    known_slugs = {t.slug for t in tasks}
+
+    # Validate all depends_on slugs exist in the manifest
+    for task in tasks:
+        missing = [dep for dep in task.depends_on if dep not in known_slugs]
+        if missing:
+            raise ValueError(
+                f"Story '{task.slug}' depends on unknown slug(s): {', '.join(missing)}. "
+                f"All depends_on slugs must reference stories in the sprint manifest."
+            )
+
+    # Detect circular dependencies via DFS (gray/white/black coloring)
+    deps = {t.slug: list(t.depends_on) for t in tasks}
+    visited: set[str] = set()
+    in_stack: set[str] = set()
+
+    def _dfs(slug: str) -> None:
+        visited.add(slug)
+        in_stack.add(slug)
+        for dep in deps[slug]:
+            if dep in in_stack:
+                raise ValueError(
+                    f"Circular dependency detected: '{slug}' → '{dep}'. "
+                    f"Sprint manifest contains a dependency cycle."
+                )
+            if dep not in visited:
+                _dfs(dep)
+        in_stack.discard(slug)
+
+    for task in tasks:
+        if task.slug not in visited:
+            _dfs(task.slug)
+
     return StoryDAG(tasks)
 
 
@@ -740,13 +780,51 @@ def run_sprint(
                     specs_skipped += 1
                 break
 
-            done_futs, _ = wait(list(active.values()), return_when=FIRST_COMPLETED)
+            done_futs, _ = wait(list(active.values()), return_when=FIRST_COMPLETED, timeout=3600)
             batch_number += 1
+
+            if not done_futs:
+                # Timeout: all active workers hung for >3600s — cancel and fail them
+                for slug, fut in list(active.items()):
+                    fut.cancel()
+                    _log(f"TIMEOUT {slug} (worker unresponsive after 3600s — marking as failed)")
+                    spec_str = slug_to_spec[slug]
+                    _timeout_state = CoordinatorState()
+                    _timeout_state.error = "Worker timeout (>3600s)"
+                    _timeout_result = CoordinatorResult(
+                        success=False,
+                        phase=Phase.ESCALATE,
+                        state=_timeout_state,
+                        message="Worker thread timed out after 3600s",
+                    )
+                    results.append((spec_str, _timeout_result))
+                    dag.mark_skipped(slug)
+                    specs_failed += 1
+                active.clear()
+                stopped_reason = stopped_reason or "Worker timeout (>3600s)"
+                continue
 
             for slug, fut in list(active.items()):
                 if fut not in done_futs:
                     continue
-                task, result, elapsed, t0, t1 = fut.result()  # type: ignore[misc]
+                try:
+                    task, result, elapsed, t0, t1 = fut.result()  # type: ignore[misc]
+                except Exception as exc:
+                    _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
+                    del active[slug]
+                    spec_str = slug_to_spec[slug]
+                    _exc_state = CoordinatorState()
+                    _exc_state.error = f"Worker exception: {exc}"
+                    _exc_result = CoordinatorResult(
+                        success=False,
+                        phase=Phase.ESCALATE,
+                        state=_exc_state,
+                        message=f"Worker thread raised {type(exc).__name__}: {exc}",
+                    )
+                    results.append((spec_str, _exc_result))
+                    dag.mark_skipped(slug)
+                    specs_failed += 1
+                    continue
                 del active[slug]
                 story_times[slug] = (t0, t1)
 
@@ -787,8 +865,8 @@ def run_sprint(
                 specs_failed += df
                 specs_skipped += dsk
 
-                # Parallel merge ordering: queue for dependency-ordered merge
-                if manifest.max_parallel > 1 and auto_merge:
+                # Parallel merge ordering: queue successful stories for dependency-ordered merge
+                if manifest.max_parallel > 1 and auto_merge and result.success:
                     pending_merges[slug] = (task, result)
 
                 _print_worker_status(active, worker_phases, dag, total)
