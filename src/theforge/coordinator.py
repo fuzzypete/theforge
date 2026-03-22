@@ -1342,13 +1342,24 @@ def run_task(
                 _history_path = config.project_root / ".forge" / "assignment_history.yaml"
                 _esc_history = _load_esc_history(_history_path)
 
-                # Build explicit_profiles from profiles: key (non-adaptive overrides)
-                # Profiles that were explicitly set in forge.yaml are kept as-is.
+                # Build explicit_profiles from profiles: key (non-adaptive overrides).
+                # Classic config (smart_config_models is None) means profiles: was used;
+                # compare against defaults by identity to detect explicitly-set roles.
+                # Smart config (smart_config_models set) auto-generates profiles —
+                # adaptive assignment should override them freely.
+                from .config import (
+                    DEFAULT_DEV_PROFILE as _DEF_DEV,
+                )
+                from .config import (
+                    DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
+                )
+
                 _explicit: dict[str, ModelProfile] = {}
-                if not config.agents:
-                    # No agents pool means explicit profiles only
-                    _explicit["dev"] = config.dev_profile
-                    _explicit["preflight"] = config.preflight_profile
+                if config.smart_config_models is None:
+                    if config.dev_profile is not _DEF_DEV:
+                        _explicit["dev"] = config.dev_profile
+                    if config.preflight_profile is not _DEF_PRE:
+                        _explicit["preflight"] = config.preflight_profile
 
                 _decision = _assign_models(
                     config.agents,

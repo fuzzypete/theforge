@@ -214,19 +214,25 @@ def _enforce_budget(
 
     def _next_cheaper_profile(profile: ModelProfile) -> ModelProfile | None:
         agent = agent_by_name.get(profile.name)
-        if agent is None:
+        if agent is not None:
+            current_tier = agent.tier
+            idx = _TIER_ORDER.index(current_tier) if current_tier in _TIER_ORDER else 0
+            if idx == 0:
+                return None  # already cheapest
+            # Try each tier below current, from next-cheaper down to cheapest
+            for cheaper_tier in _TIER_ORDER[idx - 1 :: -1]:
+                cheaper_agents = _agents_by_tier(agents, cheaper_tier)
+                if cheaper_agents:
+                    cheaper = cheaper_agents[0]
+                    return cheaper.to_model_profile(allowed_tools=profile.allowed_tools)
             return None
-        current_tier = agent.tier
-        idx = _TIER_ORDER.index(current_tier) if current_tier in _TIER_ORDER else 0
-        if idx == 0:
-            return None  # already cheapest
-        # Try each tier below current, from next-cheaper down to cheapest
-        for cheaper_tier in _TIER_ORDER[idx - 1 :: -1]:
-            cheaper_agents = _agents_by_tier(agents, cheaper_tier)
-            if cheaper_agents:
-                cheaper = cheaper_agents[0]
-                return cheaper.to_model_profile(allowed_tools=profile.allowed_tools)
-        return None
+        else:
+            # Profile not in agent pool (e.g. explicit override) — find any cheaper agent
+            cheaper_options = [a for a in agents if a.budget_usd < profile.budget_usd]
+            if not cheaper_options:
+                return None
+            cheapest = min(cheaper_options, key=lambda a: a.budget_usd)
+            return cheapest.to_model_profile(allowed_tools=profile.allowed_tools)
 
     # Iteratively downgrade until within budget (max 10 passes)
     for _ in range(10):
@@ -234,13 +240,12 @@ def _enforce_budget(
             break
 
         # Find highest-cost non-preflight, non-planner profile that can be downgraded
-        # Candidates: dev, code_reviewers (exclude preflight to preserve quality)
+        # Candidates: dev, code_reviewers (exclude preflight to preserve quality).
+        # All profiles are candidates — _next_cheaper_profile handles pool lookup.
         candidates = []
-        if decision.dev.name in agent_by_name:
-            candidates.append(("dev", decision.dev))
+        candidates.append(("dev", decision.dev))
         for i, p in enumerate(decision.code_reviewers):
-            if p.name in agent_by_name:
-                candidates.append((f"code_review_{i}", p))
+            candidates.append((f"code_review_{i}", p))
 
         if not candidates:
             break
@@ -341,13 +346,13 @@ def assign_models(
         effective_dev_tier = dev_base_tier
         if promoted is not None:
             effective_dev_tier = _promote_tier(dev_base_tier)
-            escalation_cnt = sum(
-                1
-                for r in history[-10:]
-                if r.complexity == norm_complexity
-                and r.dev_model == dev_model_name
-                and r.outcome == "ESCALATE"
-            )
+            # Use filtered matching records (same slice as _check_promotion uses)
+            _matching = [
+                r
+                for r in history
+                if r.complexity == norm_complexity and r.dev_model == dev_model_name
+            ][-10:]
+            escalation_cnt = sum(1 for r in _matching if r.outcome == "ESCALATE")
             rationale["dev"] = (
                 f"{norm_complexity} dev promoted {dev_model_name} "
                 f"(tier {dev_base_tier} → {effective_dev_tier}) — "
