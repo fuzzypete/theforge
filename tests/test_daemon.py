@@ -220,6 +220,7 @@ def test_fallback_no_daemon(tmp_path: Path) -> None:
         no_notify=True,
         resume=False,
         detach=False,
+        fg=True,
     )
 
     mock_config = MagicMock()
@@ -239,7 +240,7 @@ def test_fallback_no_daemon(tmp_path: Path) -> None:
 
 
 def test_submit_routes_to_daemon(tmp_path: Path) -> None:
-    """When daemon is running, cmd_sprint calls submit_sprint, not run_sprint."""
+    """When daemon is running and --detach is set, cmd_sprint routes to submit_sprint."""
     import argparse
 
     from theforge import cli
@@ -257,7 +258,8 @@ def test_submit_routes_to_daemon(tmp_path: Path) -> None:
         interactive=False,
         no_notify=True,
         resume=False,
-        detach=False,
+        detach=True,
+        fg=True,
     )
 
     mock_config = MagicMock()
