@@ -50,6 +50,30 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
 _VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
 
 
+def _parse_preflight_warnings(output: str) -> list[str]:
+    """Extract warnings list from preflight agent output. Returns [] if absent."""
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            raw = parsed.get("warnings", [])
+            if isinstance(raw, list):
+                return [str(w) for w in raw if w]
+    except yaml.YAMLError:
+        pass
+
+    return []
+
+
 def _parse_preflight_complexity(output: str) -> str:
     """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
     yaml_text = output

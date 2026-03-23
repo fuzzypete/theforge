@@ -219,7 +219,7 @@ def build_preflight_prompt(
           the current code. You MUST verify each criterion individually.
 
         - **BLOCKED** — The spec cannot be implemented as written. This includes:
-          - References to files, functions, or APIs that do not exist
+          - References to functions or APIs that do not exist
           - Conflicts with the current architecture
           - **Internal contradictions** (e.g., requirements that conflict with
             acceptance criteria, or acceptance criteria that contradict each other)
@@ -227,6 +227,11 @@ def build_preflight_prompt(
             verify (e.g., "should be fast" without a measurable threshold)
           - A dependency is missing
           Provide a clear reason so a human can fix the spec.
+
+        **File path references**: If the spec mentions file paths that don't exist
+        on disk, do NOT set verdict to BLOCKED for this reason alone. Instead,
+        list the missing paths in the `warnings` field and proceed normally.
+        The plan agent will discover the correct paths.
 
         ## Spec Quality Check
 
@@ -266,6 +271,8 @@ def build_preflight_prompt(
         spec_issues:
           - type: contradiction | ambiguity | impossible_constraint
             description: "<what conflicts or is unclear>"
+        warnings:
+          - "<missing file path or other non-blocking advisory>"
         criteria_checked:
           - criterion: "<acceptance criterion text>"
             satisfied: true | false
@@ -273,6 +280,7 @@ def build_preflight_prompt(
         ```
 
         Use `spec_issues: []` if the spec is clean.
+        Use `warnings: []` if there are no non-blocking advisories.
 
         ## Rules
 
