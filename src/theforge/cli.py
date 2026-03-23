@@ -864,8 +864,9 @@ def _print_daemon_status(state: dict) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    """Show daemon status and recent run history."""
+    """Show daemon status, recent run history, and pending decisions."""
     from . import daemon as _daemon
+    from . import pending as _pending
 
     config_path = _find_config()
     if config_path is None or not config_path.exists():
@@ -874,6 +875,88 @@ def cmd_status(args: argparse.Namespace) -> int:
     config = load_config(config_path)
     state = _daemon.get_daemon_status(config.project_root)
     _print_daemon_status(state)
+
+    # Show pending decisions
+    _pending.cleanup_stale(config.project_root)
+    pending_entries = _pending.list_pending(config.project_root)
+    if pending_entries:
+        import datetime
+
+        print("\nPending decisions:")
+        now = datetime.datetime.now(datetime.timezone.utc)
+        for entry in pending_entries:
+            run_id = entry.get("run_id", "?")
+            story = entry.get("story", "?")
+            phase = entry.get("phase", "?")
+            reason = (entry.get("reason") or "")[:80]
+            created_at = entry.get("created_at", "")
+            timeout_at_str = entry.get("timeout_at", "")
+            options = entry.get("options", [])
+            decision = entry.get("decision")
+
+            time_remaining = ""
+            if timeout_at_str and not decision:
+                try:
+                    timeout_at = datetime.datetime.fromisoformat(timeout_at_str)
+                    remaining = (timeout_at - now).total_seconds()
+                    if remaining > 0:
+                        mins = int(remaining // 60)
+                        secs = int(remaining % 60)
+                        time_remaining = f" ({mins}m{secs}s remaining)"
+                    else:
+                        time_remaining = " (expired)"
+                except Exception:
+                    pass
+
+            status = f"decided: {decision}" if decision else f"waiting{time_remaining}"
+            opts_str = "/".join(options) if options else ""
+            print(f"  {run_id}  [{phase}]  story={story}  {status}")
+            if reason:
+                print(f"    reason: {reason}")
+            if opts_str:
+                print(f"    options: {opts_str}")
+            if created_at:
+                print(f"    created: {created_at}")
+    else:
+        print("\nPending decisions: (none)")
+
+    return 0
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    """Write a decision to a pending file."""
+    from . import pending as _pending
+
+    config_path = _find_config()
+    project_root = None
+    if config_path is not None and config_path.exists():
+        try:
+            config = load_config(config_path)
+            project_root = config.project_root
+        except Exception:
+            pass
+
+    run_id = args.run_id
+    action = args.action
+
+    entry = _pending.read_pending(run_id, project_root)
+    if entry is None:
+        print(f"No pending decision found for run_id={run_id!r}", file=sys.stderr)
+        return 1
+
+    options = entry.get("options", [])
+    if options and action not in options:
+        print(
+            f"Invalid action {action!r}. Valid options: {', '.join(options)}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not _pending.resolve_pending(run_id, action, project_root):
+        print(f"Failed to write decision for run_id={run_id!r}", file=sys.stderr)
+        return 1
+
+    print(f"Decision '{action}' recorded for {run_id}")
     return 0
 
 
@@ -2004,7 +2087,18 @@ def main() -> None:
     # forge status
     subparsers.add_parser(
         "status",
-        help="Show daemon status and recent run history",
+        help="Show daemon status, recent run history, and pending decisions",
+    )
+
+    # forge decide
+    decide_parser = subparsers.add_parser(
+        "decide",
+        help="Write a decision to a pending HITL file",
+    )
+    decide_parser.add_argument("run_id", help="Run ID of the pending decision")
+    decide_parser.add_argument(
+        "action",
+        help="Decision to record (e.g. approve, reject, continue, retry, skip, abort)",
     )
 
     args = parser.parse_args()
@@ -2022,6 +2116,7 @@ def main() -> None:
         "telemetry": cmd_telemetry,
         "daemon": cmd_daemon,
         "status": cmd_status,
+        "decide": cmd_decide,
     }
 
     try:

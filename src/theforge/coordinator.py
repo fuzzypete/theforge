@@ -60,6 +60,7 @@ from .coord_logging import StructuredLogger  # noqa: F401
 from .coord_notify import (  # noqa: F401
     _escalate_notify,
     _human_review,
+    _is_pending_file_mode,
     _is_remote_mode,
     _notify,
     _ntfy_crash_notify,
@@ -68,6 +69,7 @@ from .coord_notify import (  # noqa: F401
     _ntfy_publish,
     _ntfy_reply_url,
     _osa_quote,
+    _pending_plan_review,
     _plan_review_interactive,
     _plan_review_remote,
     _remote_human_review,
@@ -2058,7 +2060,11 @@ def run_task(
                         _log(f"  Plan written to: {workspace_path / 'forge_plan.md'}")
 
                         _pr_start = time.monotonic()
-                        if _is_remote_mode(notify, config):
+                        if _is_pending_file_mode(notify, config):
+                            plan_review_decision = _pending_plan_review(
+                                state, plan_text, workspace_path, task, config, run_id=run_id
+                            )
+                        elif _is_remote_mode(notify, config):
                             plan_review_decision = _plan_review_remote(
                                 state, plan_text, workspace_path, task, config
                             )
