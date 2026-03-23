@@ -427,7 +427,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         run_id = _generate_run_id()
         _detach.daemonize_run(run_id, task.slug, config.project_root)
         # Grandchild continues here; parent has already exited above
-        _detach.suppress_app_nap()
+        # NOTE: suppress_app_nap() intentionally skipped — PyObjC crashes
+        # in forked processes. setsid() provides sufficient protection.
         _detach.install_cleanup_handler(run_id, config.project_root)
     else:
         run_id = _generate_run_id()
