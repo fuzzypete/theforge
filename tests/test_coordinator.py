@@ -5541,7 +5541,6 @@ class TestParsePhaseNameUtility:
             )
 
 
-@pytest.mark.skip(reason="stage-aware coordinator wiring pending — merge conflict")
 class TestUntilPhaseStop:
     """Tests for --until phase stop behaviour."""
 
@@ -5625,7 +5624,6 @@ class TestUntilPhaseStop:
         assert result.state.dev_trace_count == 1
 
 
-@pytest.mark.skip(reason="stage-aware coordinator wiring pending — merge conflict")
 class TestFromPhaseSkip:
     """Tests for --from phase skip behaviour."""
 

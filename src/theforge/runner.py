@@ -72,6 +72,7 @@ class AgentResult:
     profile_name: str = ""  # identifies which profile produced this result
     model_usage: tuple[ModelUsage, ...] = ()  # per-model breakdown (Claude only)
     structured_data: dict | None = None  # NEW: parsed JSON for API reviewers
+    startup_failure: bool = False  # True when the agent couldn't start at all
 
 
 # ── Heartbeat helper ─────────────────────────────────────────────────
@@ -171,6 +172,7 @@ def _handle_exception(
             exit_code=-1,
             raw={},
             profile_name=profile.name,
+            startup_failure=True,
         )
     return None
 
@@ -227,6 +229,7 @@ def run_agent(
             exit_code=-1,
             raw={},
             profile_name=profile.name,
+            startup_failure=True,
         )
 
     runner_kwargs: dict[str, Any] = {

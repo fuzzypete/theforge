@@ -1,6 +1,11 @@
 # forge.yaml — TheForge developing itself
 project: theforge
 
+# Dev model escalation chain: sonnet → opus on persistent P1s
+smart_config_models:
+  - sonnet
+  - opus
+
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
   setup_command: "test -d .venv || (python -m venv .venv && .venv/bin/pip install -e '.[all]' pytest -q)"
