@@ -1421,6 +1421,11 @@ def run_task(
                 "PROCEED",
                 f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
             )
+            # A story complex enough to time out preflight is almost certainly
+            # non-trivial. Default to large so the plan phase fires and the
+            # strong dev model is used.
+            state.preflight_complexity = "large"
+            _log("  ⚠ PREFLIGHT failed — defaulting complexity to large")
 
         state.preflight_verdict = verdict
         state.preflight_reason = reason
