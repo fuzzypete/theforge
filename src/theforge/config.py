@@ -236,6 +236,9 @@ class RetryPolicy:
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
     max_handoff_retries: int = 2  # dev handoff rewrite retries after gate passes
     max_plan_regen_attempts: int = 3  # plan review rejection → regen cycles before escalating
+    plan_escalation_threshold: int = (
+        2  # consecutive plan rejections before escalating planner model
+    )
     escalate_policy: str = "prompt"  # "prompt" | "auto_approve" | "reject"
 
 
