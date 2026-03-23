@@ -949,11 +949,12 @@ def run_sprint(
         total_duration_s=round(_sprint_elapsed, 2),
     )
     if notify:
-        _notify(
-            f"TheForge: {manifest.name}",
-            f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
-            f" — ${final_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
-        )
+        if config.notifications.backend != "none":
+            _notify(
+                f"TheForge: {manifest.name}",
+                f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
+                f" — ${final_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
+            )
         # R10: ntfy summary notification when remote mode is active
         if _is_remote_mode(notify, config):
             assert config.notifications.ntfy is not None

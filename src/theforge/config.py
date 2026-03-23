@@ -884,6 +884,9 @@ def load_config(config_path: Path) -> ForgeConfig:
                         type=str(b.get("type", "terminal")),
                         url=b.get("url") or None,
                         priority=b.get("priority") or None,
+                        webhook_url_env=b.get("webhook_url_env") or None,
+                        channel=b.get("channel") or None,
+                        mention_on_escalate=b.get("mention_on_escalate") or None,
                     )
                 )
     elif notif_backend == "ntfy" and ntfy_config is not None:

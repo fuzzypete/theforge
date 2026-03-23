@@ -19,6 +19,7 @@ def _make_config(backends: list[BackendConfig]) -> MagicMock:
     """Build a minimal ForgeConfig mock with specified backends."""
     config = MagicMock()
     config.notifications.backends = backends
+    config.secrets = {}
     return config
 
 
@@ -269,7 +270,55 @@ def test_send_notifications_dispatches_to_slack_backend(monkeypatch):
             body="body",
             channel=None,
             mention_on_escalate=None,
+            secrets={},
         )
+
+
+def test_send_slack_reads_webhook_url_from_secrets(monkeypatch):
+    """Webhook URL from config.secrets takes precedence over os.environ absence."""
+    monkeypatch.delenv("MY_SECRET_HOOK", raising=False)
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", return_value=_MockResponse()
+    ) as mock_open:
+        _send_slack(
+            "MY_SECRET_HOOK",
+            "title",
+            "body",
+            secrets={"MY_SECRET_HOOK": "https://hooks.slack.com/from-secrets"},
+        )
+        assert mock_open.called
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "https://hooks.slack.com/from-secrets"
+
+
+def test_escalate_notify_calls_send_notifications_when_ntfy_is_none():
+    """_escalate_notify must call send_notifications for Slack backend even when ntfy is None."""
+    from theforge.config import BackendConfig
+    from theforge.coord_notify import _escalate_notify
+    from theforge.coord_state import CoordinatorState
+
+    config = MagicMock()
+    config.notifications.ntfy = None
+    config.notifications.backend = "slack"
+    config.notifications.backends = (BackendConfig(type="slack", webhook_url_env="TEST_HOOK"),)
+    config.secrets = {}
+
+    state = MagicMock()
+    state.review_cycle = 2
+    state.total_cost = 1.50
+    state.error = "Too many cycles"
+    state.branch_name = "feat/test"
+    state.started_at = None
+    state.review_results = []
+
+    task = MagicMock()
+    task.slug = "test-task"
+
+    with patch("theforge.notify_backends.send_notifications") as mock_sn:
+        _escalate_notify(task, state, notify=True, config=config)
+        mock_sn.assert_called_once()
+        title_arg = mock_sn.call_args[0][1]
+        assert "escalated" in title_arg.lower()
 
 
 def test_send_notifications_passes_mention_on_escalate(monkeypatch):
@@ -291,6 +340,7 @@ def test_send_notifications_passes_mention_on_escalate(monkeypatch):
             body="body",
             channel=None,
             mention_on_escalate="@oncall",
+            secrets={},
         )
 
 
@@ -312,4 +362,5 @@ def test_send_notifications_no_mention_when_not_escalation(monkeypatch):
             body="body",
             channel=None,
             mention_on_escalate=None,
+            secrets={},
         )

@@ -13,7 +13,9 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    BackendConfig,
     ForgeConfig,
+    NotificationConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -416,6 +418,22 @@ class TestCampaignNotifications:
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
         config = _make_config(tmp_path)
+        # Use a non-none backend so the native OS notification fires
+        config = ForgeConfig(
+            project=config.project,
+            project_root=config.project_root,
+            workspace=config.workspace,
+            validation=config.validation,
+            dev_profile=config.dev_profile,
+            preflight_profile=config.preflight_profile,
+            review_pool=config.review_pool,
+            synthesis_profile=None,
+            retry=config.retry,
+            notifications=NotificationConfig(
+                backend="terminal",
+                backends=(BackendConfig(type="terminal"),),
+            ),
+        )
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
         with patch("theforge.sprint._notify") as mock_notify:
@@ -464,6 +482,21 @@ class TestCampaignNotifications:
         with patch("theforge.sprint._notify") as mock_notify:
             with patch("theforge.sprint.run_task", return_value=result_a):
                 run_sprint(config, manifest_path, notify=False)
+
+        mock_notify.assert_not_called()
+
+    def test_campaign_notification_suppressed_for_backend_none(self, tmp_path: Path) -> None:
+        """backend: none suppresses the native OS notification even when notify=True."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        # _make_config() defaults to backend="none" (NotificationConfig default)
+        config = _make_config(tmp_path)
+        assert config.notifications.backend == "none"
+        result_a = _make_coordinator_result(success=True, cost=2.0)
+
+        with patch("theforge.sprint._notify") as mock_notify:
+            with patch("theforge.sprint.run_task", return_value=result_a):
+                run_sprint(config, manifest_path, notify=True)
 
         mock_notify.assert_not_called()
 

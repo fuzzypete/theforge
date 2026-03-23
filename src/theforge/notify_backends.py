@@ -47,6 +47,7 @@ def send_notifications(
                     body=body,
                     channel=backend.channel,
                     mention_on_escalate=backend.mention_on_escalate if is_escalation else None,
+                    secrets=config.secrets,
                 )
             else:
                 _cu._log(f"WARNING: unknown notification backend type {btype!r} — skipping")
@@ -124,9 +125,10 @@ def _send_slack(
     body: str,
     channel: str | None = None,
     mention_on_escalate: str | None = None,
+    secrets: "dict[str, str] | None" = None,
 ) -> None:
     """POST a Slack Block Kit message to the configured incoming webhook URL."""
-    webhook_url = os.environ.get(webhook_url_env)
+    webhook_url = (secrets or {}).get(webhook_url_env) or os.environ.get(webhook_url_env)
     if not webhook_url:
         _cu._log(
             f"WARNING: Slack backend enabled but env var {webhook_url_env!r} is not set — skipping"

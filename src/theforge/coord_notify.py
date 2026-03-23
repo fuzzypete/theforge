@@ -62,9 +62,8 @@ def _escalate_notify(
         f"TheForge: escalated — {task.slug}",
         (state.error or "")[:120],
     )
-    if config is None or config.notifications.ntfy is None:
+    if config is None:
         return
-    ntfy = config.notifications.ntfy
     elapsed = 0.0
     if state.started_at:
         try:
@@ -84,15 +83,17 @@ def _escalate_notify(
         f" — ${state.total_cost:.2f}  {_cu._fmt_duration(elapsed)}"
     )
     body = "\n".join([first_line, detail, f"Branch: {branch}"])
-    try:
-        _ntfy_publish(
-            ntfy.url,
-            f"TheForge: \u2717 escalated \u2014 {task.slug}",
-            body,
-            priority=ntfy.priority,
-        )
-    except Exception:
-        pass
+    if config.notifications.ntfy is not None:
+        ntfy = config.notifications.ntfy
+        try:
+            _ntfy_publish(
+                ntfy.url,
+                f"TheForge: \u2717 escalated \u2014 {task.slug}",
+                body,
+                priority=ntfy.priority,
+            )
+        except Exception:
+            pass
     if config.notifications.backend not in ("ntfy", "none"):
         from .notify_backends import send_notifications
 
