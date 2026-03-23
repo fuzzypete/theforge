@@ -1,40 +1,32 @@
-dev_notes: |
-  summary: "Added SprintConfig frozen dataclass (max_parallel: int = 1) to config.py,
-    wired it into ForgeConfig as sprint: SprintConfig, and added parsing of the
-    sprint.max_parallel key in load_config() with int >= 1 validation. In sprint.py,
-    changed SprintManifest.max_parallel default from 1 to None (sentinel for 'not set'),
-    updated load_sprint_manifest() to only validate the value when present, and added
-    a resolution step in run_sprint() that sets manifest.max_parallel = config.sprint.max_parallel
-    when the manifest omits it. All downstream code inside run_sprint() continues to read
-    manifest.max_parallel as an int without changes."
-  commits:
-    - sha: "0a2e97f"
-      message: "feat(config): add sprint.max_parallel default to forge.yaml"
-  acceptance_criteria:
-    - criterion: "forge.yaml accepts sprint.max_parallel as an integer >= 1"
-      status: MET
-      notes: "SprintConfig parsed in load_config() with ValueError on < 1 or non-int."
-    - criterion: "Sprint manifests that omit max_parallel inherit the forge.yaml default"
-      status: MET
-      notes: "manifest.max_parallel is None after load; run_sprint() fills it from config.sprint.max_parallel."
-    - criterion: "Sprint manifests that specify max_parallel override the forge.yaml default"
-      status: MET
-      notes: "When manifest provides max_parallel, it is never None so the resolution branch is skipped."
-    - criterion: "When neither is set, default is 1"
-      status: MET
-      notes: "SprintConfig.max_parallel defaults to 1; manifest None resolves to that value."
-    - criterion: "ForgeConfig exposes the sprint default (new field or nested config)"
-      status: MET
-      notes: "ForgeConfig.sprint: SprintConfig = field(default_factory=SprintConfig) added."
-    - criterion: "run_sprint() reads the config default when manifest value is absent"
-      status: MET
-      notes: "Resolution block in run_sprint() sets manifest.max_parallel from config.sprint.max_parallel when None."
-    - criterion: "All existing tests pass"
-      status: MET
-      notes: "1359 tests pass. Fixed test_daemon.py MagicMock to set sprint.max_parallel=1 and updated TestMaxParallelManifest to reflect the new None sentinel."
-    - criterion: "New tests for config parsing and precedence logic"
-      status: MET
-      notes: "TestSprintConfig in test_config.py (4 tests) and TestMaxParallelPrecedence in test_sprint.py (4 tests) cover config parsing and precedence cases."
-  story_deviations: none
-  deferred_items: none
-  gate_result: PASS
+dev_notes: "summary: \"Added SprintConfig frozen dataclass (max_parallel: int = 1)\
+  \ to config.py,\n  wired it into ForgeConfig as sprint: SprintConfig, and added\
+  \ parsing of the\n  sprint.max_parallel key in load_config() with int >= 1 validation.\
+  \ In sprint.py,\n  changed SprintManifest.max_parallel default from 1 to None (sentinel\
+  \ for 'not set'),\n  updated load_sprint_manifest() to only validate the value when\
+  \ present, and added\n  a resolution step in run_sprint() that sets manifest.max_parallel\
+  \ = config.sprint.max_parallel\n  when the manifest omits it. All downstream code\
+  \ inside run_sprint() continues to read\n  manifest.max_parallel as an int without\
+  \ changes.\"\ncommits:\n  - sha: \"0a2e97f\"\n    message: \"feat(config): add sprint.max_parallel\
+  \ default to forge.yaml\"\nacceptance_criteria:\n  - criterion: \"forge.yaml accepts\
+  \ sprint.max_parallel as an integer >= 1\"\n    status: MET\n    notes: \"SprintConfig\
+  \ parsed in load_config() with ValueError on < 1 or non-int.\"\n  - criterion: \"\
+  Sprint manifests that omit max_parallel inherit the forge.yaml default\"\n    status:\
+  \ MET\n    notes: \"manifest.max_parallel is None after load; run_sprint() fills\
+  \ it from config.sprint.max_parallel.\"\n  - criterion: \"Sprint manifests that\
+  \ specify max_parallel override the forge.yaml default\"\n    status: MET\n    notes:\
+  \ \"When manifest provides max_parallel, it is never None so the resolution branch\
+  \ is skipped.\"\n  - criterion: \"When neither is set, default is 1\"\n    status:\
+  \ MET\n    notes: \"SprintConfig.max_parallel defaults to 1; manifest None resolves\
+  \ to that value.\"\n  - criterion: \"ForgeConfig exposes the sprint default (new\
+  \ field or nested config)\"\n    status: MET\n    notes: \"ForgeConfig.sprint: SprintConfig\
+  \ = field(default_factory=SprintConfig) added.\"\n  - criterion: \"run_sprint()\
+  \ reads the config default when manifest value is absent\"\n    status: MET\n  \
+  \  notes: \"Resolution block in run_sprint() sets manifest.max_parallel from config.sprint.max_parallel\
+  \ when None.\"\n  - criterion: \"All existing tests pass\"\n    status: MET\n  \
+  \  notes: \"1359 tests pass. Fixed test_daemon.py MagicMock to set sprint.max_parallel=1\
+  \ and updated TestMaxParallelManifest to reflect the new None sentinel.\"\n  - criterion:\
+  \ \"New tests for config parsing and precedence logic\"\n    status: MET\n    notes:\
+  \ \"TestSprintConfig in test_config.py (4 tests) and TestMaxParallelPrecedence in\
+  \ test_sprint.py (4 tests) cover config parsing and precedence cases.\"\nstory_deviations:\
+  \ none\ndeferred_items: none\ngate_result: PASS\n"
+gate_decision: PASS
