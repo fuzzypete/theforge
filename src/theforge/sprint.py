@@ -46,7 +46,7 @@ class SprintManifest:
     name: str
     budget_usd: float
     stories: list[str]  # relative paths to story files
-    max_parallel: int = 1
+    max_parallel: int | None = None
 
 
 @dataclass
@@ -92,11 +92,12 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
     if budget_usd <= 0:
         raise ValueError(f"Sprint 'budget_usd' must be > 0, got {budget_usd}")
 
-    max_parallel_raw = raw.get("max_parallel", 1)
-    if not isinstance(max_parallel_raw, int):
-        raise ValueError(f"Sprint 'max_parallel' must be an integer, got {max_parallel_raw!r}")
-    if max_parallel_raw < 1:
-        raise ValueError(f"Sprint 'max_parallel' must be >= 1, got {max_parallel_raw}")
+    max_parallel_raw = raw.get("max_parallel")
+    if max_parallel_raw is not None:
+        if not isinstance(max_parallel_raw, int):
+            raise ValueError(f"Sprint 'max_parallel' must be an integer, got {max_parallel_raw!r}")
+        if max_parallel_raw < 1:
+            raise ValueError(f"Sprint 'max_parallel' must be >= 1, got {max_parallel_raw}")
     max_parallel = max_parallel_raw
 
     # Accept both 'stories' (new) and 'specs' (deprecated) keys
@@ -609,6 +610,8 @@ def run_sprint(
         SprintResult with per-story outcomes and aggregate stats.
     """
     manifest = load_sprint_manifest(manifest_path)
+    if manifest.max_parallel is None:
+        manifest.max_parallel = config.sprint.max_parallel
     story_paths = _validate_story_paths(manifest, config.project_root)
 
     total = len(story_paths)

@@ -1441,3 +1441,33 @@ class TestLocalModelRegistry:
         """'openai/' prefix ensures routing through the existing OpenAI adapter."""
         for key in self.LOCAL_KEYS:
             assert key.startswith("openai/"), f"{key} must use 'openai/' prefix"
+
+
+class TestSprintConfig:
+    """Tests for forge.yaml sprint.max_parallel parsing."""
+
+    def test_sprint_max_parallel_parsed(self, tmp_path):
+        """forge.yaml with sprint.max_parallel: 3 → config.sprint.max_parallel == 3."""
+        config_path = _write_config({"project": "test", "sprint": {"max_parallel": 3}}, tmp_path)
+        config = load_config(config_path)
+        assert config.sprint.max_parallel == 3
+
+    def test_sprint_section_absent_defaults_to_1(self, tmp_path):
+        """No sprint section → config.sprint.max_parallel defaults to 1."""
+        config_path = _write_config({"project": "test"}, tmp_path)
+        config = load_config(config_path)
+        assert config.sprint.max_parallel == 1
+
+    def test_sprint_max_parallel_zero_raises(self, tmp_path):
+        """sprint.max_parallel: 0 → raises ValueError."""
+        config_path = _write_config({"project": "test", "sprint": {"max_parallel": 0}}, tmp_path)
+        with pytest.raises(ValueError, match="max_parallel"):
+            load_config(config_path)
+
+    def test_sprint_max_parallel_non_integer_raises(self, tmp_path):
+        """sprint.max_parallel: 'abc' → raises ValueError."""
+        config_path = _write_config(
+            {"project": "test", "sprint": {"max_parallel": "abc"}}, tmp_path
+        )
+        with pytest.raises(ValueError, match="max_parallel"):
+            load_config(config_path)
