@@ -1,56 +1,84 @@
-dev_notes: "summary: \"Implemented full process detachment for forge run/sprint. Created\
-  \ a new detach.py module with double-fork daemonization (reusing the UNIX double-fork\
-  \ pattern from daemon.py), macOS App Nap suppression via NSProcessInfo (PyObjC)\
-  \ with ctypes IOPMAssertionCreateWithName fallback, per-run PID file management\
-  \ (.forge/runs/<run-id>.pid, line 1: PID, line 2: slug), and stale PID cleanup.\
-  \ Wired daemonization into cmd_run and cmd_sprint with a --fg escape hatch. The\
-  \ daemon queue routing in cmd_sprint now requires explicit --detach flag (the new\
-  \ model replaces daemon-based execution). Rewrote forge status to scan .forge/runs/*.pid\
-  \ for live runs with phase/cost/elapsed table. Added forge logs <run-id> (tail -f\
-  \ wrapper) and forge stop <run-id> (SIGTERM). forge daemon now emits DeprecationWarning\
-  \ but is otherwise unchanged. Updated test_daemon.py to add fg=True to existing\
-  \ sprint tests and updated the daemon-routing test to use detach=True. Added 17\
-  \ new tests in test_detach.py and 11 new tests in test_cli.py.\"\n\ncommits:\n \
-  \ - sha: \"4fcab1a\"\n    message: \"feat(detach): process detachment — every forge\
-  \ run survives terminal close\"\n  - sha: \"0a3bf35\"\n    message: \"chore(handoff):\
-  \ write dev_notes for process-detachment story\"\n\nacceptance_criteria:\n  - criterion:\
-  \ \"forge run daemonizes by default, prints run ID and log path\"\n    status: MET\n\
-  \    notes: \"cmd_run calls detach.daemonize_run() unless --fg is set. Parent prints\
-  \ run ID, log path, and forge status/logs hints before exiting 0.\"\n\n  - criterion:\
-  \ \"--fg flag preserves current foreground behavior\"\n    status: MET\n    notes:\
-  \ \"--fg added to both run and sprint subparsers. When set, daemonize_run is skipped\
-  \ entirely.\"\n\n  - criterion: \"Process survives terminal close (setsid)\"\n \
-  \   status: MET\n    notes: \"daemonize_run performs double-fork + os.setsid() in\
-  \ the intermediate child, matching the pattern in daemon.py.\"\n\n  - criterion:\
-  \ \"App Nap disabled on macOS\"\n    status: MET\n    notes: \"suppress_app_nap()\
-  \ calls NSProcessInfo.beginActivityWithOptions_reason_ via PyObjC, falls back to\
-  \ IOPMAssertionCreateWithName via ctypes. No-op on non-macOS and when frameworks\
-  \ are unavailable.\"\n\n  - criterion: \".forge/runs/<run-id>.pid written on start,\
-  \ removed on completion\"\n    status: MET\n    notes: \"write_pid() called in grandchild\
-  \ after double-fork. remove_pid() called at the end of cmd_run and cmd_sprint. install_cleanup_handler()\
-  \ also removes PID on SIGTERM.\"\n\n  - criterion: \"forge status lists active runs\
-  \ with phase, cost, elapsed\"\n    status: MET\n    notes: \"cmd_status rewritten\
-  \ to call detach.list_active_runs() and read_run_status(). Prints table with RUN\
-  \ ID / STORY / PHASE / COST / ELAPSED columns. Phase extracted from [forge] ▸ <PHASE>\
-  \ log markers. Elapsed from log file creation time. Still shows pending decisions\
-  \ section.\"\n\n  - criterion: \"forge logs <run-id> tails the run log\"\n    status:\
-  \ MET\n    notes: \"cmd_logs added. Finds log via PID file slug (new-style: .forge/logs/<slug>/run.log)\
-  \ or falls back to rglob for legacy run-<run_id>.log. Calls subprocess.run(['tail',\
-  \ '-f', log_path]).\"\n\n  - criterion: \"forge stop <run-id> sends SIGTERM for\
-  \ clean shutdown\"\n    status: MET\n    notes: \"cmd_stop added. Reads PID from\
-  \ .forge/runs/<run-id>.pid, calls os.kill(pid, SIGTERM).\"\n\n  - criterion: \"\
-  Stale PID files cleaned up by forge status\"\n    status: MET\n    notes: \"list_active_runs()\
-  \ uses os.kill(pid, 0) to check liveness and unlinks stale PID files. Called on\
-  \ every forge status invocation.\"\n\n  - criterion: \"All existing tests pass\"\
-  \n    status: MET\n    notes: \"1351 tests pass. Fixed test_daemon.py tests that\
-  \ called cmd_sprint without fg=True (would trigger actual fork). Updated test_submit_routes_to_daemon\
-  \ to use detach=True since daemon queue routing now requires explicit --detach.\"\
-  \n\n  - criterion: \"forge daemon start/stop still works (not removed, just deprecated)\"\
-  \n    status: MET\n    notes: \"cmd_daemon is unchanged functionally. Added warnings.warn(DeprecationWarning)\
-  \ at the top. All 12 daemon tests pass.\"\n\nstory_deviations:\n  - description:\
-  \ \"Daemon queue routing in cmd_sprint now requires --detach flag (previously triggered\
-  \ by is_daemon_running() alone).\"\n    justification: \"Daemonization happens before\
-  \ the daemon check, and the two execution models are incompatible. --detach is now\
-  \ the explicit opt-in for the legacy daemon queue path.\"\n\ndeferred_items: none\n\
-  \ngate_result: PASS\n"
-gate_decision: PASS
+dev_notes: |
+  summary: "Implemented Slack webhook notification backend. Added SlackConfig dataclass
+  (webhook_url_env, channel, mention_on_escalate) to config.py; extended BackendConfig
+  with the same fields; added slack parsing in load_forge_yaml(); synthesize
+  BackendConfig(type='slack') for backend: slack; fixed backend: none to produce
+  empty backends list (was incorrectly returning [terminal]). Added _send_slack() to
+  notify_backends.py using Slack Block Kit format (header + section blocks); reads
+  webhook URL from env var, skips with warning if unset; prepends mention_on_escalate
+  to body text when is_escalation=True. Added is_escalation kwarg to
+  send_notifications() to thread mention through. Updated _escalate_notify(),
+  _ntfy_crash_notify(), _ntfy_done_notify() in coord_notify.py to call
+  send_notifications() when backend is not ntfy/none (ntfy path unchanged, no double
+  notification). Added sprint-started, budget-exceeded, and sprint-complete
+  send_notifications() calls in sprint.py for non-ntfy backends. Added 12 new Slack
+  tests in test_notify_backends.py covering: Block Kit format, env var reading, missing
+  env var skip, channel field, mention prepend, failure propagation, dispatch routing,
+  escalation mention, non-escalation suppression."
+
+commits:
+  - sha: "868d373"
+    message: "feat(notifications): add SlackConfig dataclass and extend config for Slack backend"
+  - sha: "47d3cf9"
+    message: "feat(notifications): implement Slack webhook backend"
+
+acceptance_criteria:
+  - criterion: "backend: slack sends notifications via Slack webhook"
+    status: MET
+    notes: "BackendConfig(type='slack') synthesized from backend: slack + slack: block.
+    send_notifications() dispatches to _send_slack() which POSTs Block Kit JSON to
+    the webhook URL read from the configured env var."
+
+  - criterion: "All 6 event types produce Slack messages"
+    status: MET
+    notes: "Sprint started: added send_notifications() call in sprint.py run_sprint()
+    after started_at assignment. Story APPROVE: _ntfy_done_notify() now calls
+    send_notifications() for non-ntfy backends. Story ESCALATE: _escalate_notify()
+    now calls send_notifications(is_escalation=True) for non-ntfy backends. Sprint
+    complete: send_notifications() added alongside ntfy block in run_sprint(). Budget
+    exceeded: send_notifications() fires on first budget-exhausted skip. Agent startup
+    failure: _ntfy_crash_notify() now calls send_notifications() for non-ntfy backends."
+
+  - criterion: "Webhook URL read from environment variable"
+    status: MET
+    notes: "_send_slack() calls os.environ.get(webhook_url_env) at send time. webhook_url_env
+    defaults to 'SLACK_WEBHOOK_URL'. URL never appears in forge.yaml or BackendConfig."
+
+  - criterion: "Notification failure logs warning and continues"
+    status: MET
+    notes: "_send_slack() raises on network errors; the except Exception catch in
+    send_notifications() logs a WARNING and continues to the next backend. Missing
+    env var is handled inside _send_slack() itself (logs warning, returns early)."
+
+  - criterion: "Existing ntfy backend still works when selected"
+    status: MET
+    notes: "ntfy path in coord_notify.py functions is unchanged. The send_notifications()
+    call is gated on backend not in ('ntfy', 'none') to prevent double-notification."
+
+  - criterion: "backend: none disables all notifications"
+    status: MET
+    notes: "load_forge_yaml() now sets backends=[] when notif_backend == 'none'.
+    Previously it incorrectly defaulted to [BackendConfig(type='terminal')]. send_notifications()
+    loops over an empty tuple and does nothing."
+
+  - criterion: "All existing tests pass"
+    status: MET
+    notes: "1361 tests pass (up from 1349 before this story)."
+
+  - criterion: "New tests mock webhook POST and verify message format"
+    status: MET
+    notes: "12 new tests in test_notify_backends.py: Block Kit JSON structure verified,
+    channel field present/absent, mention_on_escalate prepend, env var routing,
+    missing env skip, failure propagation, dispatch via send_notifications() with
+    is_escalation flag."
+
+story_deviations:
+  - description: "_slack_publish() placed in notify_backends.py rather than coord_notify.py
+    as suggested in the spec's Implementation section."
+    justification: "coord_notify.py already imports from notify_backends.py; co-locating
+    Slack with the other backend send functions (ntfy, webhook, terminal) avoids a
+    circular import and is consistent with the existing pluggable backend architecture."
+
+deferred_items: none
+
+gate_result: PASS
