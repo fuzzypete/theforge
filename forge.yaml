@@ -57,8 +57,8 @@ profiles:
         - Glob
         - Grep
     - name: codex-reviewer
-      provider: openai
-      model: o4-mini
+      cli: codex
+      model: gpt-5.4
       review_role: patterns
       budget_usd: 2.00
       timeout_seconds: 300
@@ -118,8 +118,8 @@ plan_agent_review:
         - Glob
         - Grep
     - name: codex-plan-reviewer
-      provider: openai
-      model: o4-mini
+      cli: codex
+      model: gpt-5.4
       budget_usd: 1.00
       timeout_seconds: 300
       max_iterations: 20
