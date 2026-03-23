@@ -12,8 +12,6 @@ the process and models stay inside bounded roles: plan, implement, validate,
 review. Every state transition is mechanical. Every run is auditable, resumable,
 and isolated in a git worktree until you decide to merge.
 
-[![TheForge architecture overview](docs/assets/readme-architecture-overview.svg)](docs/vision.md)
-
 - LLMs generate artifacts, not process decisions
 - Validation and review act as mechanical gates
 - Work happens on feature branches in managed worktrees
@@ -102,7 +100,8 @@ Expected shape of a successful run:
 The public-facing lifecycle is intentionally simple:
 
 ```text
-INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW -> DEV -> VALIDATE -> REVIEW -> DONE/ESCALATE
+INIT -> WORKSPACE -> PREFLIGHT -> PLAN -> PLAN_REVIEW
+  -> DEV -> VALIDATE -> REVIEW -> DONE / ESCALATE
 ```
 
 The coordinator creates a worktree, invokes the configured agents, runs your
@@ -110,6 +109,25 @@ gate command, parses structured review output, and decides what happens next.
 Models do the planning, coding, and reviewing, but they do not decide whether
 to retry, pass a gate, or escalate. When validation fails or review requests
 changes, the run can loop back to `DEV` before it finishes.
+
+```mermaid
+stateDiagram-v2
+    [*] --> WORKSPACE
+    WORKSPACE --> PREFLIGHT
+    PREFLIGHT --> PLAN
+    PREFLIGHT --> DONE : already done
+    PLAN --> PLAN_REVIEW
+    PLAN_REVIEW --> DEV
+    DEV --> VALIDATE
+    VALIDATE --> DEV : FAIL (retry)
+    VALIDATE --> REVIEW : PASS
+    REVIEW --> DEV : REQUEST_CHANGES
+    REVIEW --> DONE : APPROVE
+    REVIEW --> ESCALATE : max cycles
+    DEV --> ESCALATE : max iterations
+    DONE --> [*]
+    ESCALATE --> [*]
+```
 
 ## What gets created
 

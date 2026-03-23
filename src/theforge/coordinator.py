@@ -982,6 +982,7 @@ def _coordinator_loop(
     notify: bool = False,
     logger: StructuredLogger | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
+    stop_phase: Phase | None = None,
 ) -> CoordinatorResult:
     """Shared DEV→VALIDATE→REVIEW loop used by run_task() and run_from_review().
 
@@ -1033,6 +1034,22 @@ def _coordinator_loop(
             if escalation is not None:
                 return escalation
 
+            # ── Startup failure guard ──────────────────────────────
+            if state.dev_results and state.dev_results[-1].startup_failure:
+                _last = state.dev_results[-1]
+                _snippet = _last.output[:200] if _last.output else "(no output)"
+                state.phase = Phase.ESCALATE
+                state.error = f"DEV aborted: no agent available ({_snippet})"
+                _log(f"✗ ESCALATE   {state.error}")
+                if logger:
+                    logger._safe_emit("escalate", reason=state.error, phase="DEV")
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.error,
+                )
+
             # ── VALIDATE ──────────────────────────────────────────
             _val_outcome, _val_result = _run_validate_phase(
                 state,
@@ -1065,6 +1082,16 @@ def _coordinator_loop(
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
         _skip_dev = False  # all subsequent iterations start at DEV
+
+        # ── stop_phase gate ───────────────────────────────────
+        if stop_phase is not None and stop_phase.value <= Phase.VALIDATE.value:
+            state.phase = Phase.VALIDATE
+            return CoordinatorResult(
+                success=True,
+                phase=Phase.VALIDATE,
+                state=state,
+                message=f"Stopped at --until {stop_phase.name.lower()}",
+            )
 
         # ── DEV HANDOFF VALIDATION ────────────────────────────
         # Validate structured dev handoff after gate passes.
@@ -1108,6 +1135,16 @@ def _coordinator_loop(
             else:
                 _log("  ⚠ HANDOFF   still invalid after retries — proceeding anyway")
 
+        # ── Persist handoff to logs ────────────────────────────
+        if config.validation.handoff_file and state.log_dir is not None:
+            try:
+                _hf_src = workspace_path / config.validation.handoff_file
+                if _hf_src.exists():
+                    _hf_dest = state.log_dir / f"handoff-iter-{state.dev_iteration}.yaml"
+                    _hf_dest.write_bytes(_hf_src.read_bytes())
+            except Exception:
+                pass  # best-effort, never block pipeline
+
         # ── REVIEW ────────────────────────────────────────────
         _rev_outcome, _rev_result, config = _run_review_phase(
             state,
@@ -1125,6 +1162,15 @@ def _coordinator_loop(
         )
         if _rev_outcome in (_ReviewOutcome.DONE, _ReviewOutcome.ESCALATE):
             return _rev_result  # type: ignore[return-value]
+        # ── stop_phase gate (REVIEW) ──────────────────────────
+        if stop_phase is not None and stop_phase.value <= Phase.REVIEW.value:
+            state.phase = Phase.REVIEW
+            return CoordinatorResult(
+                success=True,
+                phase=Phase.REVIEW,
+                state=state,
+                message=f"Stopped at --until {stop_phase.name.lower()}",
+            )
         # RETRY_DEV — reset cycle counter and loop back
         _dev_calls_this_cycle = 0
 
@@ -1307,6 +1353,33 @@ def run_task(
             if config.plan_review.enabled:
                 _log("  ℹ PLAN_REVIEW   skipped (plan injected)")
 
+        # ── start_phase skip: jump directly to DEV loop ───────────────
+        if start_phase is not None and start_phase.value > Phase.PREFLIGHT.value:
+            state.preflight_verdict = "SKIPPED"
+            _log("  ⚡ PREFLIGHT   skipped (--from phase)")
+            result = _coordinator_loop(
+                state,
+                config,
+                task,
+                story_content,
+                _task_start,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                notify=notify,
+                logger=logger,
+                state_update_fn=state_update_fn,
+                stop_phase=stop_phase,
+            )
+            _total_elapsed = time.monotonic() - _task_start
+            _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
+            logger._safe_emit(
+                "run_end",
+                outcome="done" if result.success else "escalate",
+                total_cost_usd=round(state.total_cost, 6),
+                total_duration_s=round(_total_elapsed, 2),
+            )
+            return result
+
         # ── PREFLIGHT ──────────────────────────────────────────────────
         state.phase = Phase.PREFLIGHT
         if state_update_fn is not None:
@@ -1395,8 +1468,10 @@ def run_task(
                         _explicit["preflight"] = config.preflight_profile
                         _explicit_roles.add("preflight")
                     # Detect explicit review pool and plan review config
-                    if config.review_pool:
+                    if config.review_pool and not config.review_pool_is_default:
                         _explicit_roles.add("review_pool")
+                    if not config.plan_model_is_default:
+                        _explicit_roles.add("planner")
                     if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
                         _explicit_roles.add("plan_agent_review")
 
@@ -1481,6 +1556,15 @@ def run_task(
             "preflight.yaml",
             yaml.dump(_preflight_artifact, default_flow_style=False, allow_unicode=True),
         )
+
+        # ── stop_phase gate (PREFLIGHT) ───────────────────────
+        if stop_phase is not None and stop_phase == Phase.PREFLIGHT:
+            return CoordinatorResult(
+                success=True,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=f"Stopped at --until {stop_phase.name.lower()}",
+            )
 
         if verdict == "ALREADY_DONE":
             # Guard: if commits exist on the branch but no prior review APPROVE, the
@@ -1633,9 +1717,14 @@ def run_task(
                 _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
             else:
                 _log(f"  Plan timeout: {_plan_timeout}s")
-            # Use adaptive planner if available, otherwise static config
+            # Use adaptive planner if available and not explicitly configured
             _adaptive = getattr(state, "_adaptive_decision", None)
-            if _adaptive is not None and _adaptive.planner is not None:
+            _explicit_roles_now = getattr(state, "_explicit_roles", set())
+            if (
+                _adaptive is not None
+                and _adaptive.planner is not None
+                and "planner" not in _explicit_roles_now
+            ):
                 plan_profile = _adaptive.planner
                 # Preserve timeout from plan config (complexity-aware)
                 plan_profile = _dc.replace(plan_profile, timeout_seconds=_plan_timeout)
@@ -2163,6 +2252,7 @@ def run_task(
             notify=notify,
             logger=logger,
             state_update_fn=state_update_fn,
+            stop_phase=stop_phase,
         )
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
