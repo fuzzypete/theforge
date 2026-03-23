@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -14,6 +15,29 @@ from .task import TaskStory as TaskSpec  # noqa: F401
 
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
+
+# Matches: test -d .venv || (python -m venv .venv && <install>)
+_VENV_GUARD_RE = re.compile(
+    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*python\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
+    re.DOTALL,
+)
+
+
+def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
+    """Run workspace setup, always running pip install even if .venv exists.
+
+    Detects the `test -d .venv || (python -m venv .venv && <install>)` pattern
+    and splits it: venv creation is guarded, install always runs.
+    Falls back to running setup_command verbatim when the pattern is not found.
+    """
+    m = _VENV_GUARD_RE.search(setup_command)
+    if not m:
+        return _cu._run_shell(setup_command, workspace_path)
+    install_cmd = m.group(1).strip()
+    ok, out = _cu._run_shell("test -d .venv || python -m venv .venv", workspace_path)
+    if not ok:
+        return ok, out
+    return _cu._run_shell(install_cmd, workspace_path)
 
 
 def _resolve_merge_conflicts(
@@ -322,7 +346,7 @@ def _create_workspace(
                 _cu._log(f"↻ WORKSPACE  reusing existing worktree (registered): {existing_wt}")
                 if config.workspace.setup_command:
                     _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-                    ok_s, out_s = _cu._run_shell(config.workspace.setup_command, existing_wt)
+                    ok_s, out_s = _run_setup_split(config.workspace.setup_command, existing_wt)
                     if not ok_s:
                         return None, None, f"Workspace setup command failed: {out_s}"
                 return existing_wt, branch_name, None
@@ -346,7 +370,7 @@ def _create_workspace(
                 return None, None, f"Failed to reattach worktree: {add_out}"
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-                ok_s, out_s = _cu._run_shell(config.workspace.setup_command, workspace_path)
+                ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
             return workspace_path, branch_name, None
@@ -371,7 +395,7 @@ def _create_workspace(
 
     if config.workspace.setup_command:
         _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
-        ok, output = _cu._run_shell(config.workspace.setup_command, workspace_path)
+        ok, output = _run_setup_split(config.workspace.setup_command, workspace_path)
         if not ok:
             return None, None, f"Workspace setup command failed: {output}"
 

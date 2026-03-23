@@ -326,6 +326,8 @@ class ForgeConfig:
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
+    review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
+    plan_model_is_default: bool = False  # True when plan.model was not explicitly configured
 
     @property
     def review_profile(self) -> ModelProfile:
@@ -689,6 +691,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # ── Smart config: models key ──────────────────────────────────────
     smart_config_models: list[str] | None = None
+    _review_pool_is_default = False
 
     if "models" in raw:
         models_list = raw["models"]
@@ -785,6 +788,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         else:
             review_pool = [DEFAULT_REVIEW_PROFILE]
             synthesis_profile = None
+            _review_pool_is_default = True
 
     # smart_config_models — escalation chain; works alongside explicit profiles
     if smart_config_models is None and "smart_config_models" in raw:
@@ -832,6 +836,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Plan
     plan_data = raw.get("plan", {})
+    _plan_model_is_default = "model" not in plan_data and "model_name" not in plan_data
     plan_timeout_medium_raw = plan_data.get("timeout_medium")
     plan_timeout_large_raw = plan_data.get("timeout_large")
     plan_cfg = PlanConfig(
@@ -1005,6 +1010,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         secrets=secrets,
         agents=agents_list,
         assignment=assignment_cfg,
+        review_pool_is_default=_review_pool_is_default,
+        plan_model_is_default=_plan_model_is_default,
     )
 
 
