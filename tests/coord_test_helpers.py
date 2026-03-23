@@ -253,6 +253,21 @@ criteria_checked:
 ```
 """
 
+PREFLIGHT_PROCEED_WITH_WARNINGS = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Spec requirements are not yet implemented."
+warnings:
+  - "src/theforge/old_module.py does not exist on disk"
+  - "src/theforge/another_missing.py does not exist on disk"
+criteria_checked:
+  - criterion: "Feature X"
+    satisfied: false
+    evidence: "Not found in codebase"
+```
+"""
+
 
 _PREFLIGHT_RESULT = _make_agent_result(
     success=True, output=PREFLIGHT_PROCEED, cost_usd=0.05, profile_name="review"
