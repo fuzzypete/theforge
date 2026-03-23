@@ -91,7 +91,7 @@ class AgentDef:
         """Convert to a ModelProfile for use in coordinator config."""
         return ModelProfile(
             name=self.name,
-            cli=None,
+            cli=self.cli,
             provider=self.provider,
             model=self.model,
             budget_usd=self.budget_usd,
