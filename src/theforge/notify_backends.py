@@ -7,6 +7,7 @@ warning and never raise or block.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -20,7 +21,9 @@ if TYPE_CHECKING:
     from .config import ForgeConfig
 
 
-def send_notifications(config: "ForgeConfig", title: str, body: str) -> None:
+def send_notifications(
+    config: "ForgeConfig", title: str, body: str, *, is_escalation: bool = False
+) -> None:
     """Send notifications to all configured backends."""
     for backend in config.notifications.backends:
         try:
@@ -37,6 +40,15 @@ def send_notifications(config: "ForgeConfig", title: str, body: str) -> None:
                     _send_webhook(backend.url, title, body)
                 else:
                     _cu._log("WARNING: webhook backend configured but no URL — skipping")
+            elif btype == "slack":
+                _send_slack(
+                    webhook_url_env=backend.webhook_url_env or "SLACK_WEBHOOK_URL",
+                    title=title,
+                    body=body,
+                    channel=backend.channel,
+                    mention_on_escalate=backend.mention_on_escalate if is_escalation else None,
+                    secrets=config.secrets,
+                )
             else:
                 _cu._log(f"WARNING: unknown notification backend type {btype!r} — skipping")
         except Exception as exc:
@@ -99,6 +111,51 @@ def _send_webhook(url: str, title: str, body: str) -> None:
     ).encode("utf-8")
     req = urllib.request.Request(
         url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=10):
+        pass
+
+
+def _send_slack(
+    webhook_url_env: str,
+    title: str,
+    body: str,
+    channel: str | None = None,
+    mention_on_escalate: str | None = None,
+    secrets: "dict[str, str] | None" = None,
+) -> None:
+    """POST a Slack Block Kit message to the configured incoming webhook URL."""
+    webhook_url = (secrets or {}).get(webhook_url_env) or os.environ.get(webhook_url_env)
+    if not webhook_url:
+        _cu._log(
+            f"WARNING: Slack backend enabled but env var {webhook_url_env!r} is not set — skipping"
+        )
+        return
+
+    text_body = body
+    if mention_on_escalate:
+        text_body = f"{mention_on_escalate} {body}"
+
+    blocks: list[dict] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": title, "emoji": True},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": text_body},
+        },
+    ]
+    payload_dict: dict = {"blocks": blocks}
+    if channel:
+        payload_dict["channel"] = channel
+
+    payload = json.dumps(payload_dict).encode("utf-8")
+    req = urllib.request.Request(
+        webhook_url,
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",

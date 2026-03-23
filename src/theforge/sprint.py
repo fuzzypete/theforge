@@ -653,6 +653,14 @@ def run_sprint(
     accumulated_cost = 0.0
     prior_cost = 0.0
     results: list[tuple[str, CoordinatorResult]] = []
+    if notify and config.notifications.backend not in ("ntfy", "none"):
+        from .notify_backends import send_notifications
+
+        send_notifications(
+            config,
+            f'TheForge: sprint started \u2014 "{manifest.name}"',
+            f"{total} stories \u00b7 budget ${manifest.budget_usd:.2f}",
+        )
     specs_succeeded = 0
     specs_failed = 0
     specs_skipped = 0
@@ -733,6 +741,15 @@ def run_sprint(
                         stopped_reason = (
                             f"Budget exhausted (${cumulative:.2f} >= ${manifest.budget_usd:.2f})"
                         )
+                        if notify and config.notifications.backend not in ("ntfy", "none"):
+                            from .notify_backends import send_notifications
+
+                            send_notifications(
+                                config,
+                                f'TheForge: budget exceeded \u2014 "{manifest.name}"',
+                                f"${cumulative:.2f} >= ${manifest.budget_usd:.2f}"
+                                " \u2014 remaining stories skipped",
+                            )
                     _log(f"SKIPPED {task.slug} (budget exhausted)")
                     continue
 
@@ -935,11 +952,12 @@ def run_sprint(
         total_duration_s=round(_sprint_elapsed, 2),
     )
     if notify:
-        _notify(
-            f"TheForge: {manifest.name}",
-            f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
-            f" — ${final_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
-        )
+        if config.notifications.backend != "none":
+            _notify(
+                f"TheForge: {manifest.name}",
+                f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
+                f" — ${final_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
+            )
         # R10: ntfy summary notification when remote mode is active
         if _is_remote_mode(notify, config):
             assert config.notifications.ntfy is not None
@@ -956,6 +974,17 @@ def run_sprint(
                 "\n".join(_ntfy_body_lines),
                 priority=config.notifications.ntfy.priority,
             )
+        if config.notifications.backend not in ("ntfy", "none"):
+            from .notify_backends import send_notifications
+
+            _sc_title = f'TheForge sprint complete \u2014 "{manifest.name}"'
+            _sc_body_lines = [
+                f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
+                f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
+            ]
+            if stopped_reason:
+                _sc_body_lines.append(f"Stopped: {stopped_reason}")
+            send_notifications(config, _sc_title, "\n".join(_sc_body_lines))
 
     # Build slug map for audit writers
     slug_map: dict[str, str] = {}

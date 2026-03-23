@@ -121,6 +121,15 @@ class NtfyConfig:
 
 
 @dataclass(frozen=True)
+class SlackConfig:
+    """Configuration for Slack webhook notifications."""
+
+    webhook_url_env: str = "SLACK_WEBHOOK_URL"  # env var name holding the webhook URL
+    channel: str | None = None  # optional channel override (e.g. "#theforge")
+    mention_on_escalate: str | None = None  # optional mention (e.g. "@here")
+
+
+@dataclass(frozen=True)
 class EmailConfig:
     """Stub for future email notification support (not yet implemented)."""
 
@@ -131,17 +140,21 @@ class EmailConfig:
 class BackendConfig:
     """Configuration for a single notification backend."""
 
-    type: str  # "terminal", "ntfy", "webhook"
+    type: str  # "terminal", "ntfy", "webhook", "slack"
     url: str | None = None
     priority: str | None = None
+    webhook_url_env: str | None = None  # Slack: env var name for webhook URL
+    channel: str | None = None  # Slack: optional channel override
+    mention_on_escalate: str | None = None  # Slack: optional mention on escalations
 
 
 @dataclass(frozen=True)
 class NotificationConfig:
     """Notification backend configuration."""
 
-    backend: str = "none"  # "none", "ntfy", "osascript"
+    backend: str = "none"  # "none", "ntfy", "slack", "osascript"
     ntfy: NtfyConfig | None = None
+    slack: SlackConfig | None = None
     email: EmailConfig | None = None  # reserved for future use
     script: str | None = None  # path to custom notification script
     human_review_timeout_seconds: int = 600  # 10 minutes — never block indefinitely
@@ -846,6 +859,17 @@ def load_config(config_path: Path) -> ForgeConfig:
         else:
             log.warning("ntfy backend enabled but no URL configured — notifications disabled")
 
+    slack_config: SlackConfig | None = None
+    if "slack" in notif_data:
+        slack_data = notif_data["slack"]
+        slack_config = SlackConfig(
+            webhook_url_env=str(slack_data.get("webhook_url_env", "SLACK_WEBHOOK_URL")),
+            channel=slack_data.get("channel") or None,
+            mention_on_escalate=slack_data.get("mention_on_escalate") or None,
+        )
+    elif notif_backend == "slack":
+        slack_config = SlackConfig(webhook_url_env="SLACK_WEBHOOK_URL")
+
     # hitl_timeout_seconds is the canonical YAML key; human_review_timeout_seconds is the alias
     _hitl_timeout = int(
         notif_data.get(
@@ -868,19 +892,31 @@ def load_config(config_path: Path) -> ForgeConfig:
                         type=str(b.get("type", "terminal")),
                         url=b.get("url") or None,
                         priority=b.get("priority") or None,
+                        webhook_url_env=b.get("webhook_url_env") or None,
+                        channel=b.get("channel") or None,
+                        mention_on_escalate=b.get("mention_on_escalate") or None,
                     )
                 )
     elif notif_backend == "ntfy" and ntfy_config is not None:
         backends = [BackendConfig(type="ntfy", url=ntfy_config.url, priority=ntfy_config.priority)]
+    elif notif_backend == "slack" and slack_config is not None:
+        backends = [
+            BackendConfig(
+                type="slack",
+                webhook_url_env=slack_config.webhook_url_env,
+                channel=slack_config.channel,
+                mention_on_escalate=slack_config.mention_on_escalate,
+            )
+        ]
     elif notif_backend == "none":
-        # Default: terminal notification (zero-config, always works)
-        backends = [BackendConfig(type="terminal")]
+        backends = []
     else:
         backends = [BackendConfig(type="terminal")]
 
     notifications = NotificationConfig(
         backend=notif_backend,
         ntfy=ntfy_config,
+        slack=slack_config,
         script=notif_data.get("script"),
         human_review_timeout_seconds=_hitl_timeout,
         backends=tuple(backends),
