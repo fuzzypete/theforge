@@ -4914,6 +4914,71 @@ class TestPerRunLogCapture:
         assert per_run_path.exists(), f"Expected log file not found: {per_run_path}"
         assert sys.stderr is original_stderr
 
+    def test_begin_run_log_tee_skipped_in_worker_thread(self, tmp_path):
+        """_begin_run_log_tee returns None when called from a non-main thread."""
+        import sys
+        import threading
+
+        from theforge.coord_logging import StructuredLogger
+        from theforge.coordinator import _begin_run_log_tee
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True)
+        config = self._make_logging_config(tmp_path, log_dir)
+        logger = StructuredLogger(
+            run_id="tee-test",
+            project="test",
+            task="some-slug",
+            log_file=str(tmp_path / "forge.log"),
+            enabled=True,
+            project_root=tmp_path,
+        )
+
+        results: list = []
+        original_stderr = sys.stderr
+
+        def worker():
+            tee = _begin_run_log_tee(config, logger, "some-slug", log_dir=log_dir)
+            results.append(tee)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        # Tee must be None (skipped) in worker thread
+        assert results[0] is None, "Expected tee to be skipped in worker thread"
+        # sys.stderr must be untouched
+        assert sys.stderr is original_stderr
+
+    def test_begin_run_log_tee_active_on_main_thread(self, tmp_path):
+        """_begin_run_log_tee installs tee when called from the main thread."""
+        import sys
+
+        from theforge.coord_logging import StructuredLogger
+        from theforge.coordinator import _begin_run_log_tee, _end_run_log_tee
+
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True)
+        config = self._make_logging_config(tmp_path, log_dir)
+        logger = StructuredLogger(
+            run_id="tee-main",
+            project="test",
+            task="main-slug",
+            log_file=str(tmp_path / "forge.log"),
+            enabled=True,
+            project_root=tmp_path,
+        )
+        original_stderr = sys.stderr
+
+        tee = _begin_run_log_tee(config, logger, "main-slug", log_dir=log_dir)
+        try:
+            assert tee is not None, "Expected tee to be active on main thread"
+            assert sys.stderr is not original_stderr
+        finally:
+            _end_run_log_tee(tee)
+
+        assert sys.stderr is original_stderr
+
 
 # ── Project-local log directory tests ───────────────────────────────
 

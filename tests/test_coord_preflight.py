@@ -11,6 +11,7 @@ from coord_test_helpers import (
     PREFLIGHT_BLOCKED,
     PREFLIGHT_PROCEED_MEDIUM,
     PREFLIGHT_PROCEED_SMALL,
+    PREFLIGHT_PROCEED_WITH_WARNINGS,
     REQUEST_CHANGES_REVIEW,
     _make_agent_result,
     _make_config,
@@ -38,6 +39,7 @@ from theforge.coordinator import (
     _escalate_dev_model,
     _has_persistent_p1,
     _parse_preflight_complexity,
+    _parse_preflight_warnings,
     _persistent_p1_descriptions,
     generate_audit_log,
     run_task,
@@ -202,6 +204,63 @@ class TestCoordinatorPreflight:
         assert audit["preflight"]["verdict"] == "ALREADY_DONE"
         assert audit["preflight"]["cost_usd"] == 0.08
         assert "already" in audit["preflight"]["reason"].lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_preflight_file_path_warning_proceeds(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Missing file paths in story → warning stored in state, PROCEED continues to dev."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.")
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(
+                success=True,
+                output=PREFLIGHT_PROCEED_WITH_WARNINGS,
+                cost_usd=0.05,
+                profile_name="review",
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "PROCEED"
+        assert len(result.state.preflight_warnings) == 2
+        assert "src/theforge/old_module.py" in result.state.preflight_warnings[0]
+        assert len(result.state.dev_results) == 1
+
+    def test_parse_preflight_warnings_extracts_paths(self):
+        """_parse_preflight_warnings returns the warnings list from YAML."""
+        warnings = _parse_preflight_warnings(PREFLIGHT_PROCEED_WITH_WARNINGS)
+        assert len(warnings) == 2
+        assert "src/theforge/old_module.py does not exist on disk" in warnings
+        assert "src/theforge/another_missing.py does not exist on disk" in warnings
+
+    def test_parse_preflight_warnings_empty_when_absent(self):
+        """_parse_preflight_warnings returns [] when warnings field is missing."""
+        from coord_test_helpers import PREFLIGHT_PROCEED
+
+        warnings = _parse_preflight_warnings(PREFLIGHT_PROCEED)
+        assert warnings == []
+
+    def test_parse_preflight_warnings_empty_on_garbage(self):
+        """_parse_preflight_warnings returns [] on unparseable input."""
+        warnings = _parse_preflight_warnings("not yaml at all")
+        assert warnings == []
 
 
 # ── Complexity parsing tests ──────────────────────────────────────────

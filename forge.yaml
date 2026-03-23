@@ -1,10 +1,9 @@
 # forge.yaml — TheForge developing itself
 project: theforge
 
-# Dev model escalation chain: sonnet → opus on persistent P1s
+# Dev model escalation chain: Codex primary; no CLI-provider hop required
 smart_config_models:
-  - sonnet
-  - opus
+  - openai/gpt-5.4
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
@@ -16,17 +15,18 @@ workspace:
 
 validation:
   gate_command: ".venv/bin/python -m pytest tests/ -q"
-  handoff_file: "handoff.yaml"
+  handoff_file: ".forge/handoff.yaml"
   gate_decision_key: "gate_decision"
 
 profiles:
   dev:
-    cli: claude
-    model: sonnet
+    cli: codex
+    model: gpt-5.4
     budget_usd: 50.00
     timeout_seconds: 600
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
+    reasoning_effort: medium
     allowed_tools:
       - Read
       - Edit
@@ -35,33 +35,37 @@ profiles:
       - Glob
       - Grep
   preflight:
-    cli: claude
-    model: sonnet
+    cli: codex
+    model: gpt-5.4
     budget_usd: 1.00
     timeout_seconds: 300
+    reasoning_effort: medium
     allowed_tools:
       - Read
       - Bash
       - Glob
       - Grep
   review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus
+    - name: codex-reviewer
+      cli: codex
+      model: gpt-5.4
       review_role: correctness
       budget_usd: 5.00
       timeout_seconds: 300
+      reasoning_effort: high
+      max_iterations: 20
       allowed_tools:
         - Read
         - Bash
         - Glob
         - Grep
-    - name: codex-reviewer
+    - name: codex-patterns-reviewer
       cli: codex
       model: gpt-5.4
       review_role: patterns
       budget_usd: 2.00
       timeout_seconds: 300
+      reasoning_effort: medium
       max_iterations: 20
       allowed_tools:
         - Read
@@ -98,8 +102,8 @@ retry:
 
 plan:
   enabled: true
-  model: claude
-  model_name: sonnet
+  model: codex
+  model_name: gpt-5.4
   budget_usd: 1.00
   timeout: 600
   timeout_medium: 900
@@ -108,20 +112,23 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: claude-plan-reviewer
-      cli: claude
-      model: opus
+    - name: codex-plan-reviewer
+      cli: codex
+      model: gpt-5.4
       budget_usd: 2.00
       timeout_seconds: 600
+      reasoning_effort: high
+      max_iterations: 20
       allowed_tools:
         - Read
         - Glob
         - Grep
-    - name: codex-plan-reviewer
+    - name: codex-plan-reviewer-2
       cli: codex
       model: gpt-5.4
       budget_usd: 1.00
       timeout_seconds: 300
+      reasoning_effort: medium
       max_iterations: 20
       allowed_tools:
         - Read
@@ -139,22 +146,21 @@ plan_agent_review:
         - Grep
 
 agents:
-  - name: sonnet-cli
-    cli: claude
-    model: sonnet
+  - name: codex-cli
+    cli: codex
+    model: gpt-5.4
     budget_usd: 5.00
     timeout_seconds: 900
     tier: mid
     strengths: [code, tools, general]
-  - name: opus-cli
-    cli: claude
-    model: opus
+  - name: codex-strong
+    cli: codex
+    model: gpt-5.4
     budget_usd: 8.00
     timeout_seconds: 1200
     tier: strong
     strengths: [architecture, review, complex-logic]
-  # API agents removed — this project uses Claude CLI (Max auth), not API keys.
-  # Add API agents here only if ANTHROPIC_API_KEY is set in .forge/.env.
+    reasoning_effort: high
 
 assignment:
   enabled: true  # M2: complexity-driven model routing

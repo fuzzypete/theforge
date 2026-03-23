@@ -82,6 +82,7 @@ from .coord_preflight import (  # noqa: F401
     _has_persistent_p1,
     _parse_preflight_complexity,
     _parse_preflight_verdict,
+    _parse_preflight_warnings,
     _persistent_p1_descriptions,
 )
 
@@ -237,6 +238,8 @@ def _begin_run_log_tee(
     """
     if not config.log.enabled:
         return None
+    if threading.current_thread() is not threading.main_thread():
+        return None  # skip in worker threads; parallel sprints avoid cross-story tee stacking
     try:
         if log_dir is not None:
             per_run_path = log_dir / f"run-{logger._run_id}.log"
@@ -1413,6 +1416,13 @@ def run_task(
 
         state.preflight_verdict = verdict
         state.preflight_reason = reason
+
+        # ── Warnings parsing (non-blocking advisories) ─────────────────
+        if preflight_result.success:
+            _warnings = _parse_preflight_warnings(preflight_result.output)
+            state.preflight_warnings = _warnings
+            if _warnings:
+                _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
 
         # ── Complexity parsing + adaptive model swapping ───────────────
         if preflight_result.success:
