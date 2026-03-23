@@ -169,7 +169,7 @@ hooks:
   timeout_seconds: 30
 
 notifications:
-  backend: ntfy
-  ntfy:
-    # url omitted — resolved from NTFY_URL in .forge/.env
-    priority: high
+  backend: slack
+  slack:
+    webhook_url_env: SLACK_WEBHOOK_URL
+  human_review_timeout_seconds: 600
