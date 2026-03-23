@@ -291,11 +291,14 @@ def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
         os.dup2(null.fileno(), sys.stdin.fileno())
 
     # Redirect stdout/stderr to log file (append mode)
-    with open(log_file, "a", encoding="utf-8") as lf:
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os.dup2(lf.fileno(), sys.stdout.fileno())
-        os.dup2(lf.fileno(), sys.stderr.fileno())
+    # Open the log file and keep the handle alive (no `with` — intentional,
+    # the FDs must outlive the daemonize call).
+    sys.stdout.flush()
+    sys.stderr.flush()
+    log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    os.dup2(log_fd, sys.stdout.fileno())
+    os.dup2(log_fd, sys.stderr.fileno())
+    os.close(log_fd)  # safe — dup2'd copies keep the underlying file open
 
     # Re-open python-level file objects to the log
     sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)  # noqa: WPS515
