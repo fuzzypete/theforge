@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from theforge.config import BackendConfig
 from theforge.notify_backends import (
     _send_ntfy,
+    _send_slack,
     _send_terminal,
     _send_webhook,
     send_notifications,
@@ -162,3 +163,153 @@ def test_send_notifications_unknown_backend_logs_warning():
     config = _make_config([BackendConfig(type="unknown")])
     # Should not raise
     send_notifications(config, "title", "body")
+
+
+# ── Slack backend tests ────────────────────────────────────────────────
+
+
+class _MockResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_send_slack_posts_block_kit_json(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", return_value=_MockResponse()
+    ) as mock_open:
+        _send_slack("SLACK_WEBHOOK_URL", "Sprint Done", "3 passed · 0 failed")
+        assert mock_open.called
+        req = mock_open.call_args[0][0]
+        payload = json.loads(req.data.decode())
+        assert "blocks" in payload
+        blocks = payload["blocks"]
+        assert blocks[0]["type"] == "header"
+        assert blocks[0]["text"]["text"] == "Sprint Done"
+        assert blocks[1]["type"] == "section"
+        assert "3 passed" in blocks[1]["text"]["text"]
+        assert req.get_header("Content-type") == "application/json"
+
+
+def test_send_slack_reads_webhook_url_from_env(monkeypatch):
+    monkeypatch.setenv("MY_WEBHOOK", "https://hooks.slack.com/custom")
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", return_value=_MockResponse()
+    ) as mock_open:
+        _send_slack("MY_WEBHOOK", "title", "body")
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "https://hooks.slack.com/custom"
+
+
+def test_send_slack_skips_when_env_not_set(monkeypatch):
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    with patch("theforge.notify_backends.urllib.request.urlopen") as mock_open:
+        _send_slack("SLACK_WEBHOOK_URL", "title", "body")
+        mock_open.assert_not_called()
+
+
+def test_send_slack_includes_channel_when_set(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", return_value=_MockResponse()
+    ) as mock_open:
+        _send_slack("SLACK_WEBHOOK_URL", "title", "body", channel="#theforge")
+        payload = json.loads(mock_open.call_args[0][0].data.decode())
+        assert payload.get("channel") == "#theforge"
+
+
+def test_send_slack_no_channel_field_when_not_set(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", return_value=_MockResponse()
+    ) as mock_open:
+        _send_slack("SLACK_WEBHOOK_URL", "title", "body")
+        payload = json.loads(mock_open.call_args[0][0].data.decode())
+        assert "channel" not in payload
+
+
+def test_send_slack_prepends_mention_on_escalate(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", return_value=_MockResponse()
+    ) as mock_open:
+        _send_slack("SLACK_WEBHOOK_URL", "title", "body text", mention_on_escalate="@here")
+        payload = json.loads(mock_open.call_args[0][0].data.decode())
+        section_text = payload["blocks"][1]["text"]["text"]
+        assert section_text.startswith("@here ")
+        assert "body text" in section_text
+
+
+def test_send_slack_failure_does_not_raise(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    with patch(
+        "theforge.notify_backends.urllib.request.urlopen", side_effect=OSError("network error")
+    ):
+        # _send_slack itself raises; the caller (send_notifications) catches it
+        # Verify the exception propagates so send_notifications can log+continue
+        try:
+            _send_slack("SLACK_WEBHOOK_URL", "title", "body")
+            raised = False
+        except OSError:
+            raised = True
+        assert raised
+
+
+def test_send_notifications_dispatches_to_slack_backend(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    config = _make_config([BackendConfig(type="slack", webhook_url_env="SLACK_WEBHOOK_URL")])
+    with patch("theforge.notify_backends._send_slack") as mock_slack:
+        send_notifications(config, "title", "body")
+        mock_slack.assert_called_once_with(
+            webhook_url_env="SLACK_WEBHOOK_URL",
+            title="title",
+            body="body",
+            channel=None,
+            mention_on_escalate=None,
+        )
+
+
+def test_send_notifications_passes_mention_on_escalate(monkeypatch):
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/test")
+    config = _make_config(
+        [
+            BackendConfig(
+                type="slack",
+                webhook_url_env="SLACK_WEBHOOK_URL",
+                mention_on_escalate="@oncall",
+            )
+        ]
+    )
+    with patch("theforge.notify_backends._send_slack") as mock_slack:
+        send_notifications(config, "title", "body", is_escalation=True)
+        mock_slack.assert_called_once_with(
+            webhook_url_env="SLACK_WEBHOOK_URL",
+            title="title",
+            body="body",
+            channel=None,
+            mention_on_escalate="@oncall",
+        )
+
+
+def test_send_notifications_no_mention_when_not_escalation(monkeypatch):
+    config = _make_config(
+        [
+            BackendConfig(
+                type="slack",
+                webhook_url_env="SLACK_WEBHOOK_URL",
+                mention_on_escalate="@oncall",
+            )
+        ]
+    )
+    with patch("theforge.notify_backends._send_slack") as mock_slack:
+        send_notifications(config, "title", "body", is_escalation=False)
+        mock_slack.assert_called_once_with(
+            webhook_url_env="SLACK_WEBHOOK_URL",
+            title="title",
+            body="body",
+            channel=None,
+            mention_on_escalate=None,
+        )
