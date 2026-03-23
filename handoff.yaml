@@ -1,22 +1,20 @@
 gate_decision: PASS
 gate_result: PASS
 dev_notes: |
-  summary: "Implemented Slack webhook notification backend. Added SlackConfig dataclass
-    (webhook_url_env, channel, mention_on_escalate) to config.py; extended BackendConfig
-    with the same fields; added slack parsing in load_forge_yaml(); synthesize
-    BackendConfig(type='slack') for backend: slack; fixed backend: none to produce
-    empty backends list (was incorrectly returning [terminal]). Added _send_slack()
-    to notify_backends.py using Slack Block Kit format (header + section blocks); reads
-    webhook URL from env var, skips with warning if unset; prepends mention_on_escalate
-    to body text when is_escalation=True. Added is_escalation kwarg to
-    send_notifications() to thread mention through. Updated _escalate_notify(),
-    _ntfy_crash_notify(), _ntfy_done_notify() in coord_notify.py to call
-    send_notifications() when backend is not ntfy/none (ntfy path unchanged, no double
-    notification). Added sprint-started, budget-exceeded, and sprint-complete
-    send_notifications() calls in sprint.py for non-ntfy backends. Added 12 new Slack
-    tests in test_notify_backends.py covering: Block Kit format, env var reading, missing
-    env var skip, channel field, mention prepend, failure propagation, dispatch routing,
-    escalation mention, non-escalation suppression."
+  summary: "Implemented Slack webhook notification backend (iter 1 fixes applied).
+    Original work: added SlackConfig dataclass, extended BackendConfig with Slack
+    fields, added slack parsing in load_forge_yaml(), synthesized BackendConfig(type='slack')
+    for backend: slack, fixed backend: none to produce empty backends list, added
+    _send_slack() to notify_backends.py using Block Kit format, threaded is_escalation
+    kwarg through send_notifications(), wired 6 event types. Iter 1 fixes: (1)
+    _escalate_notify early-return was gating on ntfy-is-None before send_notifications
+    call — restructured so ntfy guard only wraps ntfy block; (2) _send_slack only
+    checked os.environ for webhook URL — now checks config.secrets first so .forge/.env
+    values work; (3) sprint completion native _notify was firing even for backend: none
+    — gated on backend != 'none'; (4) backends list format in forge.yaml was not
+    parsing Slack-specific fields — added webhook_url_env/channel/mention_on_escalate
+    to BackendConfig constructor in _backends_raw loop. Added 3 regression tests for
+    the missed paths plus updated existing dispatch assertions."
   commits:
     - sha: "868d373"
       message: "feat(notifications): add SlackConfig dataclass and extend config for Slack backend"
@@ -26,52 +24,53 @@ dev_notes: |
       message: "chore(handoff): write dev_notes for slack-notification story"
     - sha: "c809f78"
       message: "chore: commit remaining modified files before gate"
+    - sha: "1a08cbe"
+      message: "fix(slack-notification): rewrite dev handoff to match schema"
+    - sha: "ac53f0d"
+      message: "fix(notifications): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "backend: slack sends notifications via Slack webhook"
       status: MET
       notes: "BackendConfig(type='slack') synthesized from backend: slack + slack: block.
         send_notifications() dispatches to _send_slack() which POSTs Block Kit JSON to
-        the webhook URL read from the configured env var."
+        the webhook URL resolved from config.secrets then os.environ."
     - criterion: "All 6 event types produce Slack messages"
       status: MET
-      notes: "Sprint started: added send_notifications() call in sprint.py run_sprint()
-        after started_at assignment. Story APPROVE: _ntfy_done_notify() now calls send_notifications()
-        for non-ntfy backends. Story ESCALATE: _escalate_notify() now calls send_notifications(is_escalation=True)
-        for non-ntfy backends. Sprint complete: send_notifications() added alongside ntfy
-        block in run_sprint(). Budget exceeded: send_notifications() fires on first budget-exhausted
-        skip. Agent startup failure: _ntfy_crash_notify() now calls send_notifications()
-        for non-ntfy backends."
+      notes: "Sprint started, Story APPROVE, Story ESCALATE (fixed: was early-returning
+        when ntfy=None), Sprint complete, Budget exceeded, Agent startup failure — all
+        call send_notifications() for non-ntfy/non-none backends."
     - criterion: "Webhook URL read from environment variable"
       status: MET
-      notes: "_send_slack() calls os.environ.get(webhook_url_env) at send time. webhook_url_env
-        defaults to 'SLACK_WEBHOOK_URL'. URL never appears in forge.yaml or BackendConfig."
+      notes: "_send_slack() now checks config.secrets first (covers .forge/.env), then
+        falls back to os.environ. webhook_url_env defaults to 'SLACK_WEBHOOK_URL'."
     - criterion: "Notification failure logs warning and continues"
       status: MET
-      notes: "_send_slack() raises on network errors; the except Exception catch in send_notifications()
-        logs a WARNING and continues to the next backend. Missing env var is handled inside
-        _send_slack() itself (logs warning, returns early)."
+      notes: "_send_slack() raises on network errors; except Exception in send_notifications()
+        logs WARNING and continues. Missing env var/secret is handled inside _send_slack()
+        with early return."
     - criterion: "Existing ntfy backend still works when selected"
       status: MET
-      notes: "ntfy path in coord_notify.py functions is unchanged. The send_notifications()
-        call is gated on backend not in ('ntfy', 'none') to prevent double-notification."
+      notes: "ntfy path in coord_notify.py functions is unchanged. send_notifications()
+        is gated on backend not in ('ntfy', 'none') to prevent double-notification."
     - criterion: "backend: none disables all notifications"
       status: MET
-      notes: "load_forge_yaml() now sets backends=[] when notif_backend == 'none'. Previously
-        it incorrectly defaulted to [BackendConfig(type='terminal')]. send_notifications()
-        loops over an empty tuple and does nothing."
+      notes: "backends=[] when notif_backend=='none' (no pluggable dispatch). Sprint
+        completion native _notify is now also gated on backend != 'none'. Verified
+        by new test_campaign_notification_suppressed_for_backend_none."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1361 tests pass (up from 1349 before this story)."
+      notes: "All tests pass after fixing 3 existing dispatch assertions to include
+        secrets kwarg and updating test_campaign_notification_sent to use backend=terminal."
     - criterion: "New tests mock webhook POST and verify message format"
       status: MET
-      notes: "12 new tests in test_notify_backends.py: Block Kit JSON structure verified,
-        channel field present/absent, mention_on_escalate prepend, env var routing, missing
-        env skip, failure propagation, dispatch via send_notifications() with is_escalation flag."
+      notes: "12 original + 3 new regression tests: secrets-dict URL lookup,
+        _escalate_notify with ntfy=None triggers send_notifications, backend: none
+        suppresses _notify in sprint completion."
   story_deviations:
     - description: "_slack_publish() placed in notify_backends.py rather than coord_notify.py
         as suggested in the spec's Implementation section."
       justification: "coord_notify.py already imports from notify_backends.py; co-locating
-        Slack with the other backend send functions (ntfy, webhook, terminal) avoids a
-        circular import and is consistent with the existing pluggable backend architecture."
+        Slack with the other backend send functions avoids a circular import and is
+        consistent with the existing pluggable backend architecture."
   deferred_items: none
   gate_result: PASS
