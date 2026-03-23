@@ -1,0 +1,12 @@
+name: "v0.2.1 — reliability + adaptive improvements"
+budget_usd: 60
+max_parallel: 3
+stories:
+  # Small fixes (independent, parallel)
+  - stories/backlog/plan-escalation.md
+  - stories/backlog/stderr-tee-fix.md
+  - stories/backlog/preflight-file-path-warning.md
+  # Medium (after plan-escalation ships)
+  - stories/backlog/domain-aware-routing.md
+  # Small (independent)
+  - stories/backlog/artifacts-under-forge.md
