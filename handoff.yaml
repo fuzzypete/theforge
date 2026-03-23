@@ -1,0 +1,62 @@
+dev_notes: |
+  summary: "Implemented full process detachment for forge run/sprint. Created a new detach.py module with double-fork daemonization (reusing the UNIX double-fork pattern from daemon.py), macOS App Nap suppression via NSProcessInfo (PyObjC) with ctypes IOPMAssertionCreateWithName fallback, per-run PID file management (.forge/runs/<run-id>.pid, line 1: PID, line 2: slug), and stale PID cleanup. Wired daemonization into cmd_run and cmd_sprint with a --fg escape hatch. The daemon queue routing in cmd_sprint now requires explicit --detach flag (the new model replaces daemon-based execution). Rewrote forge status to scan .forge/runs/*.pid for live runs with phase/cost/elapsed table. Added forge logs <run-id> (tail -f wrapper) and forge stop <run-id> (SIGTERM). forge daemon now emits DeprecationWarning but is otherwise unchanged. Updated test_daemon.py to add fg=True to existing sprint tests and updated the daemon-routing test to use detach=True. Added 17 new tests in test_detach.py and 11 new tests in test_cli.py."
+
+  commits:
+    - sha: "4fcab1a"
+      message: "feat(detach): process detachment — every forge run survives terminal close"
+    - sha: "0a3bf35"
+      message: "chore(handoff): write dev_notes for process-detachment story"
+
+  acceptance_criteria:
+    - criterion: "forge run daemonizes by default, prints run ID and log path"
+      status: MET
+      notes: "cmd_run calls detach.daemonize_run() unless --fg is set. Parent prints run ID, log path, and forge status/logs hints before exiting 0."
+
+    - criterion: "--fg flag preserves current foreground behavior"
+      status: MET
+      notes: "--fg added to both run and sprint subparsers. When set, daemonize_run is skipped entirely."
+
+    - criterion: "Process survives terminal close (setsid)"
+      status: MET
+      notes: "daemonize_run performs double-fork + os.setsid() in the intermediate child, matching the pattern in daemon.py."
+
+    - criterion: "App Nap disabled on macOS"
+      status: MET
+      notes: "suppress_app_nap() calls NSProcessInfo.beginActivityWithOptions_reason_ via PyObjC, falls back to IOPMAssertionCreateWithName via ctypes. No-op on non-macOS and when frameworks are unavailable."
+
+    - criterion: ".forge/runs/<run-id>.pid written on start, removed on completion"
+      status: MET
+      notes: "write_pid() called in grandchild after double-fork. remove_pid() called at the end of cmd_run and cmd_sprint. install_cleanup_handler() also removes PID on SIGTERM."
+
+    - criterion: "forge status lists active runs with phase, cost, elapsed"
+      status: MET
+      notes: "cmd_status rewritten to call detach.list_active_runs() and read_run_status(). Prints table with RUN ID / STORY / PHASE / COST / ELAPSED columns. Phase extracted from [forge] ▸ <PHASE> log markers. Elapsed from log file creation time. Still shows pending decisions section."
+
+    - criterion: "forge logs <run-id> tails the run log"
+      status: MET
+      notes: "cmd_logs added. Finds log via PID file slug (new-style: .forge/logs/<slug>/run.log) or falls back to rglob for legacy run-<run_id>.log. Calls subprocess.run(['tail', '-f', log_path])."
+
+    - criterion: "forge stop <run-id> sends SIGTERM for clean shutdown"
+      status: MET
+      notes: "cmd_stop added. Reads PID from .forge/runs/<run-id>.pid, calls os.kill(pid, SIGTERM)."
+
+    - criterion: "Stale PID files cleaned up by forge status"
+      status: MET
+      notes: "list_active_runs() uses os.kill(pid, 0) to check liveness and unlinks stale PID files. Called on every forge status invocation."
+
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "1351 tests pass. Fixed test_daemon.py tests that called cmd_sprint without fg=True (would trigger actual fork). Updated test_submit_routes_to_daemon to use detach=True since daemon queue routing now requires explicit --detach."
+
+    - criterion: "forge daemon start/stop still works (not removed, just deprecated)"
+      status: MET
+      notes: "cmd_daemon is unchanged functionally. Added warnings.warn(DeprecationWarning) at the top. All 12 daemon tests pass."
+
+  story_deviations:
+    - description: "Daemon queue routing in cmd_sprint now requires --detach flag (previously triggered by is_daemon_running() alone)."
+      justification: "Daemonization happens before the daemon check, and the two execution models are incompatible. --detach is now the explicit opt-in for the legacy daemon queue path."
+
+  deferred_items: none
+
+  gate_result: PASS
+gate_decision: PASS

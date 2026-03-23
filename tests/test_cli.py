@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import signal as _signal
 from pathlib import Path
 from unittest.mock import patch
 
@@ -619,6 +620,7 @@ def _make_run_args(
     resume: bool = False,
     dev_model: str | None = None,
     dry_run: bool = False,
+    fg: bool = True,
 ) -> argparse.Namespace:
     """Build a minimal argparse.Namespace for cmd_run tests."""
     story = tmp_path / "story.md"
@@ -643,6 +645,7 @@ def _make_run_args(
         auto_merge=False,
         verbose=False,
         no_notify=True,
+        fg=fg,
     )
 
 
@@ -878,3 +881,277 @@ class TestCmdRunConfigOverrides:
 
         call_kwargs = mock_run.call_args.kwargs
         assert call_kwargs.get("start_phase") is None
+
+
+# ── New tests: --fg flag, forge logs/stop/status ──────────────────────
+
+
+def _make_sprint_args(
+    tmp_path,
+    *,
+    fg: bool = True,
+    detach: bool = False,
+    resume: bool = False,
+) -> argparse.Namespace:
+    manifest = tmp_path / "sprint.yaml"
+    manifest.write_text("stories: []\n", encoding="utf-8")
+    forge_yaml = tmp_path / "forge.yaml"
+    if not forge_yaml.exists():
+        forge_yaml.write_text("project:\n  root: .\n", encoding="utf-8")
+    return argparse.Namespace(
+        manifest=str(manifest),
+        config=str(forge_yaml),
+        fg=fg,
+        detach=detach,
+        resume=resume,
+        auto_merge=False,
+        interactive=False,
+        verbose=False,
+        no_notify=True,
+    )
+
+
+class TestFgFlag:
+    """--fg flag parsing for run and sprint."""
+
+    def test_run_fg_true_skips_daemonization(self, tmp_path):
+        """With --fg, daemonize_run should NOT be called."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, fg=True)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()),
+            patch("theforge.cli._write_audit"),
+            patch("theforge.detach.daemonize_run") as mock_daemonize,
+            patch("theforge.detach.remove_pid"),
+        ):
+            cmd_run(args)
+            mock_daemonize.assert_not_called()
+
+    def test_run_fg_false_calls_daemonization(self, tmp_path):
+        """Without --fg, daemonize_run should be called."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, fg=False)
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()),
+            patch("theforge.cli._write_audit"),
+            patch("theforge.detach.daemonize_run") as mock_daemonize,
+            patch("theforge.detach.suppress_app_nap"),
+            patch("theforge.detach.install_cleanup_handler"),
+            patch("theforge.detach.remove_pid"),
+        ):
+            cmd_run(args)
+            mock_daemonize.assert_called_once()
+
+    def test_sprint_fg_true_skips_daemonization(self, tmp_path):
+        """With --fg on sprint, daemonize_run should NOT be called."""
+        from theforge.cli import cmd_sprint
+        from theforge.sprint import SprintResult
+
+        config = _make_forge_config(tmp_path)
+        args = _make_sprint_args(tmp_path, fg=True)
+
+        stub_result = SprintResult(
+            name="test",
+            specs_total=0,
+            specs_succeeded=0,
+            specs_failed=0,
+            specs_skipped=0,
+            total_cost_usd=0.0,
+            budget_usd=0.0,
+        )
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_sprint", return_value=stub_result),
+            patch("theforge.detach.daemonize_run") as mock_daemonize,
+            patch("theforge.detach.remove_pid"),
+        ):
+            cmd_sprint(args)
+            mock_daemonize.assert_not_called()
+
+
+class TestCmdLogs:
+    def test_tails_log_file_for_known_run(self, tmp_path):
+        """forge logs <run-id> calls tail -f on the correct log file."""
+        from theforge.cli import cmd_logs
+
+        run_id = "abc123"
+        slug = "my-slug"
+        # Create PID file
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.pid").write_text(f"12345\n{slug}\n")
+        # Create log file
+        log_dir = tmp_path / ".forge" / "logs" / slug
+        log_dir.mkdir(parents=True)
+        log_file = log_dir / "run.log"
+        log_file.write_text("hello\n")
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id)
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.subprocess.run") as mock_run,
+        ):
+            result = cmd_logs(args)
+
+        assert result == 0
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == "tail"
+        assert call_args[1] == "-f"
+        assert str(log_file) in call_args[2]
+
+    def test_returns_error_when_no_pid_and_no_log(self, tmp_path):
+        """forge logs with unknown run_id returns error."""
+        from theforge.cli import cmd_logs
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id="deadbeef")
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 1
+
+
+class TestCmdStop:
+    def test_sends_sigterm_to_pid(self, tmp_path):
+        """forge stop <run-id> sends SIGTERM to the correct PID."""
+        from theforge.cli import cmd_stop
+
+        run_id = "abc123"
+        target_pid = 54321
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.pid").write_text(f"{target_pid}\nmy-slug\n")
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id)
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.os.kill") as mock_kill,
+        ):
+            result = cmd_stop(args)
+
+        assert result == 0
+        mock_kill.assert_called_once_with(target_pid, _signal.SIGTERM)
+
+    def test_returns_error_when_no_pid_file(self, tmp_path):
+        """forge stop returns 1 when no PID file found."""
+        from theforge.cli import cmd_stop
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id="nosuchrun")
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+        ):
+            result = cmd_stop(args)
+
+        assert result == 1
+
+
+class TestCmdStatusActiveRuns:
+    def test_shows_no_active_runs(self, tmp_path, capsys):
+        """When no active runs, prints 'No active runs.'"""
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace()
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.detach.list_active_runs", return_value=[]),
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            result = cmd_status(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "No active runs" in captured.out
+
+    def test_shows_table_for_active_runs(self, tmp_path, capsys):
+        """Active runs are displayed in table format."""
+        from theforge.cli import cmd_status
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace()
+
+        mock_runs = [{"run_id": "abc123ef", "pid": 12345, "slug": "my-story", "alive": True}]
+        mock_status = {"phase": "DEV", "cost_usd": 1.23, "elapsed_seconds": 300, "log_path": None}
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.detach.list_active_runs", return_value=mock_runs),
+            patch("theforge.detach.read_run_status", return_value=mock_status),
+            patch("theforge.pending.cleanup_stale"),
+            patch("theforge.pending.list_pending", return_value=[]),
+        ):
+            result = cmd_status(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "abc123ef" in captured.out
+        assert "my-story" in captured.out
+        assert "DEV" in captured.out
+        assert "active run" in captured.out
+
+
+class TestDaemonDeprecation:
+    def test_daemon_emits_deprecation_warning(self, tmp_path):
+        """forge daemon emits DeprecationWarning."""
+        import warnings
+
+        from theforge.cli import cmd_daemon
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(
+            daemon_subcommand="status",
+            config=str(forge_yaml),
+            no_daemonize=False,
+        )
+
+        with (
+            patch("theforge.cli._find_config", return_value=forge_yaml),
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.daemon.get_daemon_status", return_value={}),
+            patch("theforge.cli._print_daemon_status"),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            cmd_daemon(args)
+
+        dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(dep_warnings) >= 1
+        assert "deprecated" in str(dep_warnings[0].message).lower()
