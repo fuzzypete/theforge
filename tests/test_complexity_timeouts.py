@@ -76,14 +76,18 @@ _VALID_DEV_NOTES = (
 _RECENT_COMMIT_TS = str(int(_time.time()) - 60)
 
 
-def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
+def _write_handoff(
+    workspace: Path, decision: str = "PASS", handoff_file: str = "handoff.yaml"
+) -> None:
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
         "dev_notes": _VALID_DEV_NOTES,
     }
-    (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+    handoff_path = workspace / handoff_file
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
 
 
 def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:

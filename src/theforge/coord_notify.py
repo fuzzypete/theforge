@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import coord_util as _cu
+from .artifacts import PLAN_PATH
 
 if TYPE_CHECKING:
     from . import coord_state as _cs
@@ -677,13 +678,13 @@ def _plan_review_interactive(
     del state, task
 
     print(plan_text, end="" if plan_text.endswith("\n") else "\n", file=sys.stdout, flush=True)
-    print(f"Plan at: {workspace_path / 'forge_plan.md'}", file=sys.stderr, flush=True)
+    print(f"Plan at: {workspace_path / PLAN_PATH}", file=sys.stderr, flush=True)
 
     while True:
-        print("Plan ready. Review forge_plan.md and choose:", file=sys.stderr, flush=True)
+        print("Plan ready. Review .forge/plan.md and choose:", file=sys.stderr, flush=True)
         print("  [a] Approve   — proceed to DEV", file=sys.stderr, flush=True)
         print(
-            "  [e] Edit      — edit forge_plan.md externally, then re-enter 'a'",
+            "  [e] Edit      — edit .forge/plan.md externally, then re-enter 'a'",
             file=sys.stderr,
             flush=True,
         )

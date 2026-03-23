@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import signal as _signal
 from pathlib import Path
 from unittest.mock import patch
@@ -761,12 +762,12 @@ class TestCmdRunFromFlag:
         mock_run.assert_not_called()
 
     def test_from_dev_no_plan_md_returns_1(self, tmp_path):
-        """--from dev with worktree but no forge_plan.md → exit code 1."""
+        """--from dev with worktree but no .forge/plan.md → exit code 1."""
         config = _make_forge_config(tmp_path)
         slug = "story"
         args = _make_run_args(tmp_path, from_phase="dev", slug=slug)
 
-        # Create worktree without forge_plan.md
+        # Create worktree without .forge/plan.md
         wt = tmp_path / slug
         wt.mkdir()
 
@@ -780,12 +781,12 @@ class TestCmdRunFromFlag:
         mock_run.assert_not_called()
 
     def test_from_review_no_handoff_returns_1(self, tmp_path):
-        """--from review with worktree but no handoff.yaml → exit code 1."""
+        """--from review with worktree but no .forge/handoff.yaml → exit code 1."""
         config = _make_forge_config(tmp_path)
         slug = "story"
         args = _make_run_args(tmp_path, from_phase="review", slug=slug)
 
-        # Create worktree without handoff.yaml
+        # Create worktree without .forge/handoff.yaml
         wt = tmp_path / slug
         wt.mkdir()
 
@@ -799,15 +800,15 @@ class TestCmdRunFromFlag:
         mock_run.assert_not_called()
 
     def test_from_dev_with_plan_md_succeeds(self, tmp_path):
-        """--from dev with worktree + forge_plan.md passes preconditions."""
+        """--from dev with worktree + .forge/plan.md passes preconditions."""
         config = _make_forge_config(tmp_path)
         slug = "story"
         args = _make_run_args(tmp_path, from_phase="dev", slug=slug)
 
-        # Create worktree with forge_plan.md
+        # Create worktree with .forge/plan.md
         wt = tmp_path / slug
-        wt.mkdir()
-        (wt / "forge_plan.md").write_text("# Plan", encoding="utf-8")
+        (wt / ".forge").mkdir(parents=True)
+        (wt / ".forge" / "plan.md").write_text("# Plan", encoding="utf-8")
 
         with (
             patch("theforge.cli.load_config", return_value=config),
@@ -819,6 +820,50 @@ class TestCmdRunFromFlag:
         assert rc == 0
         call_kwargs = mock_run.call_args.kwargs
         assert call_kwargs.get("start_phase") == Phase.DEV
+
+    def test_from_dev_with_legacy_root_plan_succeeds(self, tmp_path):
+        """--from dev accepts legacy forge_plan.md when .forge/plan.md is absent."""
+        config = _make_forge_config(tmp_path)
+        slug = "story"
+        args = _make_run_args(tmp_path, from_phase="dev", slug=slug)
+
+        wt = tmp_path / slug
+        wt.mkdir()
+        (wt / "forge_plan.md").write_text("# Legacy Plan", encoding="utf-8")
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 0
+        assert mock_run.call_args.kwargs.get("start_phase") == Phase.DEV
+
+    def test_from_review_with_legacy_root_handoff_succeeds(self, tmp_path):
+        """--from review accepts legacy handoff.yaml when configured .forge file is absent."""
+        config = _make_forge_config(tmp_path)
+        config = dataclasses.replace(
+            config,
+            validation=dataclasses.replace(config.validation, handoff_file=".forge/handoff.yaml"),
+        )
+        slug = "story"
+        args = _make_run_args(tmp_path, from_phase="review", slug=slug)
+
+        wt = tmp_path / slug
+        wt.mkdir()
+        (wt / "handoff.yaml").write_text("gate_decision: PASS\n", encoding="utf-8")
+
+        with (
+            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli._write_audit"),
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 0
+        assert mock_run.call_args.kwargs.get("start_phase") == Phase.REVIEW
 
 
 class TestCmdRunConfigOverrides:

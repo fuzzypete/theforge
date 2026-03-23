@@ -165,7 +165,7 @@ class CoordinatorState:
     preflight_result: AgentResult | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
-        None  # contents of forge_plan.md, passed to dev (raw string for audit)
+        None  # contents of the worktree plan file, passed to dev (raw string for audit)
     )
     plan_structured: PlanData | None = None  # parsed structured plan; None if fallback to markdown
     plan_review_decision: str | None = None  # "approve" | "regenerate" | "abandon"
@@ -192,7 +192,7 @@ class CoordinatorState:
     finding_registry: list[FindingRecord] = field(default_factory=list)
     dev_handoff_snapshots: list[dict | None] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
-    # Each entry is the parsed handoff.yaml dict, or None if absent/unparseable.
+    # Each entry is the parsed handoff-file dict, or None if absent/unparseable.
     # Stable record of all findings across cycles, classified by finding_classifier
     last_dev_start_commit: str | None = None
     # HEAD commit hash captured before each dev iteration; used by finding_classifier

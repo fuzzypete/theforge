@@ -212,15 +212,19 @@ _VALID_DEV_NOTES = (
 )
 
 
-def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
-    """Write a minimal handoff.yaml in the workspace with valid dev_notes."""
+def _write_handoff(
+    workspace: Path, decision: str = "PASS", handoff_file: str = "handoff.yaml"
+) -> None:
+    """Write a minimal handoff file in the workspace with valid dev_notes."""
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
         "dev_notes": _VALID_DEV_NOTES,
     }
-    (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+    handoff_path = workspace / handoff_file
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
 
 
 # Stale-worktree detection commands need specific responses so that pre-created
@@ -692,7 +696,9 @@ class TestPlanReview:
         edited_plan = "# Plan\n\nEdited by human."
 
         def plan_review_side_effect(*args, **kwargs):
-            (workspace / "forge_plan.md").write_text(edited_plan, encoding="utf-8")
+            plan_path = workspace / ".forge" / "plan.md"
+            plan_path.parent.mkdir(parents=True, exist_ok=True)
+            plan_path.write_text(edited_plan, encoding="utf-8")
             return "approve"
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
@@ -882,7 +888,9 @@ class TestPlanReview:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
         plan_text = "# Plan\n\nRead me."
-        (workspace / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+        plan_path = workspace / ".forge" / "plan.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text(plan_text, encoding="utf-8")
 
         with patch("theforge.coord_notify.sys.stdin", io.StringIO("")):
             decision = _plan_review_interactive(CoordinatorState(), plan_text, workspace, task)
@@ -890,7 +898,7 @@ class TestPlanReview:
         captured = capsys.readouterr()
         assert decision == "abandon"
         assert plan_text in captured.out
-        assert f"Plan at: {workspace / 'forge_plan.md'}" in captured.err
+        assert f"Plan at: {workspace / '.forge/plan.md'}" in captured.err
 
     @patch("theforge.coordinator._plan_review_interactive")
     @patch("theforge.coordinator.run_agent_pool")
@@ -1053,7 +1061,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         def plan_review_side_effect(*args, **kwargs):
-            (workspace / "forge_plan.md").unlink()
+            (workspace / ".forge" / "plan.md").unlink()
             return "approve"
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
@@ -3672,6 +3680,62 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
+    def test_dev_notes_fall_back_to_legacy_handoff(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Coordinator falls back to legacy handoff.yaml when configured .forge file is absent."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            validation=dataclasses.replace(
+                _make_config(tmp_path).validation,
+                handoff_file=".forge/handoff.yaml",
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        handoff = {
+            "gate_decision": "PASS",
+            "validation": {"make_fmt": {"status": "PASS"}},
+            "scope_completed": ["test item"],
+            "dev_notes": "Legacy root handoff content.",
+        }
+        (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Unused.")
+        )
+
+        captured_prompts: list[str] = []
+
+        def pool_side_effect(**kwargs):
+            prompt = kwargs.get("prompt", "")
+            if isinstance(prompt, list):
+                captured_prompts.extend(prompt)
+            elif isinstance(prompt, str):
+                captured_prompts.append(prompt)
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        assert any("Legacy root handoff content." in p for p in captured_prompts)
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
     def test_review_to_dev_handoff_used_on_request_changes(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -3712,7 +3776,9 @@ class TestCoordinatorDevNotes:
 class TestCoordinatorDevHandoffValidation:
     """Test that coordinator validates structured dev handoff after gate passes."""
 
-    def _make_structured_handoff(self, workspace: Path, dev_notes: str) -> None:
+    def _make_structured_handoff(
+        self, workspace: Path, dev_notes: str, handoff_file: str = "handoff.yaml"
+    ) -> None:
         """Write handoff.yaml with structured dev_notes."""
         handoff = {
             "gate_decision": "PASS",
@@ -3720,7 +3786,9 @@ class TestCoordinatorDevHandoffValidation:
             "scope_completed": ["test item"],
             "dev_notes": dev_notes,
         }
-        (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+        handoff_path = workspace / handoff_file
+        handoff_path.parent.mkdir(parents=True, exist_ok=True)
+        handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -3900,7 +3968,13 @@ class TestCoordinatorDevHandoffValidation:
     @patch("theforge.coord_util._run_shell")
     def test_missing_dev_notes_triggers_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """PASS gate with no dev_notes triggers the handoff retry path."""
-        config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            validation=dataclasses.replace(
+                _make_config(tmp_path).validation,
+                handoff_file=".forge/handoff.yaml",
+            ),
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -3925,7 +3999,9 @@ class TestCoordinatorDevHandoffValidation:
                 "validation": {"make_fmt": {"status": "PASS"}},
                 "scope_completed": ["test item"],
             }
-            (ws / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+            handoff_path = ws / ".forge" / "handoff.yaml"
+            handoff_path.parent.mkdir(parents=True, exist_ok=True)
+            handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -3942,6 +4018,7 @@ class TestCoordinatorDevHandoffValidation:
         mock_shell.side_effect = shell_side_effect
 
         call_idx = {"n": 0}
+        captured_fix_prompts: list[str] = []
 
         def agent_side_effect(**kwargs):
             call_idx["n"] += 1
@@ -3951,7 +4028,8 @@ class TestCoordinatorDevHandoffValidation:
                 # dev agent
                 return _make_agent_result(success=True, output="Implemented.")
             # handoff fix agent — write valid handoff with dev_notes
-            self._make_structured_handoff(workspace, good_notes)
+            captured_fix_prompts.append(kwargs.get("prompt", ""))
+            self._make_structured_handoff(workspace, good_notes, ".forge/handoff.yaml")
             return _make_agent_result(success=True, output="Fixed handoff.")
 
         mock_agent.side_effect = agent_side_effect
@@ -3964,6 +4042,12 @@ class TestCoordinatorDevHandoffValidation:
         assert result.success is True
         # preflight + dev + handoff fix = 3 agent calls
         assert call_idx["n"] == 3
+        assert any(".forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
+        assert any(
+            "dev_notes field is missing or blank in .forge/handoff.yaml" in prompt
+            for prompt in captured_fix_prompts
+        )
+        assert any("git add .forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
 
 
 # ── _has_persistent_p1 unit tests ────────────────────────────────────
@@ -5722,8 +5806,10 @@ class TestFromPhaseSkip:
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
-        # Put forge_plan.md so the coordinator doesn't complain
-        (workspace / "forge_plan.md").write_text("# Plan\n- step 1", encoding="utf-8")
+        # Put .forge/plan.md so the coordinator doesn't complain
+        plan_path = workspace / ".forge" / "plan.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text("# Plan\n- step 1", encoding="utf-8")
 
         def shell_side(cmd, cwd=None, **kw):
             if "rev-parse --abbrev-ref HEAD" in cmd:
@@ -5755,7 +5841,9 @@ class TestFromPhaseSkip:
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
-        (workspace / "forge_plan.md").write_text("# Plan\n", encoding="utf-8")
+        plan_path = workspace / ".forge" / "plan.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text("# Plan\n", encoding="utf-8")
 
         def shell_side(cmd, cwd=None, **kw):
             if "rev-parse --abbrev-ref HEAD" in cmd:

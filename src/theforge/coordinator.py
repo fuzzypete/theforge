@@ -44,6 +44,7 @@ from pathlib import Path
 import yaml
 
 from . import coord_util as _cu
+from .artifacts import PLAN_PATH, ensure_parent_dir, resolve_handoff_path, resolve_plan_path
 from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
 from .coord_audit import has_review_approve
 from .coord_gate import (  # noqa: F401
@@ -413,21 +414,21 @@ def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
 
 
 def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
-    """Read the handoff.yaml content as text for the reviewer."""
+    """Read the configured handoff content as text for the reviewer."""
     if not config.validation.handoff_file:
         return "(exit-code gate mode — no handoff file)"
-    handoff_path = workspace_path / config.validation.handoff_file
-    if handoff_path.exists():
+    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
+    if handoff_path is not None and handoff_path.exists():
         return handoff_path.read_text(encoding="utf-8")
-    return "(handoff.yaml not found)"
+    return f"({config.validation.handoff_file} not found)"
 
 
 def _get_raw_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
-    """Extract raw dev_notes string from handoff.yaml, or None if absent."""
+    """Extract raw dev_notes from the configured handoff file, or None if absent."""
     if not config.validation.handoff_file:
         return None
-    handoff_path = workspace_path / config.validation.handoff_file
-    if not handoff_path.exists():
+    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
+    if handoff_path is None or not handoff_path.exists():
         return None
     try:
         import yaml
@@ -444,7 +445,7 @@ def _get_raw_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
 
 
 def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff | None:
-    """Parse and validate the dev handoff from handoff.yaml.
+    """Parse and validate the dev handoff from the configured handoff file.
 
     Returns None only when there's no handoff file at all (exit-code gate mode).
     Returns DevHandoff with parse_errors when dev_notes is missing/blank or
@@ -452,11 +453,15 @@ def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff 
     """
     if not config.validation.handoff_file:
         return None
-    handoff_path = workspace_path / config.validation.handoff_file
-    if not handoff_path.exists():
+    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
+    if handoff_path is None or not handoff_path.exists():
         return None
     raw = _get_raw_dev_notes(config, workspace_path)
     if raw is None:
+        try:
+            handoff_label = str(handoff_path.relative_to(workspace_path))
+        except ValueError:
+            handoff_label = str(handoff_path)
         return DevHandoff(
             summary="",
             commits=[],
@@ -464,14 +469,14 @@ def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff 
             story_deviations=[],
             deferred_items=[],
             gate_result="",
-            parse_errors=["dev_notes field is missing or blank in handoff.yaml"],
+            parse_errors=[f"dev_notes field is missing or blank in {handoff_label}"],
             raw={},
         )
     return parse_dev_handoff(raw)
 
 
 def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
-    """Extract dev_notes from handoff.yaml as structured reviewer text.
+    """Extract dev_notes from the configured handoff file as reviewer text.
 
     If the dev handoff is valid structured YAML, formats it as structured
     markdown sections. Falls back to raw text if parsing fails.
@@ -1112,6 +1117,7 @@ def _coordinator_loop(
                     workspace_path=workspace_path,
                     branch_name=branch_name,
                     validation_errors=_handoff.parse_errors,
+                    handoff_file=config.validation.handoff_file,
                 )
                 _hf_result = run_agent(
                     prompt=_hf_prompt,
@@ -1139,8 +1145,8 @@ def _coordinator_loop(
         # ── Persist handoff to logs ────────────────────────────
         if config.validation.handoff_file and state.log_dir is not None:
             try:
-                _hf_src = workspace_path / config.validation.handoff_file
-                if _hf_src.exists():
+                _hf_src = resolve_handoff_path(workspace_path, config.validation.handoff_file)
+                if _hf_src is not None and _hf_src.exists():
                     _hf_dest = state.log_dir / f"handoff-iter-{state.dev_iteration}.yaml"
                     _hf_dest.write_bytes(_hf_src.read_bytes())
             except Exception:
@@ -1347,7 +1353,9 @@ def run_task(
         # ── Plan injection (--plan) ─────────────────────────────────
         if plan_path is not None:
             plan_text = plan_path.read_text(encoding="utf-8")
-            (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+            worktree_plan_path = workspace_path / PLAN_PATH
+            ensure_parent_dir(worktree_plan_path)
+            worktree_plan_path.write_text(plan_text, encoding="utf-8")
             state.plan_output = plan_text
             state.plan_structured = parse_plan_output(plan_text)
             _log(f"  ✓ PLAN   (injected from {plan_path.name})")
@@ -1770,7 +1778,9 @@ def run_task(
 
             if plan_result.success:
                 plan_text = plan_result.output
-                (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+                worktree_plan_path = workspace_path / PLAN_PATH
+                ensure_parent_dir(worktree_plan_path)
+                worktree_plan_path.write_text(plan_text, encoding="utf-8")
                 state.plan_output = plan_text
                 state.plan_structured = parse_plan_output(plan_text)
                 _log(
@@ -1924,7 +1934,7 @@ def run_task(
                             # Commit the approved plan so it's preserved in git history
                             try:
                                 _cu._run_shell(
-                                    ["git", "add", "forge_plan.md"],
+                                    ["git", "add", str(PLAN_PATH)],
                                     cwd=workspace_path,
                                 )
                                 _cu._run_shell(
@@ -1937,9 +1947,9 @@ def run_task(
                                     ],
                                     cwd=workspace_path,
                                 )
-                                _log("  ✓ PLAN   committed forge_plan.md")
+                                _log(f"  ✓ PLAN   committed {PLAN_PATH}")
                             except Exception as _commit_err:
-                                _log(f"  ⚠ PLAN   could not commit forge_plan.md: {_commit_err}")
+                                _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
                             # Save approved plan snapshot to story log dir
                             _write_log_artifact(state.log_dir, "plan.md", plan_text)
                             # Write plan-review artifacts per reviewer
@@ -2106,7 +2116,9 @@ def run_task(
                             )
 
                         plan_text = plan_result.output
-                        (workspace_path / "forge_plan.md").write_text(plan_text, encoding="utf-8")
+                        worktree_plan_path = workspace_path / PLAN_PATH
+                        ensure_parent_dir(worktree_plan_path)
+                        worktree_plan_path.write_text(plan_text, encoding="utf-8")
                         state.plan_output = plan_text
                         state.plan_structured = parse_plan_output(plan_text)
                         _log(
@@ -2118,7 +2130,7 @@ def run_task(
                     for _ in range(config.retry.max_plan_regen_attempts + 1):
                         state.phase = Phase.PLAN_REVIEW
                         _log_phase(state.phase, "waiting for human decision...")
-                        _log(f"  Plan written to: {workspace_path / 'forge_plan.md'}")
+                        _log(f"  Plan written to: {workspace_path / PLAN_PATH}")
 
                         _pr_start = time.monotonic()
                         if _is_pending_file_mode(notify, config):
@@ -2139,12 +2151,13 @@ def run_task(
 
                         if plan_review_decision == "approve":
                             try:
-                                updated = (workspace_path / "forge_plan.md").read_text(
+                                updated = resolve_plan_path(workspace_path).read_text(
                                     encoding="utf-8"
                                 )
                             except (OSError, UnicodeDecodeError) as exc:
                                 state.phase = Phase.ESCALATE
-                                state.error = f"forge_plan.md unreadable after edit: {exc}"
+                                plan_path = resolve_plan_path(workspace_path)
+                                state.error = f"{plan_path} unreadable after edit: {exc}"
                                 _log(f"  ✗ PLAN_REVIEW   {state.error}")
                                 _escalate_notify(task, state, notify, config)
                                 return CoordinatorResult(
@@ -2164,7 +2177,7 @@ def run_task(
                             # Commit the approved plan so it's preserved in git history
                             try:
                                 _cu._run_shell(
-                                    ["git", "add", "forge_plan.md"],
+                                    ["git", "add", str(PLAN_PATH)],
                                     cwd=workspace_path,
                                 )
                                 _cu._run_shell(
@@ -2177,9 +2190,9 @@ def run_task(
                                     ],
                                     cwd=workspace_path,
                                 )
-                                _log("  ✓ PLAN   committed forge_plan.md")
+                                _log(f"  ✓ PLAN   committed {PLAN_PATH}")
                             except Exception as _commit_err:
-                                _log(f"  ⚠ PLAN   could not commit forge_plan.md: {_commit_err}")
+                                _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
                             # Save approved plan snapshot to story log dir
                             _write_log_artifact(state.log_dir, "plan.md", plan_text)
                             break
@@ -2237,9 +2250,9 @@ def run_task(
                                 )
 
                             plan_text = plan_result.output
-                            (workspace_path / "forge_plan.md").write_text(
-                                plan_text, encoding="utf-8"
-                            )
+                            worktree_plan_path = workspace_path / PLAN_PATH
+                            ensure_parent_dir(worktree_plan_path)
+                            worktree_plan_path.write_text(plan_text, encoding="utf-8")
                             state.plan_output = plan_text
                             state.plan_structured = parse_plan_output(plan_text)
                             _log(

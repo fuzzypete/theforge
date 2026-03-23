@@ -21,6 +21,13 @@ from pathlib import Path
 
 import yaml
 
+from .artifacts import (
+    AUDIT_PATH,
+    PLAN_PATH,
+    ensure_parent_dir,
+    resolve_handoff_path,
+    resolve_plan_path,
+)
 from .config import PROVIDER_API_KEY_MAP, ForgeConfig, generate_default_config, load_config
 from .coord_state import parse_phase_name
 from .coordinator import (
@@ -112,7 +119,7 @@ def _append_history(audits_dir: Path, record: dict) -> None:
 
 
 def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec) -> Path:
-    """Write the audit log to .forge/audits/forge_audit.yaml and worktree."""
+    """Write the audit log to .forge/audits/forge_audit.yaml and .forge/audit.yaml."""
     audit = generate_audit_log(config, task, result)
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
@@ -125,7 +132,8 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec)
     # Skip for ALREADY_DONE — no real work was done, worktree is just a checkout.
     already_done = result.state.preflight_verdict == "ALREADY_DONE"
     if not already_done and result.state.workspace_path and result.state.workspace_path.exists():
-        worktree_audit_path = result.state.workspace_path / "forge_audit.yaml"
+        worktree_audit_path = result.state.workspace_path / AUDIT_PATH
+        ensure_parent_dir(worktree_audit_path)
         with open(worktree_audit_path, "w", encoding="utf-8") as f:
             yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Copy to durable per-story log dir (survives worktree cleanup)
@@ -540,11 +548,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             return 1
 
         if start_phase == Phase.DEV and plan_path is None:
-            # forge_plan.md must exist in worktree (or --plan provided)
-            plan_in_wt = expected_wt / "forge_plan.md"
+            # .forge/plan.md must exist in worktree (legacy forge_plan.md also accepted)
+            plan_in_wt = resolve_plan_path(expected_wt)
             if not plan_in_wt.exists():
+                legacy_plan_in_wt = expected_wt / "forge_plan.md"
                 print(
-                    f"✗ --from dev: forge_plan.md not found in worktree ({plan_in_wt}). "
+                    "✗ --from dev: plan file not found in worktree "
+                    f"({expected_wt / PLAN_PATH}; "
+                    f"legacy fallback: {legacy_plan_in_wt}). "
                     "Provide --plan <file> to inject a plan.",
                     file=sys.stderr,
                 )
@@ -552,10 +563,13 @@ def cmd_run(args: argparse.Namespace) -> int:
 
         if start_phase == Phase.REVIEW:
             # Dev handoff must exist
-            handoff_in_wt = expected_wt / "handoff.yaml"
-            if not handoff_in_wt.exists():
+            handoff_in_wt = resolve_handoff_path(expected_wt, config.validation.handoff_file)
+            if handoff_in_wt is None or not handoff_in_wt.exists():
+                legacy_handoff_in_wt = expected_wt / "handoff.yaml"
                 print(
-                    f"✗ --from review: handoff.yaml not found in worktree ({handoff_in_wt}). "
+                    "✗ --from review: handoff file not found in worktree "
+                    f"({expected_wt / config.validation.handoff_file}; "
+                    f"legacy fallback: {legacy_handoff_in_wt}). "
                     "Run dev + validate first.",
                     file=sys.stderr,
                 )

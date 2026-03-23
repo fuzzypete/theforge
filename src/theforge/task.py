@@ -766,11 +766,12 @@ def build_handoff_fix_prompt(
     workspace_path: Path,
     branch_name: str,
     validation_errors: list[str],
+    handoff_file: str = "handoff.yaml",
 ) -> str:
     """Build a focused prompt to fix dev handoff formatting.
 
-    Used when the gate passed but the dev_notes field in handoff.yaml
-    doesn't conform to the required YAML schema. The agent only needs
+    Used when the gate passed but the dev_notes field in the configured handoff
+    file doesn't conform to the required YAML schema. The agent only needs
     to rewrite dev_notes — not re-implement anything.
     """
     error_list = "\n".join(f"- {e}" for e in validation_errors)
@@ -787,7 +788,7 @@ def build_handoff_fix_prompt(
         ## Problem
 
         Your implementation passed the gate, but the `dev_notes` field in
-        `handoff.yaml` does not conform to the required structure.
+        `{handoff_file}` does not conform to the required structure.
 
         **Validation errors:**
 
@@ -795,7 +796,7 @@ def build_handoff_fix_prompt(
 
         ## Required Format
 
-        The `dev_notes` field in `handoff.yaml` must contain valid YAML with
+        The `dev_notes` field in `{handoff_file}` must contain valid YAML with
         this exact structure:
 
         ```yaml
@@ -824,11 +825,11 @@ def build_handoff_fix_prompt(
 
         ## Your Task
 
-        1. Open `handoff.yaml` and fix ONLY the `dev_notes` field.
+        1. Open `{handoff_file}` and fix ONLY the `dev_notes` field.
         2. Do NOT change any code. Do NOT re-run the gate.
         3. Commit the fix:
            ```bash
-           git add handoff.yaml
+           git add {handoff_file}
            git commit -m "fix({task.slug}): rewrite dev handoff to match schema"
            ```
     """)
@@ -1130,7 +1131,7 @@ def build_review_prompt(
     The reviewer receives:
     - The commit log (git log main..HEAD) as the primary handoff artifact
     - The spec (to verify compliance)
-    - The handoff.yaml (to cross-check validation claims)
+    - The handoff file (to cross-check validation claims)
     - Instructions to use Read/Bash/Glob/Grep tools to inspect actual source
 
     This mirrors a PR review workflow: reviewers discover files from commits,
