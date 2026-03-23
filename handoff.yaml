@@ -1,75 +1,38 @@
 dev_notes: |
-  summary: >
-    Implemented plan model escalation on repeated plan review rejection, mirroring
-    the existing dev model escalation pattern. Added plan_escalation_threshold
-    (default: 2) to RetryPolicy in config.py, plan_escalated and plan_escalation_note
-    fields to CoordinatorState, and the escalation block in coordinator.py's plan
-    regen loop. After N consecutive rejections the coordinator promotes the planner
-    model via _escalate_dev_model (reused from the dev path) and injects an
-    escalation note with prior rejection findings into the regen prompt. Guards for
-    smart_config_models=None (classic config) and no higher tier available are in
-    place. The P2 advisory about the second regen path was assessed and intentionally
-    left out of scope — that path is a timeout/advisory-resume regen, not a rejection
-    loop, so escalation there would misfire.
-
+  summary: "Implemented plan model escalation on repeated plan review rejection, mirroring the existing dev model escalation pattern. Added plan_escalation_threshold (default: 2) to RetryPolicy in config.py, plan_escalated and plan_escalation_note fields to CoordinatorState, and an escalation block in coordinator.py's plan regen loop. After N consecutive rejections the coordinator promotes the planner model via _escalate_dev_model (reused from the dev path), sets state flags, emits telemetry, and injects an escalation note with prior rejection findings into the regen prompt. Guards for smart_config_models=None (classic config) and no higher tier available are in place."
   commits:
     - sha: "c8895f3"
       message: "feat(plan): escalate planner model after N consecutive plan review rejections"
-
+    - sha: "c7636c0"
+      message: "chore: write dev handoff for plan-escalation story"
   acceptance_criteria:
     - criterion: "After N consecutive plan rejections, planner model is escalated to next tier"
       status: MET
-      notes: >
-        At plan_regen_count >= plan_escalation_threshold and not plan_escalated,
-        _escalate_dev_model finds the next tier and plan_profile is replaced.
-
+      notes: "At plan_regen_count >= plan_escalation_threshold and not plan_escalated, _escalate_dev_model finds the next tier and plan_profile is replaced."
     - criterion: "Escalation threshold is configurable (default: 2 rejections)"
       status: MET
       notes: "RetryPolicy.plan_escalation_threshold: int = 2 added to config.py."
-
     - criterion: "Escalation note injected into planner prompt ('previous plan was rejected N times, key findings: ...')"
       status: MET
-      notes: >
-        plan_escalation_note built with count and findings_text; appended to
-        regen_prompt under '## Model Escalation' section.
-
+      notes: "plan_escalation_note built with count and findings_text; appended to regen_prompt under '## Model Escalation' section."
     - criterion: "Plan review findings from prior attempts are passed to the upgraded planner"
       status: MET
-      notes: >
-        findings_text included in plan_escalation_note and in the existing
-        '## Previous Plan Review Findings' section of regen_prompt.
-
+      notes: "findings_text included in plan_escalation_note and in the existing '## Previous Plan Review Findings' section of regen_prompt."
     - criterion: "If no higher tier is available, continue with current model"
       status: MET
-      notes: >
-        When _escalate_dev_model returns None or smart_config_models is None,
-        the block is skipped and the loop continues with the current plan_profile.
-
+      notes: "When _escalate_dev_model returns None or smart_config_models is None, the block is skipped and the loop continues with the current plan_profile."
     - criterion: "Escalation is logged in telemetry"
       status: MET
-      notes: >
-        logger._safe_emit("plan_model_escalate", from_model=..., to_model=...,
-        rejections=...) emitted on successful escalation.
-
+      notes: "logger._safe_emit('plan_model_escalate', from_model=..., to_model=..., rejections=...) emitted on successful escalation."
     - criterion: "All existing tests pass"
       status: MET
       notes: "1377 tests pass (pytest -q)."
-
     - criterion: "New test: 2 plan rejections trigger model escalation"
       status: MET
-      notes: >
-        test_plan_model_escalation_on_repeated_rejection asserts plan_escalated=True,
-        regen_count=2, escalation note present, 3rd run_agent call uses opus,
-        and regen prompt contains 'MODEL ESCALATION'.
-
+      notes: "test_plan_model_escalation_on_repeated_rejection asserts plan_escalated=True, regen_count=2, escalation note present, 3rd run_agent call uses opus, and regen prompt contains 'MODEL ESCALATION'."
   story_deviations: none
-
   deferred_items:
-    - item: "Escalation in the agent-review-phase regen path (~line 2127)"
-      reason: >
-        That path handles advisory/timeout mode regen, not a rejection loop.
-        Escalation there would fire on first timeout-resume, not on repeated
-        rejection. Out of scope per P2 plan reviewer advisory.
-
+    - description: "Escalation in the agent-review-phase regen path (~line 2127)"
+      reason: "That path handles advisory/timeout mode regen, not a rejection loop. Escalation there would fire on first timeout-resume, not on repeated rejection. Out of scope per P2 plan reviewer advisory."
   gate_result: PASS
 gate_decision: PASS
