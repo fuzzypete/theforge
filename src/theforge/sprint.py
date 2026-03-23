@@ -17,6 +17,7 @@ from pathlib import Path
 
 import yaml
 
+from .artifacts import AUDIT_PATH, ensure_parent_dir
 from .config import ForgeConfig
 from .coord_audit import has_review_approve
 from .coord_workspace import _merge_branch
@@ -864,7 +865,8 @@ def run_sprint(
                 )
                 if workspace_path.exists():
                     audit_data = generate_audit_log(config, task, result)
-                    audit_path = workspace_path / "forge_audit.yaml"
+                    audit_path = workspace_path / AUDIT_PATH
+                    ensure_parent_dir(audit_path)
                     with open(audit_path, "w", encoding="utf-8") as f:
                         yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
                     _log(f"Per-story audit written: {audit_path}")

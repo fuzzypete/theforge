@@ -14,17 +14,18 @@ lint:
 test:
 	PYTHONPATH=src python -m pytest tests/ -v
 
-# Gate: run tests and write handoff.yaml
+# Gate: run tests and write .forge/handoff.yaml
 gate:
-	@PYTHONPATH=src python -m pytest tests/ -q && \
+	@mkdir -p .forge && \
+	PYTHONPATH=src python -m pytest tests/ -q && \
 	python -c "\
 import yaml, pathlib; \
-pathlib.Path('handoff.yaml').write_text(yaml.dump({'gate_decision': 'PASS', 'scope_completed': [], 'deferred_followups': [], 'next_recommended_step': 'merge'})); \
+pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'PASS', 'scope_completed': [], 'deferred_followups': [], 'next_recommended_step': 'merge'})); \
 print('[gate] PASS')" || \
 	python -c "\
 import yaml, pathlib; \
-pathlib.Path('handoff.yaml').write_text(yaml.dump({'gate_decision': 'FAIL', 'scope_completed': [], 'deferred_followups': ['fix test failures'], 'next_recommended_step': 'fix failing tests'})); \
+pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'FAIL', 'scope_completed': [], 'deferred_followups': ['fix test failures'], 'next_recommended_step': 'fix failing tests'})); \
 print('[gate] FAIL')"
 
 clean:
-	rm -rf .forge/worktrees/ handoff.yaml forge_audit.yaml
+	rm -rf .forge/worktrees/ .forge/handoff.yaml .forge/audit.yaml

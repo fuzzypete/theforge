@@ -805,7 +805,7 @@ class TestCampaignAuditWrites:
 
     @patch("theforge.sprint.run_task")
     def test_campaign_writes_worktree_audit(self, mock_run_task, tmp_path):
-        """After run_sprint(), the spec worktree contains forge_audit.yaml."""
+        """After run_sprint(), the spec worktree contains .forge/audit.yaml."""
         from theforge.sprint import run_sprint
 
         config = _make_config(tmp_path)
@@ -824,8 +824,8 @@ class TestCampaignAuditWrites:
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
         run_sprint(config, manifest_path)
 
-        audit_path = workspace / "forge_audit.yaml"
-        assert audit_path.exists(), "forge_audit.yaml not written to worktree"
+        audit_path = workspace / ".forge" / "audit.yaml"
+        assert audit_path.exists(), ".forge/audit.yaml not written to worktree"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
         assert "reviews" in audit
         assert len(audit["reviews"]) == 1
@@ -893,6 +893,6 @@ class TestCampaignAuditWrites:
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
         run_sprint(config, manifest_path)
 
-        # No workspace dir → no forge_audit.yaml written there
+        # No workspace dir → no .forge/audit.yaml written there
         workspace = tmp_path / "done-spec"
-        assert not workspace.exists() or not (workspace / "forge_audit.yaml").exists()
+        assert not workspace.exists() or not (workspace / ".forge" / "audit.yaml").exists()

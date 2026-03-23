@@ -1030,6 +1030,18 @@ class TestBuildHandoffFixPrompt:
         assert "Do NOT change any code" in prompt
         assert "Do NOT re-run the gate" in prompt
 
+    def test_uses_configured_handoff_file(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_handoff_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            validation_errors=["error"],
+            handoff_file=".forge/handoff.yaml",
+        )
+        assert ".forge/handoff.yaml" in prompt
+        assert "git add .forge/handoff.yaml" in prompt
+
 
 # ── build_dev_prompt structured dev_notes ─────────────────────────────
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from . import coord_util as _cu
+from .artifacts import ensure_parent_dir, resolve_handoff_path
 from .config import ForgeConfig
 from .task import TaskStory as TaskSpec  # noqa: F401
 from .traces import write_trace
@@ -69,9 +70,9 @@ def _read_gate_decision(
     config: ForgeConfig, workspace_path: Path
 ) -> tuple[str | None, str | None]:
     """Read gate decision from handoff.yaml. Returns (decision, error)."""
-    handoff_path = workspace_path / config.validation.handoff_file
-    if not handoff_path.exists():
-        return None, f"handoff file not found: {handoff_path}"
+    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
+    if handoff_path is None or not handoff_path.exists():
+        return None, (f"handoff file not found: {workspace_path / config.validation.handoff_file}")
 
     try:
         with open(handoff_path, encoding="utf-8") as f:
@@ -83,10 +84,11 @@ def _read_gate_decision(
 
     decision = data.get(config.validation.gate_decision_key)
     if decision is None:
-        return None, (
-            f"Key {config.validation.gate_decision_key!r} not found in "
-            f"{config.validation.handoff_file}"
-        )
+        try:
+            handoff_label = str(handoff_path.relative_to(workspace_path))
+        except ValueError:
+            handoff_label = str(handoff_path)
+        return None, (f"Key {config.validation.gate_decision_key!r} not found in {handoff_label}")
 
     return str(decision).upper(), None
 
@@ -103,10 +105,13 @@ def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: st
             if isinstance(loaded, dict):
                 data = loaded
         data[config.validation.gate_decision_key] = decision
+        ensure_parent_dir(handoff_path)
         with open(handoff_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
     except (OSError, yaml.YAMLError) as e:
-        _cu._log(f"Warning: could not write gate_decision to handoff.yaml: {e}")
+        _cu._log(
+            f"Warning: could not write gate_decision to {config.validation.handoff_file}: {e}"
+        )
 
 
 def _run_gate_full(

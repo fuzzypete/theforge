@@ -28,8 +28,6 @@ htmlcov/
 !.forge/hooks/
 !.forge/hooks/**
 # Legacy root-level artifacts (ignore if leftover)
-forge_plan.md
-forge_audit.yaml
 forge_ideation_audit.yaml
 sprint-audit.yaml
 campaign-audit.yaml
@@ -47,4 +45,3 @@ MagicMock/
 # OS
 .DS_Store
 .forge/.env
-handoff.yaml

@@ -4,9 +4,11 @@ Covers: stale handoff cleanup, dirty worktree detection, exit-code gate mode,
 pytest_target substitution, spec-level gate overrides, and fix prompt routing.
 """
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from coord_test_helpers import (
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
@@ -31,6 +33,7 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
+from theforge.coord_gate import _read_gate_decision
 from theforge.coord_state import CoordinatorState
 from theforge.coordinator import Phase, run_from_review, run_task
 from theforge.task import TaskStory
@@ -152,6 +155,49 @@ class TestCoordinatorStaleHandoff:
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert "Gate" in result.message or "gate" in result.message
+
+
+class TestGateDecisionFallback:
+    def test_prefers_configured_handoff_path(self, tmp_path):
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            validation=dataclasses.replace(
+                _make_config(tmp_path).validation,
+                handoff_file=".forge/handoff.yaml",
+            ),
+        )
+        workspace = tmp_path / "test-task"
+        (workspace / ".forge").mkdir(parents=True)
+        (workspace / ".forge" / "handoff.yaml").write_text(
+            yaml.dump({"gate_decision": "PASS"}), encoding="utf-8"
+        )
+        (workspace / "handoff.yaml").write_text(
+            yaml.dump({"gate_decision": "FAIL"}), encoding="utf-8"
+        )
+
+        decision, error = _read_gate_decision(config, workspace)
+
+        assert error is None
+        assert decision == "PASS"
+
+    def test_falls_back_to_legacy_root_handoff(self, tmp_path):
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            validation=dataclasses.replace(
+                _make_config(tmp_path).validation,
+                handoff_file=".forge/handoff.yaml",
+            ),
+        )
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        (workspace / "handoff.yaml").write_text(
+            yaml.dump({"gate_decision": "PASS"}), encoding="utf-8"
+        )
+
+        decision, error = _read_gate_decision(config, workspace)
+
+        assert error is None
+        assert decision == "PASS"
 
 
 # ── Dirty worktree tests ─────────────────────────────────────────────

@@ -131,15 +131,19 @@ _VALID_DEV_NOTES = (
 )
 
 
-def _write_handoff(workspace: Path, decision: str = "PASS") -> None:
-    """Write a minimal handoff.yaml in the workspace with valid dev_notes."""
+def _write_handoff(
+    workspace: Path, decision: str = "PASS", handoff_file: str = "handoff.yaml"
+) -> None:
+    """Write a minimal handoff file in the workspace with valid dev_notes."""
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
         "dev_notes": _VALID_DEV_NOTES,
     }
-    (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+    handoff_path = workspace / handoff_file
+    handoff_path.parent.mkdir(parents=True, exist_ok=True)
+    handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
 
 
 # Stale-worktree detection commands need specific responses so that pre-created

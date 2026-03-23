@@ -1,8 +1,8 @@
 """Dev handoff: parse and validate structured dev→reviewer handoff.
 
-The dev agent writes structured YAML into the dev_notes field of handoff.yaml.
-This module extracts, validates, and converts that data into structured content
-the reviewer can act on — mirroring review.py for the review→dev direction.
+The dev agent writes structured YAML into the dev_notes field of the handoff
+file. This module extracts, validates, and converts that data into structured
+content the reviewer can act on, mirroring review.py for review→dev handoff.
 """
 
 from __future__ import annotations

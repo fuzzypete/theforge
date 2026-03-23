@@ -1027,8 +1027,8 @@ class TestPlanPhase:
         # plan_output is stored on state
         assert result.state.plan_output is not None
         assert "Implementation Plan" in result.state.plan_output
-        # forge_plan.md written to workspace
-        assert (workspace / "forge_plan.md").exists()
+        # .forge/plan.md written to workspace
+        assert (workspace / ".forge" / "plan.md").exists()
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -1065,7 +1065,7 @@ class TestPlanPhase:
         # PREFLIGHT + DEV only (no PLAN) = 2 run_agent calls
         assert mock_agent.call_count == 2
         assert result.state.plan_output is None
-        assert not (workspace / "forge_plan.md").exists()
+        assert not (workspace / ".forge" / "plan.md").exists()
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -1294,7 +1294,7 @@ class TestPlanPhase:
         assert mock_agent.call_count == 2
         assert result.state.plan_output == plan_content
         assert result.state.plan_results == []
-        assert (workspace / "forge_plan.md").read_text(encoding="utf-8") == plan_content
+        assert (workspace / ".forge" / "plan.md").read_text(encoding="utf-8") == plan_content
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
