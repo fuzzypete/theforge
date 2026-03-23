@@ -158,16 +158,23 @@ class TestDaemonizeRun:
             patch("theforge.detach.os.waitpid"),
             patch("theforge.detach.os.devnull", "/dev/null"),
             patch("theforge.detach.write_pid") as mock_write_pid,
-            patch("builtins.open", return_value=MagicMock(
-                __enter__=lambda s: mock_fd,
-                __exit__=MagicMock(return_value=False),
-                fileno=lambda: 99,
-                write=MagicMock(),
-                flush=MagicMock(),
-            )),
+            patch(
+                "builtins.open",
+                return_value=MagicMock(
+                    __enter__=lambda s: mock_fd,
+                    __exit__=MagicMock(return_value=False),
+                    fileno=lambda: 99,
+                    write=MagicMock(),
+                    flush=MagicMock(),
+                ),
+            ),
             patch.object(sys, "stdin", MagicMock(fileno=MagicMock(return_value=0))),
-            patch.object(sys, "stdout", MagicMock(fileno=MagicMock(return_value=1), flush=MagicMock())),
-            patch.object(sys, "stderr", MagicMock(fileno=MagicMock(return_value=2), flush=MagicMock())),
+            patch.object(
+                sys, "stdout", MagicMock(fileno=MagicMock(return_value=1), flush=MagicMock())
+            ),
+            patch.object(
+                sys, "stderr", MagicMock(fileno=MagicMock(return_value=2), flush=MagicMock())
+            ),
         ):
             # The second fork also returns 0 — grandchild path
             detach.daemonize_run("run123", "my-slug", tmp_path)
