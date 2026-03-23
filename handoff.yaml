@@ -1,0 +1,23 @@
+dev_notes: "summary: \"Added --plan-model CLI flag to forge run, mirroring --dev-model.\
+  \ Implemented\n  _apply_plan_model_override in cli.py which accepts 'model' or 'provider/model'\
+  \ format\n  and applies dataclasses.replace on config.plan to set model_name. Wired\
+  \ it into cmd_run\n  after the dev-model override block. Added --plan-model argument\
+  \ to the run_parser. Added\n  TestApplyPlanModelOverride test class with four tests\
+  \ covering short model name, provider/model\n  format, no-op when flag absent, and\
+  \ preservation of other plan fields.\"\ncommits:\n  - sha: \"4c66b4b\"\n    message:\
+  \ \"feat(cli): add --plan-model CLI override for runtime planner selection\"\nacceptance_criteria:\n\
+  \  - criterion: \"--plan-model opus overrides the plan agent model\"\n    status:\
+  \ MET\n    notes: \"_apply_plan_model_override sets plan.model_name='opus'; applied\
+  \ in cmd_run when args.plan_model is set\"\n  - criterion: \"--plan-model provider/model\
+  \ works like --dev-model format\"\n    status: MET\n    notes: \"spec with '/' splits\
+  \ on first slash; model portion set as model_name (e.g. 'anthropic/claude-opus-4-6'\
+  \ → model_name='claude-opus-4-6')\"\n  - criterion: \"Original plan config preserved\
+  \ when flag not used\"\n    status: MET\n    notes: \"Override only applied when\
+  \ getattr(args, 'plan_model', None) is truthy; tested in test_original_plan_config_preserved_when_flag_absent\"\
+  \n  - criterion: \"Works with forge run (not needed for forge sprint)\"\n    status:\
+  \ MET\n    notes: \"--plan-model added only to run_parser, not sprint_parser\"\n\
+  \  - criterion: \"All existing tests pass\"\n    status: MET\n    notes: \"1376\
+  \ tests pass\"\n  - criterion: \"New test for the override application\"\n    status:\
+  \ MET\n    notes: \"TestApplyPlanModelOverride class with 4 tests added to tests/test_cli.py\"\
+  \nstory_deviations: none\ndeferred_items: none\ngate_result: PASS\n"
+gate_decision: PASS

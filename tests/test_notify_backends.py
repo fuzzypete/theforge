@@ -295,7 +295,6 @@ def test_escalate_notify_calls_send_notifications_when_ntfy_is_none():
     """_escalate_notify must call send_notifications for Slack backend even when ntfy is None."""
     from theforge.config import BackendConfig
     from theforge.coord_notify import _escalate_notify
-    from theforge.coord_state import CoordinatorState
 
     config = MagicMock()
     config.notifications.ntfy = None

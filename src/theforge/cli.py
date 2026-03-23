@@ -355,6 +355,25 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
     return replace(config, dev_profile=new_dev)
 
 
+def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig":
+    """Override the plan profile with a --plan-model spec.
+
+    Format: provider/model  (no @base_url — plan agents are CLI-based)
+    Examples:
+        opus
+        anthropic/claude-opus-4-6
+    """
+    from dataclasses import replace
+
+    if "/" in spec:
+        _provider, model = spec.split("/", 1)
+    else:
+        model = spec
+
+    new_plan = replace(config.plan, model_name=model)
+    return replace(config, plan=new_plan)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Execute the dev→review loop for a story file."""
     from . import detach as _detach
@@ -400,6 +419,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     # --dev-model override: provider/model@base_url
     if getattr(args, "dev_model", None):
         config = _apply_dev_model_override(config, args.dev_model)
+
+    # --plan-model override: provider/model
+    if getattr(args, "plan_model", None):
+        config = _apply_plan_model_override(config, args.plan_model)
 
     # --reviewers N: trim review pool for this run (never mutates forge.yaml)
     if getattr(args, "reviewers", None) is not None:
@@ -2003,6 +2026,13 @@ def main() -> None:
             "Override dev model. Format: provider/model@base_url. "
             "Examples: openai/qwen2.5-coder:7b@http://localhost:11434/v1, "
             "anthropic/claude-opus-4-6"
+        ),
+    )
+    run_parser.add_argument(
+        "--plan-model",
+        help=(
+            "Override plan model. Format: provider/model or model. "
+            "Examples: opus, anthropic/claude-opus-4-6"
         ),
     )
     run_parser.add_argument(

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from theforge.cli import (
     _apply_dev_model_override,
+    _apply_plan_model_override,
     _build_task,
     _ensure_gitignored,
     _find_config,
@@ -605,6 +606,36 @@ class TestApplyDevModelOverride:
         assert result.dev_profile.mode == "api"
 
 
+class TestApplyPlanModelOverride:
+    """Tests for _apply_plan_model_override."""
+
+    def _base_config(self, tmp_path: Path) -> "ForgeConfig":
+        return _make_forge_config(tmp_path)
+
+    def test_short_model_name(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_plan_model_override(cfg, "opus")
+        assert result.plan.model_name == "opus"
+
+    def test_provider_slash_model(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_plan_model_override(cfg, "anthropic/claude-opus-4-6")
+        assert result.plan.model_name == "claude-opus-4-6"
+
+    def test_original_plan_config_preserved_when_flag_absent(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        original_model_name = cfg.plan.model_name
+        # No override applied — plan config should be unchanged
+        assert cfg.plan.model_name == original_model_name
+
+    def test_other_plan_fields_unchanged(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        result = _apply_plan_model_override(cfg, "opus")
+        assert result.plan.model == cfg.plan.model
+        assert result.plan.budget_usd == cfg.plan.budget_usd
+        assert result.plan.enabled == cfg.plan.enabled
+
+
 # ── Stage-aware pipeline CLI tests ───────────────────────────────────
 
 
@@ -619,6 +650,7 @@ def _make_run_args(
     slug: str | None = None,
     resume: bool = False,
     dev_model: str | None = None,
+    plan_model: str | None = None,
     dry_run: bool = False,
     fg: bool = True,
 ) -> argparse.Namespace:
@@ -640,6 +672,7 @@ def _make_run_args(
         max_cycles=max_cycles,
         resume=resume,
         dev_model=dev_model,
+        plan_model=plan_model,
         dry_run=dry_run,
         interactive=False,
         auto_merge=False,
