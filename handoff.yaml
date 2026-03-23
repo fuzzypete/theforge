@@ -1,116 +1,60 @@
 verdict: PASS
+gate_decision: PASS
 dev_notes: |
-  summary: >
-    Implemented a file-based pending decision interface (.forge/pending/<run-id>.yaml)
-    that decouples HITL decisions from transport, added pluggable one-way notification
-    backends (terminal, ntfy, webhook), refactored all coordinator HITL gates
-    (HUMAN_REVIEW, ESCALATE, PLAN_REVIEW) to poll pending files instead of ntfy reply
-    topics, and added 'forge decide' / 'forge status' CLI commands.
-
+  summary: "Implemented a file-based pending decision interface (.forge/pending/<run-id>.yaml) that decouples HITL decisions from transport. Added pluggable one-way notification backends (terminal, ntfy, webhook). Refactored all coordinator HITL gates (HUMAN_REVIEW, ESCALATE, PLAN_REVIEW) to write a pending file, send notifications, and poll for a decision field rather than polling ntfy reply topics. Added forge decide <run-id> <action> CLI subcommand and updated forge status to list pending decisions."
   commits:
     - sha: "286954a"
       message: "feat(notification): pending-file HITL interface with pluggable backends"
-
+    - sha: "ee32740"
+      message: "chore: write dev handoff.yaml for notification-reliability"
   acceptance_criteria:
     - criterion: "Coordinator writes .forge/pending/<run-id>.yaml for HITL decisions"
       status: MET
-      notes: >
-        pending.write_pending() called in _pending_human_review, _pending_escalate_gate,
-        and _pending_plan_review before polling. Creates .forge/pending/ dir if needed.
-
+      notes: "pending.write_pending() called in _pending_human_review, _pending_escalate_gate, and _pending_plan_review before polling. Creates .forge/pending/ dir if needed."
     - criterion: "Coordinator polls pending file with configurable timeout"
       status: MET
-      notes: >
-        pending.poll_pending() polls every 2s until decision appears or
-        human_review_timeout_seconds expires. Uses monotonic clock.
-
+      notes: "pending.poll_pending() polls every 2s until decision appears or human_review_timeout_seconds expires. Uses monotonic clock."
     - criterion: "Auto-escalate on timeout expiry with log message"
       status: MET
-      notes: >
-        poll_pending returns ("timeout", None) on expiry with a log message.
-        _pending_human_review maps "timeout" to the existing timeout→escalate path.
-        _pending_escalate_gate maps timeout to "reject". _pending_plan_review
-        maps timeout to "approve" (advisory) or "abandon" (blocking).
-
+      notes: "poll_pending returns ('timeout', None) on expiry with a log message. _pending_human_review maps timeout to the existing timeout->escalate path. _pending_escalate_gate maps timeout to reject. _pending_plan_review maps timeout to approve (advisory) or abandon (blocking)."
     - criterion: "forge decide <run-id> <action> writes decision to pending file"
       status: MET
-      notes: >
-        cmd_decide() reads the pending file, validates action against options,
-        calls resolve_pending() to write decision + decided_at. Registered as
-        'decide' subcommand.
-
+      notes: "cmd_decide() reads the pending file, validates action against options, calls resolve_pending() to write decision + decided_at. Registered as decide subcommand."
     - criterion: "forge status lists pending decisions"
       status: MET
-      notes: >
-        cmd_status() calls cleanup_stale() then list_pending() and prints
-        run_id, phase, story, status, time remaining, reason, and options.
-
+      notes: "cmd_status() calls cleanup_stale() then list_pending() and prints run_id, phase, story, status, time remaining, reason, and options."
     - criterion: "Terminal notification (osascript) works as default backend"
       status: MET
-      notes: >
-        BackendConfig(type="terminal") is the default when backend: none.
-        _send_terminal() calls osascript on Darwin, notify-send on Linux.
-        notify_backends.send_notifications() dispatches to it.
-
+      notes: "BackendConfig(type=terminal) is the default when backend: none. _send_terminal() calls osascript on Darwin, notify-send on Linux. notify_backends.send_notifications() dispatches to it."
     - criterion: "ntfy still works when configured (backward compatible)"
       status: MET
-      notes: >
-        Old forge.yaml with backend: ntfy + ntfy: {url, priority} synthesises
-        a BackendConfig(type="ntfy", ...) in the backends list. _ntfy_publish and
-        all existing ntfy functions are unchanged. Old _remote_human_review path
-        is preserved as a fallback (now bypassed by _is_pending_file_mode).
-
+      notes: "Old forge.yaml with backend: ntfy + ntfy: {url, priority} synthesises a BackendConfig(type=ntfy, ...) in the backends list. _ntfy_publish and all existing ntfy functions are unchanged. Old _remote_human_review path is preserved as fallback."
     - criterion: "Webhook backend sends POST with JSON body"
       status: MET
-      notes: >
-        _send_webhook() POSTs {"title", "body", "timestamp"} as JSON with
-        Content-Type application/json and a 10s socket timeout.
-
+      notes: "_send_webhook() POSTs {title, body, timestamp} as JSON with Content-Type application/json and a 10s socket timeout."
     - criterion: "Multiple backends can be configured simultaneously"
       status: MET
-      notes: >
-        send_notifications() iterates all backends in config.notifications.backends
-        and calls each handler in sequence.
-
+      notes: "send_notifications() iterates all backends in config.notifications.backends and calls each handler in sequence."
     - criterion: "Backend failure logs warning and continues (never blocks)"
       status: MET
-      notes: >
-        Each backend call is wrapped in try/except in send_notifications().
-        Failures log a warning and the loop continues to the next backend.
-
+      notes: "Each backend call is wrapped in try/except in send_notifications(). Failures log a warning and the loop continues to the next backend."
     - criterion: "Pending files cleaned up after consumption or timeout"
       status: MET
-      notes: >
-        cleanup_pending() called in each _pending_* function after poll_pending
-        returns (whether decision or timeout). cleanup_stale() removes
-        expired files on forge status.
-
+      notes: "cleanup_pending() called in each _pending_* function after poll_pending returns. cleanup_stale() removes expired files on forge status."
     - criterion: "forge.yaml backward compatible (old ntfy config still works)"
       status: MET
-      notes: >
-        Config loader converts old backend: ntfy + ntfy: {url, priority} to
-        backends: [BackendConfig(type="ntfy", ...)]. Accepts hitl_timeout_seconds
-        as YAML alias for human_review_timeout_seconds. All existing tests pass.
-
+      notes: "Config loader converts old backend: ntfy + ntfy: {url, priority} to backends: [BackendConfig(type=ntfy, ...)]. Accepts hitl_timeout_seconds as YAML alias for human_review_timeout_seconds."
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1318 passed, 5 skipped (same as pre-change baseline)"
-
+      notes: "1318 passed, 5 skipped (same as pre-change baseline)."
   story_deviations:
-    - The reviewer flag about Python field rename (human_review_timeout_seconds) was
-      heeded: the Python field name is kept unchanged. The loader now accepts
-      hitl_timeout_seconds as a YAML alias with fallback to human_review_timeout_seconds.
-    - The reviewer flag about _is_remote_mode was addressed: _is_pending_file_mode is
-      added as the new check, which activates whenever notify=True and any backend is
-      configured (independent of ntfy). _is_remote_mode remains as fallback for
-      installations that have not yet migrated.
-    - cleanup_stale() uses timeout_at expiry as the primary staleness heuristic
-      (since pending files without decisions past timeout are stale) and PID check
-      as a secondary signal, as suggested by the reviewer.
-    - The default timeout in the loader was NOT changed from 14400 to 600 to avoid
-      a breaking behavior change for existing users. The spec example of 600 is
-      advisory; the reviewer note flagged this requires an explicit decision.
-
+    - description: "Python field human_review_timeout_seconds was not renamed to hitl_timeout_seconds"
+      justification: "Reviewer P2 flag: rename adds churn across 6 files with no value. hitl_timeout_seconds is accepted as a YAML alias in the loader with fallback to the existing key."
+    - description: "Default timeout left at 14400s (4h) rather than changed to 600s (10m)"
+      justification: "Reviewer P2 flag: changing the default would be a breaking behavior change for existing users with no explicit timeout configured. Left for an explicit decision."
+    - description: "_is_pending_file_mode added alongside _is_remote_mode rather than replacing it"
+      justification: "Reviewer P2 flag: pending-file mode now takes priority when any backend is configured. _is_remote_mode is kept as fallback for ntfy-only installations not yet migrated."
+    - description: "cleanup_stale uses timeout_at expiry as primary staleness heuristic"
+      justification: "Reviewer P2 flag: pending file schema did not include pid originally. Added pid field to schema and use timeout_at expiry as primary check, PID signal as secondary."
   deferred_items: none
-
   gate_result: PASS
