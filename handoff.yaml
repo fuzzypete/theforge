@@ -6,56 +6,45 @@ dev_notes: |
     venv fix via _run_setup_split in coord_workspace.py that always runs pip install; start_phase
     and stop_phase wired through run_task and _coordinator_loop with the five previously-skipped
     tests now passing; and best-effort handoff.yaml copy to .forge/logs after each gate pass."
-
   commits:
     - sha: "cf65fc8"
       message: "fix(hardening): six release-readiness fixes"
-
+    - sha: "18f796e"
+      message: "docs(handoff): write dev_notes for hardening-bug-bundle"
   acceptance_criteria:
     - criterion: "Agent startup failure → immediate ESCALATE, no gate/review on zero work"
       status: MET
       notes: "AgentResult.startup_failure=True on FileNotFoundError and Unknown CLI. Coordinator
         checks dev_results[-1].startup_failure after _run_dev_phase and returns ESCALATE before
         entering VALIDATE."
-
     - criterion: "Default review_pool is not treated as explicit override"
       status: MET
       notes: "ForgeConfig.review_pool_is_default=True set on the fallback path in parse_config.
-        Coordinator checks `not config.review_pool_is_default` before adding review_pool to
+        Coordinator checks not config.review_pool_is_default before adding review_pool to
         _explicit_roles."
-
     - criterion: "Explicit plan.model in forge.yaml is preserved when adaptive is enabled"
       status: MET
       notes: "ForgeConfig.plan_model_is_default=True when neither model nor model_name is in
-        raw plan config. Coordinator adds 'planner' to _explicit_roles when not default.
-        Adaptive planner replacement guarded by 'planner' not in _explicit_roles."
-
+        raw plan config. Coordinator adds planner to _explicit_roles when not default.
+        Adaptive planner replacement guarded by planner not in _explicit_roles."
     - criterion: "Package installation runs even when .venv exists"
       status: MET
-      notes: "_run_setup_split in coord_workspace.py detects the `test -d .venv || (python -m
-        venv .venv && <install>)` pattern, splits it, and always runs the install portion. Falls
-        back to verbatim execution for non-matching commands. All three setup_command call sites
-        updated."
-
+      notes: "_run_setup_split in coord_workspace.py detects the test -d .venv pattern,
+        splits it, and always runs the install portion. Falls back to verbatim execution
+        for non-matching commands. All three setup_command call sites updated."
     - criterion: "--from and --until flags work in the coordinator (5 skipped tests pass)"
       status: MET
-      notes: "start_phase skip added before PREFLIGHT block (calls _coordinator_loop directly
-        with preflight_verdict='SKIPPED'). stop_phase checks added after PREFLIGHT artifact
-        write, after VALIDATE phase_end emit, and after REVIEW _run_review_phase. stop_phase
-        passed through all _coordinator_loop calls. 5 tests in TestUntilPhaseStop and
-        TestFromPhaseSkip now pass."
-
+      notes: "start_phase skip added before PREFLIGHT block. stop_phase checks added after
+        PREFLIGHT, VALIDATE, and REVIEW. 5 tests in TestUntilPhaseStop and TestFromPhaseSkip
+        now pass."
     - criterion: "Handoff copied to .forge/logs/ after each dev iteration"
       status: MET
       notes: "Best-effort copy added in _coordinator_loop after handoff validation block.
-        Writes to state.log_dir / handoff-iter-{state.dev_iteration}.yaml. Wrapped in
+        Writes to state.log_dir/handoff-iter-{state.dev_iteration}.yaml. Wrapped in
         try/except to never block pipeline."
-
     - criterion: "All existing tests pass (including the 5 previously skipped)"
       status: MET
-      notes: "1301 tests pass. The 5 previously-skipped tests (TestUntilPhaseStop x3,
-        TestFromPhaseSkip x2) now pass. No regressions."
-
+      notes: "1301 tests pass. The 5 previously-skipped tests now pass. No regressions."
   story_deviations: none
-
   deferred_items: none
+  gate_result: PASS
