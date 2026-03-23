@@ -128,6 +128,15 @@ class EmailConfig:
 
 
 @dataclass(frozen=True)
+class BackendConfig:
+    """Configuration for a single notification backend."""
+
+    type: str  # "terminal", "ntfy", "webhook"
+    url: str | None = None
+    priority: str | None = None
+
+
+@dataclass(frozen=True)
 class NotificationConfig:
     """Notification backend configuration."""
 
@@ -136,6 +145,7 @@ class NotificationConfig:
     email: EmailConfig | None = None  # reserved for future use
     script: str | None = None  # path to custom notification script
     human_review_timeout_seconds: int = 14400  # 4 hours
+    backends: tuple[BackendConfig, ...] = ()  # pluggable backend list
 
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
@@ -823,11 +833,45 @@ def load_config(config_path: Path) -> ForgeConfig:
             ntfy_config = NtfyConfig(url=ntfy_url, priority="high")
         else:
             log.warning("ntfy backend enabled but no URL configured — notifications disabled")
+
+    # hitl_timeout_seconds is the canonical YAML key; human_review_timeout_seconds is the alias
+    _hitl_timeout = int(
+        notif_data.get(
+            "hitl_timeout_seconds",
+            notif_data.get("human_review_timeout_seconds", 14400),
+        )
+    )
+
+    # Build pluggable backends list
+    # New format: backends: [{type: terminal}, {type: ntfy, url: ...}]
+    # Old format: backend: ntfy + ntfy: {url, priority} → synthesise a single ntfy entry
+    _backends_raw = notif_data.get("backends")
+    backends: list[BackendConfig]
+    if _backends_raw is not None:
+        backends = []
+        for b in _backends_raw:
+            if isinstance(b, dict):
+                backends.append(
+                    BackendConfig(
+                        type=str(b.get("type", "terminal")),
+                        url=b.get("url") or None,
+                        priority=b.get("priority") or None,
+                    )
+                )
+    elif notif_backend == "ntfy" and ntfy_config is not None:
+        backends = [BackendConfig(type="ntfy", url=ntfy_config.url, priority=ntfy_config.priority)]
+    elif notif_backend == "none":
+        # Default: terminal notification (zero-config, always works)
+        backends = [BackendConfig(type="terminal")]
+    else:
+        backends = [BackendConfig(type="terminal")]
+
     notifications = NotificationConfig(
         backend=notif_backend,
         ntfy=ntfy_config,
         script=notif_data.get("script"),
-        human_review_timeout_seconds=int(notif_data.get("human_review_timeout_seconds", 14400)),
+        human_review_timeout_seconds=_hitl_timeout,
+        backends=tuple(backends),
     )
 
     # Plan

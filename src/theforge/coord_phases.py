@@ -30,8 +30,11 @@ from .coord_notify import (
     _escalate_gate_interactive,
     _escalate_gate_remote,
     _escalate_notify,
+    _is_pending_file_mode,
     _is_remote_mode,
     _ntfy_done_notify,
+    _pending_escalate_gate,
+    _pending_human_review,
     _remote_human_review,
 )
 from .coord_preflight import (
@@ -443,7 +446,11 @@ def _run_escalate_gate(
                 )
 
     # Determine interaction method
-    if _is_remote_mode(notify, config):
+    if _is_pending_file_mode(notify, config):
+        decision = _pending_escalate_gate(
+            state, task, config, escalate_reason, reviewer_verdicts, gate_result, run_id=run_id
+        )
+    elif _is_remote_mode(notify, config):
         decision = _escalate_gate_remote(
             state, task, config, escalate_reason, reviewer_verdicts, gate_result
         )
@@ -696,7 +703,18 @@ def _run_review_phase(
         if interactive:
             state.phase = Phase.HUMAN_REVIEW
             _log_phase(state.phase)
-            if _is_remote_mode(notify, config):
+            if _is_pending_file_mode(notify, config):
+                decision, feedback = _pending_human_review(
+                    state,
+                    parsed_review,
+                    workspace_path,
+                    branch_name,
+                    task,
+                    config,
+                    task_start,
+                    run_id=run_id,
+                )
+            elif _is_remote_mode(notify, config):
                 decision, feedback = _remote_human_review(
                     state, parsed_review, workspace_path, branch_name, task, config, task_start
                 )
@@ -853,7 +871,18 @@ def _run_review_phase(
         if interactive:
             state.phase = Phase.HUMAN_REVIEW
             _log_phase(state.phase, "cycles exhausted")
-            if _is_remote_mode(notify, config):
+            if _is_pending_file_mode(notify, config):
+                decision, feedback = _pending_human_review(
+                    state,
+                    parsed_review,
+                    workspace_path,
+                    branch_name,
+                    task,
+                    config,
+                    task_start,
+                    run_id=run_id,
+                )
+            elif _is_remote_mode(notify, config):
                 decision, feedback = _remote_human_review(
                     state, parsed_review, workspace_path, branch_name, task, config, task_start
                 )
