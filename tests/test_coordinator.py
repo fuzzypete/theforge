@@ -4281,6 +4281,92 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
+    def test_plan_model_escalation_on_repeated_rejection(
+        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+    ):
+        """After 2 plan rejections, planner model escalates sonnet→opus; 3rd review approves."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=3,
+                plan_escalation_threshold=2,
+            ),
+            smart_config_models=["claude/sonnet", "claude/opus"],
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_agent.side_effect = [
+            # preflight
+            _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
+            # initial plan (sonnet)
+            _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
+            # 1st regen (sonnet — rejection 1, below threshold)
+            _make_agent_result(success=True, output="# Plan\n\nStill bad.", cost_usd=0.12),
+            # 2nd regen (opus — rejection 2, escalation fires before this call)
+            _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.20),
+            # dev
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_pool.side_effect = [
+            # 1st plan review → REJECT (rejection 1)
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_REJECT_P0,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            # 2nd plan review → REJECT (rejection 2, triggers escalation)
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_REJECT_P0,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            # 3rd plan review → APPROVE (after escalation)
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.06,
+                    profile_name="plan-review",
+                )
+            ],
+            # code review
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_escalated is True
+        assert result.state.plan_regen_count == 2
+        assert result.state.plan_escalation_note is not None
+        assert "MODEL ESCALATION" in result.state.plan_escalation_note
+
+        # The 4th run_agent call (index 3) is the 2nd regen — should use opus
+        regen_call = mock_agent.call_args_list[3]
+        regen_profile = regen_call.kwargs.get("profile") or regen_call[1].get("profile")
+        assert regen_profile.model == "opus", (
+            f"Expected opus model after escalation, got {regen_profile.model}"
+        )
+
+        # The regen prompt should contain the escalation note
+        regen_prompt = regen_call.kwargs.get("prompt") or regen_call[1].get("prompt")
+        assert "MODEL ESCALATION" in regen_prompt
+
+    @patch("theforge.coordinator._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
     def test_plan_agent_review_disabled_by_default(
         self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
     ):

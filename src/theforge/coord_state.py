@@ -178,6 +178,8 @@ class CoordinatorState:
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
+    plan_escalated: bool = False  # True once plan model escalation has occurred this run
+    plan_escalation_note: str | None = None  # escalation context injected into regen prompt
     retry_reason: str | None = (
         None
         # "review_changes" | "gate_fail" | "dirty_worktree" | "extend"

@@ -1956,6 +1956,54 @@ def run_task(
                         )
 
                         state.plan_regen_count += 1
+
+                        # Escalate planner model after N consecutive rejections
+                        if (
+                            state.plan_regen_count >= config.retry.plan_escalation_threshold
+                            and not state.plan_escalated
+                        ):
+                            _curr_key = _find_registry_key_for_profile(plan_profile)
+                            if _curr_key is not None and config.smart_config_models is not None:
+                                _next_key = _escalate_dev_model(
+                                    _curr_key, config.smart_config_models
+                                )
+                                if _next_key is not None:
+                                    import dataclasses as _dc_esc
+
+                                    _next_info = MODEL_REGISTRY[_next_key]
+                                    _old_model = plan_profile.model
+                                    _new_model = _next_info.model
+                                    plan_profile = _dc_esc.replace(
+                                        plan_profile,
+                                        cli=_next_info.cli,
+                                        model=_next_info.model,
+                                    )
+                                    state.plan_escalated = True
+                                    state.plan_escalation_note = (
+                                        f"MODEL ESCALATION: The plan was rejected"
+                                        f" {state.plan_regen_count} time(s). The previous"
+                                        f" model ({_old_model}) was unable to produce an"
+                                        f" acceptable plan. You are now running on an upgraded"
+                                        f" model ({_new_model}). Key findings from prior"
+                                        f" rejections: {findings_text}"
+                                    )
+                                    _log(
+                                        f"  Plan escalation:"
+                                        f" {_old_model} → {_new_model}"
+                                        f" (rejected {state.plan_regen_count}x)"
+                                    )
+                                    logger._safe_emit(
+                                        "plan_model_escalate",
+                                        from_model=_old_model,
+                                        to_model=_new_model,
+                                        rejections=state.plan_regen_count,
+                                    )
+                                else:
+                                    _log(
+                                        "  Plan escalation: no higher tier available"
+                                        " — continuing with current model"
+                                    )
+
                         if state.plan_regen_count > config.retry.max_plan_regen_attempts:
                             state.plan_review_decision = "reject"
                             state.phase = Phase.ESCALATE
@@ -1999,6 +2047,11 @@ def run_task(
                             "The previous plan was REJECTED. Address these issues:\n\n"
                             f"{findings_text}\n"
                         )
+
+                        if state.plan_escalation_note:
+                            regen_prompt += (
+                                f"\n\n## Model Escalation\n\n{state.plan_escalation_note}\n"
+                            )
 
                         if _LOG_LEVEL >= LogLevel.VERBOSE:
                             regen_prompt += (
