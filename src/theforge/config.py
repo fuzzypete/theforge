@@ -314,6 +314,13 @@ class HooksConfig:
 
 
 @dataclass(frozen=True)
+class SprintConfig:
+    """Project-level sprint defaults from forge.yaml."""
+
+    max_parallel: int = 1
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -333,6 +340,7 @@ class ForgeConfig:
     plan_agent_review: PlanAgentReviewConfig = field(default_factory=PlanAgentReviewConfig)
     log: LogConfig = field(default_factory=LogConfig)
     hooks: HooksConfig | None = None
+    sprint: SprintConfig = field(default_factory=SprintConfig)
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
@@ -1034,6 +1042,19 @@ def load_config(config_path: Path) -> ForgeConfig:
         escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
     )
 
+    # Sprint config
+    sprint_data = raw.get("sprint", {})
+    sprint_max_parallel_raw = sprint_data.get("max_parallel", 1)
+    if not isinstance(sprint_max_parallel_raw, int):
+        raise ValueError(
+            f"forge.yaml 'sprint.max_parallel' must be an integer, got {sprint_max_parallel_raw!r}"
+        )
+    if sprint_max_parallel_raw < 1:
+        raise ValueError(
+            f"forge.yaml 'sprint.max_parallel' must be >= 1, got {sprint_max_parallel_raw}"
+        )
+    sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -1051,6 +1072,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         plan_agent_review=plan_agent_review_cfg,
         log=log_cfg,
         hooks=hooks_cfg,
+        sprint=sprint_cfg,
         secrets=secrets,
         agents=agents_list,
         assignment=assignment_cfg,

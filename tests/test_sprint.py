@@ -15,6 +15,7 @@ from theforge.config import (
     DEFAULT_VALIDATION,
     ForgeConfig,
     RetryPolicy,
+    SprintConfig,
     WorkspaceConfig,
 )
 from theforge.coordinator import (
@@ -1242,15 +1243,15 @@ class TestMaxParallelManifest:
         manifest = load_sprint_manifest(path)
         assert manifest.max_parallel == 3
 
-    def test_defaults_to_1_when_absent(self, tmp_path: Path) -> None:
-        """max_parallel defaults to 1 when not specified."""
+    def test_defaults_to_none_when_absent(self, tmp_path: Path) -> None:
+        """max_parallel is None (sentinel) when not specified in manifest."""
         path = tmp_path / "sprint.yaml"
         path.write_text(
             yaml.dump({"name": "X", "budget_usd": 5.0, "stories": ["a.md"]}),
             encoding="utf-8",
         )
         manifest = load_sprint_manifest(path)
-        assert manifest.max_parallel == 1
+        assert manifest.max_parallel is None
 
     def test_rejects_max_parallel_zero(self, tmp_path: Path) -> None:
         """max_parallel=0 is rejected with ValueError."""
@@ -1281,6 +1282,81 @@ class TestMaxParallelManifest:
         )
         with pytest.raises(ValueError, match="max_parallel"):
             load_sprint_manifest(path)
+
+
+def _make_config_with_sprint(tmp_path: Path, sprint_max_parallel: int = 1) -> ForgeConfig:
+    """Build a ForgeConfig with a custom sprint.max_parallel default."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        sprint=SprintConfig(max_parallel=sprint_max_parallel),
+    )
+
+
+class TestMaxParallelPrecedence:
+    """Tests for manifest vs forge.yaml max_parallel precedence."""
+
+    def _make_manifest(self, tmp_path: Path, max_parallel: int | None = None) -> Path:
+        data: dict = {"name": "X", "budget_usd": 5.0, "stories": ["story-a.md"]}
+        if max_parallel is not None:
+            data["max_parallel"] = max_parallel
+        path = tmp_path / "sprint.yaml"
+        path.write_text(yaml.dump(data), encoding="utf-8")
+        return path
+
+    def test_manifest_wins_over_config_default(self, tmp_path: Path) -> None:
+        """Manifest max_parallel=2 overrides config default of 3."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = self._make_manifest(tmp_path, max_parallel=2)
+        config = _make_config_with_sprint(tmp_path, sprint_max_parallel=3)
+
+        with patch("theforge.sprint.run_task") as mock_run:
+            mock_run.return_value = _make_coordinator_result(success=True)
+            run_sprint(config, manifest_path)
+
+        manifest = load_sprint_manifest(manifest_path)
+        assert manifest.max_parallel == 2  # unchanged after load (not None)
+
+    def test_config_default_used_when_manifest_omits(self, tmp_path: Path) -> None:
+        """When manifest omits max_parallel, config default (3) is used in run_sprint."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = self._make_manifest(tmp_path, max_parallel=None)
+        config = _make_config_with_sprint(tmp_path, sprint_max_parallel=3)
+
+        with patch("theforge.sprint.run_task") as mock_run:
+            mock_run.return_value = _make_coordinator_result(success=True)
+            result = run_sprint(config, manifest_path)
+
+        assert result.specs_succeeded == 1
+
+    def test_neither_set_defaults_to_1(self, tmp_path: Path) -> None:
+        """When neither manifest nor config set max_parallel, default is 1."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = self._make_manifest(tmp_path, max_parallel=None)
+        config = _make_config(tmp_path)  # SprintConfig defaults to max_parallel=1
+
+        with patch("theforge.sprint.run_task") as mock_run:
+            mock_run.return_value = _make_coordinator_result(success=True)
+            run_sprint(config, manifest_path)
+
+        assert config.sprint.max_parallel == 1
+
+    def test_manifest_none_is_resolved_in_run_sprint(self, tmp_path: Path) -> None:
+        """After load_sprint_manifest, max_parallel is None; run_sprint resolves it."""
+        manifest_path = self._make_manifest(tmp_path, max_parallel=None)
+        manifest = load_sprint_manifest(manifest_path)
+        assert manifest.max_parallel is None
 
 
 # ── StoryDAG unit tests ───────────────────────────────────────────────────────

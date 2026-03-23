@@ -334,6 +334,7 @@ def test_state_update_fn_called_in_run_sprint(tmp_path: Path) -> None:
     mock_config.log.enabled = False
     mock_config.log.log_file = None
     mock_config.notifications.ntfy = None
+    mock_config.sprint.max_parallel = 1
 
     mock_result = MagicMock()
     mock_result.success = True
