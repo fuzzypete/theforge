@@ -286,21 +286,20 @@ def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
     # Grandchild: write PID file, redirect stdio
     write_pid(run_id, slug, project_root)
 
-    # Redirect stdin to /dev/null
-    with open(os.devnull) as null:
-        os.dup2(null.fileno(), sys.stdin.fileno())
+    # Redirect stdin to /dev/null — use raw fd ops to avoid issues with
+    # Python file objects in forked processes
+    null_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(null_fd, 0)  # fd 0 = stdin
+    os.close(null_fd)
 
-    # Redirect stdout/stderr to log file (append mode)
-    # Open the log file and keep the handle alive (no `with` — intentional,
-    # the FDs must outlive the daemonize call).
-    sys.stdout.flush()
-    sys.stderr.flush()
+    # Redirect stdout/stderr to log file
     log_fd = os.open(str(log_file), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    os.dup2(log_fd, sys.stdout.fileno())
-    os.dup2(log_fd, sys.stderr.fileno())
-    os.close(log_fd)  # safe — dup2'd copies keep the underlying file open
+    os.dup2(log_fd, 1)  # fd 1 = stdout
+    os.dup2(log_fd, 2)  # fd 2 = stderr
+    os.close(log_fd)
 
-    # Re-open python-level file objects to the log
+    # Re-open Python-level file objects pointing at the new fds
+    sys.stdin = open(os.devnull, encoding="utf-8")  # noqa: WPS515
     sys.stdout = open(log_file, "a", encoding="utf-8", buffering=1)  # noqa: WPS515
     sys.stderr = open(log_file, "a", encoding="utf-8", buffering=1)  # noqa: WPS515
 

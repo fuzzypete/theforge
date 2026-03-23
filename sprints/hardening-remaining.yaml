@@ -1,0 +1,9 @@
+name: "Hardening — remaining stories (parallel)"
+budget_usd: 70
+max_parallel: 3
+stories:
+  - stories/backlog/stale-venv-deps.md
+  - stories/backlog/notification-reliability.md
+  - stories/backlog/adaptive-override-protection.md
+  - stories/backlog/stage-aware-coordinator-wiring.md
+  - stories/backlog/sprint-default-parallel.md

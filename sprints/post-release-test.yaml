@@ -1,0 +1,6 @@
+name: "Post-release test — Slack notification + sprint config"
+budget_usd: 30
+max_parallel: 2
+stories:
+  - stories/backlog/slack-notification.md
+  - stories/backlog/sprint-default-parallel.md

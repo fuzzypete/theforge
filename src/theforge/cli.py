@@ -719,8 +719,11 @@ def cmd_sprint(args: argparse.Namespace) -> int:
         slug = manifest_path.stem
         _detach.daemonize_run(run_id, slug, config.project_root)
         # Grandchild continues here; parent has already exited above
-        _detach.suppress_app_nap()
+        # suppress_app_nap uses PyObjC which can SIGABRT in forked processes
+        # due to ObjC runtime state. Skip it — the process is already detached
+        # and setsid'd, which is sufficient protection.
         _detach.install_cleanup_handler(run_id, config.project_root)
+        print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
     else:
         run_id = _generate_run_id()
         slug = manifest_path.stem
@@ -755,8 +758,12 @@ def cmd_sprint(args: argparse.Namespace) -> int:
             notify=not args.no_notify,
             resume=resume,
         )
-    except ValueError as exc:
-        print(f"Sprint error: {exc}", file=sys.stderr)
+    except Exception as exc:
+        import traceback
+
+        print(f"Sprint error: {exc}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
         return 1
 
     # Remove PID file on completion
