@@ -238,6 +238,8 @@ def _begin_run_log_tee(
     """
     if not config.log.enabled:
         return None
+    if threading.current_thread() is not threading.main_thread():
+        return None  # skip in worker threads; parallel sprints avoid cross-story tee stacking
     try:
         if log_dir is not None:
             per_run_path = log_dir / f"run-{logger._run_id}.log"
