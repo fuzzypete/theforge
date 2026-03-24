@@ -1,41 +1,40 @@
-dev_notes: "summary: \"Addressed both P1 findings from review cycle 1.\\n\\n1. finding_classifier.py\
-  \ — fingerprint now includes line number so a reviewer reporting the same description\
-  \ at distant lines (e.g. 10 and 100) produces separate buckets.  A snapshot of the\
-  \ prior registry is taken before the classification loop so new records inserted\
-  \ for one bucket cannot falsely match later buckets from the same cycle.  Together\
-  \ these ensure the nearby-line pair (lines 10 & 11) correctly corroborates regardless\
-  \ of a distant same-reviewer duplicate at line 100.\\n\\n2. config.py — rewrote\
-  \ _planner_candidate_models to mirror the actual assign_models planner selection\
-  \ logic (target tier → highest-budget fallback) instead of unioning raw tier sets.\
-  \  With only cheap + strong agents and no mid-tier agents, the fallback always selects\
-  \ the strong model, so a plan reviewer using the cheap model is no longer falsely\
-  \ rejected.\"\ncommits:\n  - sha: \"54d33a9\"\n    message: \"fix(finding_classifier,config):\
-  \ address review findings (iter 1)\"\nacceptance_criteria:\n  - criterion: \"Two\
-  \ findings at the same file and line (within ±3 lines) are corroborated even if\
-  \ their descriptions differ\"\n    status: MET\n    notes: \"Nearby-line corroboration\
-  \ still groups same-file findings within the ±3-line window even when the descriptions\
-  \ differ.\"\n  - criterion: \"Exact-match fingerprinting continues to work for identical\
-  \ findings\"\n    status: MET\n    notes: \"Exact fingerprint path works; line is\
-  \ now part of the key so two different reviewers reporting the same description\
-  \ at the same line still share one bucket.\"\n  - criterion: \"A reviewer reporting\
+dev_notes: "summary: \"Addressed the regression P1 from review cycle 2: config.py\
+  \ was seeding planner_models with plan_cfg.model_name even when adaptive assignment\
+  \ is enabled and the plan model is still the default, causing load_config to reject\
+  \ plan reviewers that use the default model even though the coordinator ignores\
+  \ that default at runtime.  Fix: when assignment.enabled is True and _plan_model_is_default\
+  \ is True, build planner_models exclusively from _planner_candidate_models (which\
+  \ mirrors the actual assign_models selection logic) instead of seeding it with the\
+  \ unused default model name.  Added regression test for the default-plan-model-unreachable\
+  \ case (cheap haiku + strong opus agents, plan reviewer on sonnet, adaptive assignment\
+  \ enabled).\"\ncommits:\n  - sha: \"54d33a9\"\n    message: \"fix(finding_classifier,config):\
+  \ address review findings (iter 1)\"\n  - sha: \"d83baf5\"\n    message: \"fix(config):\
+  \ exclude default plan model from conflict check when adaptive assignment active\"\
+  \nacceptance_criteria:\n  - criterion: \"Two findings at the same file and line\
+  \ (within \\xb13 lines) are corroborated even if their descriptions differ\"\n \
+  \   status: MET\n    notes: \"Line-aware fingerprinting and prior-registry snapshot\
+  \ fix correctly corroborate nearby findings.\"\n  - criterion: \"A reviewer reporting\
   \ the same description at a distant line does not block corroboration with another\
-  \ reviewer near the first report\"\n    status: MET\n    notes: \"Line-aware fingerprinting\
-  \ splits distant same-description reports into separate buckets, allowing the nearby\
-  \ pair to merge and corroborate independently.\"\n  - criterion: \"`load_config()`\
-  \ raises `ValueError` if any plan_agent_review pool member uses the same model as\
-  \ the planner\"\n    status: MET\n    notes: \"Config loading still rejects planner/model\
-  \ reuse for plan review in all paths.\"\n  - criterion: \"Error message names the\
-  \ conflicting model\"\n    status: MET\n    notes: \"The config validation error\
-  \ includes the reused model name.\"\n  - criterion: \"Adaptive planner conflict\
-  \ check does not reject configs where the cheap model is not reachable by the planner\"\
-  \n    status: MET\n    notes: \"With cheap+strong only, _planner_candidate_models\
-  \ now returns only the strong model (highest-budget fallback), so a cheap-model\
-  \ plan reviewer is accepted.\"\n  - criterion: \"Test covers the no-mid-tier allowed\
-  \ and rejected cases\"\n    status: MET\n    notes: \"Two new tests in test_config.py\
-  \ cover the allowed (cheap reviewer) and rejected (strong reviewer) cases when no\
-  \ mid-tier agents exist.\"\n  - criterion: \"API-provider profiles with no explicit\
+  \ reviewer near the first report\"\n    status: MET\n    notes: \"Line is now part\
+  \ of the fingerprint key so distant same-description reports go into separate buckets.\"\
+  \n  - criterion: \"`load_config()` raises `ValueError` if any plan_agent_review\
+  \ pool member uses the same model as the planner\"\n    status: MET\n    notes:\
+  \ \"Conflict check still fires for explicit planner model matches and for models\
+  \ reachable by adaptive assignment.\"\n  - criterion: \"Error message names the\
+  \ conflicting model\"\n    status: MET\n    notes: \"Error message unchanged, still\
+  \ names the reused model.\"\n  - criterion: \"Adaptive planner conflict check does\
+  \ not reject configs where the cheap model is not reachable by the planner\"\n \
+  \   status: MET\n    notes: \"_planner_candidate_models now mirrors assign_models\
+  \ fallback logic so only structurally reachable models are checked.\"\n  - criterion:\
+  \ \"Adaptive planner conflict check does not reject configs where the default plan\
+  \ model is overridden by adaptive assignment at runtime\"\n    status: MET\n  \
+  \  notes: \"When assignment.enabled + _plan_model_is_default, planner_models is\
+  \ built exclusively from _planner_candidate_models and does not include the unused\
+  \ default model name.\"\n  - criterion: \"Test covers the default-plan-model-unreachable\
+  \ case\"\n    status: MET\n    notes: \"test_plan_agent_review_allows_default_plan_model_when_adaptive_assignment_overrides_it\
+  \ added to test_config.py.\"\n  - criterion: \"API-provider profiles with no explicit\
   \ `allowed_tools` default to `(\\\"read_file\\\", \\\"bash\\\", \\\"glob\\\", \\\
   \"grep\\\", \\\"submit_review\\\")`\"\n    status: MET\n    notes: \"Unchanged from\
-  \ prior iteration.\"\nstory_deviations: none\ndeferred_items: none\ngate_result:\
+  \ prior iterations.\"\nstory_deviations: none\ndeferred_items: none\ngate_result:\
   \ PASS\n"
 gate_decision: PASS
