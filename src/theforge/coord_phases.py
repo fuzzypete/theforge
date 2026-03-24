@@ -1152,9 +1152,7 @@ def _run_validate_phase(
                     # Escalate: don't let uncommitted changes leak into
                     # REVIEW/DONE/PR.
                     state.phase = Phase.ESCALATE
-                    state.error = (
-                        f"Auto-commit failed for dirty worktree: {raw_names}"
-                    )
+                    state.error = f"Auto-commit failed for dirty worktree: {raw_names}"
                     _log(f"✗ ESCALATE   {state.error}")
                     _escalate_notify(task, state, notify, config)
                     return _ValidateOutcome.ESCALATE, CoordinatorResult(
@@ -1385,5 +1383,50 @@ def _run_dev_phase(
         _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
         # Don't immediately escalate — try validation anyway,
         # the agent may have committed partial work + run the gate
+
+    # ── Zero-change guard (retry iterations only) ──────────────────
+    # If the coordinator retried DEV after review REQUEST_CHANGES and the dev
+    # agent produced no changes (no commits, no dirty files), escalate immediately.
+    # Without this guard the coordinator sends the identical code back to review,
+    # the finding classifier sees no diff, classifies new P1s as net_new
+    # (non-blocking), and the story passes with unfixed code.
+    if state.dev_trace_count > 1 and state.last_dev_start_commit:
+        _has_commits = False
+        _has_dirty = False
+        try:
+            _diff_proc = subprocess.run(
+                ["git", "diff", "--quiet", state.last_dev_start_commit, "HEAD"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=10,
+            )
+            _has_commits = _diff_proc.returncode != 0  # exit 1 = diff exists
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _status_proc = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=10,
+            )
+            _has_dirty = bool(_status_proc.stdout.strip())
+        except Exception:  # noqa: BLE001
+            pass
+        if not _has_commits and not _has_dirty:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                "Dev retry produced no changes — escalating to avoid re-reviewing identical code"
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("escalate", reason=state.error, phase="DEV")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
 
     return None

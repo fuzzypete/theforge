@@ -245,7 +245,7 @@ class TestHybridRunnerConfig:
             import logging
 
             with patch.object(logging.getLogger("theforge.config"), "warning") as mock_warn:
-                config = load_config(config_path)
+                load_config(config_path)
             mock_warn.assert_called_once()
             assert "OPENAI_API_KEY" in mock_warn.call_args[0][3]
 

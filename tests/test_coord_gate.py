@@ -210,7 +210,9 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_dirty_worktree_auto_commits_no_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_dirty_worktree_auto_commits_no_retry(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
         """Dirty worktree after gate PASS → coordinator auto-commits, no agent retry."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -243,7 +245,9 @@ class TestCoordinatorDirtyWorktree:
         assert result.phase == Phase.DONE
         assert mock_agent.call_count == 2
         assert any("git add" in c for c in shell_cmds)
-        assert any(c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list)
+        assert any(
+            c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
+        )
         assert mock_subprocess.call_args[0][0] == ["git", "commit", "-m", mock.ANY]
 
     @patch("theforge.coordinator.run_agent_pool")
@@ -293,7 +297,9 @@ class TestCoordinatorDirtyWorktree:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert any(c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list)
+        assert any(
+            c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
+        )
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -402,7 +408,9 @@ class TestCoordinatorDirtyWorktree:
         assert result.phase == Phase.DONE
         assert mock_agent.call_count == 2
         assert any("git add" in c for c in shell_cmds)
-        assert any(c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list)
+        assert any(
+            c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
+        )
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -439,12 +447,161 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coord_phases.subprocess.run"):
             result = run_task(config, task)
 
         assert result.success is True
         assert result.phase == Phase.DONE
         assert mock_agent.call_count == 2
+
+
+# ── Zero-change guard tests ──────────────────────────────────────────
+
+
+class TestDevZeroChangeGuard:
+    """Dev retry that produces no changes should escalate, not re-review identical code."""
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_dev_retry_no_changes_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Dev iteration 2 produces no diff and no dirty files → ESCALATE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        call_idx = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")  # no dirty files
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+
+        # Preflight → dev (iter 1) → review REQUEST_CHANGES → dev (iter 2, no changes) → escalate
+        dev_result = _make_agent_result(success=True, output="Done.")
+        review_rc = _make_agent_result(
+            success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+        )
+        review_approve = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="review"
+        )
+
+        def agent_side_effect(**kwargs):
+            call_idx["n"] += 1
+            return dev_result
+
+        mock_agent.side_effect = _preflight_then(dev_result)
+        # First review: REQUEST_CHANGES, second would be APPROVE but should never be reached
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [review_rc]
+            return [review_approve]
+
+        mock_pool.side_effect = pool_side_effect
+
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0] == "git":
+                if "rev-parse" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0
+                    result.stdout = b"abc123"
+                    return result
+                if "diff" in cmd and "--quiet" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0  # no diff
+                    return result
+                if "status" in cmd and "--porcelain" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0
+                    result.stdout = b""  # no dirty files
+                    return result
+                if "commit" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0
+                    return result
+            result = mock.Mock()
+            result.returncode = 0
+            result.stdout = b""
+            return result
+
+        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+            result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "no changes" in result.message.lower()
+
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_dev_retry_with_dirty_files_proceeds(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Dev iteration 2 has dirty files (uncommitted work) → does NOT escalate."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, " M src/theforge/config.py")
+            if "git add" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+
+        dev_result = _make_agent_result(success=True, output="Done.")
+        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0] == "git":
+                if "rev-parse" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0
+                    result.stdout = b"abc123"
+                    return result
+                if "diff" in cmd and "--quiet" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0  # no committed diff
+                    return result
+                if "status" in cmd and "--porcelain" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0
+                    result.stdout = b" M src/theforge/config.py"  # dirty files exist
+                    return result
+                if "commit" in cmd:
+                    result = mock.Mock()
+                    result.returncode = 0
+                    return result
+            result = mock.Mock()
+            result.returncode = 0
+            result.stdout = b""
+            return result
+
+        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
 
 
 # ── Exit-code gate mode tests ────────────────────────────────────────
