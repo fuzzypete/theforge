@@ -228,9 +228,9 @@ def test_fallback_no_daemon(tmp_path: Path) -> None:
     mock_result = MagicMock()
     mock_result.specs_failed = 0
 
-    with patch("theforge.cli.load_config", return_value=mock_config):
+    with patch("theforge.cli.sprint.load_config", return_value=mock_config):
         with patch("theforge.daemon.is_daemon_running", return_value=False):
-            with patch("theforge.cli.run_sprint", return_value=mock_result) as mock_run:
+            with patch("theforge.cli.sprint.run_sprint", return_value=mock_result) as mock_run:
                 with patch("theforge.daemon.submit_sprint") as mock_submit:
                     exit_code = cli.cmd_sprint(args)
 
@@ -265,13 +265,13 @@ def test_submit_routes_to_daemon(tmp_path: Path) -> None:
     mock_config = MagicMock()
     mock_config.project_root = tmp_path
 
-    with patch("theforge.cli.load_config", return_value=mock_config):
+    with patch("theforge.cli.sprint.load_config", return_value=mock_config):
         with patch("theforge.daemon.is_daemon_running", return_value=True):
             with patch(
                 "theforge.daemon.submit_sprint",
                 return_value={"ok": True, "queued": "sprint", "position": 1},
             ) as mock_submit:
-                with patch("theforge.cli.run_sprint") as mock_run:
+                with patch("theforge.cli.sprint.run_sprint") as mock_run:
                     exit_code = cli.cmd_sprint(args)
 
     mock_submit.assert_called_once()

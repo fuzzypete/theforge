@@ -306,8 +306,8 @@ class TestCmdCheckProviders:
             _make_pass_result("claude-reviewer"),
             _make_pass_result("codex-reviewer"),
         ]
-        with patch("theforge.cli.load_config", return_value=cfg):
-            with patch("theforge.cli.run_api_agent", side_effect=side_effects):
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch("theforge.cli.providers.run_api_agent", side_effect=side_effects):
                 rc = cmd_check_providers(args)
 
         assert rc == 0
@@ -324,8 +324,8 @@ class TestCmdCheckProviders:
             _make_pass_result("claude-reviewer"),
             _make_fail_result("codex-reviewer"),
         ]
-        with patch("theforge.cli.load_config", return_value=cfg):
-            with patch("theforge.cli.run_api_agent", side_effect=side_effects):
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch("theforge.cli.providers.run_api_agent", side_effect=side_effects):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -341,8 +341,8 @@ class TestCmdCheckProviders:
         def _boom(*_, **__):
             raise RuntimeError("connection refused")
 
-        with patch("theforge.cli.load_config", return_value=cfg):
-            with patch("theforge.cli.run_api_agent", side_effect=_boom):
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch("theforge.cli.providers.run_api_agent", side_effect=_boom):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -355,9 +355,9 @@ class TestCmdCheckProviders:
         cfg = _make_forge_config(tmp_path)
         args = _make_args(profile="claude-reviewer", config=str(tmp_path / "forge.yaml"))
 
-        with patch("theforge.cli.load_config", return_value=cfg):
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch(
-                "theforge.cli.run_api_agent",
+                "theforge.cli.providers.run_api_agent",
                 return_value=_make_pass_result("claude-reviewer"),
             ) as mock_api:
                 rc = cmd_check_providers(args)
@@ -372,8 +372,8 @@ class TestCmdCheckProviders:
         cfg = _make_forge_config(tmp_path)
         args = _make_args(profile="nonexistent", config=str(tmp_path / "forge.yaml"))
 
-        with patch("theforge.cli.load_config", return_value=cfg):
-            with patch("theforge.cli.run_api_agent") as mock_api:
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch("theforge.cli.providers.run_api_agent") as mock_api:
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -394,8 +394,8 @@ class TestCmdCheckProviders:
             profile_name="claude-reviewer",
             structured_data={"summary": "no verdict here"},
         )
-        with patch("theforge.cli.load_config", return_value=cfg):
-            with patch("theforge.cli.run_api_agent", return_value=bad_result):
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch("theforge.cli.providers.run_api_agent", return_value=bad_result):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -405,7 +405,7 @@ class TestCmdCheckProviders:
     def test_no_forge_yaml_exits_one(self, tmp_path):
         """No forge.yaml found → exit code 1."""
         args = _make_args(config=None)
-        with patch("theforge.cli._find_config", return_value=None):
+        with patch("theforge.cli.providers._find_config", return_value=None):
             rc = cmd_check_providers(args)
         assert rc == 1
 
@@ -446,9 +446,9 @@ class TestCmdCheckProviders:
         )
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
-        with patch("theforge.cli.load_config", return_value=cfg):
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch(
-                "theforge.cli.run_api_agent",
+                "theforge.cli.providers.run_api_agent",
                 return_value=_make_pass_result("shared-reviewer"),
             ) as mock_api:
                 rc = cmd_check_providers(args)
@@ -701,9 +701,9 @@ class TestCmdRunUntilFlag:
         args = _make_run_args(tmp_path, until="plan")
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             rc = cmd_run(args)
 
@@ -717,8 +717,8 @@ class TestCmdRunUntilFlag:
         args = _make_run_args(tmp_path, until="bogus-phase")
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task") as mock_run,
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task") as mock_run,
         ):
             rc = cmd_run(args)
 
@@ -731,9 +731,9 @@ class TestCmdRunUntilFlag:
         args = _make_run_args(tmp_path)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             rc = cmd_run(args)
 
@@ -753,8 +753,8 @@ class TestCmdRunFromFlag:
 
         # Worktree does NOT exist
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task") as mock_run,
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task") as mock_run,
         ):
             rc = cmd_run(args)
 
@@ -772,8 +772,8 @@ class TestCmdRunFromFlag:
         wt.mkdir()
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task") as mock_run,
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task") as mock_run,
         ):
             rc = cmd_run(args)
 
@@ -791,8 +791,8 @@ class TestCmdRunFromFlag:
         wt.mkdir()
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task") as mock_run,
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task") as mock_run,
         ):
             rc = cmd_run(args)
 
@@ -811,9 +811,9 @@ class TestCmdRunFromFlag:
         (wt / ".forge" / "plan.md").write_text("# Plan", encoding="utf-8")
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             rc = cmd_run(args)
 
@@ -832,9 +832,9 @@ class TestCmdRunFromFlag:
         (wt / "forge_plan.md").write_text("# Legacy Plan", encoding="utf-8")
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             rc = cmd_run(args)
 
@@ -856,9 +856,9 @@ class TestCmdRunFromFlag:
         (wt / "handoff.yaml").write_text("gate_decision: PASS\n", encoding="utf-8")
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             rc = cmd_run(args)
 
@@ -876,9 +876,9 @@ class TestCmdRunConfigOverrides:
         args = _make_run_args(tmp_path, reviewers=1)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             cmd_run(args)
 
@@ -892,9 +892,9 @@ class TestCmdRunConfigOverrides:
         args = _make_run_args(tmp_path, max_cycles=1)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             cmd_run(args)
 
@@ -911,9 +911,9 @@ class TestCmdRunConfigOverrides:
         args = _make_run_args(tmp_path, reviewers=1, max_cycles=1)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()),
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()),
+            patch("theforge.cli.run._write_audit"),
         ):
             cmd_run(args)
 
@@ -933,9 +933,9 @@ class TestCmdRunConfigOverrides:
         args = _make_run_args(tmp_path, plan=str(plan_file), slug=slug)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             cmd_run(args)
 
@@ -951,9 +951,9 @@ class TestCmdRunConfigOverrides:
         args = _make_run_args(tmp_path, plan=str(plan_file))
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
+            patch("theforge.cli.run._write_audit"),
         ):
             cmd_run(args)
 
@@ -998,9 +998,9 @@ class TestFgFlag:
         args = _make_run_args(tmp_path, fg=True)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()),
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()),
+            patch("theforge.cli.run._write_audit"),
             patch("theforge.detach.daemonize_run") as mock_daemonize,
             patch("theforge.detach.remove_pid"),
         ):
@@ -1013,9 +1013,9 @@ class TestFgFlag:
         args = _make_run_args(tmp_path, fg=False)
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_task", return_value=_stub_result()),
-            patch("theforge.cli._write_audit"),
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()),
+            patch("theforge.cli.run._write_audit"),
             patch("theforge.detach.daemonize_run") as mock_daemonize,
             patch("theforge.detach.suppress_app_nap"),
             patch("theforge.detach.install_cleanup_handler"),
@@ -1043,8 +1043,8 @@ class TestFgFlag:
         )
 
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_sprint", return_value=stub_result),
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint.run_sprint", return_value=stub_result),
             patch("theforge.detach.daemonize_run") as mock_daemonize,
             patch("theforge.detach.remove_pid"),
         ):
@@ -1076,9 +1076,9 @@ class TestCmdLogs:
         args = argparse.Namespace(run_id=run_id)
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.subprocess.run") as mock_run,
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.subprocess.run") as mock_run,
         ):
             result = cmd_logs(args)
 
@@ -1099,8 +1099,8 @@ class TestCmdLogs:
         args = argparse.Namespace(run_id="deadbeef")
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
         ):
             result = cmd_logs(args)
 
@@ -1124,9 +1124,9 @@ class TestCmdStop:
         args = argparse.Namespace(run_id=run_id)
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.os.kill") as mock_kill,
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.os.kill") as mock_kill,
         ):
             result = cmd_stop(args)
 
@@ -1143,8 +1143,8 @@ class TestCmdStop:
         args = argparse.Namespace(run_id="nosuchrun")
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
         ):
             result = cmd_stop(args)
 
@@ -1162,8 +1162,8 @@ class TestCmdStatusActiveRuns:
         args = argparse.Namespace()
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
             patch("theforge.detach.list_active_runs", return_value=[]),
             patch("theforge.pending.cleanup_stale"),
             patch("theforge.pending.list_pending", return_value=[]),
@@ -1187,8 +1187,8 @@ class TestCmdStatusActiveRuns:
         mock_status = {"phase": "DEV", "cost_usd": 1.23, "elapsed_seconds": 300, "log_path": None}
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
             patch("theforge.detach.list_active_runs", return_value=mock_runs),
             patch("theforge.detach.read_run_status", return_value=mock_status),
             patch("theforge.pending.cleanup_stale"),
@@ -1221,10 +1221,10 @@ class TestDaemonDeprecation:
         )
 
         with (
-            patch("theforge.cli._find_config", return_value=forge_yaml),
-            patch("theforge.cli.load_config", return_value=config),
+            patch("theforge.cli.daemon._find_config", return_value=forge_yaml),
+            patch("theforge.cli.daemon.load_config", return_value=config),
             patch("theforge.daemon.get_daemon_status", return_value={}),
-            patch("theforge.cli._print_daemon_status"),
+            patch("theforge.cli.daemon._print_daemon_status"),
             warnings.catch_warnings(record=True) as caught,
         ):
             warnings.simplefilter("always")
