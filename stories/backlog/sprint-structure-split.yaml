@@ -1,0 +1,11 @@
+name: "Structure Split Sprint"
+budget_usd: 80
+auto_merge: true
+stories:
+  - stories/backlog/split-cli-package.md
+  - stories/backlog/split-task-package.md
+  - stories/backlog/coordinator-relocate-modules.md
+  - stories/backlog/coordinator-extract-entrypoints.md
+  - stories/backlog/coordinator-split-phases.md
+  - stories/backlog/split-config-package.md
+  - stories/backlog/structure-cleanup-facades.md

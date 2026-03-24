@@ -1,0 +1,4 @@
+name: v0.2.2 — bug fixes
+budget_usd: 20
+stories:
+  - stories/backlog/v0.2.2-fixes.md
