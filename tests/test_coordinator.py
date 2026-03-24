@@ -2700,8 +2700,8 @@ class TestProgressShowsPhaseTransitions:
         assert "✓ DONE" in captured.err
 
 
-class TestCampaignSpecHeaderPrinted:
-    """Campaign emits [N/total] slug header before each spec."""
+class TestSprintSpecHeaderPrinted:
+    """Sprint emits [N/total] slug header before each spec."""
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -2721,12 +2721,12 @@ class TestCampaignSpecHeaderPrinted:
             encoding="utf-8",
         )
 
-        # Write a campaign manifest
-        manifest_path = tmp_path / "campaign.yaml"
+        # Write a sprint manifest
+        manifest_path = tmp_path / "sprint.yaml"
         manifest_path.write_text(
             _yaml.dump(
                 {
-                    "name": "test campaign",
+                    "name": "test sprint",
                     "budget_usd": 10.0,
                     "specs": ["test-spec.md"],
                 }
