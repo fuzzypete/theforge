@@ -1084,9 +1084,9 @@ class TestCmdIdeate:
         config_file.write_text("project: test\n", encoding="utf-8")
         args.config = str(config_file)
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli.run_ideation", return_value=ideation_result) as mock_run,
-            patch("theforge.cli._find_config", return_value=config_file),
+            patch("theforge.cli.ideate.load_config", return_value=config),
+            patch("theforge.cli.ideate.run_ideation", return_value=ideation_result) as mock_run,
+            patch("theforge.cli.ideate._find_config", return_value=config_file),
         ):
             rc = cmd_ideate(args)
         return rc, mock_run
@@ -1128,8 +1128,8 @@ class TestCmdIdeate:
         args = _make_ideate_args(rounds=5)
         args.config = str(config_file)
         with (
-            patch("theforge.cli.load_config", return_value=config),
-            patch("theforge.cli._find_config", return_value=config_file),
+            patch("theforge.cli.ideate.load_config", return_value=config),
+            patch("theforge.cli.ideate._find_config", return_value=config_file),
         ):
             rc = cmd_ideate(args)
         assert rc == 1
