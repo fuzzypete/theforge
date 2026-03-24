@@ -225,7 +225,8 @@ class TestHybridRunnerConfig:
             with pytest.raises(ValueError, match="SDK 'openai' is not installed"):
                 load_config(config_path)
 
-    def test_missing_api_key_raises(self, tmp_path):
+    def test_missing_api_key_warns(self, tmp_path):
+        """Missing API key logs a warning instead of raising (demoted from error)."""
         config_path = _write_config(
             {
                 "profiles": {
@@ -241,8 +242,12 @@ class TestHybridRunnerConfig:
             tmp_path,
         )
         with patch.dict("os.environ", clear=True), patch("importlib.import_module"):
-            with pytest.raises(ValueError, match=r"\$OPENAI_API_KEY is not set"):
-                load_config(config_path)
+            import logging
+
+            with patch.object(logging.getLogger("theforge.config"), "warning") as mock_warn:
+                config = load_config(config_path)
+            mock_warn.assert_called_once()
+            assert "OPENAI_API_KEY" in mock_warn.call_args[0][3]
 
     def test_plan_agent_review_provider(self, tmp_path):
         config_path = _write_config(

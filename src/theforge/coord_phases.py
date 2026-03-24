@@ -1119,30 +1119,32 @@ def _run_validate_phase(
             else:
                 dirty_lines = [line for line in dirty_out.splitlines() if line.strip()]
             if dirty_lines:
-
-                def _dirty_dev_retry(
-                    dirty_files: str,
-                ) -> tuple[_ValidateOutcome, CoordinatorResult | None]:
-                    _log(f"Dirty worktree detected: {dirty_files}")
-                    if dev_calls_this_cycle >= config.retry.max_dev_iterations:
-                        state.phase = Phase.ESCALATE
-                        state.error = f"Dev agent left uncommitted changes: {dirty_files}"
-                        _log(f"✗ ESCALATE   {state.error}")
-                        _escalate_notify(task, state, notify, config)
-                        return _ValidateOutcome.ESCALATE, CoordinatorResult(
-                            success=False, phase=state.phase, state=state, message=state.error
-                        )
-                    state.human_feedback = (
-                        "PROCESS VIOLATION: You left uncommitted changes in"
-                        f" the worktree: {dirty_files}. You MUST commit ALL"
-                        " modified files before running the gate. Stage and"
-                        " commit them now."
-                    )
-                    state.retry_reason = "dirty_worktree"
-                    return _ValidateOutcome.RETRY_DEV, None
-
                 raw_names = ", ".join(line.strip().split(maxsplit=1)[-1] for line in dirty_lines)
-                return _dirty_dev_retry(raw_names)
+                _log(f"Dirty worktree detected: {raw_names}")
+
+                # Auto-commit: synthesize message from handoff, don't
+                # re-invoke the agent (full-prompt retry burns tokens and
+                # times out — the agent already wrote the code).
+                dev_notes = mod._get_raw_dev_notes(config, workspace_path)
+                if dev_notes:
+                    # Use first line of dev_notes as subject, truncated
+                    first_line = dev_notes.strip().splitlines()[0][:72]
+                    commit_msg = first_line
+                else:
+                    commit_msg = (
+                        f"wip: uncommitted changes from dev iteration {state.dev_iteration}"
+                    )
+                _cu._run_shell("git add -A", workspace_path)
+                ok, out = _cu._run_shell(
+                    f'git commit -m "{commit_msg}"',
+                    workspace_path,
+                )
+                if ok:
+                    _log(f"  Auto-committed dirty worktree: {commit_msg}")
+                else:
+                    _log(f"  ⚠ Auto-commit failed: {out[:200]}")
+                    # Fall through — don't escalate for a commit failure,
+                    # the work is done and gate passed.
 
     elif gate_decision in ("FAIL", "BLOCKED"):
         if dev_calls_this_cycle >= config.retry.max_dev_iterations:

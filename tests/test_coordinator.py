@@ -1819,9 +1819,10 @@ class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_timeout_resume_only_overrides_gate_fail(
+    def test_timeout_resume_dirty_worktree_auto_committed(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, tmp_path
     ):
+        """Timeout on iter 1, success on iter 2, dirty worktree → auto-commit (no retry)."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -1846,16 +1847,18 @@ class TestCoordinatorSessionResume:
                 )
             return _make_agent_result(success=True, output="Done.", profile_name="dev")
 
-        shell_calls = {"status": 0}
+        shell_cmds: list[str] = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            shell_cmds.append(cmd)
             if "gate" in cmd:
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
-                shell_calls["status"] += 1
-                if shell_calls["status"] == 1:
-                    return (True, " M src/foo.py")
+                return (True, " M src/foo.py")
+            if "git add" in cmd:
+                return (True, "")
+            if "git commit" in cmd:
                 return (True, "")
             stale_resp = _handle_stale_check_cmd(cmd)
             if stale_resp is not None:
@@ -1871,10 +1874,11 @@ class TestCoordinatorSessionResume:
         result = run_task(config, task)
 
         assert result.success is True
-        assert mock_dev_prompt.call_count == 2
-        assert dev_prompts == ["full dev prompt", "full dev prompt"]
-        second_feedback = mock_dev_prompt.call_args_list[1].kwargs["human_feedback"]
-        assert "PROCESS VIOLATION" in second_feedback
+        # Timeout iter → gate passes → auto-commit → REVIEW → DONE
+        # No PROCESS VIOLATION retry — only 1 dev prompt built
+        assert mock_dev_prompt.call_count == 1
+        # Auto-commit was called instead of retry
+        assert any("git commit" in c for c in shell_cmds)
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")

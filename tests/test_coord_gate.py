@@ -209,24 +209,25 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_dirty_worktree_retries_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Dirty worktree after gate PASS sends dev back with process violation feedback."""
+    def test_dirty_worktree_auto_commits_no_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Dirty worktree after gate PASS → coordinator auto-commits, no agent retry."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        call_count = {"gate": 0}
+        shell_cmds: list[str] = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            shell_cmds.append(cmd)
             if "gate" in cmd:
-                call_count["gate"] += 1
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
-                # First call: dirty; second call: clean (dev fixed it)
-                if call_count["gate"] == 1:
-                    return (True, " M src/theforge/runner.py\n M src/theforge/config.py")
+                return (True, " M src/theforge/runner.py\n M src/theforge/config.py")
+            if "git add" in cmd:
+                return (True, "")
+            if "git commit" in cmd:
                 return (True, "")
             return (True, "OK")
 
@@ -238,19 +239,20 @@ class TestCoordinatorDirtyWorktree:
 
         result = run_task(config, task)
 
-        # Dev was retried (dirty first, clean second) → should succeed
         assert result.success is True
         assert result.phase == Phase.DONE
-        # PREFLIGHT + 2 DEV calls (once dirty, once clean)
-        assert mock_agent.call_count == 3
+        # PREFLIGHT + 1 DEV — no retry
+        assert mock_agent.call_count == 2
+        assert any("git add" in c for c in shell_cmds)
+        assert any("git commit" in c for c in shell_cmds)
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_dirty_worktree_escalates_after_max_retries(
+    def test_dirty_worktree_auto_commits_even_at_max_iterations(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
-        """Dirty worktree with no retries left escalates."""
+        """Dirty worktree at max iterations → auto-commit succeeds, no escalation."""
         config = ForgeConfig(
             project="test",
             project_root=tmp_path,
@@ -270,12 +272,19 @@ class TestCoordinatorDirtyWorktree:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        shell_cmds: list[str] = []
+
         def shell_side_effect(cmd, cwd, **kwargs):
+            shell_cmds.append(cmd)
             if "gate" in cmd:
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py")
+            if "git add" in cmd:
+                return (True, "")
+            if "git commit" in cmd:
+                return (True, "")
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
@@ -286,9 +295,10 @@ class TestCoordinatorDirtyWorktree:
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "uncommitted" in result.message.lower()
+        # Auto-commit succeeds — no escalation even at max iterations
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert any("git commit" in c for c in shell_cmds)
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -358,8 +368,8 @@ class TestCoordinatorDirtyWorktree:
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_dirty_files_trigger_dev_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Dirty files after gate → DEV retry."""
+    def test_dirty_files_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Dirty files after gate PASS → coordinator auto-commits, no retry."""
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
@@ -371,16 +381,18 @@ class TestCoordinatorDirtyWorktree:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        call_count = {"gate": 0}
+        shell_cmds: list[str] = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            shell_cmds.append(cmd)
             if "gate" in cmd:
-                call_count["gate"] += 1
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
-                if call_count["gate"] == 1:
-                    return (True, " M src/theforge/ideate.py")
+                return (True, " M src/theforge/ideate.py")
+            if "git add" in cmd:
+                return (True, "")
+            if "git commit" in cmd:
                 return (True, "")
             return (True, "OK")
 
@@ -392,17 +404,19 @@ class TestCoordinatorDirtyWorktree:
 
         result = run_task(config, task)
 
-        # Dirty → DEV retry → clean on second pass → DONE
         assert result.success is True
         assert result.phase == Phase.DONE
-        # PREFLIGHT + 2 DEV calls (retry once for dirty)
-        assert mock_agent.call_count == 3
+        # PREFLIGHT + 1 DEV (no retry — auto-committed)
+        assert mock_agent.call_count == 2
+        # Verify git add + git commit were called
+        assert any("git add" in c for c in shell_cmds)
+        assert any("git commit" in c for c in shell_cmds)
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
-    def test_untracked_file_retries_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
-        """Tracked file + untracked file → DEV retry."""
+    def test_untracked_file_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
+        """Tracked + untracked files → coordinator auto-commits both."""
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test Spec\n\nImplement the thing.", encoding="utf-8")
@@ -414,16 +428,18 @@ class TestCoordinatorDirtyWorktree:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        call_count = {"gate": 0}
+        shell_cmds: list[str] = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            shell_cmds.append(cmd)
             if "gate" in cmd:
-                call_count["gate"] += 1
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
-                if call_count["gate"] == 1:
-                    return (True, " M src/theforge/ideate.py\n?? new_scratch.py")
+                return (True, " M src/theforge/ideate.py\n?? new_scratch.py")
+            if "git add" in cmd:
+                return (True, "")
+            if "git commit" in cmd:
                 return (True, "")
             return (True, "OK")
 
@@ -435,10 +451,9 @@ class TestCoordinatorDirtyWorktree:
 
         result = run_task(config, task)
 
-        # Dirty → DEV retry → clean → DONE
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert mock_agent.call_count == 3  # PREFLIGHT + 2 DEV
+        assert mock_agent.call_count == 2  # PREFLIGHT + 1 DEV, no retry
 
 
 # ── Exit-code gate mode tests ────────────────────────────────────────
