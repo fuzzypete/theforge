@@ -18,6 +18,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+import importlib.metadata
 
 import yaml
 
@@ -1840,6 +1841,51 @@ _PHASE_LABELS = {
 }
 
 
+def cmd_version(args: argparse.Namespace) -> int:
+    """Print the installed version of TheForge."""
+    try:
+        version = importlib.metadata.version("theforge")
+    except importlib.metadata.PackageNotFoundError:
+        version = "(not installed)"
+
+    print(f"TheForge version: {version}")
+
+    # Check for editable install
+    try:
+        dist = importlib.metadata.distribution("theforge")
+        # Check for 'direct_url.json' which indicates an editable install
+        if dist.read_text("direct_url.json"):
+            # Try to get git info
+            try:
+                # Get branch name
+                branch = subprocess.check_output(
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+                # Get commit hash
+                commit = subprocess.check_output(
+                    ["git", "rev-parse", "HEAD"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+                # Get tag distance
+                tag_distance = subprocess.check_output(
+                    ["git", "describe", "--tags", "--long"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+                print(f"  Branch: {branch}")
+                print(f"  Commit: {commit}")
+                print(f"  Tag distance: {tag_distance}")
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print("  (Git information not available)")
+    except (FileNotFoundError, importlib.metadata.PackageNotFoundError):
+        pass # Not an editable install or direct_url.json not found
+
+    return 0
+
+
 def cmd_telemetry(args: argparse.Namespace) -> int:
     """Print per-phase cost/duration telemetry from history.jsonl."""
     # Locate project root
@@ -2005,6 +2051,9 @@ def main() -> None:
         "secrets-init",
         help="Create .forge/secrets.yaml skeleton and update .gitignore",
     )
+
+    # forge version
+    subparsers.add_parser("version", help="Print the installed version")
 
     # forge init-hooks
     subparsers.add_parser(
