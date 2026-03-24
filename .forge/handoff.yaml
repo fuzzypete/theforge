@@ -1,9 +1,31 @@
-dev_notes: "summary: \"Implemented the `forge version` command and updated existing\
-  \ version displays to be dynamic.\"\ncommits:\n  - sha: \"<COMMIT_SHA>\"\n    message:\
-  \ \"feat(version): implement `forge version` command and dynamic version display\"\
-  \nacceptance_criteria:\n  - criterion: \"The system should display the correct version\
-  \ when queried.\"\n    status: MET\n    notes: \"The `forge version` command now\
-  \ dynamically retrieves and displays the package version. The hardcoded version\
-  \ strings in `cmd_run` and `cmd_review` have been replaced with dynamic version\
-  \ retrieval.\"\nstory_deviations: none\ndeferred_items: none\ngate_result: PASS\n"
+dev_notes: "summary: \"Implemented the V0.2.2 review-fix pass: nearby-line corroboration\
+  \ now requires matching severity, legacy `plan_agent_review` provider profiles inherit\
+  \ the API read-only tool defaults, and regression tests cover both reviewed failures\
+  \ alongside the earlier planner/reviewer model conflict checks.\"\ncommits:\n  -\
+  \ sha: \"<COMMIT_SHA>\"\n    message: \"fix(v0.2.2): address review findings (iter\
+  \ 1)\"\nacceptance_criteria:\n  - criterion: \"Two findings at the same file and\
+  \ line (within +/-3 lines) are corroborated even if their descriptions differ\"\n\
+  \    status: MET\n    notes: \"Nearby-line corroboration still works for differently\
+  \ worded reports, but only when severity also matches.\"\n  - criterion: \"Exact-match\
+  \ fingerprinting continues to work for identical findings\"\n    status: MET\n \
+  \   notes: \"The existing exact-fingerprint grouping logic is unchanged and remains\
+  \ covered by the finding-classifier tests.\"\n  - criterion: \"load_config() raises\
+  \ ValueError if any plan_agent_review pool member uses the same model as the planner\"\
+  \n    status: MET\n    notes: \"Pool and legacy scalar plan-agent-review configurations\
+  \ are both rejected when they reuse the planner model.\"\n  - criterion: \"Error\
+  \ message names the conflicting model\"\n    status: MET\n    notes: \"The validation\
+  \ error still includes the conflicting model name, and the tests assert against\
+  \ that text.\"\n  - criterion: \"Test covers the invalid config case\"\n    status:\
+  \ MET\n    notes: \"Config tests cover conflicting pool members, the legacy scalar\
+  \ path, and an allowed different-model case.\"\n  - criterion: \"API-provider profiles\
+  \ with no explicit allowed_tools default to ('read_file', 'bash', 'glob', 'grep',\
+  \ 'submit_review')\"\n    status: MET\n    notes: \"The parsed-profile, override,\
+  \ and legacy `plan_agent_review.profiles` materialization paths now all produce\
+  \ the same API default tool tuple.\"\n  - criterion: \"CLI-provider profiles continue\
+  \ to use their existing defaults\"\n    status: MET\n    notes: \"CLI-backed profiles\
+  \ still inherit the existing review defaults when no explicit allowed_tools are\
+  \ configured.\"\n  - criterion: \"Test covers an API-provider profile with no allowed_tools\
+  \ set\"\n    status: MET\n    notes: \"Regression tests cover `_parse_profile()`,\
+  \ `_apply_profile_overrides()`, and the legacy `plan_agent_review` provider path.\"\
+  \nstory_deviations: none\ndeferred_items: none\ngate_result: NOT_RUN\n"
 gate_decision: PASS

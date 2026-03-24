@@ -232,6 +232,31 @@ class TestUpdateFindingRegistryCycle1:
         assert len(p1s) == 2
         assert all(r.disposition == "net_new" for r in p1s)
 
+    def test_multiple_reviewers_nearby_lines_different_severities_do_not_merge(self, tmp_path):
+        state = _make_state()
+        finding_a = _make_finding(
+            "Missing null check before dereferencing request.user",
+            severity="P1",
+            line=10,
+        )
+        finding_b = _make_finding(
+            "Formatting issue in nearby branch",
+            severity="P2",
+            line=12,
+        )
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b], verdict="APPROVE")),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        assert len(classified) == 2
+        by_severity = {record.severity: record for record in classified}
+        assert by_severity["P1"].disposition == "net_new"
+        assert by_severity["P2"].disposition == "net_new"
+
 
 class TestUpdateFindingRegistryCycle2:
     """Cycle 2+: matching against prior registry."""

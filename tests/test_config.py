@@ -609,6 +609,29 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "opus"
 
+    def test_plan_agent_review_legacy_provider_profile_uses_api_default_tools(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "provider": "openai",
+                    "model": "o4-mini",
+                },
+            },
+            tmp_path,
+        )
+
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+
+        profiles = config.plan_agent_review.profiles
+        assert len(profiles) == 1
+        assert profiles[0].provider == "openai"
+        assert profiles[0].allowed_tools == API_PROVIDER_DEFAULT_TOOLS
+
 
 class TestAllowedToolsConfig:
     def test_empty_allowed_tools_is_empty(self, tmp_path):

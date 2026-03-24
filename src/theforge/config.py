@@ -296,7 +296,11 @@ class PlanAgentReviewConfig:
         if self.pool:
             return self.pool
         # Legacy single-profile: construct from scalar fields.
-        # Use DEFAULT_PREFLIGHT_PROFILE.allowed_tools as the standard plan-review tool set.
+        allowed_tools = (
+            API_PROVIDER_DEFAULT_TOOLS
+            if self.provider and self.provider in SUPPORTED_PROVIDERS
+            else DEFAULT_PREFLIGHT_PROFILE.allowed_tools
+        )
         return [
             ModelProfile(
                 name="plan-review",
@@ -305,7 +309,7 @@ class PlanAgentReviewConfig:
                 model=self.model or "sonnet",
                 budget_usd=self.budget_usd,
                 timeout_seconds=self.timeout,
-                allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+                allowed_tools=allowed_tools,
             )
         ]
 

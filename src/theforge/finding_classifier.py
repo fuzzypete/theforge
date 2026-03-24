@@ -157,6 +157,7 @@ def update_finding_registry(
                 if (
                     finding_b.file is not None
                     and finding_b.line is not None
+                    and finding_a.severity == finding_b.severity
                     and finding_a.file == finding_b.file
                     and abs(finding_a.line - finding_b.line) <= 3
                 ):
