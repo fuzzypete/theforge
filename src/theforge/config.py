@@ -617,9 +617,12 @@ def _parse_profile(
         )
         api_key_var = PROVIDER_API_KEY_MAP.get(provider)
         if api_key_var and not _resolve_secret(api_key_var, secrets or {}) and not _is_local:
-            raise ValueError(
-                f"Profile {name!r} uses provider '{provider}' but the required "
-                f"environment variable ${api_key_var} is not set."
+            log.warning(
+                "Profile %r uses provider %r but $%s is not set — "
+                "this agent will be skipped at runtime.",
+                name,
+                provider,
+                api_key_var,
             )
 
     tools = data.get("allowed_tools")
