@@ -1,40 +1,41 @@
 dev_notes: |
-  summary: "Converted src/theforge/config.py (1,239 lines) into a config/
-  package with 8 sub-modules: types.py (dataclasses), models.py
-  (ModelInfo + AgentDef + MODEL_REGISTRY + helpers), defaults.py (DEFAULT_*
-  constants), secrets.py (_resolve_secret + _parse_notifications), profiles.py
-  (profile resolution, _auto_assign_models), _loaders.py (_parse_plan_agent_review
-  + _parse_workspace), load.py (load_config), and __init__.py (re-exports full
-  public API). ModelInfo and AgentDef were moved to models.py (the plan had them
-  there; linter initially placed ModelInfo in types.py). A TYPE_CHECKING guard was
-  added in types.py for the AgentDef forward reference to satisfy ruff F821 without
-  creating a circular import. The critical package-relative import was updated:
-  from .tool_runtime → from theforge.tool_runtime in profiles.py. Logger namespace
-  preserved as 'theforge.config' across all sub-modules."
-commits:
-  - sha: "1555ca5"
-    message: "refactor(config): split config.py into a config/ package"
-  - sha: "7278afe"
-    message: "chore: update handoff.yaml dev_notes for split-config-package"
-  - sha: "f7f6ca7"
-    message: "summary: Converted src/theforge/config.py into a config/ package"
-acceptance_criteria:
-  - criterion: "make test passes with the same test count."
-    status: MET
-    notes: "1410 tests pass (same count as before the split)."
-  - criterion: "make lint passes."
-    status: MET
-    notes: "ruff check and ruff format --check both pass cleanly."
-  - criterion: "All existing public imports from theforge.config still work."
-    status: MET
-    notes: "__init__.py re-exports all 31 public names; import smoke test confirmed."
-  - criterion: "No single file in src/theforge/config/ exceeds 300 lines."
-    status: MET
-    notes: "Largest file is load.py at 288 lines; all others are under 250."
-  - criterion: "The old config.py file no longer exists."
-    status: MET
-    notes: "src/theforge/config.py deleted; Python resolves config/ package identically."
-story_deviations: none
-deferred_items: none
-gate_result: PASS
+  summary: "Converted src/theforge/config.py (1,239 lines) into a config/ package
+  with 8 sub-modules: types.py (dataclasses), models.py (ModelInfo + AgentDef +
+  MODEL_REGISTRY + helpers), defaults.py (DEFAULT_* constants), secrets.py
+  (_resolve_secret + _parse_notifications), profiles.py (profile resolution,
+  _auto_assign_models), _loaders.py (_parse_plan_agent_review + _parse_workspace),
+  load.py (load_config), and __init__.py (re-exports full public API). ModelInfo
+  and AgentDef were moved to models.py. A TYPE_CHECKING guard was added in
+  types.py for the AgentDef forward reference to satisfy ruff F821 without creating
+  a circular import. The package-relative import was updated from .tool_runtime to
+  theforge.tool_runtime in profiles.py. Logger namespace preserved as
+  'theforge.config' across all sub-modules."
+  commits:
+    - sha: "1555ca5"
+      message: "refactor(config): split config.py into a config/ package"
+    - sha: "7278afe"
+      message: "chore: update handoff.yaml dev_notes for split-config-package"
+    - sha: "f7f6ca7"
+      message: "summary: Converted src/theforge/config.py into a config/ package"
+    - sha: "98c834a"
+      message: "chore(handoff): update dev_notes with final commit list"
+  acceptance_criteria:
+    - criterion: "make test passes with the same test count."
+      status: MET
+      notes: "1410 tests pass (same count as before the split)."
+    - criterion: "make lint passes."
+      status: MET
+      notes: "ruff check and ruff format --check both pass cleanly."
+    - criterion: "All existing public imports from theforge.config still work."
+      status: MET
+      notes: "__init__.py re-exports all 31 public names; import smoke test confirmed."
+    - criterion: "No single file in src/theforge/config/ exceeds 300 lines."
+      status: MET
+      notes: "Largest file is load.py at 288 lines; all others are under 250."
+    - criterion: "The old config.py file no longer exists."
+      status: MET
+      notes: "src/theforge/config.py deleted; Python resolves config/ package identically."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
 gate_decision: PASS
