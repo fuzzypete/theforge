@@ -1,40 +1,41 @@
-dev_notes: "summary: \"Addressed the regression P1 from review cycle 2: config.py\
-  \ was seeding planner_models with plan_cfg.model_name even when adaptive assignment\
-  \ is enabled and the plan model is still the default, causing load_config to reject\
-  \ plan reviewers that use the default model even though the coordinator ignores\
-  \ that default at runtime.  Fix: when assignment.enabled is True and _plan_model_is_default\
-  \ is True, build planner_models exclusively from _planner_candidate_models (which\
-  \ mirrors the actual assign_models selection logic) instead of seeding it with the\
-  \ unused default model name.  Added regression test for the default-plan-model-unreachable\
-  \ case (cheap haiku + strong opus agents, plan reviewer on sonnet, adaptive assignment\
-  \ enabled).\"\ncommits:\n  - sha: \"54d33a9\"\n    message: \"fix(finding_classifier,config):\
-  \ address review findings (iter 1)\"\n  - sha: \"d83baf5\"\n    message: \"fix(config):\
-  \ exclude default plan model from conflict check when adaptive assignment active\"\
-  \nacceptance_criteria:\n  - criterion: \"Two findings at the same file and line\
-  \ (within \\xb13 lines) are corroborated even if their descriptions differ\"\n \
-  \   status: MET\n    notes: \"Line-aware fingerprinting and prior-registry snapshot\
-  \ fix correctly corroborate nearby findings.\"\n  - criterion: \"A reviewer reporting\
-  \ the same description at a distant line does not block corroboration with another\
-  \ reviewer near the first report\"\n    status: MET\n    notes: \"Line is now part\
-  \ of the fingerprint key so distant same-description reports go into separate buckets.\"\
-  \n  - criterion: \"`load_config()` raises `ValueError` if any plan_agent_review\
-  \ pool member uses the same model as the planner\"\n    status: MET\n    notes:\
-  \ \"Conflict check still fires for explicit planner model matches and for models\
-  \ reachable by adaptive assignment.\"\n  - criterion: \"Error message names the\
-  \ conflicting model\"\n    status: MET\n    notes: \"Error message unchanged, still\
-  \ names the reused model.\"\n  - criterion: \"Adaptive planner conflict check does\
-  \ not reject configs where the cheap model is not reachable by the planner\"\n \
-  \   status: MET\n    notes: \"_planner_candidate_models now mirrors assign_models\
-  \ fallback logic so only structurally reachable models are checked.\"\n  - criterion:\
-  \ \"Adaptive planner conflict check does not reject configs where the default plan\
-  \ model is overridden by adaptive assignment at runtime\"\n    status: MET\n  \
-  \  notes: \"When assignment.enabled + _plan_model_is_default, planner_models is\
-  \ built exclusively from _planner_candidate_models and does not include the unused\
-  \ default model name.\"\n  - criterion: \"Test covers the default-plan-model-unreachable\
-  \ case\"\n    status: MET\n    notes: \"test_plan_agent_review_allows_default_plan_model_when_adaptive_assignment_overrides_it\
-  \ added to test_config.py.\"\n  - criterion: \"API-provider profiles with no explicit\
-  \ `allowed_tools` default to `(\\\"read_file\\\", \\\"bash\\\", \\\"glob\\\", \\\
-  \"grep\\\", \\\"submit_review\\\")`\"\n    status: MET\n    notes: \"Unchanged from\
-  \ prior iterations.\"\nstory_deviations: none\ndeferred_items: none\ngate_result:\
-  \ PASS\n"
+dev_notes: |
+  summary: "Converted src/theforge/config.py (1,239 lines) into a config/ package
+  with 8 sub-modules: types.py (dataclasses), models.py (ModelInfo + AgentDef +
+  MODEL_REGISTRY + helpers), defaults.py (DEFAULT_* constants), secrets.py
+  (_resolve_secret + _parse_notifications), profiles.py (profile resolution,
+  _auto_assign_models), _loaders.py (_parse_plan_agent_review + _parse_workspace),
+  load.py (load_config), and __init__.py (re-exports full public API). ModelInfo
+  and AgentDef were moved to models.py. A TYPE_CHECKING guard was added in
+  types.py for the AgentDef forward reference to satisfy ruff F821 without creating
+  a circular import. The package-relative import was updated from .tool_runtime to
+  theforge.tool_runtime in profiles.py. Logger namespace preserved as
+  'theforge.config' across all sub-modules."
+  commits:
+    - sha: "1555ca5"
+      message: "refactor(config): split config.py into a config/ package"
+    - sha: "7278afe"
+      message: "chore: update handoff.yaml dev_notes for split-config-package"
+    - sha: "f7f6ca7"
+      message: "summary: Converted src/theforge/config.py into a config/ package"
+    - sha: "98c834a"
+      message: "chore(handoff): update dev_notes with final commit list"
+  acceptance_criteria:
+    - criterion: "make test passes with the same test count."
+      status: MET
+      notes: "1410 tests pass (same count as before the split)."
+    - criterion: "make lint passes."
+      status: MET
+      notes: "ruff check and ruff format --check both pass cleanly."
+    - criterion: "All existing public imports from theforge.config still work."
+      status: MET
+      notes: "__init__.py re-exports all 31 public names; import smoke test confirmed."
+    - criterion: "No single file in src/theforge/config/ exceeds 300 lines."
+      status: MET
+      notes: "Largest file is load.py at 288 lines; all others are under 250."
+    - criterion: "The old config.py file no longer exists."
+      status: MET
+      notes: "src/theforge/config.py deleted; Python resolves config/ package identically."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
 gate_decision: PASS
