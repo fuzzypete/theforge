@@ -1,9 +1,40 @@
-dev_notes: "summary: \"Implemented the `forge version` command and updated existing\
-  \ version displays to be dynamic.\"\ncommits:\n  - sha: \"<COMMIT_SHA>\"\n    message:\
-  \ \"feat(version): implement `forge version` command and dynamic version display\"\
-  \nacceptance_criteria:\n  - criterion: \"The system should display the correct version\
-  \ when queried.\"\n    status: MET\n    notes: \"The `forge version` command now\
-  \ dynamically retrieves and displays the package version. The hardcoded version\
-  \ strings in `cmd_run` and `cmd_review` have been replaced with dynamic version\
-  \ retrieval.\"\nstory_deviations: none\ndeferred_items: none\ngate_result: PASS\n"
+dev_notes: "summary: \"Addressed the regression P1 from review cycle 2: config.py\
+  \ was seeding planner_models with plan_cfg.model_name even when adaptive assignment\
+  \ is enabled and the plan model is still the default, causing load_config to reject\
+  \ plan reviewers that use the default model even though the coordinator ignores\
+  \ that default at runtime.  Fix: when assignment.enabled is True and _plan_model_is_default\
+  \ is True, build planner_models exclusively from _planner_candidate_models (which\
+  \ mirrors the actual assign_models selection logic) instead of seeding it with the\
+  \ unused default model name.  Added regression test for the default-plan-model-unreachable\
+  \ case (cheap haiku + strong opus agents, plan reviewer on sonnet, adaptive assignment\
+  \ enabled).\"\ncommits:\n  - sha: \"54d33a9\"\n    message: \"fix(finding_classifier,config):\
+  \ address review findings (iter 1)\"\n  - sha: \"d83baf5\"\n    message: \"fix(config):\
+  \ exclude default plan model from conflict check when adaptive assignment active\"\
+  \nacceptance_criteria:\n  - criterion: \"Two findings at the same file and line\
+  \ (within \\xb13 lines) are corroborated even if their descriptions differ\"\n \
+  \   status: MET\n    notes: \"Line-aware fingerprinting and prior-registry snapshot\
+  \ fix correctly corroborate nearby findings.\"\n  - criterion: \"A reviewer reporting\
+  \ the same description at a distant line does not block corroboration with another\
+  \ reviewer near the first report\"\n    status: MET\n    notes: \"Line is now part\
+  \ of the fingerprint key so distant same-description reports go into separate buckets.\"\
+  \n  - criterion: \"`load_config()` raises `ValueError` if any plan_agent_review\
+  \ pool member uses the same model as the planner\"\n    status: MET\n    notes:\
+  \ \"Conflict check still fires for explicit planner model matches and for models\
+  \ reachable by adaptive assignment.\"\n  - criterion: \"Error message names the\
+  \ conflicting model\"\n    status: MET\n    notes: \"Error message unchanged, still\
+  \ names the reused model.\"\n  - criterion: \"Adaptive planner conflict check does\
+  \ not reject configs where the cheap model is not reachable by the planner\"\n \
+  \   status: MET\n    notes: \"_planner_candidate_models now mirrors assign_models\
+  \ fallback logic so only structurally reachable models are checked.\"\n  - criterion:\
+  \ \"Adaptive planner conflict check does not reject configs where the default plan\
+  \ model is overridden by adaptive assignment at runtime\"\n    status: MET\n  \
+  \  notes: \"When assignment.enabled + _plan_model_is_default, planner_models is\
+  \ built exclusively from _planner_candidate_models and does not include the unused\
+  \ default model name.\"\n  - criterion: \"Test covers the default-plan-model-unreachable\
+  \ case\"\n    status: MET\n    notes: \"test_plan_agent_review_allows_default_plan_model_when_adaptive_assignment_overrides_it\
+  \ added to test_config.py.\"\n  - criterion: \"API-provider profiles with no explicit\
+  \ `allowed_tools` default to `(\\\"read_file\\\", \\\"bash\\\", \\\"glob\\\", \\\
+  \"grep\\\", \\\"submit_review\\\")`\"\n    status: MET\n    notes: \"Unchanged from\
+  \ prior iterations.\"\nstory_deviations: none\ndeferred_items: none\ngate_result:\
+  \ PASS\n"
 gate_decision: PASS

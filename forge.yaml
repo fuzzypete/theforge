@@ -1,10 +1,6 @@
 # forge.yaml — TheForge developing itself
 project: theforge
 
-# Dev model escalation chain: Codex primary; no CLI-provider hop required
-smart_config_models:
-  - openai/gpt-5.4
-
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
   setup_command: "test -d .venv || (python -m venv .venv && .venv/bin/pip install -e '.[all]' pytest -q)"
@@ -18,33 +14,24 @@ validation:
   handoff_file: ".forge/handoff.yaml"
   gate_decision_key: "gate_decision"
 
+retry:
+  max_dev_iterations: 3
+  max_review_cycles: 3
+
+# Explicit profiles until adaptive assignment is stable
 profiles:
   dev:
-    cli: codex
-    model: gpt-5.4
+    cli: claude
+    model: sonnet
     budget_usd: 50.00
     timeout_seconds: 600
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
-    reasoning_effort: medium
-    allowed_tools:
-      - Read
-      - Edit
-      - Write
-      - Bash
-      - Glob
-      - Grep
   preflight:
-    cli: codex
-    model: gpt-5.4
+    cli: claude
+    model: sonnet
     budget_usd: 1.00
     timeout_seconds: 300
-    reasoning_effort: medium
-    allowed_tools:
-      - Read
-      - Bash
-      - Glob
-      - Grep
   review_pool:
     - name: codex-reviewer
       cli: codex
@@ -54,35 +41,19 @@ profiles:
       timeout_seconds: 300
       reasoning_effort: high
       max_iterations: 20
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
     - name: codex-patterns-reviewer
       cli: codex
       model: gpt-5.4
       review_role: patterns
       budget_usd: 2.00
       timeout_seconds: 300
-      reasoning_effort: medium
       max_iterations: 20
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
     - name: gemini-reviewer
       provider: google
       model: gemini-2.5-flash
       review_role: edge-cases
       budget_usd: 1.00
       timeout_seconds: 300
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
     - name: deepseek-reviewer
       provider: deepseek
       model: deepseek-chat
@@ -90,20 +61,12 @@ profiles:
       budget_usd: 1.00
       timeout_seconds: 300
       max_iterations: 15
-      allowed_tools:
-        - Read
-        - Bash
-        - Glob
-        - Grep
 
-retry:
-  max_dev_iterations: 3
-  max_review_cycles: 3
-
+# Plan uses opus — deliberate choice
 plan:
   enabled: true
   model: claude
-  model_name: claude-opus-4-5
+  model_name: opus
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
@@ -119,63 +82,12 @@ plan_agent_review:
       timeout_seconds: 600
       reasoning_effort: high
       max_iterations: 20
-      allowed_tools:
-        - Read
-        - Glob
-        - Grep
-    - name: codex-plan-reviewer-2
-      cli: codex
-      model: gpt-5.4
-      budget_usd: 1.00
-      timeout_seconds: 300
-      reasoning_effort: medium
-      max_iterations: 20
-      allowed_tools:
-        - Read
-        - Glob
-        - Grep
     - name: deepseek-plan-reviewer
       provider: deepseek
       model: deepseek-chat
       budget_usd: 0.50
       timeout_seconds: 300
       max_iterations: 15
-      allowed_tools:
-        - Read
-        - Glob
-        - Grep
-
-agents:
-  - name: codex-cli
-    cli: codex
-    model: gpt-5.4
-    budget_usd: 5.00
-    timeout_seconds: 900
-    tier: mid
-    strengths: [code, tools, general]
-  - name: codex-strong
-    cli: codex
-    model: gpt-5.4
-    budget_usd: 8.00
-    timeout_seconds: 1200
-    tier: strong
-    strengths: [architecture, review, complex-logic]
-    reasoning_effort: high
-  - name: claude-sonnet
-    cli: claude
-    model: claude-sonnet-4-5
-    budget_usd: 5.00
-    timeout_seconds: 900
-    tier: mid
-    strengths: [code, tools, general]
-
-assignment:
-  enabled: true  # M2: complexity-driven model routing
-  min_reviewers: 1
-  max_reviewers: 3
-  prefer_cross_provider: true
-  budget_per_story_usd: 15.00
-  escalation_memory: true
 
 hooks:
   post_run: .forge/hooks/post_run.sh

@@ -200,6 +200,110 @@ class TestUpdateFindingRegistryCycle1:
         assert len(p1s) == 1
         assert p1s[0].disposition == "corroborated_new"
 
+    def test_multiple_reviewers_nearby_lines_different_wording_corroborated(self, tmp_path):
+        state = _make_state()
+        finding_a = _make_finding("Missing null check before dereferencing request.user", line=10)
+        finding_b = _make_finding("Handler can crash when account lookup returns None", line=12)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 1
+        assert p1s[0].disposition == "corroborated_new"
+
+    def test_multiple_reviewers_far_apart_lines_not_corroborated(self, tmp_path):
+        state = _make_state()
+        finding_a = _make_finding("Missing null check before dereferencing request.user", line=10)
+        finding_b = _make_finding("Handler can crash when account lookup returns None", line=14)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 2
+        assert all(r.disposition == "net_new" for r in p1s)
+
+    def test_multiple_reviewers_nearby_lines_different_severities_do_not_merge(self, tmp_path):
+        state = _make_state()
+        finding_a = _make_finding(
+            "Missing null check before dereferencing request.user",
+            severity="P1",
+            line=10,
+        )
+        finding_b = _make_finding(
+            "Formatting issue in nearby branch",
+            severity="P2",
+            line=12,
+        )
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b], verdict="APPROVE")),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        assert len(classified) == 2
+        by_severity = {record.severity: record for record in classified}
+        assert by_severity["P1"].disposition == "net_new"
+        assert by_severity["P2"].disposition == "net_new"
+
+    def test_same_reviewer_distant_duplicate_does_not_block_nearby_corroboration(self, tmp_path):
+        """Reviewer A reports the same description at lines 10 AND 100 (same fingerprint bucket).
+        Reviewer B reports different wording at line 11.
+        The pair (line 10, line 11) satisfies ±3, so the buckets should merge → corroborated_new.
+        The distant report at line 100 must not prevent corroboration.
+        """
+        state = _make_state()
+        finding_a_near = _make_finding("Missing null check before dereference", line=10)
+        finding_a_far = _make_finding("Missing null check before dereference", line=100)
+        finding_b = _make_finding("Potential None dereference in handler", line=11)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a_near, finding_a_far])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        # reviewer-a and reviewer-b should corroborate via the near pair (lines 10 & 11)
+        corroborated = [r for r in p1s if r.disposition == "corroborated_new"]
+        assert len(corroborated) >= 1, (
+            f"Expected at least one corroborated_new P1; got dispositions: "
+            f"{[r.disposition for r in p1s]}"
+        )
+
+    def test_nearby_line_corroboration_does_not_chain_transitively(self, tmp_path):
+        state = _make_state()
+        cycle_results = [
+            ("reviewer-a", _make_review([_make_finding("Null access in branch A", line=10)])),
+            (
+                "reviewer-b",
+                _make_review([_make_finding("Unchecked response in branch B", line=13)]),
+            ),
+            ("reviewer-c", _make_review([_make_finding("Missing guard in branch C", line=16)])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 2
+        corroborated = [record for record in p1s if record.disposition == "corroborated_new"]
+        net_new = [record for record in p1s if record.disposition == "net_new"]
+        assert len(corroborated) == 1
+        assert len(net_new) == 1
+
 
 class TestUpdateFindingRegistryCycle2:
     """Cycle 2+: matching against prior registry."""

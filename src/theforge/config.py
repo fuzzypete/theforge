@@ -296,7 +296,11 @@ class PlanAgentReviewConfig:
         if self.pool:
             return self.pool
         # Legacy single-profile: construct from scalar fields.
-        # Use DEFAULT_PREFLIGHT_PROFILE.allowed_tools as the standard plan-review tool set.
+        allowed_tools = (
+            API_PROVIDER_DEFAULT_TOOLS
+            if self.provider and self.provider in SUPPORTED_PROVIDERS
+            else DEFAULT_PREFLIGHT_PROFILE.allowed_tools
+        )
         return [
             ModelProfile(
                 name="plan-review",
@@ -305,7 +309,7 @@ class PlanAgentReviewConfig:
                 model=self.model or "sonnet",
                 budget_usd=self.budget_usd,
                 timeout_seconds=self.timeout,
-                allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+                allowed_tools=allowed_tools,
             )
         ]
 
@@ -428,6 +432,7 @@ PROVIDER_API_KEY_MAP = {
     "google": "GOOGLE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
 }
+API_PROVIDER_DEFAULT_TOOLS = ("read_file", "bash", "glob", "grep", "submit_review")
 
 
 def _resolve_secret(key: str, secrets: dict[str, str]) -> str | None:
@@ -448,9 +453,39 @@ def _resolve_model_info(model_key: str) -> ModelInfo:
     return ModelInfo(cli=cli, model=model, tier="strong", capability=5, cost_rank=2)
 
 
+def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
+    """Return model names the adaptive planner can select at runtime.
+
+    Mirrors assign_models planner selection logic (PHASE_TIER["plan"]):
+      LOW → mid tier (fallback: highest-budget agent if no mid agents)
+      MEDIUM/HIGH → strong tier (fallback: highest-budget agent if no strong agents)
+
+    Auth filtering is intentionally omitted: auth state can change at runtime,
+    so the static check only considers structural availability.
+    """
+    if not agents:
+        return set()
+
+    # PHASE_TIER["plan"] = {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"}
+    planner_tiers = {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"}
+    highest_budget = sorted(agents, key=lambda a: -a.budget_usd)[0]
+
+    candidate_models: set[str] = set()
+    for tier in planner_tiers.values():
+        tier_agents = sorted([a for a in agents if a.tier == tier], key=lambda a: a.budget_usd)
+        if tier_agents:
+            candidate_models.add(tier_agents[0].model)
+        else:
+            # Mirror assign_models fallback: pick highest-budget agent
+            candidate_models.add(highest_budget.model)
+
+    return candidate_models
+
+
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
     tools = data.get("allowed_tools")
+    effective_provider = data.get("provider") or base.provider
     reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
@@ -469,7 +504,11 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
-        allowed_tools=tuple(tools) if tools is not None else base.allowed_tools,
+        allowed_tools=(
+            tuple(tools)
+            if tools is not None
+            else (API_PROVIDER_DEFAULT_TOOLS if effective_provider else base.allowed_tools)
+        ),
         reasoning_effort=reasoning_effort,
         base_url=data.get("base_url", base.base_url),
         max_iterations=int(max_iter_raw)
@@ -645,7 +684,7 @@ def _parse_profile(
         else:
             allowed_tools_tuple = tuple(tools)
     elif provider:
-        allowed_tools_tuple = ()
+        allowed_tools_tuple = API_PROVIDER_DEFAULT_TOOLS
     else:
         allowed_tools_tuple = default.allowed_tools
 
@@ -1020,7 +1059,6 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout=int(par_data.get("timeout", 300)),
         pool=par_pool,
     )
-
     # Logging
     log_data = raw.get("logging", {})
     log_cfg = LogConfig(
@@ -1083,6 +1121,23 @@ def load_config(config_path: Path) -> ForgeConfig:
         budget_per_story_usd=float(assignment_raw.get("budget_per_story_usd", 15.0)),
         escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
     )
+
+    if plan_agent_review_cfg.enabled:
+        if assignment_cfg.enabled and agents_list and _plan_model_is_default:
+            # When adaptive assignment is active, the coordinator ignores plan_cfg.model_name
+            # at runtime and selects from the adaptive candidate set.  Validate only against
+            # what assign_models can actually select, not the unused default model name.
+            planner_models = _planner_candidate_models(agents_list)
+        else:
+            planner_models = {plan_cfg.model_name}
+
+        for profile in plan_agent_review_cfg.profiles:
+            if profile.model in planner_models:
+                raise ValueError(
+                    f"plan_agent_review member '{profile.name}' uses model '{profile.model}' "
+                    "which matches the planner — the reviewer must use a different model "
+                    "for independent review."
+                )
 
     # Sprint config
     sprint_data = raw.get("sprint", {})

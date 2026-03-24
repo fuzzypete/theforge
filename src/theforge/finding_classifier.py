@@ -39,10 +39,17 @@ def _normalize_tokens(text: str) -> frozenset[str]:
     return frozenset(t for t in text.split() if len(t) > 2)
 
 
-def _fingerprint(severity: str, file: str | None, description: str) -> str:
-    """Stable fingerprint: sha256 prefix of severity + file + normalized description tokens."""
+def _fingerprint(
+    severity: str, file: str | None, description: str, line: int | None = None
+) -> str:
+    """Stable fingerprint: sha256 prefix of severity + file + line + normalized description tokens.
+
+    Line is included so that one reviewer reporting the same description at distant lines
+    produces separate buckets.  Reports with line=None share a bucket (line omitted from key).
+    """
     tokens = sorted(_normalize_tokens(description))
-    raw = f"{severity}|{file or ''}|{' '.join(tokens)}"
+    line_part = str(line) if line is not None else ""
+    raw = f"{severity}|{file or ''}|{line_part}|{' '.join(tokens)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -129,18 +136,67 @@ def update_finding_registry(
     for reviewer_name, review_result in cycle_results:
         for finding in review_result.findings:
             all_findings.append((reviewer_name, finding))
-            fp = _fingerprint(finding.severity, finding.file, finding.description)
+            fp = _fingerprint(finding.severity, finding.file, finding.description, finding.line)
             fingerprint_to_reports[fp].append((reviewer_name, finding))
+
+    def _should_merge(
+        reports_a: list[tuple[str, ReviewFinding]],
+        reports_b: list[tuple[str, ReviewFinding]],
+    ) -> bool:
+        comparable_a = [
+            finding
+            for _, finding in reports_a
+            if finding.file is not None and finding.line is not None
+        ]
+        comparable_b = [
+            finding
+            for _, finding in reports_b
+            if finding.file is not None and finding.line is not None
+        ]
+        if not comparable_a or not comparable_b:
+            return False
+        for finding_a in comparable_a:
+            for finding_b in comparable_b:
+                if finding_a.severity != finding_b.severity:
+                    return False
+                if finding_a.file != finding_b.file:
+                    return False
+                if abs(finding_a.line - finding_b.line) > 3:
+                    return False
+        return True
+
+    merged_reports: dict[str, list[tuple[str, ReviewFinding]]] = {
+        fp: list(reports) for fp, reports in fingerprint_to_reports.items()
+    }
+    fingerprint_keys = list(merged_reports)
+    for idx, fp_a in enumerate(fingerprint_keys):
+        if fp_a not in merged_reports:
+            continue
+        for fp_b in fingerprint_keys[idx + 1 :]:
+            if fp_b not in merged_reports:
+                continue
+            if not _should_merge(merged_reports[fp_a], merged_reports[fp_b]):
+                continue
+            if len({reviewer for reviewer, _ in merged_reports[fp_a]}) < len(
+                {reviewer for reviewer, _ in merged_reports[fp_b]}
+            ):
+                fp_a, fp_b = fp_b, fp_a
+            merged_reports[fp_a].extend(merged_reports.pop(fp_b))
 
     classified_this_cycle: list[FindingRecord] = []
 
-    for fp, reports in fingerprint_to_reports.items():
+    # Snapshot the registry before this cycle's processing so that records inserted
+    # during the loop (for new findings) don't falsely match later buckets from the
+    # same cycle (e.g. same reviewer reporting the same description at distant lines).
+    prior_registry = list(state.finding_registry)
+
+    for fp, reports in merged_reports.items():
         # Use the first report as representative
         first_reviewer, first_finding = reports[0]
 
-        # Look for match in prior registry
+        # Look for match in prior registry (snapshot taken before this cycle's inserts)
         prior_match: FindingRecord | None = None
-        for record in state.finding_registry:
+        for record in prior_registry:
             if _matches_prior(first_finding, record):
                 prior_match = record
                 break
