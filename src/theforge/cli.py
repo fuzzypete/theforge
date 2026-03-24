@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -18,7 +19,6 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-import importlib.metadata
 
 import yaml
 
@@ -465,7 +465,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         run_id = _generate_run_id()
 
-    print("TheForge v0.1.0", file=sys.stderr)
+    print(f"TheForge v{importlib.metadata.version('theforge')}", file=sys.stderr)
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)
@@ -680,7 +680,9 @@ def cmd_review(args: argparse.Namespace) -> int:
     else:
         workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
 
-    print("TheForge v0.1.0 — review-only mode", file=sys.stderr)
+    print(
+        f"TheForge v{importlib.metadata.version('theforge')} — review-only mode", file=sys.stderr
+    )
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)
@@ -1881,7 +1883,7 @@ def cmd_version(args: argparse.Namespace) -> int:
             except (subprocess.CalledProcessError, FileNotFoundError):
                 print("  (Git information not available)")
     except (FileNotFoundError, importlib.metadata.PackageNotFoundError):
-        pass # Not an editable install or direct_url.json not found
+        pass  # Not an editable install or direct_url.json not found
 
     return 0
 

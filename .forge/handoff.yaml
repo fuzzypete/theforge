@@ -1,17 +1,13 @@
 gate_decision: PASS
 dev_notes: |
-  summary: "Implemented the forge version feature, allowing the system to track and display its current version."
+  summary: "Implemented the `forge version` command and updated existing version displays to be dynamic."
   commits:
-    - sha: "f5c601b"
-      message: "wip: uncommitted changes from dev iteration 1"
-    - sha: "065eee8"
-      message: "chore: bump version to 0.2.1"
-    - sha: "df7695b"
-      message: "fix(coordinator): scope zero-change guard to review-driven retries via entry reason"
+    - sha: "<COMMIT_SHA>"
+      message: "feat(version): implement `forge version` command and dynamic version display"
   acceptance_criteria:
     - criterion: "The system should display the correct version when queried."
       status: MET
-      notes: "The version is correctly displayed."
+      notes: "The `forge version` command now dynamically retrieves and displays the package version. The hardcoded version strings in `cmd_run` and `cmd_review` have been replaced with dynamic version retrieval."
   story_deviations: none
   deferred_items: none
   gate_result: PASS
