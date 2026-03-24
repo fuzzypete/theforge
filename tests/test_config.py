@@ -7,12 +7,16 @@ import pytest
 import yaml
 
 from theforge.config import (
+    API_PROVIDER_DEFAULT_TOOLS,
     DEFAULT_DEV_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_WORKSPACE,
     MODEL_REGISTRY,
     SUPPORTED_CLIS,
+    ModelProfile,
+    _apply_profile_overrides,
     _auto_assign_models,
+    _parse_profile,
     _resolve_model_info,
     generate_default_config,
     load_config,
@@ -385,13 +389,13 @@ class TestLoadConfig:
 
     def test_plan_agent_review_enabled_parsed(self, tmp_path):
         config_path = _write_config(
-            {"plan_agent_review": {"enabled": True, "cli": "claude", "model": "sonnet"}},
+            {"plan_agent_review": {"enabled": True, "cli": "claude", "model": "opus"}},
             tmp_path,
         )
         config = load_config(config_path)
         assert config.plan_agent_review.enabled is True
         assert config.plan_agent_review.cli == "claude"
-        assert config.plan_agent_review.model == "sonnet"
+        assert config.plan_agent_review.model == "opus"
 
     def test_plan_agent_review_unsupported_cli_raises(self, tmp_path):
         config_path = _write_config(
@@ -428,7 +432,7 @@ class TestLoadConfig:
                         {
                             "name": "sonnet-plan-reviewer",
                             "cli": "claude",
-                            "model": "sonnet",
+                            "model": "haiku",
                             "budget_usd": 1.00,
                             "timeout_seconds": 300,
                             "allowed_tools": ["Read", "Glob", "Grep"],
@@ -446,7 +450,7 @@ class TestLoadConfig:
         assert par.pool[0].model == "opus"
         assert par.pool[0].budget_usd == pytest.approx(2.00)
         assert par.pool[1].name == "sonnet-plan-reviewer"
-        assert par.pool[1].model == "sonnet"
+        assert par.pool[1].model == "haiku"
 
     def test_plan_agent_review_pool_profiles_property(self, tmp_path):
         """AC-7: profiles property returns pool list when pool is non-empty."""
@@ -555,6 +559,56 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="Duplicate names in plan_agent_review.pool"):
             load_config(config_path)
 
+    def test_plan_agent_review_pool_rejects_same_model_as_planner(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan": {"model_name": "sonnet"},
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "reviewer-a", "cli": "claude", "model": "sonnet"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="model 'sonnet'"):
+            load_config(config_path)
+
+    def test_plan_agent_review_legacy_rejects_same_model_as_planner(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan": {"model_name": "sonnet"},
+                "plan_agent_review": {
+                    "enabled": True,
+                    "cli": "claude",
+                    "model": "sonnet",
+                },
+            },
+            tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="model 'sonnet'"):
+            load_config(config_path)
+
+    def test_plan_agent_review_allows_different_model_than_planner(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan": {"model_name": "sonnet"},
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "reviewer-a", "cli": "claude", "model": "opus"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        config = load_config(config_path)
+        assert config.plan_agent_review.pool[0].model == "opus"
+
 
 class TestAllowedToolsConfig:
     def test_empty_allowed_tools_is_empty(self, tmp_path):
@@ -574,6 +628,54 @@ class TestAllowedToolsConfig:
         )
         config = load_config(config_path)
         assert config.dev_profile.allowed_tools == DEFAULT_DEV_PROFILE.allowed_tools
+
+    def test_parse_profile_provider_without_allowed_tools_uses_read_only_defaults(self):
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            profile = _parse_profile(
+                "api-reviewer",
+                {"provider": "openai", "model": "o4-mini"},
+                role="review",
+            )
+
+        assert profile.allowed_tools == API_PROVIDER_DEFAULT_TOOLS
+
+    def test_apply_profile_overrides_provider_without_allowed_tools_uses_read_only_defaults(self):
+        base = ModelProfile(
+            name="reviewer",
+            cli="codex",
+            provider=None,
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+
+        overridden = _apply_profile_overrides(
+            base,
+            {"provider": "openai", "model": "o4-mini"},
+        )
+
+        assert overridden.provider == "openai"
+        assert overridden.allowed_tools == API_PROVIDER_DEFAULT_TOOLS
+
+    def test_apply_profile_overrides_cli_profile_keeps_existing_defaults(self):
+        base = ModelProfile(
+            name="reviewer",
+            cli="claude",
+            provider=None,
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+
+        overridden = _apply_profile_overrides(base, {"model": "sonnet"})
+
+        assert overridden.provider is None
+        assert overridden.allowed_tools == DEFAULT_REVIEW_PROFILE.allowed_tools
 
 
 class TestReviewPool:

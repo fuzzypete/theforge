@@ -428,6 +428,7 @@ PROVIDER_API_KEY_MAP = {
     "google": "GOOGLE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
 }
+API_PROVIDER_DEFAULT_TOOLS = ("read_file", "bash", "glob", "grep", "submit_review")
 
 
 def _resolve_secret(key: str, secrets: dict[str, str]) -> str | None:
@@ -451,6 +452,7 @@ def _resolve_model_info(model_key: str) -> ModelInfo:
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
     tools = data.get("allowed_tools")
+    effective_provider = data.get("provider") or base.provider
     reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
@@ -469,7 +471,11 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
-        allowed_tools=tuple(tools) if tools is not None else base.allowed_tools,
+        allowed_tools=(
+            tuple(tools)
+            if tools is not None
+            else (API_PROVIDER_DEFAULT_TOOLS if effective_provider else base.allowed_tools)
+        ),
         reasoning_effort=reasoning_effort,
         base_url=data.get("base_url", base.base_url),
         max_iterations=int(max_iter_raw)
@@ -645,7 +651,7 @@ def _parse_profile(
         else:
             allowed_tools_tuple = tuple(tools)
     elif provider:
-        allowed_tools_tuple = ()
+        allowed_tools_tuple = API_PROVIDER_DEFAULT_TOOLS
     else:
         allowed_tools_tuple = default.allowed_tools
 
@@ -1020,6 +1026,14 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout=int(par_data.get("timeout", 300)),
         pool=par_pool,
     )
+    if plan_agent_review_cfg.enabled:
+        for profile in plan_agent_review_cfg.profiles:
+            if profile.model == plan_cfg.model_name:
+                raise ValueError(
+                    f"plan_agent_review member '{profile.name}' uses model '{profile.model}' "
+                    "which matches the planner — the reviewer must use a different model "
+                    "for independent review."
+                )
 
     # Logging
     log_data = raw.get("logging", {})

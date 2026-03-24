@@ -200,6 +200,38 @@ class TestUpdateFindingRegistryCycle1:
         assert len(p1s) == 1
         assert p1s[0].disposition == "corroborated_new"
 
+    def test_multiple_reviewers_nearby_lines_different_wording_corroborated(self, tmp_path):
+        state = _make_state()
+        finding_a = _make_finding("Missing null check before dereferencing request.user", line=10)
+        finding_b = _make_finding("Handler can crash when account lookup returns None", line=12)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 1
+        assert p1s[0].disposition == "corroborated_new"
+
+    def test_multiple_reviewers_far_apart_lines_not_corroborated(self, tmp_path):
+        state = _make_state()
+        finding_a = _make_finding("Missing null check before dereferencing request.user", line=10)
+        finding_b = _make_finding("Handler can crash when account lookup returns None", line=14)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 2
+        assert all(r.disposition == "net_new" for r in p1s)
+
 
 class TestUpdateFindingRegistryCycle2:
     """Cycle 2+: matching against prior registry."""

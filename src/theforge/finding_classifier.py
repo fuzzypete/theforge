@@ -132,9 +132,61 @@ def update_finding_registry(
             fp = _fingerprint(finding.severity, finding.file, finding.description)
             fingerprint_to_reports[fp].append((reviewer_name, finding))
 
+    # Merge exact-fingerprint groups when reviewers reported the same file at nearly
+    # the same line, even if their descriptions produced different fingerprints.
+    parent: dict[str, str] = {fp: fp for fp in fingerprint_to_reports}
+    group_sizes: dict[str, int] = {
+        fp: len({reviewer for reviewer, _ in reports})
+        for fp, reports in fingerprint_to_reports.items()
+    }
+
+    def _find(fp: str) -> str:
+        while parent[fp] != fp:
+            parent[fp] = parent[parent[fp]]
+            fp = parent[fp]
+        return fp
+
+    def _should_merge(
+        reports_a: list[tuple[str, ReviewFinding]],
+        reports_b: list[tuple[str, ReviewFinding]],
+    ) -> bool:
+        for _, finding_a in reports_a:
+            if finding_a.file is None or finding_a.line is None:
+                continue
+            for _, finding_b in reports_b:
+                if (
+                    finding_b.file is not None
+                    and finding_b.line is not None
+                    and finding_a.file == finding_b.file
+                    and abs(finding_a.line - finding_b.line) <= 3
+                ):
+                    return True
+        return False
+
+    fingerprint_keys = list(fingerprint_to_reports)
+    for idx, fp_a in enumerate(fingerprint_keys):
+        for fp_b in fingerprint_keys[idx + 1 :]:
+            root_a = _find(fp_a)
+            root_b = _find(fp_b)
+            if root_a == root_b:
+                continue
+            if not _should_merge(
+                fingerprint_to_reports[root_a],
+                fingerprint_to_reports[root_b],
+            ):
+                continue
+            if group_sizes[root_a] < group_sizes[root_b]:
+                root_a, root_b = root_b, root_a
+            parent[root_b] = root_a
+            group_sizes[root_a] += group_sizes[root_b]
+
+    merged_reports: dict[str, list[tuple[str, ReviewFinding]]] = defaultdict(list)
+    for fp, reports in fingerprint_to_reports.items():
+        merged_reports[_find(fp)].extend(reports)
+
     classified_this_cycle: list[FindingRecord] = []
 
-    for fp, reports in fingerprint_to_reports.items():
+    for fp, reports in merged_reports.items():
         # Use the first report as representative
         first_reviewer, first_finding = reports[0]
 
