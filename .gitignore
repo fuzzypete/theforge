@@ -45,3 +45,4 @@ MagicMock/
 # OS
 .DS_Store
 .forge/.env
+forge_audit.yaml

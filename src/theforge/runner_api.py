@@ -858,19 +858,28 @@ def _run_openai_chat(
     secrets: dict[str, str] | None = None,
     client: Any = None,
     provider: str = "openai",
+    response_format: dict[str, Any] | None = None,
 ) -> AgentResult:
-    """Run via OpenAI Chat Completions (/v1/chat/completions)."""
+    """Run via OpenAI Chat Completions (/v1/chat/completions).
+
+    Args:
+        response_format: Override the default response_format. Pass
+            ``{"type": "json_object"}`` for providers that don't support
+            ``json_schema`` (e.g. DeepSeek).
+    """
     if client is None:
         client = _openai_client(profile, secrets)
     schema = review_json_schema()
+    if response_format is None:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {"name": "review_output", "schema": schema, "strict": True},
+        }
     try:
         create_kwargs: dict[str, Any] = {
             "model": profile.model,
             "messages": [{"role": "user", "content": prompt}],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "review_output", "schema": schema, "strict": True},
-            },
+            "response_format": response_format,
         }
         if not _is_reasoning_model(profile.model):
             create_kwargs["temperature"] = 0
@@ -949,9 +958,19 @@ def _run_openai(
 def _run_deepseek(
     prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
-    """Run via DeepSeek API (OpenAI-compatible Chat Completions)."""
+    """Run via DeepSeek API (OpenAI-compatible Chat Completions).
+
+    DeepSeek supports json_object but not json_schema structured output.
+    """
     client = _deepseek_client(profile, secrets)
-    return _run_openai_chat(prompt, profile, secrets, client=client, provider="deepseek")
+    return _run_openai_chat(
+        prompt,
+        profile,
+        secrets,
+        client=client,
+        provider="deepseek",
+        response_format={"type": "json_object"},
+    )
 
 
 def _run_anthropic(

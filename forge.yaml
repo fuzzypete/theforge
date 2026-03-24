@@ -41,19 +41,13 @@ profiles:
       timeout_seconds: 300
       reasoning_effort: high
       max_iterations: 20
-    - name: codex-patterns-reviewer
-      cli: codex
-      model: gpt-5.4
-      review_role: patterns
+    - name: gemini-reviewer
+      provider: google
+      model: gemini-3.1-pro-preview-customtools
+      review_role: edge-cases
       budget_usd: 2.00
       timeout_seconds: 300
       max_iterations: 20
-    - name: gemini-reviewer
-      provider: google
-      model: gemini-2.5-flash
-      review_role: edge-cases
-      budget_usd: 1.00
-      timeout_seconds: 300
     - name: deepseek-reviewer
       provider: deepseek
       model: deepseek-chat
