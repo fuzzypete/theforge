@@ -1,0 +1,288 @@
+"""YAML loading and ForgeConfig construction."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import dotenv_values
+
+from ._loaders import _parse_plan_agent_review, _parse_workspace
+from .defaults import (
+    DEFAULT_DEV_PROFILE,
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_REVIEW_PROFILE,
+    DEFAULT_VALIDATION,
+)
+from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_agents, _parse_assignment
+from .profiles import _apply_profile_overrides, _auto_assign_models, _parse_profile
+from .secrets import _parse_notifications
+from .types import (
+    ForgeConfig,
+    HooksConfig,
+    LogConfig,
+    PlanConfig,
+    PlanReviewConfig,
+    RetryPolicy,
+    SprintConfig,
+    ValidationConfig,
+)
+
+log = logging.getLogger("theforge.config")
+
+
+def load_config(config_path: Path) -> ForgeConfig:
+    """Load forge.yaml and return a typed ForgeConfig.
+
+    The config file path is used to derive the project root (its parent directory).
+    Missing sections fall back to sensible defaults.
+
+    Raises ValueError for invalid configurations (empty pool, duplicate names,
+    unsupported CLI, missing synthesis profile when pool size > 1).
+    """
+    project_root = config_path.parent.resolve()
+
+    # Load project-scoped secrets before profile validation so _resolve_secret() works.
+    env_path = project_root / ".forge" / ".env"
+    secrets_yaml_path = project_root / ".forge" / "secrets.yaml"
+    secrets: dict[str, str] = {}
+    if env_path.exists():
+        raw = dotenv_values(env_path)
+        if any(v is None for v in raw.values()):
+            raise ValueError(f"{env_path}: malformed .env")
+        secrets = {k: v for k, v in raw.items() if v is not None}
+    elif secrets_yaml_path.exists():
+        log.warning(
+            "⚠ .forge/secrets.yaml detected — migrate to .forge/.env (see .forge/.env.example)"
+        )
+
+    with open(config_path, encoding="utf-8") as f:
+        raw: dict[str, Any] = yaml.safe_load(f) or {}
+
+    workspace = _parse_workspace(raw.get("workspace", {}))
+
+    # Validation
+    val_data = raw.get("validation", {})
+    validation = ValidationConfig(
+        gate_command=val_data.get("gate_command", DEFAULT_VALIDATION.gate_command),
+        handoff_file=val_data.get("handoff_file", DEFAULT_VALIDATION.handoff_file),
+        gate_decision_key=val_data.get("gate_decision_key", DEFAULT_VALIDATION.gate_decision_key),
+        gate_timeout=val_data.get("gate_timeout"),
+        gate_output_tail_chars=int(
+            val_data.get("gate_output_tail_chars", DEFAULT_VALIDATION.gate_output_tail_chars)
+        ),
+        pre_validate_command=val_data.get("pre_validate_command"),
+    )
+
+    # ── Smart config: models key ──────────────────────────────────────
+    smart_config_models: list[str] | None = None
+    _review_pool_is_default = False
+
+    if "models" in raw:
+        models_list = raw["models"]
+        if not isinstance(models_list, list) or len(models_list) == 0:
+            raise ValueError("'models' must be a non-empty list")
+        for m in models_list:
+            if "/" not in str(m):
+                raise ValueError(
+                    f"Model entry {m!r} must be in 'provider/model' format (contains '/')"
+                )
+            provider = str(m).split("/", 1)[0]
+            if str(m) not in MODEL_REGISTRY and provider not in _PROVIDER_CLI_MAP:
+                raise ValueError(
+                    f"Unknown provider {provider!r} in model {m!r}. "
+                    f"Supported providers: {sorted(_PROVIDER_CLI_MAP)}. "
+                    "Or add the model to MODEL_REGISTRY."
+                )
+        budget_usd_raw = raw.get("budget_usd", 50.0)
+        budget_usd_val = float(budget_usd_raw)
+        if budget_usd_val <= 0:
+            raise ValueError("budget_usd must be positive")
+
+        dev_profile, preflight_profile, review_pool, synthesis_profile = _auto_assign_models(
+            [str(m) for m in models_list], budget_usd_val
+        )
+
+        # Apply explicit profile overrides (partial override supported)
+        profiles = raw.get("profiles", {})
+        if "dev" in profiles:
+            dev_profile = _apply_profile_overrides(dev_profile, profiles["dev"])
+        if "preflight" in profiles:
+            preflight_profile = _apply_profile_overrides(preflight_profile, profiles["preflight"])
+        if synthesis_profile is not None and "synthesis" in profiles:
+            synthesis_profile = _apply_profile_overrides(synthesis_profile, profiles["synthesis"])
+        # Apply per-reviewer overrides matched by name
+        if "review_pool" in profiles:
+            pool_overrides = profiles["review_pool"]
+            if isinstance(pool_overrides, list):
+                override_by_name: dict[str, dict[str, Any]] = {
+                    e["name"]: e for e in pool_overrides if isinstance(e, dict) and "name" in e
+                }
+                review_pool = [
+                    _apply_profile_overrides(p, override_by_name[p.name])
+                    if p.name in override_by_name
+                    else p
+                    for p in review_pool
+                ]
+
+        smart_config_models = [str(m) for m in models_list]
+
+    else:
+        # ── Classic config: profiles key ──────────────────────────────────
+        profiles = raw.get("profiles", {})
+        dev_profile = (
+            _parse_profile("dev", profiles["dev"], role="dev", secrets=secrets)
+            if "dev" in profiles
+            else DEFAULT_DEV_PROFILE
+        )
+        preflight_profile = (
+            _parse_profile("preflight", profiles["preflight"], role="review", secrets=secrets)
+            if "preflight" in profiles
+            else DEFAULT_PREFLIGHT_PROFILE
+        )
+
+        # review_pool precedence: review_pool > review > default
+        if "review_pool" in profiles:
+            pool_data = profiles["review_pool"]
+            if not isinstance(pool_data, list) or len(pool_data) == 0:
+                raise ValueError("profiles.review_pool must be a non-empty list")
+            names = [e.get("name") for e in pool_data]
+            if any(n is None for n in names):
+                raise ValueError("Each profiles.review_pool entry must have a 'name' field")
+            if len(names) != len(set(names)):
+                raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
+            review_pool = [
+                _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
+            ]
+            if "synthesis" in profiles:
+                synthesis_profile = _parse_profile(
+                    "synthesis", profiles["synthesis"], role="review", secrets=secrets
+                )
+            else:
+                synthesis_profile = None
+
+        elif "review" in profiles:
+            review_pool = [
+                _parse_profile("review", profiles["review"], role="review", secrets=secrets)
+            ]
+            synthesis_profile = None
+
+        else:
+            review_pool = [DEFAULT_REVIEW_PROFILE]
+            synthesis_profile = None
+            _review_pool_is_default = True
+
+    # smart_config_models — escalation chain; works alongside explicit profiles
+    if smart_config_models is None and "smart_config_models" in raw:
+        models_raw = raw["smart_config_models"]
+        if isinstance(models_raw, list) and models_raw:
+            smart_config_models = [str(m) for m in models_raw]
+
+    # Retry
+    retry_data = raw.get("retry", {})
+    retry = RetryPolicy(
+        max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
+        max_review_cycles=int(retry_data.get("max_review_cycles", 2)),
+        max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
+        max_handoff_retries=int(retry_data.get("max_handoff_retries", 2)),
+        max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
+        escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
+    )
+
+    notifications = _parse_notifications(raw.get("notifications", {}), secrets)
+
+    # Plan
+    plan_data = raw.get("plan", {})
+    _plan_model_is_default = "model" not in plan_data and "model_name" not in plan_data
+    plan_timeout_medium_raw = plan_data.get("timeout_medium")
+    plan_timeout_large_raw = plan_data.get("timeout_large")
+    plan_cfg = PlanConfig(
+        enabled=bool(plan_data.get("enabled", False)),
+        model=str(plan_data.get("model", "claude")),
+        model_name=str(plan_data.get("model_name", "sonnet")),
+        budget_usd=float(plan_data.get("budget_usd", 0.50)),
+        timeout=int(plan_data.get("timeout", 600)),
+        timeout_medium=int(plan_timeout_medium_raw)
+        if plan_timeout_medium_raw is not None
+        else None,
+        timeout_large=int(plan_timeout_large_raw) if plan_timeout_large_raw is not None else None,
+    )
+
+    # Plan review
+    plan_review_data = raw.get("plan_review", {})
+    plan_review_cfg = PlanReviewConfig(
+        enabled=bool(plan_review_data.get("enabled", False)),
+        mode=str(plan_review_data.get("mode", "blocking")),
+        timeout_seconds=int(plan_review_data.get("timeout_seconds", 14400)),
+    )
+
+    agents_list = _parse_agents(raw.get("agents", []))
+    assignment_cfg = _parse_assignment(raw.get("assignment", {}))
+
+    plan_agent_review_cfg = _parse_plan_agent_review(
+        raw.get("plan_agent_review", {}),
+        secrets,
+        plan_cfg,
+        agents_list,
+        assignment_cfg.enabled,
+        _plan_model_is_default,
+    )
+
+    # Logging
+    log_data = raw.get("logging", {})
+    log_cfg = LogConfig(
+        log_file=str(log_data.get("log_file", LogConfig.log_file)),
+        enabled=bool(log_data.get("enabled", True)),
+    )
+
+    # Hooks
+    hooks_data = raw.get("hooks")
+    hooks_cfg: HooksConfig | None = None
+    if hooks_data:
+        hooks_cfg = HooksConfig(
+            post_run=hooks_data.get("post_run"),
+            post_merge=hooks_data.get("post_merge"),
+            post_sprint=hooks_data.get("post_sprint"),
+            pre_run=hooks_data.get("pre_run"),
+            timeout_seconds=int(hooks_data.get("timeout_seconds", 30)),
+        )
+
+    # Sprint config
+    sprint_data = raw.get("sprint", {})
+    sprint_max_parallel_raw = sprint_data.get("max_parallel", 1)
+    if not isinstance(sprint_max_parallel_raw, int):
+        raise ValueError(
+            f"forge.yaml 'sprint.max_parallel' must be an integer, got {sprint_max_parallel_raw!r}"
+        )
+    if sprint_max_parallel_raw < 1:
+        raise ValueError(
+            f"forge.yaml 'sprint.max_parallel' must be >= 1, got {sprint_max_parallel_raw}"
+        )
+    sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
+
+    return ForgeConfig(
+        project=raw.get("project", project_root.name),
+        project_root=project_root,
+        workspace=workspace,
+        validation=validation,
+        dev_profile=dev_profile,
+        preflight_profile=preflight_profile,
+        review_pool=review_pool,
+        synthesis_profile=synthesis_profile,
+        retry=retry,
+        notifications=notifications,
+        smart_config_models=smart_config_models,
+        plan=plan_cfg,
+        plan_review=plan_review_cfg,
+        plan_agent_review=plan_agent_review_cfg,
+        log=log_cfg,
+        hooks=hooks_cfg,
+        sprint=sprint_cfg,
+        secrets=secrets,
+        agents=agents_list,
+        assignment=assignment_cfg,
+        review_pool_is_default=_review_pool_is_default,
+        plan_model_is_default=_plan_model_is_default,
+    )

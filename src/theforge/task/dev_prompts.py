@@ -1,0 +1,226 @@
+from pathlib import Path
+from textwrap import dedent
+
+from theforge.coord_state import CycleHistory
+
+from .plan_parser import PlanData
+from .story import TaskStory
+
+
+def build_dev_prompt(
+    task: TaskStory,
+    *,
+    workspace_path: Path,
+    branch_name: str,
+    story_content: str,
+    gate_command: str,
+    gate_skipped: bool = False,
+    review_findings: str | None = None,
+    human_feedback: str | None = None,
+    preflight_output: str | None = None,
+    plan_output: str | PlanData | None = None,
+    plan_review_advisory: str | None = None,
+    iteration: int = 1,
+    escalation_note: str | None = None,
+    cycle_history: list[CycleHistory] | None = None,
+    handoff_file: str = "handoff.yaml",
+) -> str:
+    """Build the complete dev agent prompt.
+
+    The prompt tells the agent:
+    - It is already in the correct workspace (orchestrator created it)
+    - What to implement (full spec injected)
+    - What files it can modify (scope restriction)
+    - How to validate (fmt, lint, gate)
+    - What NOT to do (merge, update plan)
+    - Any review findings from previous iteration
+
+    The orchestrator fills ALL placeholders. The agent makes zero process decisions.
+    """
+    feedback_section = ""
+    if escalation_note:
+        feedback_section += dedent(f"""\
+
+            ## ⚠ Model Escalation
+
+            {escalation_note}
+        """)
+
+    if cycle_history:
+        history_lines = []
+        for h in cycle_history:
+            history_lines.append(f"### Cycle {h.cycle}: {h.verdict}")
+            history_lines.append(h.summary)
+            if h.p1_findings:
+                history_lines.append("P1 findings:")
+                for desc in h.p1_findings:
+                    history_lines.append(f"- {desc}")
+            history_lines.append("")
+        feedback_section += dedent("""\
+
+            ## Previous Review Cycles
+
+        """) + "\n".join(history_lines)
+
+    if review_findings:
+        feedback_section += dedent(f"""\
+
+            ## CRITICAL: Review Findings from Previous Iteration
+
+            The following findings were identified by the code reviewer. You MUST address
+            ALL P1 findings before considering your work complete. P2 findings should be
+            addressed if feasible.
+
+            {review_findings}
+
+            This is iteration {iteration}. Focus specifically on fixing the identified issues.
+        """)
+
+    if human_feedback:
+        feedback_section += dedent(f"""\
+
+            ## CRITICAL: Human Feedback
+
+            The project owner provided the following feedback. Address all points:
+
+            {human_feedback}
+        """)
+
+    plan_section = ""
+    if plan_output:
+        if isinstance(plan_output, dict):
+            # Structured plan: render as step-by-step checklist
+            plan_lines = [
+                "## Implementation Plan (from planning agent)",
+                "",
+                "The planning agent has already analysed this codebase and produced a",
+                "detailed implementation plan. Follow it closely — do not re-derive the",
+                "approach from scratch.",
+                "",
+                f"**Approach:** {plan_output.get('approach', '')}",
+                "",
+            ]
+            for step in plan_output.get("steps", []):
+                step_id = step.get("id", "?")
+                plan_lines.append(f"Step {step_id}: {step.get('description', '')}")
+                plan_lines.append(f"  Action: {step.get('action', '')}")
+                if "depends_on" in step and step["depends_on"]:
+                    deps = ", ".join(f"Step {d}" for d in step["depends_on"])
+                    plan_lines.append(f"  Depends on: {deps}")
+                plan_lines.append(f"  Details: {step.get('details', '')}")
+                plan_lines.append("")
+            plan_section = "\n" + "\n".join(plan_lines) + "\n"
+        else:
+            plan_section = dedent(f"""\
+
+                ## Implementation Plan (from planning agent)
+
+                The planning agent has already analysed this codebase and produced a
+                detailed implementation plan. Follow it closely — do not re-derive the
+                approach from scratch.
+
+                {plan_output}
+            """)
+        if plan_review_advisory:
+            plan_section += dedent(f"""\
+
+                ## Plan Review Notes (advisory)
+
+                The plan reviewer flagged the following. These are not blockers — the plan
+                was approved — but watch for these edge cases during implementation:
+
+                {plan_review_advisory}
+            """)
+
+    preflight_section = ""
+    if preflight_output:
+        preflight_section = dedent(f"""\
+
+            ## Codebase Context (from preflight)
+
+            The preflight agent already analysed the codebase. Use this to orient
+            yourself — do NOT re-read files that are already summarised here unless
+            you need the exact content for editing.
+
+            {preflight_output}
+        """)
+
+    if gate_skipped:
+        gate_section = dedent("""\
+            Gate is disabled for this spec. Skip the gate command.
+        """)
+    else:
+        gate_section = dedent(f"""\
+            Run the gate command to validate your work:
+            ```bash
+            {gate_command}
+            ```
+            Fix any failures. Do NOT declare success until the gate passes.
+        """)
+
+    return dedent(f"""\
+        You are implementing **{task.name}**.
+
+        ## Working Directory
+
+        `{workspace_path}` — branch `{branch_name}`
+
+        You are already in the correct workspace. Do NOT create a new worktree
+        or switch branches.
+        {plan_section}
+        ## Spec
+
+        > **How to read this spec**
+        > A story says WHAT and WHY — it is not a list of implementation tasks.
+        > **Acceptance criteria are the definitive checklist.** Every other section
+        > (background, context, motivation) is informational — do not treat it as a
+        > requirement unless it appears in an AC.
+        > If an AC is ambiguous or contradicts another section, implement the
+        > most reasonable interpretation and flag the ambiguity in `dev_notes`.
+
+        {story_content}
+        {feedback_section}{preflight_section}
+        ## Workflow
+
+        1. Implement the spec. Write tests for new functionality.
+        2. Run `make fmt` then `make lint`. Fix any failures.
+        3. {gate_section}
+        4. Commit your changes:
+           ```bash
+           git add <files-you-changed>
+           git commit -m "<type>(<scope>): <description>"
+           ```
+        {
+        "5. Write a `dev_notes` section in `"
+        + handoff_file
+        + "` with this structure:"
+        + '''
+
+           ```yaml
+           dev_notes: |
+             summary: "One paragraph: what you implemented and how."
+             commits:
+               - sha: "abc1234"
+                 message: "feat(scope): what this commit does"
+             acceptance_criteria:
+               - criterion: "AC text from the spec"
+                 status: MET | PARTIAL | NOT_MET
+                 notes: "how it was met, or why not"
+             story_deviations: none  # or list deviations with justification
+             deferred_items: none   # or list with reason
+             gate_result: PASS
+           ```
+
+           List ALL commits (`git log --oneline`). List EVERY acceptance criterion.
+           This is your voice in the review — the reviewer reads it before the diff.'''
+        if handoff_file
+        else ""
+    }
+
+        ## Rules
+
+        - Do NOT merge to main.
+        - Do NOT leave uncommitted changes.
+        - If you cannot finish, commit what you have and list blockers in
+          `deferred_items`.
+    """)
