@@ -454,16 +454,32 @@ def _resolve_model_info(model_key: str) -> ModelInfo:
 
 
 def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
-    """Return model names the adaptive planner can select at runtime."""
+    """Return model names the adaptive planner can select at runtime.
+
+    Mirrors assign_models planner selection logic (PHASE_TIER["plan"]):
+      LOW → mid tier (fallback: highest-budget agent if no mid agents)
+      MEDIUM/HIGH → strong tier (fallback: highest-budget agent if no strong agents)
+
+    Auth filtering is intentionally omitted: auth state can change at runtime,
+    so the static check only considers structural availability.
+    """
     if not agents:
         return set()
 
-    mid_models = {agent.model for agent in agents if agent.tier == "mid"}
-    strong_models = {agent.model for agent in agents if agent.tier == "strong"}
+    # PHASE_TIER["plan"] = {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"}
+    planner_tiers = {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"}
+    highest_budget = sorted(agents, key=lambda a: -a.budget_usd)[0]
 
-    low_complexity_models = mid_models or {agent.model for agent in agents}
-    medium_high_complexity_models = strong_models or {agent.model for agent in agents}
-    return low_complexity_models | medium_high_complexity_models
+    candidate_models: set[str] = set()
+    for tier in planner_tiers.values():
+        tier_agents = sorted([a for a in agents if a.tier == tier], key=lambda a: a.budget_usd)
+        if tier_agents:
+            candidate_models.add(tier_agents[0].model)
+        else:
+            # Mirror assign_models fallback: pick highest-budget agent
+            candidate_models.add(highest_budget.model)
+
+    return candidate_models
 
 
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:

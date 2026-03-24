@@ -661,6 +661,81 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "haiku"
 
+    def test_plan_agent_review_allows_cheap_model_when_no_mid_tier_agents(self, tmp_path):
+        """With only cheap and strong agents (no mid tier), the adaptive planner always selects
+        the strong agent for all complexity levels (it is the highest-budget fallback when no
+        mid-tier agent exists).  A plan reviewer using the cheap model must not be rejected.
+        """
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    # Realistic budgets: cheap < strong so the highest-budget fallback picks opus
+                    {
+                        "name": "cheap-agent",
+                        "cli": "claude",
+                        "model": "haiku",
+                        "tier": "cheap",
+                        "budget_usd": 0.5,
+                    },
+                    {
+                        "name": "strong-agent",
+                        "cli": "claude",
+                        "model": "opus",
+                        "tier": "strong",
+                        "budget_usd": 5.0,
+                    },
+                ],
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "reviewer-a", "cli": "claude", "model": "haiku"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        # Should not raise — the planner fallback always picks opus (highest budget), not haiku
+        config = load_config(config_path)
+        assert config.plan_agent_review.pool[0].model == "haiku"
+
+    def test_plan_agent_review_rejects_strong_model_when_no_mid_tier_agents(self, tmp_path):
+        """With only cheap and strong agents, the planner picks opus (highest-budget fallback).
+        A plan reviewer using opus must still be rejected.
+        """
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "cheap-agent",
+                        "cli": "claude",
+                        "model": "haiku",
+                        "tier": "cheap",
+                        "budget_usd": 0.5,
+                    },
+                    {
+                        "name": "strong-agent",
+                        "cli": "claude",
+                        "model": "opus",
+                        "tier": "strong",
+                        "budget_usd": 5.0,
+                    },
+                ],
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "reviewer-a", "cli": "claude", "model": "opus"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="model 'opus'"):
+            load_config(config_path)
+
     def test_plan_agent_review_legacy_provider_profile_uses_api_default_tools(self, tmp_path):
         config_path = _write_config(
             {

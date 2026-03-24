@@ -39,10 +39,17 @@ def _normalize_tokens(text: str) -> frozenset[str]:
     return frozenset(t for t in text.split() if len(t) > 2)
 
 
-def _fingerprint(severity: str, file: str | None, description: str) -> str:
-    """Stable fingerprint: sha256 prefix of severity + file + normalized description tokens."""
+def _fingerprint(
+    severity: str, file: str | None, description: str, line: int | None = None
+) -> str:
+    """Stable fingerprint: sha256 prefix of severity + file + line + normalized description tokens.
+
+    Line is included so that one reviewer reporting the same description at distant lines
+    produces separate buckets.  Reports with line=None share a bucket (line omitted from key).
+    """
     tokens = sorted(_normalize_tokens(description))
-    raw = f"{severity}|{file or ''}|{' '.join(tokens)}"
+    line_part = str(line) if line is not None else ""
+    raw = f"{severity}|{file or ''}|{line_part}|{' '.join(tokens)}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -129,7 +136,7 @@ def update_finding_registry(
     for reviewer_name, review_result in cycle_results:
         for finding in review_result.findings:
             all_findings.append((reviewer_name, finding))
-            fp = _fingerprint(finding.severity, finding.file, finding.description)
+            fp = _fingerprint(finding.severity, finding.file, finding.description, finding.line)
             fingerprint_to_reports[fp].append((reviewer_name, finding))
 
     def _should_merge(
@@ -178,13 +185,18 @@ def update_finding_registry(
 
     classified_this_cycle: list[FindingRecord] = []
 
+    # Snapshot the registry before this cycle's processing so that records inserted
+    # during the loop (for new findings) don't falsely match later buckets from the
+    # same cycle (e.g. same reviewer reporting the same description at distant lines).
+    prior_registry = list(state.finding_registry)
+
     for fp, reports in merged_reports.items():
         # Use the first report as representative
         first_reviewer, first_finding = reports[0]
 
-        # Look for match in prior registry
+        # Look for match in prior registry (snapshot taken before this cycle's inserts)
         prior_match: FindingRecord | None = None
-        for record in state.finding_registry:
+        for record in prior_registry:
             if _matches_prior(first_finding, record):
                 prior_match = record
                 break
