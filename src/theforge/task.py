@@ -253,11 +253,27 @@ def build_preflight_prompt(
 
         When verdict is PROCEED, also assess the implementation complexity:
 
-        - **small**: Config change, typo fix, single-file edit, <50 lines changed
-        - **medium**: New feature, multi-file change, requires tests, 50–500 lines
-        - **large**: Cross-cutting refactor, architectural change, >500 lines, many modules
+        - Output a numeric `complexity` score from **1-10**
+        - Scope factors: files touched, test surface, integration points (1-5)
+        - Domain difficulty factors: spatial reasoning, concurrency, novel design (1-5)
+        - Combine them as:
+          `max(scope, domain) + min(scope, domain)/2`, rounded to the nearest integer
 
-        When verdict is ALREADY_DONE or BLOCKED, set complexity to "small" as a placeholder.
+        When verdict is ALREADY_DONE or BLOCKED, set complexity to `3` as a placeholder.
+
+        ## Domain Classification
+
+        Also classify the dominant work domain:
+
+        - `frontend-layout` — CSS, positioning, responsive design
+        - `frontend-state` — React state, hooks, context
+        - `backend-api` — endpoints, middleware, routing
+        - `backend-data` — database, migrations, queries
+        - `concurrent` — async, threading, race conditions
+        - `refactor` — rename, restructure, no new behavior
+        - `test` — test-only changes
+        - `docs` — documentation only
+        - `general` — no strong domain signal
 
         ## Output Format
 
@@ -266,7 +282,9 @@ def build_preflight_prompt(
 
         ```yaml
         verdict: PROCEED | ALREADY_DONE | BLOCKED
-        complexity: small | medium | large
+        complexity: 1-10
+        domain: frontend-layout | frontend-state | backend-api | backend-data
+          | concurrent | refactor | test | docs | general
         reason: "<1-2 sentence explanation of your classification>"
         spec_issues:
           - type: contradiction | ambiguity | impossible_constraint

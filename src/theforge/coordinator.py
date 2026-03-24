@@ -76,11 +76,14 @@ from .coord_notify import (  # noqa: F401
 )
 from .coord_preflight import (  # noqa: F401
     _apply_complexity_adaptation,
+    _complexity_score_to_tier,
     _escalate_dev_model,
     _find_registry_info_for_profile,
     _find_registry_key_for_profile,
     _has_persistent_p1,
     _parse_preflight_complexity,
+    _parse_preflight_complexity_score,
+    _parse_preflight_domain,
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _persistent_p1_descriptions,
@@ -1424,9 +1427,14 @@ def run_task(
 
         # ── Complexity parsing + adaptive model swapping ───────────────
         if preflight_result.success:
-            complexity = _parse_preflight_complexity(preflight_result.output)
+            complexity_score = _parse_preflight_complexity_score(preflight_result.output)
+            complexity = _complexity_score_to_tier(complexity_score)
+            domain = _parse_preflight_domain(preflight_result.output)
+            state.preflight_complexity_score = complexity_score
             state.preflight_complexity = complexity
-            _log(f"  Complexity: {complexity} (from preflight)")
+            state.preflight_domain = domain
+            _log(f"  Complexity: {complexity_score}/10 ({complexity}, from preflight)")
+            _log(f"  Domain: {domain} (from preflight)")
             if config.smart_config_models is not None:
                 config = _apply_complexity_adaptation(config, complexity)
 
@@ -1443,6 +1451,9 @@ def run_task(
                 )
                 from .assignment import (
                     _promote_tier as _prom_tier,
+                )
+                from .assignment import (
+                    _promotion_cache_key as _promotion_key,
                 )
                 from .assignment import (
                     assign_models as _assign_models,
@@ -1486,10 +1497,11 @@ def run_task(
                 _decision = _assign_models(
                     config.agents,
                     config.assignment,
-                    complexity,
+                    complexity_score,
                     _esc_history,
-                    _explicit if _explicit else None,
-                    state.sprint_promotions,
+                    domain=domain,
+                    explicit_profiles=_explicit if _explicit else None,
+                    sprint_promotions=state.sprint_promotions,
                 )
 
                 # Update config with adaptive assignments
@@ -1511,33 +1523,36 @@ def run_task(
                 state._explicit_roles = _explicit_roles
 
                 # Update sprint_promotions if promotion occurred
-                _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-                _dev_agent = _pick_agt(config.agents, _dev_base_tier)
+                _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity_score)]
+                _dev_agent = _pick_agt(config.agents, _dev_base_tier, domain)
                 _dev_name = _dev_agent.name if _dev_agent else ""
+                _promotion_key_value = _promotion_key(_norm_complexity(complexity_score), domain)
                 if (
                     _dev_name
                     and "dev" not in _explicit
-                    and complexity not in state.sprint_promotions
+                    and _promotion_key_value not in state.sprint_promotions
                 ):
                     from .assignment import _check_promotion as _chk_prom
 
                     _prom = _chk_prom(
-                        _norm_complexity(complexity),
+                        _norm_complexity(complexity_score),
                         _dev_name,
                         _esc_history,
                         state.sprint_promotions,
+                        domain,
                     )
                     if _prom is not None:
                         _promoted_tier = _prom_tier(_dev_base_tier)
-                        state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
+                        state.sprint_promotions[_promotion_key_value] = _promoted_tier
                         _log_verbose(
-                            f"[adaptive] {_norm_complexity(complexity)} dev promoted "
+                            f"[adaptive] {_norm_complexity(complexity_score)} dev promoted "
                             f"{_dev_name} → tier {_promoted_tier} (sticky for sprint)"
                         )
 
                 # Log all rationale lines at verbose
                 _log_verbose(
-                    f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)"
+                    f"[adaptive] Complexity: {_norm_complexity(complexity_score)}"
+                    f" from score {complexity_score}/10, domain={domain}"
                 )
                 for _phase, _reason in _decision.rationale.items():
                     _log_verbose(f"[adaptive] {_phase}: {_reason}")
@@ -1555,7 +1570,9 @@ def run_task(
         _preflight_artifact = {
             "verdict": verdict,
             "reason": reason,
-            "complexity": state.preflight_complexity,
+            "complexity": state.preflight_complexity_score,
+            "complexity_tier": state.preflight_complexity,
+            "domain": state.preflight_domain,
             "cost_usd": preflight_result.cost_usd,
             "duration_s": round(_preflight_elapsed, 2),
         }
@@ -2337,13 +2354,12 @@ def run_task(
             _esc_outcome = "DONE" if result.success else "ESCALATE"
             _esc_record = _EscRec(
                 story=task.slug,
-                complexity=state.preflight_complexity.upper()
-                if state.preflight_complexity in ("small", "medium", "large")
-                else state.preflight_complexity,
+                complexity=str(state.preflight_complexity_score or state.preflight_complexity),
                 dev_model=config.dev_profile.name,
                 outcome=_esc_outcome,
                 reason=state.escalation_note or "",
                 timestamp=datetime.datetime.utcnow().isoformat() + "Z",
+                domain=state.preflight_domain or "general",
             )
             _append_esc(_esc_path, _esc_record)
             _log_verbose(

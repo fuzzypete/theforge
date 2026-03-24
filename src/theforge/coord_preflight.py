@@ -10,16 +10,24 @@ from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from .review import ReviewFinding
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
+_VALID_COMPLEXITIES = frozenset({"small", "medium", "large", "low", "high"})
+_VALID_DOMAINS = frozenset(
+    {
+        "frontend-layout",
+        "frontend-state",
+        "backend-api",
+        "backend-data",
+        "concurrent",
+        "refactor",
+        "test",
+        "docs",
+        "general",
+    }
+)
 
 
-def _parse_preflight_verdict(output: str) -> tuple[str, str]:
-    """Extract verdict and reason from preflight agent output.
-
-    Returns (verdict, reason). If parsing fails, returns ("PROCEED", reason)
-    to avoid blocking on a broken preflight — it's cheaper to try DEV than
-    to stall.
-    """
-    # Extract YAML block from markdown fences
+def _extract_preflight_yaml(output: str) -> dict | None:
+    """Parse the YAML body from a preflight response, or return None."""
     yaml_text = output
     if "```yaml" in output:
         start = output.index("```yaml") + len("```yaml")
@@ -33,10 +41,54 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     try:
         parsed = yaml.safe_load(yaml_text)
     except yaml.YAMLError:
-        return "PROCEED", f"Failed to parse preflight YAML; proceeding anyway. Raw: {output[:200]}"
+        return None
 
-    if not isinstance(parsed, dict):
-        return "PROCEED", "Preflight output is not a dict; proceeding anyway."
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _complexity_score_to_tier(score: int) -> str:
+    """Map a 1-10 score onto the legacy small/medium/large buckets."""
+    if score <= 3:
+        return "small"
+    if score <= 6:
+        return "medium"
+    return "large"
+
+
+def _normalize_complexity_score(raw: object) -> int:
+    """Normalize legacy or numeric complexity values into the 1-10 range."""
+    legacy_map = {
+        "small": 3,
+        "low": 3,
+        "medium": 5,
+        "med": 5,
+        "large": 8,
+        "high": 8,
+    }
+    if isinstance(raw, int):
+        return min(max(raw, 1), 10)
+    if isinstance(raw, float):
+        return min(max(int(raw), 1), 10)
+
+    value = str(raw).strip().lower()
+    if value in legacy_map:
+        return legacy_map[value]
+    try:
+        return min(max(int(value), 1), 10)
+    except ValueError:
+        return 5
+
+
+def _parse_preflight_verdict(output: str) -> tuple[str, str]:
+    """Extract verdict and reason from preflight agent output.
+
+    Returns (verdict, reason). If parsing fails, returns ("PROCEED", reason)
+    to avoid blocking on a broken preflight — it's cheaper to try DEV than
+    to stall.
+    """
+    parsed = _extract_preflight_yaml(output)
+    if parsed is None:
+        return "PROCEED", f"Failed to parse preflight YAML; proceeding anyway. Raw: {output[:200]}"
 
     verdict = str(parsed.get("verdict", "PROCEED")).upper()
     reason = str(parsed.get("reason", "(no reason provided)"))
@@ -47,55 +99,40 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     return verdict, reason
 
 
-_VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
-
-
 def _parse_preflight_warnings(output: str) -> list[str]:
     """Extract warnings list from preflight agent output. Returns [] if absent."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-
-    try:
-        parsed = yaml.safe_load(yaml_text)
-        if isinstance(parsed, dict):
-            raw = parsed.get("warnings", [])
-            if isinstance(raw, list):
-                return [str(w) for w in raw if w]
-    except yaml.YAMLError:
-        pass
+    parsed = _extract_preflight_yaml(output)
+    if parsed is not None:
+        raw = parsed.get("warnings", [])
+        if isinstance(raw, list):
+            return [str(w) for w in raw if w]
 
     return []
 
 
+def _parse_preflight_complexity_score(output: str) -> int:
+    """Extract the numeric complexity score. Defaults to 5 if absent or invalid."""
+    parsed = _extract_preflight_yaml(output)
+    if parsed is None:
+        return 5
+    return _normalize_complexity_score(parsed.get("complexity", 5))
+
+
 def _parse_preflight_complexity(output: str) -> str:
-    """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    """Extract legacy small/medium/large complexity tier from preflight output."""
+    return _complexity_score_to_tier(_parse_preflight_complexity_score(output))
 
-    try:
-        parsed = yaml.safe_load(yaml_text)
-        if isinstance(parsed, dict):
-            raw = str(parsed.get("complexity", "medium")).lower()
-            if raw in _VALID_COMPLEXITIES:
-                return raw
-    except yaml.YAMLError:
-        pass
 
-    return "medium"
+def _parse_preflight_domain(output: str) -> str:
+    """Extract the domain tag from preflight output. Defaults to general."""
+    parsed = _extract_preflight_yaml(output)
+    if parsed is None:
+        return "general"
+
+    raw = str(parsed.get("domain", "general")).strip().lower()
+    if raw in _VALID_DOMAINS:
+        return raw
+    return "general"
 
 
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:

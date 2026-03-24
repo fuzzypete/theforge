@@ -161,6 +161,8 @@ class CoordinatorState:
     preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
     preflight_reason: str | None = None
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
+    preflight_complexity_score: int | None = None  # 1-10 normalized preflight score
+    preflight_domain: str | None = None  # domain tag for adaptive routing
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
     preflight_result: AgentResult | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
@@ -202,7 +204,7 @@ class CoordinatorState:
     story_validation_result: StoryValidationResult | None = None
     plan_validation_findings: list[dict] = field(default_factory=list)
     sprint_promotions: dict[str, str] = field(default_factory=dict)
-    # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
+    # Maps "<complexity>:<domain>" → promoted tier string.
     # Sticky within a sprint (single forge process lifetime); resets on process exit.
     start_phase: Phase | None = None  # --from <phase>: skip phases before this
     stop_phase: Phase | None = None  # --until <phase>: stop after this phase

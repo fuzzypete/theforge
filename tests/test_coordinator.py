@@ -19,6 +19,8 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    AgentDef,
+    AssignmentConfig,
     ForgeConfig,
     LogConfig,
     ModelProfile,
@@ -331,6 +333,16 @@ PREFLIGHT_PROCEED_MEDIUM = """\
 ```yaml
 verdict: PROCEED
 complexity: medium
+reason: "Spec requirements are not yet implemented."
+criteria_checked: []
+```
+"""
+
+PREFLIGHT_PROCEED_MEDIUM_FRONTEND = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+domain: frontend-layout
 reason: "Spec requirements are not yet implemented."
 criteria_checked: []
 ```
@@ -4991,6 +5003,8 @@ class TestProjectLocalLogDir:
         assert preflight_path.exists(), "preflight.yaml not written"
         data = _yaml.safe_load(preflight_path.read_text())
         assert "verdict" in data
+        assert "complexity" in data
+        assert "domain" in data
 
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
@@ -5073,6 +5087,84 @@ class TestProjectLocalLogDir:
         assert summary_path.exists(), "sprint-summary.yaml not written"
         data = _yaml.safe_load(summary_path.read_text())
         assert data["sprint"]["name"] == "my-sprint"
+
+
+class TestAdaptiveAssignment:
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_sprint_promotions_are_cached_per_domain(self, mock_shell, mock_agent, tmp_path):
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            agents=[
+                AgentDef("haiku", None, "haiku", 1.0, 300, "cheap", cli="claude"),
+                AgentDef("sonnet", None, "sonnet", 4.0, 600, "mid", cli="claude"),
+                AgentDef(
+                    "gpt-layout",
+                    None,
+                    "gpt-5.4",
+                    5.0,
+                    600,
+                    "mid",
+                    cli="codex",
+                    strengths=("frontend-layout",),
+                ),
+                AgentDef("opus", None, "opus", 8.0, 900, "strong", cli="claude"),
+            ],
+            assignment=AssignmentConfig(enabled=True),
+        )
+        history_dir = tmp_path / ".forge"
+        history_dir.mkdir()
+        (history_dir / "assignment_history.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "escalations": [
+                        {
+                            "story": "story-1",
+                            "complexity": "MEDIUM",
+                            "dev_model": "gpt-layout",
+                            "outcome": "ESCALATE",
+                            "domain": "frontend-layout",
+                        },
+                        {
+                            "story": "story-2",
+                            "complexity": "MEDIUM",
+                            "dev_model": "gpt-layout",
+                            "outcome": "ESCALATE",
+                            "domain": "frontend-layout",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        global _PREFLIGHT_RESULT
+        original_preflight = _PREFLIGHT_RESULT
+        _PREFLIGHT_RESULT = _make_agent_result(
+            success=True,
+            output=PREFLIGHT_PROCEED_MEDIUM_FRONTEND,
+            cost_usd=0.05,
+            profile_name="preflight",
+        )
+        mock_agent.side_effect = _preflight_then(
+            _make_agent_result(success=True, output="Implemented.", profile_name="dev")
+        )
+        try:
+            with patch("theforge.coordinator.run_agent_pool") as mock_pool:
+                mock_pool.return_value = [
+                    _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+                ]
+                result = run_task(config, task)
+        finally:
+            _PREFLIGHT_RESULT = original_preflight
+
+        assert result.success is True
+        assert result.state.sprint_promotions == {"MEDIUM:frontend-layout": "strong"}
 
 
 # ── Escalate Gate Tests ───────────────────────────────────────────────

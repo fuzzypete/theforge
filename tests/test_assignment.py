@@ -10,8 +10,11 @@ from theforge.assignment import (
     AssignmentDecision,
     EscalationRecord,
     _normalize_complexity,
+    _normalize_complexity_score,
     _reviewer_count,
+    append_escalation_record,
     assign_models,
+    load_escalation_history,
 )
 from theforge.config import AgentDef
 
@@ -99,6 +102,65 @@ def _make_agents_cross_provider() -> list[AgentDef]:
     ]
 
 
+def _make_domain_agents() -> list[AgentDef]:
+    return [
+        AgentDef(
+            name="cheap-general",
+            provider="anthropic",
+            model="haiku",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            tier="cheap",
+            strengths=("general",),
+        ),
+        AgentDef(
+            name="cheap-layout",
+            provider="openai",
+            model="gpt-5.4",
+            budget_usd=1.5,
+            timeout_seconds=300,
+            tier="cheap",
+            strengths=("frontend-layout", "css", "ui"),
+        ),
+        AgentDef(
+            name="mid-general",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="mid",
+            strengths=("general",),
+        ),
+        AgentDef(
+            name="mid-layout",
+            provider="openai",
+            model="gpt-5.4",
+            budget_usd=6.0,
+            timeout_seconds=900,
+            tier="mid",
+            strengths=("frontend-layout", "css", "spatial"),
+        ),
+        AgentDef(
+            name="strong-general",
+            provider="anthropic",
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            strengths=("general",),
+        ),
+        AgentDef(
+            name="strong-layout",
+            provider="openai",
+            model="gpt-5.4",
+            budget_usd=9.0,
+            timeout_seconds=1200,
+            tier="strong",
+            strengths=("frontend-layout", "css", "spatial"),
+        ),
+    ]
+
+
 # ── test_normalize_complexity ──────────────────────────────────────────
 
 
@@ -133,6 +195,18 @@ def test_normalize_complexity_default_unknown():
 def test_normalize_complexity_case_insensitive():
     assert _normalize_complexity("Large") == "HIGH"
     assert _normalize_complexity("SMALL") == "LOW"
+
+
+def test_normalize_complexity_numeric_score():
+    assert _normalize_complexity(2) == "LOW"
+    assert _normalize_complexity(5) == "MEDIUM"
+    assert _normalize_complexity(9) == "HIGH"
+
+
+def test_normalize_complexity_score_legacy_mapping():
+    assert _normalize_complexity_score("LOW") == 3
+    assert _normalize_complexity_score("MEDIUM") == 5
+    assert _normalize_complexity_score("HIGH") == 8
 
 
 # ── test_tier_selection_low ────────────────────────────────────────────
@@ -176,6 +250,29 @@ def test_tier_selection_high():
     # HIGH uses max_reviewers=3 but only 1 strong agent in pool
     assert len(decision.code_reviewers) >= 1
     assert decision.code_reviewers[0].model == "opus"
+
+
+def test_strength_matching_prefers_domain_agent():
+    agents = _make_domain_agents()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+
+    decision = assign_models(agents, cfg, 3, domain="frontend-layout")
+
+    assert decision.dev.name == "cheap-layout"
+    assert decision.preflight.name == "cheap-layout"
+    assert decision.planner.name == "mid-layout"
+    assert decision.code_reviewers[0].name == "strong-layout"
+
+
+def test_general_domain_keeps_budget_order_fallback():
+    agents = _make_domain_agents()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+
+    decision = assign_models(agents, cfg, 3, domain="general")
+
+    assert decision.dev.name == "cheap-general"
+    assert decision.preflight.name == "cheap-general"
+    assert decision.planner.name == "mid-general"
 
 
 # ── test_cross_provider_preference ────────────────────────────────────
@@ -237,6 +334,7 @@ def test_escalation_promotion():
             complexity="MEDIUM",
             dev_model="sonnet",
             outcome="ESCALATE",
+            domain="frontend-layout",
         )
         for i in range(2)
     ] + [
@@ -245,10 +343,13 @@ def test_escalation_promotion():
             complexity="MEDIUM",
             dev_model="sonnet",
             outcome="DONE",
+            domain="frontend-layout",
         )
     ]
 
-    decision = assign_models(agents, cfg, "medium", escalation_history=history)
+    decision = assign_models(
+        agents, cfg, "medium", escalation_history=history, domain="frontend-layout"
+    )
 
     # Should promote from mid (sonnet) to strong (opus)
     assert decision.dev.model == "opus", (
@@ -282,6 +383,40 @@ def test_no_escalation_below_threshold():
     assert decision.dev.model == "sonnet", (
         f"Expected sonnet (no promotion), got {decision.dev.model}"
     )
+
+
+def test_escalation_promotion_uses_domain_history():
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    history = [
+        EscalationRecord(
+            story="story-a",
+            complexity="5",
+            dev_model="sonnet",
+            outcome="ESCALATE",
+            domain="frontend-layout",
+        ),
+        EscalationRecord(
+            story="story-b",
+            complexity="MEDIUM",
+            dev_model="sonnet",
+            outcome="ESCALATE",
+            domain="frontend-layout",
+        ),
+        EscalationRecord(
+            story="story-c",
+            complexity="MEDIUM",
+            dev_model="sonnet",
+            outcome="DONE",
+            domain="backend-api",
+        ),
+    ]
+
+    layout = assign_models(agents, cfg, 5, escalation_history=history, domain="frontend-layout")
+    api = assign_models(agents, cfg, 5, escalation_history=history, domain="backend-api")
+
+    assert layout.dev.model == "opus"
+    assert api.dev.model == "sonnet"
 
 
 # ── test_explicit_override ────────────────────────────────────────────
@@ -439,15 +574,41 @@ def test_reviewer_count_medium():
 
 
 def test_sprint_promotions_cached():
-    """If sprint_promotions already has a promotion for the complexity, use it."""
-    # No history, but sprint_promotions says MEDIUM was already promoted
-    sprint_promotions = {"MEDIUM": "strong"}
+    """If sprint_promotions already has a promotion for the domain slice, use it."""
+    sprint_promotions = {"MEDIUM:frontend-layout": "strong"}
 
-    # With the cached promotion, the check should return the cached result
     from theforge.assignment import _check_promotion
 
-    result = _check_promotion("MEDIUM", "sonnet", [], sprint_promotions)
+    result = _check_promotion("MEDIUM", "sonnet", [], sprint_promotions, "frontend-layout")
     assert result == "strong"
+
+
+def test_sprint_promotions_isolated_by_domain():
+    """A cached promotion in one domain must not leak into another."""
+    sprint_promotions = {"MEDIUM:frontend-layout": "strong"}
+
+    from theforge.assignment import _check_promotion
+
+    layout = _check_promotion("MEDIUM", "sonnet", [], sprint_promotions, "frontend-layout")
+    api = _check_promotion("MEDIUM", "sonnet", [], sprint_promotions, "backend-api")
+
+    assert layout == "strong"
+    assert api is None
+
+
+def test_assign_models_sprint_promotion_isolated_by_domain():
+    """Cached promotion must not change dev routing for a different domain."""
+    agents = _make_domain_agents()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    sprint_promotions = {"MEDIUM:frontend-layout": "strong"}
+
+    layout = assign_models(
+        agents, cfg, 5, domain="frontend-layout", sprint_promotions=sprint_promotions
+    )
+    api = assign_models(agents, cfg, 5, domain="backend-api", sprint_promotions=sprint_promotions)
+
+    assert layout.dev.name == "strong-layout"
+    assert api.dev.name == "mid-general"
 
 
 def test_no_promotion_with_empty_history():
@@ -458,3 +619,23 @@ def test_no_promotion_with_empty_history():
 
     # No promotion — should use mid (sonnet)
     assert decision.dev.model == "sonnet"
+
+
+def test_escalation_history_persists_domain(tmp_path):
+    history_path = tmp_path / ".forge" / "assignment_history.yaml"
+    append_escalation_record(
+        history_path,
+        EscalationRecord(
+            story="story-1",
+            complexity="8",
+            dev_model="opus",
+            outcome="DONE",
+            domain="frontend-layout",
+        ),
+    )
+
+    records = load_escalation_history(history_path)
+
+    assert len(records) == 1
+    assert records[0].complexity == "8"
+    assert records[0].domain == "frontend-layout"

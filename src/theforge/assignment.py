@@ -55,6 +55,7 @@ class EscalationRecord:
     outcome: str  # "DONE" | "ESCALATE"
     reason: str = ""
     timestamp: str = ""
+    domain: str = "general"
 
 
 @dataclass
@@ -85,21 +86,78 @@ PHASE_TIER: dict[str, dict[str, str]] = {
 }
 
 _TIER_ORDER = ["cheap", "mid", "strong"]
+_DOMAIN_STRENGTH_MAP: dict[str, tuple[str, ...]] = {
+    "frontend-layout": ("frontend-layout", "frontend", "layout", "css", "ui", "spatial"),
+    "frontend-state": ("frontend-state", "frontend", "state", "react", "hooks", "context"),
+    "backend-api": ("backend-api", "backend", "api", "routing", "middleware"),
+    "backend-data": ("backend-data", "backend", "data", "database", "db", "queries"),
+    "concurrent": ("concurrent", "concurrency", "async", "threading", "race-conditions"),
+    "refactor": ("refactor", "rename", "restructure", "cleanup"),
+    "test": ("test", "testing", "qa"),
+    "docs": ("docs", "documentation", "writing"),
+    "general": ("general",),
+}
 
 
 # ── Pure helpers ───────────────────────────────────────────────────────
 
 
-def _normalize_complexity(c: str) -> str:
-    """Map small/medium/large → LOW/MEDIUM/HIGH; pass through LOW/MEDIUM/HIGH."""
+def _normalize_complexity_score(c: str | int | float) -> int:
+    """Normalize legacy or numeric complexity into a score in the 1-10 range."""
     mapping = {
-        "small": "LOW",
-        "medium": "MEDIUM",
-        "large": "HIGH",
-        "low": "LOW",
-        "high": "HIGH",
+        "small": 3,
+        "medium": 5,
+        "large": 8,
+        "low": 3,
+        "high": 8,
     }
-    return mapping.get(c.lower(), "MEDIUM")
+    if isinstance(c, int):
+        return min(max(c, 1), 10)
+    if isinstance(c, float):
+        return min(max(int(c), 1), 10)
+
+    raw = str(c).strip().lower()
+    if raw in mapping:
+        return mapping[raw]
+    try:
+        return min(max(int(raw), 1), 10)
+    except ValueError:
+        return 5
+
+
+def _normalize_complexity(c: str | int | float) -> str:
+    """Map legacy or numeric complexity into LOW/MEDIUM/HIGH."""
+    score = _normalize_complexity_score(c)
+    if score <= 3:
+        return "LOW"
+    if score <= 6:
+        return "MEDIUM"
+    return "HIGH"
+
+
+def _normalize_domain(domain: str | None) -> str:
+    raw = str(domain or "general").strip().lower()
+    return raw if raw in _DOMAIN_STRENGTH_MAP else "general"
+
+
+def _promotion_cache_key(complexity: str, domain: str | None) -> str:
+    """Return the sprint-promotion cache key for a complexity/domain slice."""
+    return f"{complexity}:{_normalize_domain(domain)}"
+
+
+def _strength_score(agent: AgentDef, domain: str) -> int:
+    """Score how well an agent matches the requested domain."""
+    if domain == "general":
+        return 0
+
+    strengths = {s.lower() for s in agent.strengths}
+    wanted = set(_DOMAIN_STRENGTH_MAP[domain])
+    score = len(strengths & wanted)
+    if domain in strengths:
+        score += 5
+    if "general" in strengths:
+        score += 1
+    return score
 
 
 def _reviewer_count(complexity: str, min_r: int, max_r: int) -> int:
@@ -112,18 +170,20 @@ def _reviewer_count(complexity: str, min_r: int, max_r: int) -> int:
     return min_r + (max_r - min_r + 1) // 2
 
 
-def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
-    """Return agents matching tier, sorted by budget_usd ascending."""
+def _agents_by_tier(agents: list[AgentDef], tier: str, domain: str = "general") -> list[AgentDef]:
+    """Return agents matching tier, sorted by domain match then budget."""
     matches = [a for a in agents if a.tier == tier]
-    return sorted(matches, key=lambda a: a.budget_usd)
+    if domain == "general":
+        return sorted(matches, key=lambda a: a.budget_usd)
+    return sorted(matches, key=lambda a: (-_strength_score(a, domain), a.budget_usd))
 
 
-def _pick_agent(agents: list[AgentDef], tier: str) -> AgentDef | None:
+def _pick_agent(agents: list[AgentDef], tier: str, domain: str = "general") -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
     Skips API agents whose provider key is missing from the environment.
     """
-    candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a)]
+    candidates = [a for a in _agents_by_tier(agents, tier, domain) if _has_auth(a)]
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
@@ -140,6 +200,7 @@ def _select_reviewers(
     tier: str,
     n: int,
     prefer_cross_provider: bool,
+    domain: str = "general",
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -149,9 +210,11 @@ def _select_reviewers(
     """
     # Build candidate list: prefer strong, fall back to requested tier
     # Filter by auth availability — skip agents whose API key is missing
-    strong = [a for a in _agents_by_tier(agents, "strong") if _has_auth(a)]
+    strong = [a for a in _agents_by_tier(agents, "strong", domain) if _has_auth(a)]
     tier_agents = (
-        [a for a in _agents_by_tier(agents, tier) if _has_auth(a)] if tier != "strong" else []
+        [a for a in _agents_by_tier(agents, tier, domain) if _has_auth(a)]
+        if tier != "strong"
+        else []
     )
     # Merge: strong first, then same-tier, deduplicated
     seen_names: set[str] = set()
@@ -194,6 +257,7 @@ def _check_promotion(
     dev_agent_name: str,
     history: list[EscalationRecord],
     sprint_promotions: dict[str, str] | None,
+    domain: str = "general",
 ) -> str | None:
     """Return promoted tier string if promotion is warranted, else None.
 
@@ -201,12 +265,18 @@ def _check_promotion(
     Looks at last 10 records matching complexity+dev_model.
     Promotes if 2+ have outcome=ESCALATE.
     """
-    if sprint_promotions and complexity in sprint_promotions:
-        return sprint_promotions[complexity]
+    norm_domain = _normalize_domain(domain)
+    cache_key = _promotion_cache_key(complexity, norm_domain)
+    if sprint_promotions and cache_key in sprint_promotions:
+        return sprint_promotions[cache_key]
 
     # Filter to last 10 matching records
     matching = [
-        r for r in history if r.complexity == complexity and r.dev_model == dev_agent_name
+        r
+        for r in history
+        if _normalize_complexity(r.complexity) == complexity
+        and r.dev_model == dev_agent_name
+        and (norm_domain == "general" or _normalize_domain(r.domain) == norm_domain)
     ][-10:]
 
     if not matching:
@@ -341,8 +411,10 @@ def _agent_to_profile(
 def assign_models(
     agents: list[AgentDef],
     assignment_config: AssignmentConfig,
-    complexity: str,
+    complexity: str | int,
     escalation_history: list[EscalationRecord] | None = None,
+    *,
+    domain: str = "general",
     explicit_profiles: dict[str, ModelProfile] | None = None,
     sprint_promotions: dict[str, str] | None = None,
 ) -> AssignmentDecision:
@@ -356,8 +428,10 @@ def assign_models(
 
     explicit_profiles = explicit_profiles or {}
     history = escalation_history or []
+    norm_domain = _normalize_domain(domain)
 
     norm_complexity = _normalize_complexity(complexity)
+    complexity_score = _normalize_complexity_score(complexity)
     rationale: dict[str, str] = {}
 
     # ── Dev tier with promotion ────────────────────────────────────────
@@ -369,9 +443,15 @@ def assign_models(
         rationale["dev"] = f"explicit override: {dev_profile.model}"
     else:
         # Check promotion
-        dev_agent_for_check: AgentDef | None = _pick_agent(agents, dev_base_tier)
+        dev_agent_for_check = _pick_agent(agents, dev_base_tier, norm_domain)
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
-        promoted = _check_promotion(norm_complexity, dev_model_name, history, sprint_promotions)
+        promoted = _check_promotion(
+            norm_complexity,
+            dev_model_name,
+            history,
+            sprint_promotions,
+            norm_domain,
+        )
         effective_dev_tier = dev_base_tier
         if promoted is not None:
             effective_dev_tier = _promote_tier(dev_base_tier)
@@ -379,26 +459,35 @@ def assign_models(
             _matching = [
                 r
                 for r in history
-                if r.complexity == norm_complexity and r.dev_model == dev_model_name
+                if _normalize_complexity(r.complexity) == norm_complexity
+                and r.dev_model == dev_model_name
+                and (norm_domain == "general" or _normalize_domain(r.domain) == norm_domain)
             ][-10:]
             escalation_cnt = sum(1 for r in _matching if r.outcome == "ESCALATE")
             rationale["dev"] = (
                 f"{norm_complexity} dev promoted {dev_model_name} "
                 f"(tier {dev_base_tier} → {effective_dev_tier}) — "
-                f"{escalation_cnt}/10 recent {norm_complexity} stories escalated"
+                f"{escalation_cnt}/10 recent {norm_complexity} {norm_domain} stories escalated"
             )
         else:
-            rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
+            rationale["dev"] = (
+                f"complexity {complexity_score}/10 ({norm_complexity}), domain {norm_domain} "
+                f"→ tier {effective_dev_tier}"
+            )
 
-        dev_agent = _pick_agent(agents, effective_dev_tier)
+        dev_agent = _pick_agent(agents, effective_dev_tier, norm_domain)
         if dev_agent is None:
             # Fall back to any authed agent
             authed = [a for a in agents if _has_auth(a)]
             if authed:
-                dev_agent = sorted(authed, key=lambda a: a.budget_usd)[0]
+                dev_agent = sorted(
+                    authed, key=lambda a: (-_strength_score(a, norm_domain), a.budget_usd)
+                )[0]
                 rationale["dev"] += " (fallback: cheapest authed)"
             else:
-                dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
+                dev_agent = sorted(
+                    agents, key=lambda a: (-_strength_score(a, norm_domain), a.budget_usd)
+                )[0]
                 rationale["dev"] += " (fallback: cheapest, no auth checked)"
         dev_profile = _agent_to_profile(dev_agent, role="dev")
 
@@ -408,16 +497,22 @@ def assign_models(
         rationale["preflight"] = f"explicit override: {preflight_profile.model}"
     else:
         tier = PHASE_TIER["preflight"][norm_complexity]
-        agent = _pick_agent(agents, tier)
+        agent = _pick_agent(agents, tier, norm_domain)
         if agent is None:
             authed = [a for a in agents if _has_auth(a)]
-            agent = sorted(authed or agents, key=lambda a: a.budget_usd)[0]
+            agent = sorted(
+                authed or agents,
+                key=lambda a: (-_strength_score(a, norm_domain), a.budget_usd),
+            )[0]
         preflight_profile = _agent_to_profile(
             agent,
             role="preflight",
             allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
         )
-        rationale["preflight"] = f"tier {tier} (${agent.budget_usd:.2f})"
+        rationale["preflight"] = (
+            f"tier {tier} (${agent.budget_usd:.2f}), domain={norm_domain}, "
+            f"strength_score={_strength_score(agent, norm_domain)}"
+        )
 
     # ── Planner ────────────────────────────────────────────────────────
     if "planner" in explicit_profiles:
@@ -425,12 +520,18 @@ def assign_models(
         rationale["planner"] = f"explicit override: {planner_profile.model}"
     else:
         tier = PHASE_TIER["plan"][norm_complexity]
-        agent = _pick_agent(agents, tier)
+        agent = _pick_agent(agents, tier, norm_domain)
         if agent is None:
             authed = [a for a in agents if _has_auth(a)]
-            agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
+            agent = sorted(
+                authed or agents,
+                key=lambda a: (-_strength_score(a, norm_domain), a.budget_usd),
+            )[0]
         planner_profile = _agent_to_profile(agent, role="review")
-        rationale["planner"] = f"tier {tier} (${agent.budget_usd:.2f})"
+        rationale["planner"] = (
+            f"tier {tier} (${agent.budget_usd:.2f}), domain={norm_domain}, "
+            f"strength_score={_strength_score(agent, norm_domain)}"
+        )
 
     # ── Plan reviewers ─────────────────────────────────────────────────
     if "plan_review" in explicit_profiles:
@@ -443,11 +544,14 @@ def assign_models(
             assignment_config.min_reviewers,
             assignment_config.max_reviewers,
         )
-        selected = _select_reviewers(agents, tier, n, assignment_config.prefer_cross_provider)
+        selected = _select_reviewers(
+            agents, tier, n, assignment_config.prefer_cross_provider, norm_domain
+        )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         rationale["plan_review"] = (
-            f"{len(plan_reviewers)} reviewer(s), tier {tier}, providers {providers}"
+            f"{len(plan_reviewers)} reviewer(s), tier {tier}, providers {providers}, "
+            f"domain={norm_domain}"
         )
 
     # ── Code reviewers ─────────────────────────────────────────────────
@@ -461,11 +565,14 @@ def assign_models(
             assignment_config.min_reviewers,
             assignment_config.max_reviewers,
         )
-        selected = _select_reviewers(agents, tier, n, assignment_config.prefer_cross_provider)
+        selected = _select_reviewers(
+            agents, tier, n, assignment_config.prefer_cross_provider, norm_domain
+        )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         rationale["code_review"] = (
-            f"{len(code_reviewers)} reviewer(s), tier {tier}, providers {providers}"
+            f"{len(code_reviewers)} reviewer(s), tier {tier}, providers {providers}, "
+            f"domain={norm_domain}"
         )
 
     decision = AssignmentDecision(
@@ -510,6 +617,7 @@ def load_escalation_history(path: Path) -> list[EscalationRecord]:
                     outcome=str(r.get("outcome", "")),
                     reason=str(r.get("reason", "")),
                     timestamp=str(r.get("timestamp", "")),
+                    domain=str(r.get("domain", "general")),
                 )
             )
         return result
@@ -535,6 +643,7 @@ def append_escalation_record(path: Path, record: EscalationRecord) -> None:
         "complexity": record.complexity,
         "dev_model": record.dev_model,
         "outcome": record.outcome,
+        "domain": record.domain,
     }
     if record.reason:
         new_entry["reason"] = record.reason

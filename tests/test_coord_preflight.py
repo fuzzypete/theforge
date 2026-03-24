@@ -36,9 +36,12 @@ from theforge.config import (
 from theforge.coordinator import (
     Phase,
     _apply_complexity_adaptation,
+    _complexity_score_to_tier,
     _escalate_dev_model,
     _has_persistent_p1,
     _parse_preflight_complexity,
+    _parse_preflight_complexity_score,
+    _parse_preflight_domain,
     _parse_preflight_warnings,
     _persistent_p1_descriptions,
     generate_audit_log,
@@ -269,7 +272,8 @@ class TestCoordinatorPreflight:
 _PREFLIGHT_PROCEED_SMALL = """\
 ```yaml
 verdict: PROCEED
-complexity: small
+complexity: 3
+domain: general
 reason: "Single-file config change."
 criteria_checked: []
 ```
@@ -278,7 +282,8 @@ criteria_checked: []
 _PREFLIGHT_PROCEED_MEDIUM = """\
 ```yaml
 verdict: PROCEED
-complexity: medium
+complexity: 5
+domain: backend-api
 reason: "Multi-file feature with tests."
 criteria_checked: []
 ```
@@ -287,7 +292,8 @@ criteria_checked: []
 _PREFLIGHT_PROCEED_LARGE = """\
 ```yaml
 verdict: PROCEED
-complexity: large
+complexity: 8
+domain: concurrent
 reason: "Cross-cutting refactor."
 criteria_checked: []
 ```
@@ -303,6 +309,9 @@ criteria_checked: []
 
 
 class TestParsePreflightComplexity:
+    def test_complexity_score_parsed_numeric(self):
+        assert _parse_preflight_complexity_score(_PREFLIGHT_PROCEED_LARGE) == 8
+
     def test_complexity_parsed_small(self):
         assert _parse_preflight_complexity(_PREFLIGHT_PROCEED_SMALL) == "small"
 
@@ -327,9 +336,32 @@ class TestParsePreflightComplexity:
         output = "```yaml\nverdict: PROCEED\ncomplexity: LARGE\n```"
         assert _parse_preflight_complexity(output) == "large"
 
+    def test_complexity_score_legacy_mapping(self):
+        output = "```yaml\nverdict: PROCEED\ncomplexity: HIGH\n```"
+        assert _parse_preflight_complexity_score(output) == 8
+
     def test_complexity_invalid_value_defaults_medium(self):
         output = "```yaml\nverdict: PROCEED\ncomplexity: huge\n```"
         assert _parse_preflight_complexity(output) == "medium"
+
+    def test_complexity_score_to_tier(self):
+        assert _complexity_score_to_tier(3) == "small"
+        assert _complexity_score_to_tier(5) == "medium"
+        assert _complexity_score_to_tier(8) == "large"
+
+
+class TestParsePreflightDomain:
+    def test_domain_parsed(self):
+        assert _parse_preflight_domain(_PREFLIGHT_PROCEED_MEDIUM) == "backend-api"
+
+    def test_domain_defaults_general(self):
+        assert (
+            _parse_preflight_domain("```yaml\nverdict: PROCEED\ncomplexity: 4\n```") == "general"
+        )
+
+    def test_domain_invalid_defaults_general(self):
+        output = "```yaml\nverdict: PROCEED\ndomain: strange-thing\ncomplexity: 4\n```"
+        assert _parse_preflight_domain(output) == "general"
 
 
 # ── Complexity-adaptive model swapping tests ──────────────────────────
@@ -452,7 +484,8 @@ class TestComplexityIntegration:
         preflight_large = """\
 ```yaml
 verdict: PROCEED
-complexity: large
+complexity: 8
+domain: concurrent
 reason: "Big change."
 criteria_checked: []
 ```
@@ -478,6 +511,8 @@ criteria_checked: []
             result = run_task(config, task)
 
         assert result.state.preflight_complexity == "large"
+        assert result.state.preflight_complexity_score == 8
+        assert result.state.preflight_domain == "concurrent"
 
     def test_complexity_small_skips_synthesis_in_run(self, tmp_path):
         """small complexity causes pool to be reduced to 1 reviewer."""
@@ -489,7 +524,8 @@ criteria_checked: []
         preflight_small = """\
 ```yaml
 verdict: PROCEED
-complexity: small
+complexity: 3
+domain: test
 reason: "Tiny fix."
 criteria_checked: []
 ```
@@ -570,7 +606,8 @@ class TestComplexityParsedForAllPreflightsP1:
         preflight_medium = """\
 ```yaml
 verdict: PROCEED
-complexity: medium
+complexity: 5
+domain: backend-api
 reason: "Multi-file feature."
 criteria_checked: []
 ```
@@ -593,6 +630,8 @@ criteria_checked: []
             result = run_task(config, task)
 
         assert result.state.preflight_complexity == "medium"
+        assert result.state.preflight_complexity_score == 5
+        assert result.state.preflight_domain == "backend-api"
 
     def test_classic_config_complexity_does_not_swap_models(self, tmp_path):
         """Classic config: complexity is parsed but does NOT change model assignments."""
@@ -604,7 +643,8 @@ criteria_checked: []
         preflight_large = """\
 ```yaml
 verdict: PROCEED
-complexity: large
+complexity: 8
+domain: refactor
 reason: "Big refactor."
 criteria_checked: []
 ```
