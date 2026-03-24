@@ -102,9 +102,9 @@ retry:
 
 plan:
   enabled: true
-  model: codex
-  model_name: gpt-5.4
-  budget_usd: 1.00
+  model: claude
+  model_name: claude-opus-4-5
+  budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
   timeout_large: 1800
@@ -161,6 +161,13 @@ agents:
     tier: strong
     strengths: [architecture, review, complex-logic]
     reasoning_effort: high
+  - name: claude-sonnet
+    cli: claude
+    model: claude-sonnet-4-5
+    budget_usd: 5.00
+    timeout_seconds: 900
+    tier: mid
+    strengths: [code, tools, general]
 
 assignment:
   enabled: true  # M2: complexity-driven model routing
