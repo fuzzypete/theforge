@@ -603,6 +603,69 @@ class TestDevZeroChangeGuard:
         assert result.success is True
         assert result.phase == Phase.DONE
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_gate_retry_no_changes_does_not_escalate(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """Gate failure retry with no code changes should NOT escalate (not a review retry)."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        gate_calls = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                gate_calls["n"] += 1
+                if gate_calls["n"] == 1:
+                    # First gate: FAIL → triggers dev retry
+                    _write_handoff(Path(cwd), "FAIL")
+                    return (True, "FAIL")
+                # Second gate: PASS
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0] == "git":
+                if "rev-parse" in cmd:
+                    r = mock.Mock()
+                    r.returncode = 0
+                    r.stdout = b"abc123"
+                    return r
+                if "diff" in cmd and "--quiet" in cmd:
+                    r = mock.Mock()
+                    r.returncode = 0  # no diff
+                    return r
+                if "status" in cmd and "--porcelain" in cmd:
+                    r = mock.Mock()
+                    r.returncode = 0
+                    r.stdout = b""
+                    return r
+            r = mock.Mock()
+            r.returncode = 0
+            r.stdout = b""
+            return r
+
+        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+            result = run_task(config, task)
+
+        # Should complete successfully — gate retry is not a review retry
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
 
 # ── Exit-code gate mode tests ────────────────────────────────────────
 
