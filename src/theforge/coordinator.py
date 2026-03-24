@@ -1442,120 +1442,125 @@ def run_task(
             complexity = _parse_preflight_complexity(preflight_result.output)
             state.preflight_complexity = complexity
             _log(f"  Complexity: {complexity} (from preflight)")
-            if config.smart_config_models is not None:
-                config = _apply_complexity_adaptation(config, complexity)
+        else:
+            # state.preflight_complexity already set to "large" above
+            complexity = state.preflight_complexity
+            _log(f"  Complexity: {complexity} (preflight failed — using fallback)")
 
-            # ── Adaptive assignment ────────────────────────────────────
-            if config.assignment.enabled and config.agents:
-                from .assignment import (
-                    PHASE_TIER as _PHASE_TIER,
-                )
-                from .assignment import (
-                    _normalize_complexity as _norm_complexity,
-                )
-                from .assignment import (
-                    _pick_agent as _pick_agt,
-                )
-                from .assignment import (
-                    _promote_tier as _prom_tier,
-                )
-                from .assignment import (
-                    assign_models as _assign_models,
-                )
-                from .assignment import (
-                    load_escalation_history as _load_esc_history,
-                )
+        if config.smart_config_models is not None:
+            config = _apply_complexity_adaptation(config, complexity)
 
-                _history_path = config.project_root / ".forge" / "assignment_history.yaml"
-                _esc_history = _load_esc_history(_history_path)
+        # ── Adaptive assignment ────────────────────────────────────
+        if config.assignment.enabled and config.agents:
+            from .assignment import (
+                PHASE_TIER as _PHASE_TIER,
+            )
+            from .assignment import (
+                _normalize_complexity as _norm_complexity,
+            )
+            from .assignment import (
+                _pick_agent as _pick_agt,
+            )
+            from .assignment import (
+                _promote_tier as _prom_tier,
+            )
+            from .assignment import (
+                assign_models as _assign_models,
+            )
+            from .assignment import (
+                load_escalation_history as _load_esc_history,
+            )
 
-                # Build explicit_profiles from profiles: key (non-adaptive overrides).
-                # Classic config (smart_config_models is None) means profiles: was used;
-                # compare against defaults by identity to detect explicitly-set roles.
-                # Smart config (smart_config_models set) auto-generates profiles —
-                # adaptive assignment should override them freely.
-                from .config import (
-                    DEFAULT_DEV_PROFILE as _DEF_DEV,
-                )
-                from .config import (
-                    DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
-                )
+            _history_path = config.project_root / ".forge" / "assignment_history.yaml"
+            _esc_history = _load_esc_history(_history_path)
 
-                _explicit: dict[str, ModelProfile] = {}
-                _explicit_roles: set[str] = set()
-                if config.smart_config_models is None:
-                    if config.dev_profile is not _DEF_DEV:
-                        _explicit["dev"] = config.dev_profile
-                        _explicit_roles.add("dev")
-                    if config.preflight_profile is not _DEF_PRE:
-                        _explicit["preflight"] = config.preflight_profile
-                        _explicit_roles.add("preflight")
-                    # Detect explicit review pool and plan review config
-                    if config.review_pool and not config.review_pool_is_default:
-                        _explicit_roles.add("review_pool")
-                    if not config.plan_model_is_default:
-                        _explicit_roles.add("planner")
-                    if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-                        _explicit_roles.add("plan_agent_review")
+            # Build explicit_profiles from profiles: key (non-adaptive overrides).
+            # Classic config (smart_config_models is None) means profiles: was used;
+            # compare against defaults by identity to detect explicitly-set roles.
+            # Smart config (smart_config_models set) auto-generates profiles —
+            # adaptive assignment should override them freely.
+            from .config import (
+                DEFAULT_DEV_PROFILE as _DEF_DEV,
+            )
+            from .config import (
+                DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
+            )
 
-                _decision = _assign_models(
-                    config.agents,
-                    config.assignment,
-                    complexity,
+            _explicit: dict[str, ModelProfile] = {}
+            _explicit_roles: set[str] = set()
+            if config.smart_config_models is None:
+                if config.dev_profile is not _DEF_DEV:
+                    _explicit["dev"] = config.dev_profile
+                    _explicit_roles.add("dev")
+                if config.preflight_profile is not _DEF_PRE:
+                    _explicit["preflight"] = config.preflight_profile
+                    _explicit_roles.add("preflight")
+                # Detect explicit review pool and plan review config
+                if config.review_pool and not config.review_pool_is_default:
+                    _explicit_roles.add("review_pool")
+                if not config.plan_model_is_default:
+                    _explicit_roles.add("planner")
+                if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
+                    _explicit_roles.add("plan_agent_review")
+
+            _decision = _assign_models(
+                config.agents,
+                config.assignment,
+                complexity,
+                _esc_history,
+                _explicit if _explicit else None,
+                state.sprint_promotions,
+            )
+
+            # Update config with adaptive assignments
+            import dataclasses as _dc
+
+            _replace_kwargs: dict = {
+                "dev_profile": _decision.dev,
+                "preflight_profile": _decision.preflight,
+            }
+            if _decision.code_reviewers:
+                if "review_pool" not in _explicit_roles:
+                    _replace_kwargs["review_pool"] = _decision.code_reviewers
+                else:
+                    _log("  [adaptive] review_pool: explicit override preserved")
+            config = _dc.replace(config, **_replace_kwargs)
+
+            # Stash adaptive decisions for PLAN and PLAN_REVIEW phases
+            state._adaptive_decision = _decision
+            state._explicit_roles = _explicit_roles
+
+            # Update sprint_promotions if promotion occurred
+            _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
+            _dev_agent = _pick_agt(config.agents, _dev_base_tier)
+            _dev_name = _dev_agent.name if _dev_agent else ""
+            if (
+                _dev_name
+                and "dev" not in _explicit
+                and complexity not in state.sprint_promotions
+            ):
+                from .assignment import _check_promotion as _chk_prom
+
+                _prom = _chk_prom(
+                    _norm_complexity(complexity),
+                    _dev_name,
                     _esc_history,
-                    _explicit if _explicit else None,
                     state.sprint_promotions,
                 )
-
-                # Update config with adaptive assignments
-                import dataclasses as _dc
-
-                _replace_kwargs: dict = {
-                    "dev_profile": _decision.dev,
-                    "preflight_profile": _decision.preflight,
-                }
-                if _decision.code_reviewers:
-                    if "review_pool" not in _explicit_roles:
-                        _replace_kwargs["review_pool"] = _decision.code_reviewers
-                    else:
-                        _log("  [adaptive] review_pool: explicit override preserved")
-                config = _dc.replace(config, **_replace_kwargs)
-
-                # Stash adaptive decisions for PLAN and PLAN_REVIEW phases
-                state._adaptive_decision = _decision
-                state._explicit_roles = _explicit_roles
-
-                # Update sprint_promotions if promotion occurred
-                _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-                _dev_agent = _pick_agt(config.agents, _dev_base_tier)
-                _dev_name = _dev_agent.name if _dev_agent else ""
-                if (
-                    _dev_name
-                    and "dev" not in _explicit
-                    and complexity not in state.sprint_promotions
-                ):
-                    from .assignment import _check_promotion as _chk_prom
-
-                    _prom = _chk_prom(
-                        _norm_complexity(complexity),
-                        _dev_name,
-                        _esc_history,
-                        state.sprint_promotions,
+                if _prom is not None:
+                    _promoted_tier = _prom_tier(_dev_base_tier)
+                    state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
+                    _log_verbose(
+                        f"[adaptive] {_norm_complexity(complexity)} dev promoted "
+                        f"{_dev_name} → tier {_promoted_tier} (sticky for sprint)"
                     )
-                    if _prom is not None:
-                        _promoted_tier = _prom_tier(_dev_base_tier)
-                        state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
-                        _log_verbose(
-                            f"[adaptive] {_norm_complexity(complexity)} dev promoted "
-                            f"{_dev_name} → tier {_promoted_tier} (sticky for sprint)"
-                        )
 
-                # Log all rationale lines at verbose
-                _log_verbose(
-                    f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)"
-                )
-                for _phase, _reason in _decision.rationale.items():
-                    _log_verbose(f"[adaptive] {_phase}: {_reason}")
+            # Log all rationale lines at verbose
+            _log_verbose(
+                f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)"
+            )
+            for _phase, _reason in _decision.rationale.items():
+                _log_verbose(f"[adaptive] {_phase}: {_reason}")
 
         _log(f"  ✓ PREFLIGHT   {verdict}")
         _log_verbose(f"  Reason: {reason}")
