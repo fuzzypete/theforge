@@ -8,6 +8,7 @@ which are called only by the coordinator.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import warnings
 from dataclasses import dataclass, field
@@ -114,6 +115,8 @@ def _normalize_complexity_score(c: str | int | float) -> int:
     if isinstance(c, int):
         return min(max(c, 1), 10)
     if isinstance(c, float):
+        if not math.isfinite(c):
+            return 5
         return min(max(int(c), 1), 10)
 
     raw = str(c).strip().lower()

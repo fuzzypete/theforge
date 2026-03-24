@@ -340,6 +340,12 @@ class TestParsePreflightComplexity:
         output = "```yaml\nverdict: PROCEED\ncomplexity: HIGH\n```"
         assert _parse_preflight_complexity_score(output) == 8
 
+    @pytest.mark.parametrize("raw_value", [".nan", ".inf", "-.inf"])
+    def test_complexity_score_non_finite_defaults_medium(self, raw_value):
+        output = f"```yaml\nverdict: PROCEED\ncomplexity: {raw_value}\n```"
+        assert _parse_preflight_complexity_score(output) == 5
+        assert _parse_preflight_complexity(output) == "medium"
+
     def test_complexity_invalid_value_defaults_medium(self):
         output = "```yaml\nverdict: PROCEED\ncomplexity: huge\n```"
         assert _parse_preflight_complexity(output) == "medium"

@@ -209,6 +209,12 @@ def test_normalize_complexity_score_legacy_mapping():
     assert _normalize_complexity_score("HIGH") == 8
 
 
+@pytest.mark.parametrize("raw_value", [float("nan"), float("inf"), float("-inf")])
+def test_normalize_complexity_score_non_finite_defaults_medium(raw_value):
+    assert _normalize_complexity_score(raw_value) == 5
+    assert _normalize_complexity(raw_value) == "MEDIUM"
+
+
 # ── test_tier_selection_low ────────────────────────────────────────────
 
 

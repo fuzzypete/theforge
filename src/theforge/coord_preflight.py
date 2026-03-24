@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace as _dc_replace
 
 import yaml
@@ -68,6 +69,8 @@ def _normalize_complexity_score(raw: object) -> int:
     if isinstance(raw, int):
         return min(max(raw, 1), 10)
     if isinstance(raw, float):
+        if not math.isfinite(raw):
+            return 5
         return min(max(int(raw), 1), 10)
 
     value = str(raw).strip().lower()

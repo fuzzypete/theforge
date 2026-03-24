@@ -23,6 +23,7 @@ from theforge.config import (
 from theforge.coord_util import resolve_timeout
 from theforge.coordinator import run_task
 from theforge.runner import AgentResult
+from theforge.story_validator import StoryValidationResult
 from theforge.task import TaskStory
 
 # ── resolve_timeout ────────────────────────────────────────────────────
@@ -334,11 +335,12 @@ class TestDevPhaseTimeout:
 
 
 class TestPlanPhaseTimeout:
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_plan_uses_large_timeout_for_large_complexity(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_pool, mock_validate_story, tmp_path
     ):
         """PLAN phase profile uses timeout_large when complexity=large."""
         plan = PlanConfig(enabled=True, timeout=600, timeout_medium=900, timeout_large=1800)
@@ -347,6 +349,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        mock_validate_story.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
@@ -362,11 +365,12 @@ class TestPlanPhaseTimeout:
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 1800
 
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_plan_falls_back_to_base_when_no_override(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_pool, mock_validate_story, tmp_path
     ):
         """PLAN phase uses base timeout when no medium/large overrides are configured."""
         plan = PlanConfig(enabled=True, timeout=600)
@@ -375,6 +379,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        mock_validate_story.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
@@ -389,11 +394,12 @@ class TestPlanPhaseTimeout:
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 600
 
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_plan_logs_complexity_suffix_when_override_equals_base(
-        self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
+        self, mock_shell, mock_agent, mock_pool, mock_validate_story, tmp_path, capsys
     ):
         """Complexity suffix appears in plan log even when override value equals base timeout."""
         base = 600
@@ -403,6 +409,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        mock_validate_story.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
