@@ -666,6 +666,93 @@ class TestDevZeroChangeGuard:
         assert result.success is True
         assert result.phase == Phase.DONE
 
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_post_review_gate_retry_no_changes_does_not_escalate(
+        self, mock_shell, mock_agent, mock_pool, tmp_path
+    ):
+        """REQUEST_CHANGES → dev retry (has diff) → gate fail → dev retry (no new diff) → OK.
+
+        The review-driven retry produces changes (guard passes), then gate fails.
+        The gate-fail retry produces no additional changes — that's legitimate
+        and should NOT trigger the zero-change guard.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        gate_calls = {"n": 0}
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                gate_calls["n"] += 1
+                if gate_calls["n"] == 2:
+                    # Second gate (after review retry dev): FAIL → triggers gate retry
+                    _write_handoff(Path(cwd), "FAIL")
+                    return (True, "FAIL")
+                # All others: PASS
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+
+        dev_result = _make_agent_result(success=True, output="Done.")
+        review_rc = _make_agent_result(
+            success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+        )
+        review_approve = _make_agent_result(
+            success=True, output=APPROVE_REVIEW, profile_name="review"
+        )
+
+        mock_agent.side_effect = _preflight_then(dev_result, dev_result, dev_result)
+
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [review_rc]
+            return [review_approve]
+
+        mock_pool.side_effect = pool_side_effect
+
+        dev_trace = {"n": 0}
+
+        def subprocess_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args", [])
+            if cmd and cmd[0] == "git":
+                if "rev-parse" in cmd:
+                    dev_trace["n"] += 1
+                    r = mock.Mock()
+                    r.returncode = 0
+                    r.stdout = f"commit{dev_trace['n']}".encode()
+                    return r
+                if "diff" in cmd and "--quiet" in cmd:
+                    r = mock.Mock()
+                    # Review-driven retry (trace 2) has changes; gate retry (trace 3) does not
+                    r.returncode = 1 if dev_trace["n"] <= 2 else 0
+                    return r
+                if "status" in cmd and "--porcelain" in cmd:
+                    r = mock.Mock()
+                    r.returncode = 0
+                    r.stdout = b""
+                    return r
+            r = mock.Mock()
+            r.returncode = 0
+            r.stdout = b""
+            return r
+
+        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
 
 # ── Exit-code gate mode tests ────────────────────────────────────────
 

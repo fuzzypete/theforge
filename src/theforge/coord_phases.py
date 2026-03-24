@@ -1244,6 +1244,7 @@ def _run_dev_phase(
         if task.gate_override is not None and not _is_gate_skip(task.gate_override)
         else config.validation.gate_command
     )
+    _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
     if state.retry_reason == "timeout_resume":
         prompt = (
             state.human_feedback
@@ -1384,16 +1385,16 @@ def _run_dev_phase(
         # Don't immediately escalate — try validation anyway,
         # the agent may have committed partial work + run the gate
 
-    # ── Zero-change guard (post-review retry only) ──────────────────
+    # ── Zero-change guard (review-driven retry only) ─────────────────
     # If the coordinator retried DEV after review REQUEST_CHANGES and the dev
     # agent produced no changes (no commits, no dirty files), escalate immediately.
     # Without this guard the coordinator sends the identical code back to review,
     # the finding classifier sees no diff, classifies new P1s as net_new
     # (non-blocking), and the story passes with unfixed code.
-    # Only applies after a review cycle — gate retries and timeout resumes may
-    # legitimately produce no code changes (e.g., just re-running validation).
-    _is_post_review_retry = state.review_cycle >= 1 and state.last_review_findings
-    if _is_post_review_retry and state.last_dev_start_commit:
+    # Only applies when THIS dev pass was entered for review_changes or extend —
+    # gate retries and timeout resumes may legitimately produce no code changes.
+    _is_review_driven = _dev_entry_reason in ("review_changes", "extend")
+    if _is_review_driven and state.last_dev_start_commit:
         _has_commits = False
         _has_dirty = False
         try:
