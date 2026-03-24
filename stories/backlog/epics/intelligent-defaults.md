@@ -1,59 +1,74 @@
-# Epic: Intelligent Defaults — From Blank Config to Self-Tuning System
+# Epic: Intelligent Defaults → Self-Tuning System
 
 ## Vision
 
 A new user runs `forge init`, gets a config that works well out of the box,
-and the system gets smarter over time by tracking what works and what doesn't.
-No manual model-shopping, no guessing at iteration limits, no surprise $50 runs.
+and the system gets smarter over time. The number of YAML knobs shrinks as
+forge learns to derive limits from its own run data. The end state: one
+budget knob per story, everything else derived.
 
 The progression:
 1. **Smart defaults** — opinionated starting config based on ecosystem evidence
-2. **Health metrics** — visibility into whether the config is working well
-3. **Adaptive assignment** — system picks models per story based on complexity
-4. **Escalation learning** — system promotes models when current tier fails too often
+2. **Domain-aware routing** — preflight classifies domain + complexity (1-10),
+   router matches agent strengths *(in flight)*
+3. **Adaptive resource budgets** — iteration/timeout limits derived from
+   complexity score and learned agent behavior profiles, replacing manual
+   per-agent knobs
+4. **Progress-aware timeouts** — stuck detection within the adaptive ceiling
+5. **Escalation learning** — auto-promote models when current tier fails
+   too often for a given complexity band
 
-## Stories (ordered)
+## Stories (ordered by dependency)
 
-### Phase 1: Foundation
-- [ ] `smart-defaults` — `forge init` scaffolding, built-in defaults in config.py,
-      validation warnings for anti-patterns
-- [ ] `run-health-metrics` — per-phase cost/timing tracking, anomaly detection,
-      health summary in run output and audit YAML
+### Phase 1: Foundation *(shipped)*
+- [x] `smart-model-config` — model tiering in forge.yaml
+- [x] `adaptive-model-assignment` — complexity-driven model routing
+- [x] `dev-model-escalation` — persistent P1 triggers model promotion
+- [x] `phase-telemetry` — per-phase cost/timing tracking
 
-### Phase 2: Adaptive
-- [ ] `adaptive-model-assignment` — complexity-driven model routing, cross-provider
-      review pools, budget caps (depends on smart-defaults + api-mode-dev)
+### Phase 2: Domain + config (v0.2.1) *(in flight)*
+- [ ] `config-normalization` — unify model spec, loud validation on load
+- [ ] `domain-aware-routing` — 1-10 complexity, domain tags, strengths matching
+- [ ] `forge-check-config` — show effective config, auth checks, exit codes
 
-### Phase 3: Learning
-- [ ] `escalation-learning` — track escalation history per complexity tier,
-      auto-promote models after repeated failures (can be split from adaptive
-      or built as part of it)
+### Phase 3: Adaptive limits
+- [ ] `complexity-resource-scaling` — learned agent profiles replace manual
+      per-agent max_iterations/timeout/budget knobs
+- [ ] `progress-aware-timeouts` — stuck detection via tool-call patterns,
+      nudge then terminate
+
+### Phase 4: Learning loop
+- [ ] `escalation-learning` — read history, detect repeat failures at a tier,
+      auto-promote before story starts
 
 ## Dependencies
 
 ```
-smart-defaults
-  ├── run-health-metrics (uses default reference ranges)
-  └── adaptive-model-assignment (uses tier definitions)
-        └── escalation-learning (uses assignment + health data)
+config-normalization
+  └── forge-check-config
 
-api-mode-dev (already landed)
-  └── adaptive-model-assignment (needs API agents in the pool)
+domain-aware-routing
+  └── complexity-resource-scaling
+        └── progress-aware-timeouts (composes: ceiling + early exit)
+
+adaptive-model-assignment (shipped)
+  └── escalation-learning
 ```
 
 ## Key Design Constraints
 
-- **All assignment logic is deterministic** — no LLM in the routing loop
+- **All assignment/scaling logic is deterministic** — no LLM in the routing loop
 - **Explicit config always wins** — adaptive never overrides what the user set
-- **Health metrics are mechanical** — pure math on data the coordinator already collects
-- **Escalation learning is local** — stored in `.forge/`, not shipped anywhere
-- **Reference ranges are configurable** — but the defaults should be right for 90% of users
+- **Learned profiles are local** — stored in `.forge/`, not shipped anywhere
+- **Day-one backward compat** — no history → current static values as fallback
+- **One budget knob** — `budget_per_story_usd` is the primary operator control;
+  phase allocation and per-agent limits derive from it
 
 ## Definition of Done
 
 - `forge init` produces a working config that a new user can run immediately
-- Health metrics surface in every run summary (verbose) and audit trail
 - Adaptive assignment makes per-story model decisions from the available pool
+- Iteration/timeout limits scale with complexity and learned agent behavior
+- Stuck agents are detected and terminated early (not at the budget wall)
 - Escalation history auto-promotes models after repeated failures for a tier
-- A sprint of 5 MEDIUM stories with adaptive enabled costs < $60 total
-- First-pass success rate with smart defaults ≥ 70% on MEDIUM stories
+- A sprint of 5 stories with adaptive enabled requires zero manual knob-tuning

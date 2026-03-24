@@ -1,0 +1,6 @@
+name: "v0.2.1 wave 1 — config normalization + test coverage + domain routing"
+budget_usd: 45
+stories:
+  - stories/backlog/config-normalization.md
+  - stories/backlog/test-coverage-gaps.md
+  - stories/backlog/domain-aware-routing.md
