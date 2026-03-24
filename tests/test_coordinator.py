@@ -7,6 +7,7 @@ import dataclasses
 import datetime
 import io
 import json
+import logging
 import time as _time
 from pathlib import Path
 from unittest.mock import patch
@@ -29,9 +30,12 @@ from theforge.config import (
     PlanReviewConfig,
     RetryPolicy,
     WorkspaceConfig,
+    load_config,
 )
 from theforge.coord_state import parse_phase_name
 from theforge.coordinator import (
+    CoordinatorResult,
+    CoordinatorState,
     Phase,
     generate_audit_log,
     run_from_review,
@@ -39,6 +43,7 @@ from theforge.coordinator import (
     run_task,
 )
 from theforge.runner import AgentResult, LogLevel
+from theforge.sprint import StoryDAG, _classify_and_record
 from theforge.task import TaskStory
 
 # ── Fixtures ─────────────────────────────────────────────────────────
@@ -383,6 +388,170 @@ def _preflight_then(*dev_results: AgentResult):
 
 
 # ── Tests ────────────────────────────────────────────────────────────
+
+
+class TestCoordinatorCoverageGaps:
+    @patch("theforge.coordinator.validate_story")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_preflight_failure_escalates_dev_profile_and_runs_plan(
+        self, mock_shell, mock_agent, mock_pool, mock_validate, tmp_path
+    ):
+        from theforge.story_validator import StoryValidationResult
+
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+            smart_config_models=["claude/sonnet", "claude/opus"],
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        mock_validate.return_value = StoryValidationResult(verdict="PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        seen_calls: list[tuple[str, str]] = []
+
+        def agent_side_effect(**kwargs):
+            profile = kwargs["profile"]
+            seen_calls.append((profile.name, profile.model))
+            if profile.name == "preflight":
+                return AgentResult(
+                    success=False,
+                    output="TIMEOUT",
+                    session_id="preflight-timeout",
+                    cost_usd=0.0,
+                    exit_code=-9,
+                    raw={},
+                    profile_name="preflight",
+                )
+            if profile.name == "plan":
+                return _make_agent_result(
+                    success=True, output="# Plan\n\n- fallback", cost_usd=0.10
+                )
+            return _make_agent_result(success=True, output="Implemented.", profile_name="dev")
+
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_complexity == "large"
+        assert ("plan", config.plan.model_name) in seen_calls
+        assert ("dev", "opus") in seen_calls
+
+    @patch("theforge.coordinator.validate_story")
+    @patch("theforge.coordinator.run_agent_pool")
+    @patch("theforge.coordinator.run_agent")
+    @patch("theforge.coord_util._run_shell")
+    def test_unknown_preflight_complexity_falls_back_to_large_and_runs_plan(
+        self, mock_shell, mock_agent, mock_pool, mock_validate, tmp_path
+    ):
+        from theforge.story_validator import StoryValidationResult
+
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+            smart_config_models=["claude/sonnet", "claude/opus"],
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        mock_validate.return_value = StoryValidationResult(verdict="PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+
+        seen_calls: list[tuple[str, str]] = []
+        preflight_unknown = """\
+```yaml
+verdict: PROCEED
+complexity: weird
+reason: "unknown complexity"
+criteria_checked: []
+```
+"""
+
+        def agent_side_effect(**kwargs):
+            profile = kwargs["profile"]
+            seen_calls.append((profile.name, profile.model))
+            if profile.name == "preflight":
+                return _make_agent_result(
+                    success=True,
+                    output=preflight_unknown,
+                    cost_usd=0.05,
+                    profile_name="preflight",
+                )
+            if profile.name == "plan":
+                return _make_agent_result(
+                    success=True,
+                    output="# Plan\n\n- conservative",
+                    cost_usd=0.10,
+                )
+            return _make_agent_result(success=True, output="Implemented.", profile_name="dev")
+
+        mock_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_complexity == "large"
+        assert ("plan", config.plan.model_name) in seen_calls
+        assert ("dev", "opus") in seen_calls
+
+    def test_success_without_merge_keeps_dependents_blocked(self, tmp_path):
+        a_story = tmp_path / "a.md"
+        a_story.write_text("# A", encoding="utf-8")
+        b_story = tmp_path / "b.md"
+        b_story.write_text("# B", encoding="utf-8")
+        a = TaskStory(name="A", story_path=a_story, slug="a")
+        b = TaskStory(name="B", story_path=b_story, slug="b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+        state = CoordinatorState(preflight_verdict="PROCEED")
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge=None,
+        )
+
+        succeeded, failed, skipped = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert (succeeded, failed, skipped) == (1, 0, 0)
+        assert "a" not in merged_slugs
+        assert dag.ready() == []
+
+    def test_load_config_warns_when_profile_model_overrides_auto_assignment(
+        self, tmp_path, caplog
+    ):
+        config_path = tmp_path / "forge.yaml"
+        config_path.write_text(
+            yaml.dump(
+                {
+                    "project": "smart-test",
+                    "models": ["claude/sonnet", "claude/opus"],
+                    "budget_usd": 50.0,
+                    "profiles": {"dev": {"model": "opus"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING, logger="theforge.config"):
+            config = load_config(config_path)
+
+        assert config.dev_profile.model == "opus"
+        assert any(
+            record.message == "profiles.dev overrides auto-assigned model selection from models"
+            for record in caplog.records
+        )
 
 
 class TestCoordinatorHybridRunner:

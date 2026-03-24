@@ -327,9 +327,9 @@ class TestParsePreflightComplexity:
         output = "```yaml\nverdict: PROCEED\ncomplexity: LARGE\n```"
         assert _parse_preflight_complexity(output) == "large"
 
-    def test_complexity_invalid_value_defaults_medium(self):
+    def test_complexity_invalid_value_defaults_large(self):
         output = "```yaml\nverdict: PROCEED\ncomplexity: huge\n```"
-        assert _parse_preflight_complexity(output) == "medium"
+        assert _parse_preflight_complexity(output) == "large"
 
 
 # ── Complexity-adaptive model swapping tests ──────────────────────────

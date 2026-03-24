@@ -1534,11 +1534,7 @@ def run_task(
             _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
             _dev_agent = _pick_agt(config.agents, _dev_base_tier)
             _dev_name = _dev_agent.name if _dev_agent else ""
-            if (
-                _dev_name
-                and "dev" not in _explicit
-                and complexity not in state.sprint_promotions
-            ):
+            if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
                 from .assignment import _check_promotion as _chk_prom
 
                 _prom = _chk_prom(
@@ -1556,9 +1552,7 @@ def run_task(
                     )
 
             # Log all rationale lines at verbose
-            _log_verbose(
-                f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)"
-            )
+            _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
             for _phase, _reason in _decision.rationale.items():
                 _log_verbose(f"[adaptive] {_phase}: {_reason}")
 

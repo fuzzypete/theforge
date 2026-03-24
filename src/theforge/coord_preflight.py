@@ -75,7 +75,7 @@ def _parse_preflight_warnings(output: str) -> list[str]:
 
 
 def _parse_preflight_complexity(output: str) -> str:
-    """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
+    """Extract complexity from preflight agent output."""
     yaml_text = output
     if "```yaml" in output:
         start = output.index("```yaml") + len("```yaml")
@@ -92,6 +92,8 @@ def _parse_preflight_complexity(output: str) -> str:
             raw = str(parsed.get("complexity", "medium")).lower()
             if raw in _VALID_COMPLEXITIES:
                 return raw
+            if "complexity" in parsed:
+                return "large"
     except yaml.YAMLError:
         pass
 

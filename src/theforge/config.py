@@ -564,6 +564,15 @@ def _auto_assign_models(
     return dev_profile, preflight_profile, review_pool, synthesis_profile
 
 
+def _profile_model_id(
+    profile: ModelProfile | None,
+) -> tuple[str | None, str | None, str | None] | None:
+    """Return a stable identity tuple for comparing assigned models."""
+    if profile is None:
+        return None
+    return profile.cli, profile.provider, profile.model
+
+
 # ── Loader ────────────────────────────────────────────────────────────
 
 
@@ -751,15 +760,30 @@ def load_config(config_path: Path) -> ForgeConfig:
         dev_profile, preflight_profile, review_pool, synthesis_profile = _auto_assign_models(
             [str(m) for m in models_list], budget_usd_val
         )
+        auto_assigned_model_ids = {
+            "dev": _profile_model_id(dev_profile),
+            "preflight": _profile_model_id(preflight_profile),
+            "synthesis": _profile_model_id(synthesis_profile),
+        }
 
         # Apply explicit profile overrides (partial override supported)
         profiles = raw.get("profiles", {})
         if "dev" in profiles:
             dev_profile = _apply_profile_overrides(dev_profile, profiles["dev"])
+            if _profile_model_id(dev_profile) != auto_assigned_model_ids["dev"]:
+                log.warning("profiles.dev overrides auto-assigned model selection from models")
         if "preflight" in profiles:
             preflight_profile = _apply_profile_overrides(preflight_profile, profiles["preflight"])
+            if _profile_model_id(preflight_profile) != auto_assigned_model_ids["preflight"]:
+                log.warning(
+                    "profiles.preflight overrides auto-assigned model selection from models"
+                )
         if synthesis_profile is not None and "synthesis" in profiles:
             synthesis_profile = _apply_profile_overrides(synthesis_profile, profiles["synthesis"])
+            if _profile_model_id(synthesis_profile) != auto_assigned_model_ids["synthesis"]:
+                log.warning(
+                    "profiles.synthesis overrides auto-assigned model selection from models"
+                )
         # Apply per-reviewer overrides matched by name
         # (e.g. profiles.review_pool[{name: claude-opus}])
         if "review_pool" in profiles:
