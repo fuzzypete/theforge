@@ -21,10 +21,10 @@ from .defaults import (
 )
 from .load import load_config
 from .models import (
+    _PROVIDER_CLI_MAP,
     MODEL_REGISTRY,
     AgentDef,
     ModelInfo,
-    _PROVIDER_CLI_MAP,
     _planner_candidate_models,
 )
 from .profiles import (

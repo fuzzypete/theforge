@@ -1,35 +1,24 @@
-dev_notes: |
-  summary: "Converted src/theforge/config.py (1,239 lines) into a config/ package
-    with 8 sub-modules: types.py (dataclasses), models.py (MODEL_REGISTRY + helpers),
-    defaults.py (DEFAULT_* constants), secrets.py (_resolve_secret + _parse_notifications),
-    profiles.py (profile resolution), _loaders.py (_parse_plan_agent_review + _parse_workspace),
-    load.py (load_config), and __init__.py (re-exports all 31 public names). The
-    linter (ruff) reorganized helper functions during make fmt — notably _resolve_model_info,
-    _planner_candidate_models, _parse_agents, _parse_assignment moved to models.py,
-    and _parse_notifications moved to secrets.py. The critical package-relative import
-    was updated: `from ..tool_runtime import TOOL_NAME_MAP` (ruff simplified to absolute
-    `from theforge.tool_runtime import TOOL_NAME_MAP`). Logger namespace preserved
-    by hardcoding `logging.getLogger('theforge.config')` in all sub-modules."
-  commits:
-    - sha: "1555ca5"
-      message: "refactor(config): split config.py into a config/ package"
-  acceptance_criteria:
-    - criterion: "make test passes with the same test count."
-      status: MET
-      notes: "1410 tests pass (same count as before the split)."
-    - criterion: "make lint passes."
-      status: MET
-      notes: "ruff check and ruff format --check both pass cleanly."
-    - criterion: "All existing public imports from theforge.config still work."
-      status: MET
-      notes: "__init__.py re-exports all 31 public names; import smoke test confirmed."
-    - criterion: "No single file in src/theforge/config/ exceeds 300 lines."
-      status: MET
-      notes: "Largest file is load.py at 288 lines; all others are under 250."
-    - criterion: "The old config.py file no longer exists."
-      status: MET
-      notes: "src/theforge/config.py deleted in the commit."
-  story_deviations: none
-  deferred_items: none
-  gate_result: PASS
+dev_notes: "summary: \"Converted src/theforge/config.py (1,239 lines) into a config/\
+  \ package\n  with 8 sub-modules: types.py (dataclasses), models.py (MODEL_REGISTRY\
+  \ + helpers),\n  defaults.py (DEFAULT_* constants), secrets.py (_resolve_secret\
+  \ + _parse_notifications),\n  profiles.py (profile resolution), _loaders.py (_parse_plan_agent_review\
+  \ + _parse_workspace),\n  load.py (load_config), and __init__.py (re-exports all\
+  \ 31 public names). The\n  linter (ruff) reorganized helper functions during make\
+  \ fmt — notably _resolve_model_info,\n  _planner_candidate_models, _parse_agents,\
+  \ _parse_assignment moved to models.py,\n  and _parse_notifications moved to secrets.py.\
+  \ The critical package-relative import\n  was updated: `from ..tool_runtime import\
+  \ TOOL_NAME_MAP` (ruff simplified to absolute\n  `from theforge.tool_runtime import\
+  \ TOOL_NAME_MAP`). Logger namespace preserved\n  by hardcoding `logging.getLogger('theforge.config')`\
+  \ in all sub-modules.\"\ncommits:\n  - sha: \"1555ca5\"\n    message: \"refactor(config):\
+  \ split config.py into a config/ package\"\nacceptance_criteria:\n  - criterion:\
+  \ \"make test passes with the same test count.\"\n    status: MET\n    notes: \"\
+  1410 tests pass (same count as before the split).\"\n  - criterion: \"make lint\
+  \ passes.\"\n    status: MET\n    notes: \"ruff check and ruff format --check both\
+  \ pass cleanly.\"\n  - criterion: \"All existing public imports from theforge.config\
+  \ still work.\"\n    status: MET\n    notes: \"__init__.py re-exports all 31 public\
+  \ names; import smoke test confirmed.\"\n  - criterion: \"No single file in src/theforge/config/\
+  \ exceeds 300 lines.\"\n    status: MET\n    notes: \"Largest file is load.py at\
+  \ 288 lines; all others are under 250.\"\n  - criterion: \"The old config.py file\
+  \ no longer exists.\"\n    status: MET\n    notes: \"src/theforge/config.py deleted\
+  \ in the commit.\"\nstory_deviations: none\ndeferred_items: none\ngate_result: PASS\n"
 gate_decision: PASS
