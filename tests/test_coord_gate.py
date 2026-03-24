@@ -6,6 +6,7 @@ pytest_target substitution, spec-level gate overrides, and fix prompt routing.
 
 import dataclasses
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 import yaml
@@ -227,8 +228,6 @@ class TestCoordinatorDirtyWorktree:
                 return (True, " M src/theforge/runner.py\n M src/theforge/config.py")
             if "git add" in cmd:
                 return (True, "")
-            if "git commit" in cmd:
-                return (True, "")
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
@@ -237,14 +236,15 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        result = run_task(config, task)
+        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+            result = run_task(config, task)
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        # PREFLIGHT + 1 DEV — no retry
         assert mock_agent.call_count == 2
         assert any("git add" in c for c in shell_cmds)
-        assert any("git commit" in c for c in shell_cmds)
+        assert any(c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list)
+        assert mock_subprocess.call_args[0][0] == ["git", "commit", "-m", mock.ANY]
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -272,18 +272,13 @@ class TestCoordinatorDirtyWorktree:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        shell_cmds: list[str] = []
-
         def shell_side_effect(cmd, cwd, **kwargs):
-            shell_cmds.append(cmd)
             if "gate" in cmd:
                 _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py")
             if "git add" in cmd:
-                return (True, "")
-            if "git commit" in cmd:
                 return (True, "")
             return (True, "OK")
 
@@ -293,12 +288,12 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        result = run_task(config, task)
+        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+            result = run_task(config, task)
 
-        # Auto-commit succeeds — no escalation even at max iterations
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert any("git commit" in c for c in shell_cmds)
+        assert any(c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list)
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -392,8 +387,6 @@ class TestCoordinatorDirtyWorktree:
                 return (True, " M src/theforge/ideate.py")
             if "git add" in cmd:
                 return (True, "")
-            if "git commit" in cmd:
-                return (True, "")
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
@@ -402,15 +395,14 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        result = run_task(config, task)
+        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+            result = run_task(config, task)
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        # PREFLIGHT + 1 DEV (no retry — auto-committed)
         assert mock_agent.call_count == 2
-        # Verify git add + git commit were called
         assert any("git add" in c for c in shell_cmds)
-        assert any("git commit" in c for c in shell_cmds)
+        assert any(c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list)
 
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
@@ -439,8 +431,6 @@ class TestCoordinatorDirtyWorktree:
                 return (True, " M src/theforge/ideate.py\n?? new_scratch.py")
             if "git add" in cmd:
                 return (True, "")
-            if "git commit" in cmd:
-                return (True, "")
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
@@ -449,11 +439,12 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        result = run_task(config, task)
+        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+            result = run_task(config, task)
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert mock_agent.call_count == 2  # PREFLIGHT + 1 DEV, no retry
+        assert mock_agent.call_count == 2
 
 
 # ── Exit-code gate mode tests ────────────────────────────────────────

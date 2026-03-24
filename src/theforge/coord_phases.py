@@ -1127,7 +1127,6 @@ def _run_validate_phase(
                 # times out — the agent already wrote the code).
                 dev_notes = mod._get_raw_dev_notes(config, workspace_path)
                 if dev_notes:
-                    # Use first line of dev_notes as subject, truncated
                     first_line = dev_notes.strip().splitlines()[0][:72]
                     commit_msg = first_line
                 else:
@@ -1135,16 +1134,35 @@ def _run_validate_phase(
                         f"wip: uncommitted changes from dev iteration {state.dev_iteration}"
                     )
                 _cu._run_shell("git add -A", workspace_path)
-                ok, out = _cu._run_shell(
-                    f'git commit -m "{commit_msg}"',
-                    workspace_path,
-                )
-                if ok:
+                # Use subprocess.run directly to avoid shell injection
+                # from model-authored dev_notes (quotes, backticks, $()).
+                try:
+                    subprocess.run(
+                        ["git", "commit", "-m", commit_msg],
+                        cwd=workspace_path,
+                        capture_output=True,
+                        timeout=30,
+                        check=True,
+                    )
                     _log(f"  Auto-committed dirty worktree: {commit_msg}")
-                else:
-                    _log(f"  ⚠ Auto-commit failed: {out[:200]}")
-                    # Fall through — don't escalate for a commit failure,
-                    # the work is done and gate passed.
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                    err_detail = getattr(exc, "stderr", b"").decode(errors="replace")[:200]
+                    _log(f"  ⚠ Auto-commit failed: {err_detail}")
+                    # Commit failed — worktree is still dirty.
+                    # Escalate: don't let uncommitted changes leak into
+                    # REVIEW/DONE/PR.
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Auto-commit failed for dirty worktree: {raw_names}"
+                    )
+                    _log(f"✗ ESCALATE   {state.error}")
+                    _escalate_notify(task, state, notify, config)
+                    return _ValidateOutcome.ESCALATE, CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    )
 
     elif gate_decision in ("FAIL", "BLOCKED"):
         if dev_calls_this_cycle >= config.retry.max_dev_iterations:
