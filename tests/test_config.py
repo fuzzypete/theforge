@@ -609,6 +609,58 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "opus"
 
+    def test_plan_agent_review_rejects_same_model_as_adaptive_planner(self, tmp_path):
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {"name": "mid-planner", "cli": "claude", "model": "sonnet", "tier": "mid"},
+                    {"name": "strong-planner", "cli": "claude", "model": "opus", "tier": "strong"},
+                ],
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "reviewer-a", "cli": "claude", "model": "opus"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        with pytest.raises(ValueError, match="model 'opus'"):
+            load_config(config_path)
+
+    def test_plan_agent_review_allows_models_distinct_from_adaptive_planner(self, tmp_path):
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "mid-planner",
+                        "cli": "claude",
+                        "model": "sonnet",
+                        "tier": "mid",
+                    },
+                    {
+                        "name": "strong-planner",
+                        "cli": "claude",
+                        "model": "opus",
+                        "tier": "strong",
+                    },
+                ],
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {"name": "reviewer-a", "cli": "claude", "model": "haiku"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        config = load_config(config_path)
+        assert config.plan_agent_review.pool[0].model == "haiku"
+
     def test_plan_agent_review_legacy_provider_profile_uses_api_default_tools(self, tmp_path):
         config_path = _write_config(
             {

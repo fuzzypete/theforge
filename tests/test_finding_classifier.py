@@ -257,6 +257,27 @@ class TestUpdateFindingRegistryCycle1:
         assert by_severity["P1"].disposition == "net_new"
         assert by_severity["P2"].disposition == "net_new"
 
+    def test_nearby_line_corroboration_does_not_chain_transitively(self, tmp_path):
+        state = _make_state()
+        cycle_results = [
+            ("reviewer-a", _make_review([_make_finding("Null access in branch A", line=10)])),
+            (
+                "reviewer-b",
+                _make_review([_make_finding("Unchecked response in branch B", line=13)]),
+            ),
+            ("reviewer-c", _make_review([_make_finding("Missing guard in branch C", line=16)])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 2
+        corroborated = [record for record in p1s if record.disposition == "corroborated_new"]
+        net_new = [record for record in p1s if record.disposition == "net_new"]
+        assert len(corroborated) == 1
+        assert len(net_new) == 1
+
 
 class TestUpdateFindingRegistryCycle2:
     """Cycle 2+: matching against prior registry."""

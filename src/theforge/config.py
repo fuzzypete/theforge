@@ -453,6 +453,19 @@ def _resolve_model_info(model_key: str) -> ModelInfo:
     return ModelInfo(cli=cli, model=model, tier="strong", capability=5, cost_rank=2)
 
 
+def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
+    """Return model names the adaptive planner can select at runtime."""
+    if not agents:
+        return set()
+
+    mid_models = {agent.model for agent in agents if agent.tier == "mid"}
+    strong_models = {agent.model for agent in agents if agent.tier == "strong"}
+
+    low_complexity_models = mid_models or {agent.model for agent in agents}
+    medium_high_complexity_models = strong_models or {agent.model for agent in agents}
+    return low_complexity_models | medium_high_complexity_models
+
+
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
     tools = data.get("allowed_tools")
@@ -1030,15 +1043,6 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout=int(par_data.get("timeout", 300)),
         pool=par_pool,
     )
-    if plan_agent_review_cfg.enabled:
-        for profile in plan_agent_review_cfg.profiles:
-            if profile.model == plan_cfg.model_name:
-                raise ValueError(
-                    f"plan_agent_review member '{profile.name}' uses model '{profile.model}' "
-                    "which matches the planner — the reviewer must use a different model "
-                    "for independent review."
-                )
-
     # Logging
     log_data = raw.get("logging", {})
     log_cfg = LogConfig(
@@ -1101,6 +1105,19 @@ def load_config(config_path: Path) -> ForgeConfig:
         budget_per_story_usd=float(assignment_raw.get("budget_per_story_usd", 15.0)),
         escalation_memory=bool(assignment_raw.get("escalation_memory", True)),
     )
+
+    if plan_agent_review_cfg.enabled:
+        planner_models = {plan_cfg.model_name}
+        if assignment_cfg.enabled and agents_list and _plan_model_is_default:
+            planner_models |= _planner_candidate_models(agents_list)
+
+        for profile in plan_agent_review_cfg.profiles:
+            if profile.model in planner_models:
+                raise ValueError(
+                    f"plan_agent_review member '{profile.name}' uses model '{profile.model}' "
+                    "which matches the planner — the reviewer must use a different model "
+                    "for independent review."
+                )
 
     # Sprint config
     sprint_data = raw.get("sprint", {})
