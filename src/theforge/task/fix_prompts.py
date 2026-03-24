@@ -3,7 +3,6 @@ from textwrap import dedent
 
 from theforge.coord_state import CycleHistory
 
-from theforge.coord_state import CycleHistory, FindingRecord
 from .story import TaskStory
 
 
