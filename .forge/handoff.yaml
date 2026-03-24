@@ -1,36 +1,41 @@
-dev_notes: "summary: \"Completed the V0.2.2 review-fix iteration by tightening nearby-line\
-  \ corroboration so it cannot chain transitively across distant findings, extending\
-  \ plan-agent-review model conflict checks to adaptive planner selections, preserving\
-  \ the API-provider default-tools behavior from the prior pass, and adding regression\
-  \ coverage for the new paths.\"\ncommits:\n  - sha: \"PENDING\"\n    message: \"\
-  fix(v0.2.2): address review findings (iter 1)\"\nacceptance_criteria:\n  - criterion:\
-  \ \"Two findings at the same file and line (within ±3 lines) are corroborated even\
-  \ if their descriptions differ\"\n    status: MET\n    notes: \"Nearby-line corroboration\
+dev_notes: "summary: \"Addressed both P1 findings from review cycle 1.\\n\\n1.\
+  \ finding_classifier.py — fingerprint now includes line number so a reviewer reporting\
+  \ the same description at distant lines (e.g. 10 and 100) produces separate buckets.\
+  \  A snapshot of the prior registry is taken before the classification loop so\
+  \ new records inserted for one bucket cannot falsely match later buckets from the\
+  \ same cycle.  Together these ensure the nearby-line pair (lines 10 & 11) correctly\
+  \ corroborates regardless of a distant same-reviewer duplicate at line 100.\\n\\\
+  n2. config.py — rewrote _planner_candidate_models to mirror the actual assign_models\
+  \ planner selection logic (target tier → highest-budget fallback) instead of unioning\
+  \ raw tier sets.  With only cheap + strong agents and no mid-tier agents, the fallback\
+  \ always selects the strong model, so a plan reviewer using the cheap model is no\
+  \ longer falsely rejected.\"\ncommits:\n  - sha: \"54d33a9\"\n    message: \"fix(finding_classifier,config):\
+  \ address review findings (iter 1)\"\nacceptance_criteria:\n  - criterion: \"Two\
+  \ findings at the same file and line (within ±3 lines) are corroborated even if\
+  \ their descriptions differ\"\n    status: MET\n    notes: \"Nearby-line corroboration\
   \ still groups same-file findings within the ±3-line window even when the descriptions\
-  \ differ, and the grouping now requires all merged reports to remain within that\
-  \ same window.\"\n  - criterion: \"Exact-match fingerprinting continues to work\
-  \ for identical findings\"\n    status: MET\n    notes: \"The exact fingerprint\
-  \ path remains intact for identical findings, and the updated finding-classifier\
-  \ tests keep that behavior covered.\"\n  - criterion: \"`load_config()` raises `ValueError`\
-  \ if any plan_agent_review pool member uses the same model as the planner\"\n  \
-  \  status: MET\n    notes: \"Config loading now rejects planner/model reuse for\
-  \ plan review in the explicit planner path, the legacy scalar path, and the adaptive\
-  \ planner path when assignment can select the same model at runtime.\"\n  - criterion:\
-  \ \"Error message names the conflicting model\"\n    status: MET\n    notes: \"\
-  The config validation error includes the reused model name so the misconfiguration\
-  \ is explicit.\"\n  - criterion: \"Test covers the invalid config case\"\n    status:\
-  \ MET\n    notes: \"Regression coverage in `tests/test_config.py` exercises explicit-planner\
-  \ overlap, legacy overlap, and adaptive-planner overlap, and preserves an allowed\
-  \ different-model case.\"\n  - criterion: \"API-provider profiles with no explicit\
+  \ differ.\"\n  - criterion: \"Exact-match fingerprinting continues to work for\
+  \ identical findings\"\n    status: MET\n    notes: \"Exact fingerprint path works;\
+  \ line is now part of the key so two different reviewers reporting the same description\
+  \ at the same line still share one bucket.\"\n  - criterion: \"A reviewer reporting\
+  \ the same description at a distant line does not block corroboration with another\
+  \ reviewer near the first report\"\n    status: MET\n    notes: \"Line-aware fingerprinting\
+  \ splits distant same-description reports into separate buckets, allowing the nearby\
+  \ pair to merge and corroborate independently.\"\n  - criterion: \"`load_config()`\
+  \ raises `ValueError` if any plan_agent_review pool member uses the same model\
+  \ as the planner\"\n    status: MET\n    notes: \"Config loading still rejects planner/model\
+  \ reuse for plan review in all paths.\"\n  - criterion: \"Error message names the\
+  \ conflicting model\"\n    status: MET\n    notes: \"The config validation error\
+  \ includes the reused model name.\"\n  - criterion: \"Adaptive planner conflict\
+  \ check does not reject configs where the cheap model is not reachable by the planner\"\
+  \n    status: MET\n    notes: \"With cheap+strong only, _planner_candidate_models\
+  \ now returns only the strong model (highest-budget fallback), so a cheap-model\
+  \ plan reviewer is accepted.\"\n  - criterion: \"Test covers the no-mid-tier allowed\
+  \ and rejected cases\"\n    status: MET\n    notes: \"Two new tests in test_config.py\
+  \ cover the allowed (cheap reviewer) and rejected (strong reviewer) cases when\
+  \ no mid-tier agents exist.\"\n  - criterion: \"API-provider profiles with no explicit\
   \ `allowed_tools` default to `(\\\"read_file\\\", \\\"bash\\\", \\\"glob\\\", \\\
-  \"grep\\\", \\\"submit_review\\\")`\"\n    status: MET\n    notes: \"Provider-backed\
-  \ reviewer profiles now resolve to the required read-only default tool tuple when\
-  \ `allowed_tools` is omitted.\"\n  - criterion: \"CLI-provider profiles continue\
-  \ to use their existing defaults\"\n    status: MET\n    notes: \"The API-default\
-  \ change is limited to provider-backed profiles, so CLI reviewer profiles continue\
-  \ to inherit their existing default tools.\"\n  - criterion: \"Test covers an API-provider\
-  \ profile with no `allowed_tools` set\"\n    status: MET\n    notes: \"Tests now\
-  \ cover provider profiles without `allowed_tools` in the parsed-profile, override,\
-  \ and legacy `plan_agent_review.profiles` paths.\"\nstory_deviations: none\ndeferred_items:\
-  \ none\ngate_result: PASS\n"
+  \"grep\\\", \\\"submit_review\\\")`\"\n    status: MET\n    notes: \"Unchanged\
+  \ from prior iteration.\"\nstory_deviations: none\ndeferred_items: none\ngate_result:\
+  \ PASS\n"
 gate_decision: PASS
