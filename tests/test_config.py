@@ -736,6 +736,50 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="model 'opus'"):
             load_config(config_path)
 
+    def test_plan_agent_review_allows_default_plan_model_when_adaptive_assignment_overrides_it(
+        self, tmp_path
+    ):
+        """When adaptive assignment is enabled and the plan model is still defaulted (sonnet),
+        a plan reviewer using sonnet must not be rejected.  At runtime the coordinator uses the
+        adaptive planner (which selects opus for all complexity levels given cheap haiku + strong
+        opus), so sonnet is never actually the planner.
+        """
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                # No explicit plan.model → _plan_model_is_default = True, default = sonnet
+                "agents": [
+                    {
+                        "name": "cheap-agent",
+                        "cli": "claude",
+                        "model": "haiku",
+                        "tier": "cheap",
+                        "budget_usd": 0.5,
+                    },
+                    {
+                        "name": "strong-agent",
+                        "cli": "claude",
+                        "model": "opus",
+                        "tier": "strong",
+                        "budget_usd": 5.0,
+                    },
+                ],
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        # sonnet is the default plan.model_name but the adaptive planner
+                        # will never select it (only haiku/opus are in the pool)
+                        {"name": "reviewer-a", "cli": "claude", "model": "sonnet"},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+
+        # Should not raise — adaptive planner selects opus, not sonnet
+        config = load_config(config_path)
+        assert config.plan_agent_review.pool[0].model == "sonnet"
+
     def test_plan_agent_review_legacy_provider_profile_uses_api_default_tools(self, tmp_path):
         config_path = _write_config(
             {

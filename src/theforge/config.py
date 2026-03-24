@@ -1123,9 +1123,13 @@ def load_config(config_path: Path) -> ForgeConfig:
     )
 
     if plan_agent_review_cfg.enabled:
-        planner_models = {plan_cfg.model_name}
         if assignment_cfg.enabled and agents_list and _plan_model_is_default:
-            planner_models |= _planner_candidate_models(agents_list)
+            # When adaptive assignment is active, the coordinator ignores plan_cfg.model_name
+            # at runtime and selects from the adaptive candidate set.  Validate only against
+            # what assign_models can actually select, not the unused default model name.
+            planner_models = _planner_candidate_models(agents_list)
+        else:
+            planner_models = {plan_cfg.model_name}
 
         for profile in plan_agent_review_cfg.profiles:
             if profile.model in planner_models:
