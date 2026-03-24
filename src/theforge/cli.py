@@ -2401,6 +2401,7 @@ def main() -> None:
         "logs": cmd_logs,
         "stop": cmd_stop,
         "decide": cmd_decide,
+        "version": cmd_version,
     }
 
     try:
