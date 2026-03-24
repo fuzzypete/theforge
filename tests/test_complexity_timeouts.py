@@ -338,19 +338,23 @@ class TestDevPhaseTimeout:
 
 
 class TestPlanPhaseTimeout:
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_plan_uses_large_timeout_for_large_complexity(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_pool, mock_validate, tmp_path
     ):
         """PLAN phase profile uses timeout_large when complexity=large."""
+        from theforge.story_validator import StoryValidationResult
+
         plan = PlanConfig(enabled=True, timeout=600, timeout_medium=900, timeout_large=1800)
         config = _make_config(tmp_path, plan=plan)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        mock_validate.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
@@ -366,19 +370,23 @@ class TestPlanPhaseTimeout:
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 1800
 
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_plan_falls_back_to_base_when_no_override(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_pool, mock_validate, tmp_path
     ):
         """PLAN phase uses base timeout when no medium/large overrides are configured."""
+        from theforge.story_validator import StoryValidationResult
+
         plan = PlanConfig(enabled=True, timeout=600)
         config = _make_config(tmp_path, plan=plan)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        mock_validate.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
@@ -393,13 +401,16 @@ class TestPlanPhaseTimeout:
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 600
 
+    @patch("theforge.coordinator.validate_story")
     @patch("theforge.coordinator.run_agent_pool")
     @patch("theforge.coordinator.run_agent")
     @patch("theforge.coord_util._run_shell")
     def test_plan_logs_complexity_suffix_when_override_equals_base(
-        self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
+        self, mock_shell, mock_agent, mock_pool, mock_validate, tmp_path, capsys
     ):
         """Complexity suffix appears in plan log even when override value equals base timeout."""
+        from theforge.story_validator import StoryValidationResult
+
         base = 600
         plan = PlanConfig(enabled=True, timeout=base, timeout_medium=base, timeout_large=base)
         config = _make_config(tmp_path, plan=plan)
@@ -407,6 +418,7 @@ class TestPlanPhaseTimeout:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        mock_validate.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_agent.side_effect = [
             _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
@@ -437,6 +449,7 @@ class TestLoadConfigTimeoutFields:
             {
                 "profiles": {
                     "dev": {
+                        "budget_usd": 2.0,
                         "timeout_seconds": 600,
                         "timeout_medium_seconds": 900,
                         "timeout_large_seconds": 1800,
@@ -451,7 +464,10 @@ class TestLoadConfigTimeoutFields:
         assert config.dev_profile.timeout_large_seconds == 1800
 
     def test_classic_config_defaults_none_when_absent(self, tmp_path):
-        config_path = _write_config({"profiles": {"dev": {"timeout_seconds": 600}}}, tmp_path)
+        config_path = _write_config(
+            {"profiles": {"dev": {"budget_usd": 2.0, "timeout_seconds": 600}}},
+            tmp_path,
+        )
         config = load_config(config_path)
         assert config.dev_profile.timeout_medium_seconds is None
         assert config.dev_profile.timeout_large_seconds is None
@@ -461,6 +477,7 @@ class TestLoadConfigTimeoutFields:
             {
                 "plan": {
                     "enabled": True,
+                    "budget_usd": 1.0,
                     "timeout": 600,
                     "timeout_medium": 900,
                     "timeout_large": 1800,
@@ -474,7 +491,10 @@ class TestLoadConfigTimeoutFields:
         assert config.plan.timeout_large == 1800
 
     def test_plan_config_defaults_none_when_absent(self, tmp_path):
-        config_path = _write_config({"plan": {"enabled": True, "timeout": 600}}, tmp_path)
+        config_path = _write_config(
+            {"plan": {"enabled": True, "budget_usd": 1.0, "timeout": 600}},
+            tmp_path,
+        )
         config = load_config(config_path)
         assert config.plan.timeout_medium is None
         assert config.plan.timeout_large is None
@@ -487,6 +507,7 @@ class TestLoadConfigTimeoutFields:
                 "budget_usd": 10.0,
                 "profiles": {
                     "dev": {
+                        "budget_usd": 2.0,
                         "timeout_seconds": 600,
                         "timeout_medium_seconds": 900,
                         "timeout_large_seconds": 1800,
@@ -511,6 +532,6 @@ class TestLoadConfigTimeoutFields:
 
     def test_plan_timeout_defaults_to_600_when_omitted(self, tmp_path):
         """plan.timeout falls back to 600s when not specified in forge.yaml."""
-        config_path = _write_config({"plan": {"enabled": True}}, tmp_path)
+        config_path = _write_config({"plan": {"enabled": True, "budget_usd": 1.0}}, tmp_path)
         config = load_config(config_path)
         assert config.plan.timeout == 600

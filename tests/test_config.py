@@ -12,6 +12,7 @@ from theforge.config import (
     DEFAULT_WORKSPACE,
     MODEL_REGISTRY,
     SUPPORTED_CLIS,
+    ConfigError,
     _auto_assign_models,
     _resolve_model_info,
     generate_default_config,
@@ -35,6 +36,7 @@ class TestHybridRunnerConfig:
                             "name": "api-reviewer",
                             "provider": "openai",
                             "model": "o4-mini",
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -60,6 +62,7 @@ class TestHybridRunnerConfig:
                             "name": "deepseek-reviewer",
                             "provider": "deepseek",
                             "model": "deepseek-r1",
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -88,6 +91,7 @@ class TestHybridRunnerConfig:
                             "provider": "deepseek",
                             "model": "deepseek-r1",
                             "base_url": "http://localhost:11434",
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -105,7 +109,7 @@ class TestHybridRunnerConfig:
 
     def test_cli_profile_loads(self, tmp_path):
         config_path = _write_config(
-            {"profiles": {"dev": {"cli": "claude", "model": "sonnet"}}},
+            {"profiles": {"dev": {"cli": "claude", "model": "sonnet", "budget_usd": 2.0}}},
             tmp_path,
         )
         config = load_config(config_path)
@@ -122,6 +126,7 @@ class TestHybridRunnerConfig:
                         "cli": "claude",
                         "provider": "openai",
                         "model": "sonnet",
+                        "budget_usd": 2.0,
                     }
                 }
             },
@@ -132,7 +137,7 @@ class TestHybridRunnerConfig:
 
     def test_neither_cli_nor_provider_uses_default(self, tmp_path):
         config_path = _write_config(
-            {"profiles": {"dev": {"model": "sonnet"}}},
+            {"profiles": {"dev": {"model": "sonnet", "budget_usd": 2.0}}},
             tmp_path,
         )
         config = load_config(config_path)
@@ -150,6 +155,7 @@ class TestHybridRunnerConfig:
                             "provider": "openai",
                             "model": "o4-mini",
                             "allowed_tools": ["Read"],
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -178,6 +184,7 @@ class TestHybridRunnerConfig:
                             "provider": "openai",
                             "model": "o4-mini",
                             "allowed_tools": ["Read", "Bash", "Grep", "Glob"],
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -195,7 +202,7 @@ class TestHybridRunnerConfig:
     def test_allowed_tools_not_normalized_for_cli_profiles(self, tmp_path):
         """CLI profiles keep capitalized tool names so --allowedTools argument stays correct."""
         config_path = _write_config(
-            {"profiles": {"dev": {"cli": "claude", "model": "sonnet"}}},
+            {"profiles": {"dev": {"cli": "claude", "model": "sonnet", "budget_usd": 2.0}}},
             tmp_path,
         )
         config = load_config(config_path)
@@ -212,6 +219,7 @@ class TestHybridRunnerConfig:
                             "name": "api-reviewer",
                             "provider": "openai",
                             "model": "o4-mini",
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -234,6 +242,7 @@ class TestHybridRunnerConfig:
                             "name": "api-reviewer",
                             "provider": "openai",
                             "model": "o4-mini",
+                            "budget_usd": 1.0,
                         }
                     ]
                 }
@@ -251,6 +260,7 @@ class TestHybridRunnerConfig:
                     "enabled": True,
                     "provider": "openai",
                     "model": "o4-mini",
+                    "budget_usd": 1.0,
                 }
             },
             tmp_path,
@@ -270,6 +280,7 @@ class TestHybridRunnerConfig:
                     "enabled": True,
                     "provider": "google",
                     "model": "gemini-1.5-pro",
+                    "budget_usd": 1.0,
                 }
             },
             tmp_path,
@@ -299,7 +310,12 @@ class TestLoadConfig:
                 "project": "custom",
                 "profiles": {
                     "dev": {"model": "opus", "budget_usd": 5.0},
-                    "review": {"cli": "claude", "model": "haiku", "timeout_seconds": 60},
+                    "review": {
+                        "cli": "claude",
+                        "model": "haiku",
+                        "timeout_seconds": 60,
+                        "budget_usd": 1.0,
+                    },
                 },
             },
             tmp_path,
@@ -373,6 +389,58 @@ class TestLoadConfig:
         assert config.plan_review.mode == "blocking"
         assert config.plan_review.timeout_seconds == 14400
 
+    def test_plan_cli_and_model_use_normalized_fields(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan": {
+                    "enabled": True,
+                    "cli": "claude",
+                    "model": "opus",
+                    "budget_usd": 3.0,
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        assert config.plan.model == "opus"
+
+    def test_plan_model_name_deprecated_but_normalized(self, tmp_path, caplog):
+        config_path = _write_config(
+            {
+                "plan": {
+                    "enabled": True,
+                    "model": "claude",
+                    "model_name": "claude-opus-4-6",
+                    "budget_usd": 3.0,
+                }
+            },
+            tmp_path,
+        )
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="theforge.config"):
+            config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        assert config.plan.model == "claude-opus-4-6"
+        assert any("plan.model_name is deprecated" in r.message for r in caplog.records)
+
+    def test_plan_unknown_cli_raises_config_error(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": True, "cli": "bogus", "model": "opus", "budget_usd": 1.0}},
+            tmp_path,
+        )
+        with pytest.raises(ConfigError, match="Unsupported CLI.*plan"):
+            load_config(config_path)
+
+    def test_plan_missing_budget_raises_config_error(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": True, "cli": "claude", "model": "opus"}},
+            tmp_path,
+        )
+        with pytest.raises(ConfigError, match="plan must set budget_usd explicitly"):
+            load_config(config_path)
+
     def test_plan_agent_review_defaults_disabled(self, tmp_path):
         config_path = _write_config({"project": "test"}, tmp_path)
         config = load_config(config_path)
@@ -380,7 +448,14 @@ class TestLoadConfig:
 
     def test_plan_agent_review_enabled_parsed(self, tmp_path):
         config_path = _write_config(
-            {"plan_agent_review": {"enabled": True, "cli": "claude", "model": "sonnet"}},
+            {
+                "plan_agent_review": {
+                    "enabled": True,
+                    "cli": "claude",
+                    "model": "sonnet",
+                    "budget_usd": 1.0,
+                }
+            },
             tmp_path,
         )
         config = load_config(config_path)
@@ -390,7 +465,7 @@ class TestLoadConfig:
 
     def test_plan_agent_review_unsupported_cli_raises(self, tmp_path):
         config_path = _write_config(
-            {"plan_agent_review": {"enabled": True, "cli": "bogus"}},
+            {"plan_agent_review": {"enabled": True, "cli": "bogus", "budget_usd": 1.0}},
             tmp_path,
         )
         with pytest.raises(ValueError, match="Unsupported CLI.*bogus.*plan_agent_review"):
@@ -555,7 +630,7 @@ class TestAllowedToolsConfig:
     def test_empty_allowed_tools_is_empty(self, tmp_path):
         """allowed_tools: [] should produce an empty tuple, not fall back to defaults."""
         config_path = _write_config(
-            {"profiles": {"dev": {"allowed_tools": []}}},
+            {"profiles": {"dev": {"allowed_tools": [], "budget_usd": 2.0}}},
             tmp_path,
         )
         config = load_config(config_path)
@@ -564,7 +639,7 @@ class TestAllowedToolsConfig:
     def test_omitted_allowed_tools_gets_defaults(self, tmp_path):
         """Omitting allowed_tools entirely should fall back to defaults."""
         config_path = _write_config(
-            {"profiles": {"dev": {"model": "opus"}}},
+            {"profiles": {"dev": {"model": "opus", "budget_usd": 2.0}}},
             tmp_path,
         )
         config = load_config(config_path)
@@ -579,10 +654,20 @@ class TestReviewPool:
         config_path = _write_config(
             {
                 "profiles": {
-                    "dev": {"model": "sonnet"},
+                    "dev": {"model": "sonnet", "budget_usd": 2.0},
                     "review_pool": [
-                        {"name": "opus-reviewer", "cli": "claude", "model": "opus"},
-                        {"name": "sonnet-reviewer", "cli": "claude", "model": "sonnet"},
+                        {
+                            "name": "opus-reviewer",
+                            "cli": "claude",
+                            "model": "opus",
+                            "budget_usd": 1.0,
+                        },
+                        {
+                            "name": "sonnet-reviewer",
+                            "cli": "claude",
+                            "model": "sonnet",
+                            "budget_usd": 1.0,
+                        },
                     ],
                     "synthesis": {"cli": "claude", "model": "opus", "budget_usd": 1.50},
                 }
@@ -621,7 +706,7 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "primary", "cli": "claude", "model": "opus"},
+                        {"name": "primary", "cli": "claude", "model": "opus", "budget_usd": 1.0},
                     ],
                 }
             },
@@ -636,9 +721,14 @@ class TestReviewPool:
         config_path = _write_config(
             {
                 "profiles": {
-                    "review": {"model": "haiku"},
+                    "review": {"model": "haiku", "budget_usd": 0.5},
                     "review_pool": [
-                        {"name": "pool-member", "cli": "claude", "model": "opus"},
+                        {
+                            "name": "pool-member",
+                            "cli": "claude",
+                            "model": "opus",
+                            "budget_usd": 1.0,
+                        },
                     ],
                 }
             },
@@ -655,7 +745,7 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "solo", "cli": "claude", "model": "opus"},
+                        {"name": "solo", "cli": "claude", "model": "opus", "budget_usd": 1.0},
                     ],
                 }
             },
@@ -680,10 +770,10 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "dup", "cli": "claude", "model": "opus"},
-                        {"name": "dup", "cli": "claude", "model": "sonnet"},
+                        {"name": "dup", "cli": "claude", "model": "opus", "budget_usd": 1.0},
+                        {"name": "dup", "cli": "claude", "model": "sonnet", "budget_usd": 1.0},
                     ],
-                    "synthesis": {"cli": "claude", "model": "opus"},
+                    "synthesis": {"cli": "claude", "model": "opus", "budget_usd": 1.0},
                 }
             },
             tmp_path,
@@ -697,7 +787,7 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"cli": "claude", "model": "opus"},  # no name
+                        {"cli": "claude", "model": "opus", "budget_usd": 1.0},  # no name
                     ],
                 }
             },
@@ -712,7 +802,12 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "llama-reviewer", "cli": "llama", "model": "llama3"},
+                        {
+                            "name": "llama-reviewer",
+                            "cli": "llama",
+                            "model": "llama3",
+                            "budget_usd": 1.0,
+                        },
                     ],
                 }
             },
@@ -726,7 +821,7 @@ class TestReviewPool:
         config_path = _write_config(
             {
                 "profiles": {
-                    "review": {"cli": "llama", "model": "llama3"},
+                    "review": {"cli": "llama", "model": "llama3", "budget_usd": 1.0},
                 }
             },
             tmp_path,
@@ -740,7 +835,12 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "codex-reviewer", "cli": "codex", "model": "o4-mini"},
+                        {
+                            "name": "codex-reviewer",
+                            "cli": "codex",
+                            "model": "o4-mini",
+                            "budget_usd": 1.0,
+                        },
                     ],
                 }
             },
@@ -758,6 +858,7 @@ class TestReviewPool:
                         {
                             "name": "gemini-reviewer",
                             "cli": "gemini",
+                            "budget_usd": 1.0,
                             "model": "gemini-2.5-pro",
                         },
                     ],
@@ -774,8 +875,8 @@ class TestReviewPool:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "a", "cli": "claude", "model": "opus"},
-                        {"name": "b", "cli": "claude", "model": "sonnet"},
+                        {"name": "a", "cli": "claude", "model": "opus", "budget_usd": 1.0},
+                        {"name": "b", "cli": "claude", "model": "sonnet", "budget_usd": 1.0},
                     ],
                     # no synthesis — fine
                 }
@@ -793,7 +894,7 @@ class TestReviewPool:
                 "profiles": {
                     "review_pool": [
                         # entry named "dev" — should still get review-profile defaults
-                        {"name": "dev", "cli": "claude", "model": "opus"},
+                        {"name": "dev", "cli": "claude", "model": "opus", "budget_usd": 1.0},
                     ],
                 }
             },
@@ -845,10 +946,10 @@ class TestSupportedClis:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "a", "cli": "claude", "model": "opus"},
-                        {"name": "b", "cli": "claude", "model": "sonnet"},
+                        {"name": "a", "cli": "claude", "model": "opus", "budget_usd": 1.0},
+                        {"name": "b", "cli": "claude", "model": "sonnet", "budget_usd": 1.0},
                     ],
-                    "synthesis": {"cli": "llama", "model": "llama3"},
+                    "synthesis": {"cli": "llama", "model": "llama3", "budget_usd": 1.0},
                 }
             },
             tmp_path,
@@ -862,15 +963,26 @@ class TestSupportedClis:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "claude-reviewer", "cli": "claude", "model": "opus"},
-                        {"name": "codex-reviewer", "cli": "codex", "model": "o4-mini"},
+                        {
+                            "name": "claude-reviewer",
+                            "cli": "claude",
+                            "model": "opus",
+                            "budget_usd": 1.0,
+                        },
+                        {
+                            "name": "codex-reviewer",
+                            "cli": "codex",
+                            "model": "o4-mini",
+                            "budget_usd": 1.0,
+                        },
                         {
                             "name": "gemini-reviewer",
                             "cli": "gemini",
                             "model": "gemini-2.5-pro",
+                            "budget_usd": 1.0,
                         },
                     ],
-                    "synthesis": {"cli": "claude", "model": "opus"},
+                    "synthesis": {"cli": "claude", "model": "opus", "budget_usd": 1.0},
                 }
             },
             tmp_path,
@@ -1194,7 +1306,7 @@ class TestModelsKeyReviewPoolOverride:
                 "budget_usd": 50.0,
                 "profiles": {
                     "review_pool": [
-                        {"name": "claude-opus", "timeout_seconds": 600},
+                        {"name": "claude-opus", "budget_usd": 9.0, "timeout_seconds": 600},
                     ],
                 },
             },
@@ -1223,6 +1335,114 @@ class TestModelsKeyReviewPoolOverride:
         # Pool still has auto-assigned opus reviewer
         assert len(config.review_pool) == 1
         assert config.review_pool[0].model == "opus"
+
+    def test_review_pool_override_missing_budget_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "claude/opus"],
+                "budget_usd": 50.0,
+                "profiles": {
+                    "review_pool": [
+                        {"name": "claude-opus", "timeout_seconds": 600},
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        with pytest.raises(ConfigError, match="must set budget_usd explicitly"):
+            load_config(config_path)
+
+
+class TestConfigValidationWarnings:
+    def test_provider_agent_missing_api_key_raises_config_error(self, tmp_path):
+        config_path = _write_config(
+            {
+                "agents": [
+                    {
+                        "name": "openai-dev",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "budget_usd": 2.0,
+                    }
+                ]
+            },
+            tmp_path,
+        )
+        with patch.dict("os.environ", {}, clear=True), patch("importlib.import_module"):
+            with pytest.raises(ConfigError, match=r"\$OPENAI_API_KEY is not set"):
+                load_config(config_path)
+
+    def test_agent_missing_budget_raises_config_error(self, tmp_path):
+        config_path = _write_config(
+            {"agents": [{"name": "planner", "cli": "claude", "model": "opus"}]},
+            tmp_path,
+        )
+        with pytest.raises(ConfigError, match="Agent 'planner' must set budget_usd explicitly"):
+            load_config(config_path)
+
+    def test_assignment_enabled_requires_agents(self, tmp_path):
+        config_path = _write_config({"assignment": {"enabled": True}}, tmp_path)
+        with pytest.raises(ConfigError, match="non-empty agents list"):
+            load_config(config_path)
+
+    def test_plan_agent_review_same_as_planner_raises(self, tmp_path):
+        config_path = _write_config(
+            {
+                "plan": {"enabled": True, "cli": "claude", "model": "opus", "budget_usd": 2.0},
+                "plan_agent_review": {
+                    "enabled": True,
+                    "pool": [
+                        {
+                            "name": "same-as-planner",
+                            "cli": "claude",
+                            "model": "opus",
+                            "budget_usd": 1.0,
+                        }
+                    ],
+                },
+            },
+            tmp_path,
+        )
+        with pytest.raises(ConfigError, match="same cli\\+model as the planner"):
+            load_config(config_path)
+
+    def test_smart_config_models_warns_when_explicit_roles_present(self, tmp_path, caplog):
+        config_path = _write_config(
+            {
+                "project": "smart-test",
+                "smart_config_models": ["claude/sonnet", "claude/opus"],
+                "profiles": {"dev": {"cli": "claude", "model": "sonnet", "budget_usd": 3.0}},
+            },
+            tmp_path,
+        )
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="theforge.config"):
+            load_config(config_path)
+        assert any(
+            "smart_config_models is configured alongside explicit role config" in r.message
+            for r in caplog.records
+        )
+
+    def test_max_iterations_over_ceiling_warns(self, tmp_path, caplog):
+        config_path = _write_config(
+            {
+                "profiles": {
+                    "dev": {
+                        "cli": "claude",
+                        "model": "sonnet",
+                        "budget_usd": 2.0,
+                        "max_iterations": 51,
+                    }
+                }
+            },
+            tmp_path,
+        )
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="theforge.config"):
+            load_config(config_path)
+        assert any("max_iterations=51" in r.message for r in caplog.records)
 
 
 class TestResolveModelInfo:
@@ -1341,7 +1561,12 @@ class TestProjectSecrets:
             {
                 "profiles": {
                     "review_pool": [
-                        {"name": "api-reviewer", "provider": "openai", "model": "o4-mini"}
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "o4-mini",
+                            "budget_usd": 1.0,
+                        }
                     ]
                 }
             },

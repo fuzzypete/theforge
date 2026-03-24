@@ -378,7 +378,7 @@ def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig
     else:
         model = spec
 
-    new_plan = replace(config.plan, model_name=model)
+    new_plan = replace(config.plan, model=model)
     return replace(config, plan=new_plan)
 
 

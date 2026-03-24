@@ -102,8 +102,8 @@ retry:
 
 plan:
   enabled: true
-  model: claude
-  model_name: claude-opus-4-5
+  cli: claude
+  model: claude-opus-4-5
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900

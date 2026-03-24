@@ -616,23 +616,23 @@ class TestApplyPlanModelOverride:
     def test_short_model_name(self, tmp_path):
         cfg = self._base_config(tmp_path)
         result = _apply_plan_model_override(cfg, "opus")
-        assert result.plan.model_name == "opus"
+        assert result.plan.model == "opus"
 
     def test_provider_slash_model(self, tmp_path):
         cfg = self._base_config(tmp_path)
         result = _apply_plan_model_override(cfg, "anthropic/claude-opus-4-6")
-        assert result.plan.model_name == "claude-opus-4-6"
+        assert result.plan.model == "claude-opus-4-6"
 
     def test_original_plan_config_preserved_when_flag_absent(self, tmp_path):
         cfg = self._base_config(tmp_path)
-        original_model_name = cfg.plan.model_name
+        original_model_name = cfg.plan.model
         # No override applied — plan config should be unchanged
-        assert cfg.plan.model_name == original_model_name
+        assert cfg.plan.model == original_model_name
 
     def test_other_plan_fields_unchanged(self, tmp_path):
         cfg = self._base_config(tmp_path)
         result = _apply_plan_model_override(cfg, "opus")
-        assert result.plan.model == cfg.plan.model
+        assert result.plan.cli == cfg.plan.cli
         assert result.plan.budget_usd == cfg.plan.budget_usd
         assert result.plan.enabled == cfg.plan.enabled
 

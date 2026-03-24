@@ -18,6 +18,11 @@ from dotenv import dotenv_values
 
 log = logging.getLogger(__name__)
 
+
+class ConfigError(ValueError):
+    """Raised when forge.yaml contains an invalid configuration."""
+
+
 # ── Model registry ────────────────────────────────────────────────────
 
 
@@ -251,8 +256,8 @@ class PlanConfig:
     """
 
     enabled: bool = False
-    model: str = "claude"  # CLI name (the CLI binary, e.g. "claude")
-    model_name: str = "sonnet"  # model identifier passed to the CLI
+    cli: str = "claude"  # CLI name (the CLI binary, e.g. "claude")
+    model: str = "sonnet"  # model identifier passed to the CLI
     budget_usd: float = 0.50
     timeout: int = 600
     timeout_medium: int | None = None  # override for medium complexity
@@ -435,6 +440,60 @@ def _resolve_secret(key: str, secrets: dict[str, str]) -> str | None:
     return secrets.get(key) or os.getenv(key)
 
 
+def _raise_config_error(message: str) -> None:
+    raise ConfigError(message)
+
+
+def _validate_cli(cli: str, *, context: str) -> None:
+    if cli not in SUPPORTED_CLIS:
+        _raise_config_error(
+            f"Unsupported CLI {cli!r} in {context}. Supported: {sorted(SUPPORTED_CLIS)}"
+        )
+
+
+def _validate_provider_readiness(
+    provider: str,
+    *,
+    context: str,
+    secrets: dict[str, str],
+    base_url: str | None = None,
+) -> None:
+    if provider not in SUPPORTED_PROVIDERS:
+        _raise_config_error(
+            f"Unsupported provider {provider!r} in {context}. "
+            f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+        )
+    sdk = PROVIDER_SDK_MAP.get(provider)
+    if sdk:
+        try:
+            importlib.import_module(sdk)
+        except ImportError:
+            _raise_config_error(
+                f"{context} uses provider '{provider}' but the required "
+                f"SDK '{sdk}' is not installed. Please install it."
+            )
+    is_local = bool(base_url) and any(
+        base_url.startswith(prefix) for prefix in ("http://localhost", "http://127.0.0.1")
+    )
+    api_key_var = PROVIDER_API_KEY_MAP.get(provider)
+    if api_key_var and not _resolve_secret(api_key_var, secrets) and not is_local:
+        _raise_config_error(
+            f"{context} uses provider '{provider}' but the required "
+            f"environment variable ${api_key_var} is not set."
+        )
+
+
+def _require_budget(value: Any, *, context: str) -> float:
+    if value is None:
+        _raise_config_error(f"{context} must set budget_usd explicitly.")
+    return float(value)
+
+
+def _warn_if_max_iterations_high(max_iterations: int | None, *, context: str) -> None:
+    if max_iterations is not None and max_iterations > 50:
+        log.warning("%s sets max_iterations=%s (> 50)", context, max_iterations)
+
+
 # ── Smart config helpers ───────────────────────────────────────────────
 
 
@@ -454,18 +513,18 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
     reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
-        raise ValueError(
+        _raise_config_error(
             f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
             f"got {reasoning_effort!r} in profile {base.name!r}"
         )
     timeout_medium_raw = data.get("timeout_medium_seconds", base.timeout_medium_seconds)
     timeout_large_raw = data.get("timeout_large_seconds", base.timeout_large_seconds)
-    return ModelProfile(
+    profile = ModelProfile(
         name=base.name,
         cli=data.get("cli", base.cli),
         provider=data.get("provider", base.provider),
         model=data.get("model", base.model),
-        budget_usd=float(data.get("budget_usd", base.budget_usd)),
+        budget_usd=_require_budget(data.get("budget_usd"), context=f"Profile {base.name!r}"),
         timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
@@ -476,6 +535,8 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
         else None,
     )
+    _warn_if_max_iterations_high(profile.max_iterations, context=f"Profile {base.name!r}")
+    return profile
 
 
 def _auto_assign_models(
@@ -585,48 +646,29 @@ def _parse_profile(
     provider = data.get("provider")
 
     if cli and provider:
-        raise ValueError(f"Profile {name!r} cannot have both 'cli' and 'provider' set. Use one.")
+        _raise_config_error(
+            f"Profile {name!r} cannot have both 'cli' and 'provider' set. Use one."
+        )
     if not cli and not provider:
         # Fallback to default if neither is specified
         cli = default.cli
         provider = default.provider
 
-    if cli and cli not in SUPPORTED_CLIS:
-        raise ValueError(
-            f"Unsupported CLI {cli!r} in profile {name!r}. Supported: {sorted(SUPPORTED_CLIS)}"
-        )
+    if cli:
+        _validate_cli(str(cli), context=f"profile {name!r}")
     if provider:
-        if provider not in SUPPORTED_PROVIDERS:
-            raise ValueError(
-                f"Unsupported provider {provider!r} in profile {name!r}. "
-                f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
-            )
-        # Eagerly validate provider readiness
-        sdk = PROVIDER_SDK_MAP.get(provider)
-        if sdk:
-            try:
-                importlib.import_module(sdk)
-            except ImportError:
-                raise ValueError(
-                    f"Profile {name!r} uses provider '{provider}' but the required "
-                    f"SDK '{sdk}' is not installed. Please install it."
-                )
-        base_url_early = data.get("base_url")
-        _is_local = base_url_early and any(
-            base_url_early.startswith(p) for p in ("http://localhost", "http://127.0.0.1")
+        _validate_provider_readiness(
+            str(provider),
+            context=f"Profile {name!r}",
+            secrets=secrets or {},
+            base_url=data.get("base_url"),
         )
-        api_key_var = PROVIDER_API_KEY_MAP.get(provider)
-        if api_key_var and not _resolve_secret(api_key_var, secrets or {}) and not _is_local:
-            raise ValueError(
-                f"Profile {name!r} uses provider '{provider}' but the required "
-                f"environment variable ${api_key_var} is not set."
-            )
 
     tools = data.get("allowed_tools")
     reasoning_effort = data.get("reasoning_effort")
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
-        raise ValueError(
+        _raise_config_error(
             f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
             f"got {reasoning_effort!r} in profile {name!r}"
         )
@@ -646,12 +688,12 @@ def _parse_profile(
     else:
         allowed_tools_tuple = default.allowed_tools
 
-    return ModelProfile(
+    profile = ModelProfile(
         name=name,
         cli=cli,
         provider=provider,
         model=data.get("model", default.model),
-        budget_usd=float(data.get("budget_usd", default.budget_usd)),
+        budget_usd=_require_budget(data.get("budget_usd"), context=f"Profile {name!r}"),
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
@@ -663,6 +705,8 @@ def _parse_profile(
         if (max_iter_raw := data.get("max_iterations")) is not None
         else None,
     )
+    _warn_if_max_iterations_high(profile.max_iterations, context=f"Profile {name!r}")
+    return profile
 
 
 def load_config(config_path: Path) -> ForgeConfig:
@@ -671,7 +715,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     The config file path is used to derive the project root (its parent directory).
     Missing sections fall back to sensible defaults.
 
-    Raises ValueError for invalid configurations (empty pool, duplicate names,
+    Raises ConfigError for invalid configurations (empty pool, duplicate names,
     unsupported CLI, missing synthesis profile when pool size > 1).
     """
     project_root = config_path.parent.resolve()
@@ -683,7 +727,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     if env_path.exists():
         raw = dotenv_values(env_path)
         if any(v is None for v in raw.values()):
-            raise ValueError(f"{env_path}: malformed .env")
+            _raise_config_error(f"{env_path}: malformed .env")
         secrets = {k: v for k, v in raw.items() if v is not None}
     elif secrets_yaml_path.exists():
         log.warning(
@@ -730,15 +774,15 @@ def load_config(config_path: Path) -> ForgeConfig:
     if "models" in raw:
         models_list = raw["models"]
         if not isinstance(models_list, list) or len(models_list) == 0:
-            raise ValueError("'models' must be a non-empty list")
+            _raise_config_error("'models' must be a non-empty list")
         for m in models_list:
             if "/" not in str(m):
-                raise ValueError(
+                _raise_config_error(
                     f"Model entry {m!r} must be in 'provider/model' format (contains '/')"
                 )
             provider = str(m).split("/", 1)[0]
             if str(m) not in MODEL_REGISTRY and provider not in _PROVIDER_CLI_MAP:
-                raise ValueError(
+                _raise_config_error(
                     f"Unknown provider {provider!r} in model {m!r}. "
                     f"Supported providers: {sorted(_PROVIDER_CLI_MAP)}. "
                     "Or add the model to MODEL_REGISTRY."
@@ -746,7 +790,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         budget_usd_raw = raw.get("budget_usd", 50.0)
         budget_usd_val = float(budget_usd_raw)
         if budget_usd_val <= 0:
-            raise ValueError("budget_usd must be positive")
+            _raise_config_error("budget_usd must be positive")
 
         dev_profile, preflight_profile, review_pool, synthesis_profile = _auto_assign_models(
             [str(m) for m in models_list], budget_usd_val
@@ -755,16 +799,27 @@ def load_config(config_path: Path) -> ForgeConfig:
         # Apply explicit profile overrides (partial override supported)
         profiles = raw.get("profiles", {})
         if "dev" in profiles:
+            if "budget_usd" not in profiles["dev"]:
+                _raise_config_error("Profile 'dev' must set budget_usd explicitly.")
             dev_profile = _apply_profile_overrides(dev_profile, profiles["dev"])
         if "preflight" in profiles:
+            if "budget_usd" not in profiles["preflight"]:
+                _raise_config_error("Profile 'preflight' must set budget_usd explicitly.")
             preflight_profile = _apply_profile_overrides(preflight_profile, profiles["preflight"])
         if synthesis_profile is not None and "synthesis" in profiles:
+            if "budget_usd" not in profiles["synthesis"]:
+                _raise_config_error("Profile 'synthesis' must set budget_usd explicitly.")
             synthesis_profile = _apply_profile_overrides(synthesis_profile, profiles["synthesis"])
         # Apply per-reviewer overrides matched by name
         # (e.g. profiles.review_pool[{name: claude-opus}])
         if "review_pool" in profiles:
             pool_overrides = profiles["review_pool"]
             if isinstance(pool_overrides, list):
+                for entry in pool_overrides:
+                    if isinstance(entry, dict) and "name" in entry and "budget_usd" not in entry:
+                        _raise_config_error(
+                            f"Profile {entry['name']!r} must set budget_usd explicitly."
+                        )
                 override_by_name: dict[str, dict[str, Any]] = {
                     e["name"]: e for e in pool_overrides if isinstance(e, dict) and "name" in e
                 }
@@ -795,12 +850,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         if "review_pool" in profiles:
             pool_data = profiles["review_pool"]
             if not isinstance(pool_data, list) or len(pool_data) == 0:
-                raise ValueError("profiles.review_pool must be a non-empty list")
+                _raise_config_error("profiles.review_pool must be a non-empty list")
             names = [e.get("name") for e in pool_data]
             if any(n is None for n in names):
-                raise ValueError("Each profiles.review_pool entry must have a 'name' field")
+                _raise_config_error("Each profiles.review_pool entry must have a 'name' field")
             if len(names) != len(set(names)):
-                raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
+                _raise_config_error(f"Duplicate names in profiles.review_pool: {names}")
             review_pool = [
                 _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
             ]
@@ -829,6 +884,22 @@ def load_config(config_path: Path) -> ForgeConfig:
         models_raw = raw["smart_config_models"]
         if isinstance(models_raw, list) and models_raw:
             smart_config_models = [str(m) for m in models_raw]
+            profiles = raw.get("profiles", {})
+            explicit_sections = [
+                section
+                for section in ("dev", "preflight", "review", "review_pool", "synthesis")
+                if section in profiles
+            ]
+            if explicit_sections or "plan" in raw:
+                overridden_sections = list(explicit_sections)
+                if "plan" in raw:
+                    overridden_sections.append("plan")
+                log.warning(
+                    "smart_config_models is configured alongside explicit role "
+                    "config (%s); runtime adaptation may override explicit "
+                    "model/profile choices",
+                    ", ".join(overridden_sections),
+                )
 
     # Retry
     retry_data = raw.get("retry", {})
@@ -927,14 +998,28 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Plan
     plan_data = raw.get("plan", {})
-    _plan_model_is_default = "model" not in plan_data and "model_name" not in plan_data
+    _plan_model_is_default = (
+        "cli" not in plan_data and "model" not in plan_data and "model_name" not in plan_data
+    )
+    _plan_cli_is_default = "cli" not in plan_data and "model" not in plan_data
+    if "model_name" in plan_data:
+        log.warning("plan.model_name is deprecated; use plan.model instead")
+    plan_cli = str(plan_data.get("cli", plan_data.get("model", "claude")))
+    plan_model = str(plan_data.get("model_name", plan_data.get("model", "sonnet")))
+    if not _plan_cli_is_default:
+        _validate_cli(plan_cli, context="plan")
     plan_timeout_medium_raw = plan_data.get("timeout_medium")
     plan_timeout_large_raw = plan_data.get("timeout_large")
+    _plan_budget_is_explicit = (
+        "cli" in plan_data or "model" in plan_data or "model_name" in plan_data
+    )
     plan_cfg = PlanConfig(
         enabled=bool(plan_data.get("enabled", False)),
-        model=str(plan_data.get("model", "claude")),
-        model_name=str(plan_data.get("model_name", "sonnet")),
-        budget_usd=float(plan_data.get("budget_usd", 0.50)),
+        cli=plan_cli,
+        model=plan_model,
+        budget_usd=_require_budget(plan_data.get("budget_usd"), context="plan")
+        if _plan_budget_is_explicit
+        else float(plan_data.get("budget_usd", 0.50)),
         timeout=int(plan_data.get("timeout", 600)),
         timeout_medium=int(plan_timeout_medium_raw)
         if plan_timeout_medium_raw is not None
@@ -958,52 +1043,31 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     if par_enabled:
         if par_cli and par_provider:
-            raise ValueError(
+            _raise_config_error(
                 "plan_agent_review cannot have both 'cli' and 'provider' set. Use one."
             )
         if not par_cli and not par_provider:
             # Default to cli: claude if neither is set
             par_cli = "claude"
 
-        if par_cli and par_cli not in SUPPORTED_CLIS:
-            raise ValueError(
-                f"Unsupported CLI {par_cli!r} in plan_agent_review. "
-                f"Supported: {sorted(SUPPORTED_CLIS)}"
-            )
+        if par_cli:
+            _validate_cli(str(par_cli), context="plan_agent_review")
         if par_provider:
-            if par_provider not in SUPPORTED_PROVIDERS:
-                raise ValueError(
-                    f"Unsupported provider {par_provider!r} in plan_agent_review. "
-                    f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
-                )
-            # Eagerly validate provider readiness
-            sdk = PROVIDER_SDK_MAP.get(par_provider)
-            if sdk:
-                try:
-                    importlib.import_module(sdk)
-                except ImportError:
-                    raise ValueError(
-                        f"plan_agent_review uses provider '{par_provider}' but the required "
-                        f"SDK '{sdk}' is not installed. Please install it."
-                    )
-            api_key_var = PROVIDER_API_KEY_MAP.get(par_provider)
-            if api_key_var and not _resolve_secret(api_key_var, secrets):
-                raise ValueError(
-                    f"plan_agent_review uses provider '{par_provider}' but the required "
-                    f"environment variable ${api_key_var} is not set."
-                )
+            _validate_provider_readiness(
+                str(par_provider), context="plan_agent_review", secrets=secrets
+            )
 
     # Parse pool entries if present (new format)
     par_pool: list[ModelProfile] = []
     if "pool" in par_data:
         pool_data = par_data["pool"]
         if not isinstance(pool_data, list) or len(pool_data) == 0:
-            raise ValueError("plan_agent_review.pool must be a non-empty list")
+            _raise_config_error("plan_agent_review.pool must be a non-empty list")
         pool_names = [e.get("name") for e in pool_data]
         if any(n is None for n in pool_names):
-            raise ValueError("Each plan_agent_review.pool entry must have a 'name' field")
+            _raise_config_error("Each plan_agent_review.pool entry must have a 'name' field")
         if len(pool_names) != len(set(pool_names)):
-            raise ValueError(f"Duplicate names in plan_agent_review.pool: {pool_names}")
+            _raise_config_error(f"Duplicate names in plan_agent_review.pool: {pool_names}")
         par_pool = [
             _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
         ]
@@ -1043,13 +1107,13 @@ def load_config(config_path: Path) -> ForgeConfig:
     _VALID_TIERS = {"cheap", "mid", "strong"}
     for agent_data in agents_raw:
         if not isinstance(agent_data, dict):
-            raise ValueError(f"Each 'agents' entry must be a dict, got {type(agent_data)}")
+            _raise_config_error(f"Each 'agents' entry must be a dict, got {type(agent_data)}")
         agent_name = agent_data.get("name")
         if not agent_name:
-            raise ValueError("Each 'agents' entry must have a 'name' field")
+            _raise_config_error("Each 'agents' entry must have a 'name' field")
         agent_tier = str(agent_data.get("tier", "mid"))
         if agent_tier not in _VALID_TIERS:
-            raise ValueError(
+            _raise_config_error(
                 f"Agent {agent_name!r}: tier must be one of {sorted(_VALID_TIERS)}, "
                 f"got {agent_tier!r}"
             )
@@ -1057,13 +1121,21 @@ def load_config(config_path: Path) -> ForgeConfig:
         agent_provider = agent_data.get("provider")
         if not agent_cli and not agent_provider:
             agent_provider = "anthropic"  # default for backward compat
+        if agent_cli:
+            _validate_cli(str(agent_cli), context=f"agent {agent_name!r}")
+        if agent_provider:
+            _validate_provider_readiness(
+                str(agent_provider), context=f"Agent {agent_name!r}", secrets=secrets
+            )
         agents_list.append(
             AgentDef(
                 name=str(agent_name),
                 cli=str(agent_cli) if agent_cli else None,
                 provider=str(agent_provider) if agent_provider else None,
                 model=str(agent_data.get("model", "sonnet")),
-                budget_usd=float(agent_data.get("budget_usd", 1.0)),
+                budget_usd=_require_budget(
+                    agent_data.get("budget_usd"), context=f"Agent {agent_name!r}"
+                ),
                 timeout_seconds=int(agent_data.get("timeout_seconds", 300)),
                 tier=agent_tier,
                 strengths=tuple(agent_data.get("strengths", [])),
@@ -1085,14 +1157,33 @@ def load_config(config_path: Path) -> ForgeConfig:
     sprint_data = raw.get("sprint", {})
     sprint_max_parallel_raw = sprint_data.get("max_parallel", 1)
     if not isinstance(sprint_max_parallel_raw, int):
-        raise ValueError(
+        _raise_config_error(
             f"forge.yaml 'sprint.max_parallel' must be an integer, got {sprint_max_parallel_raw!r}"
         )
     if sprint_max_parallel_raw < 1:
-        raise ValueError(
+        _raise_config_error(
             f"forge.yaml 'sprint.max_parallel' must be >= 1, got {sprint_max_parallel_raw}"
         )
     sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
+
+    for profile in [dev_profile, preflight_profile, *review_pool]:
+        _warn_if_max_iterations_high(profile.max_iterations, context=f"Profile {profile.name!r}")
+    if synthesis_profile is not None:
+        _warn_if_max_iterations_high(
+            synthesis_profile.max_iterations, context=f"Profile {synthesis_profile.name!r}"
+        )
+    if assignment_cfg.enabled:
+        if not agents_list:
+            _raise_config_error("assignment.enabled requires a non-empty agents list.")
+        if not review_pool:
+            _raise_config_error("assignment.enabled requires a non-empty review_pool.")
+    if plan_cfg.enabled and plan_agent_review_cfg.enabled:
+        planner_key = (plan_cfg.cli, plan_cfg.model)
+        for reviewer in plan_agent_review_cfg.profiles:
+            if (reviewer.cli, reviewer.model) == planner_key:
+                _raise_config_error(
+                    "plan_agent_review cannot review with the same cli+model as the planner."
+                )
 
     return ForgeConfig(
         project=raw.get("project", project_root.name),
