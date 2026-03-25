@@ -14,7 +14,7 @@ from typing import Any
 
 import yaml
 
-from .runner import run_agent
+from .runners import run_agent
 
 _VALIDATION_PROMPT = """\
 You are a story quality checker for a software development orchestrator.

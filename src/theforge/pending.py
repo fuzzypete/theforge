@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-from . import coord_util as _cu
+from .coordinator import util as _cu
 
 
 def _pending_dir(project_root: Path | None = None) -> Path:

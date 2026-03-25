@@ -20,22 +20,22 @@ from theforge.cli.shared import (
     _write_audit,
 )
 from theforge.config import load_config
-from theforge.coord_state import parse_phase_name
-from theforge.coordinator import (
+from theforge.coordinator.engine import (
     Phase,
     run_from_review,
     run_task,
 )
-from theforge.coordinator import set_log_level as coordinator_set_log_level
-from theforge.runner import LogLevel
-from theforge.runner import set_log_level as runner_set_log_level
+from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
+from theforge.coordinator.state import parse_phase_name
+from theforge.runners import LogLevel
+from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import _triage_spec
 
 
 def cmd_run(args: "argparse.Namespace") -> int:
     """Execute the dev→review loop for a story file."""
     from theforge import detach as _detach
-    from theforge.coord_util import _generate_run_id
+    from theforge.coordinator.util import _generate_run_id
 
     story_path = Path(args.story).resolve()
     if not story_path.exists():
@@ -244,7 +244,7 @@ def cmd_run(args: "argparse.Namespace") -> int:
                 notify=not args.no_notify,
             )
         elif triage.action == "dev" and triage.worktree_path is not None:
-            from theforge.coordinator import run_from_dev
+            from theforge.coordinator.engine import run_from_dev
 
             result = run_from_dev(
                 config,

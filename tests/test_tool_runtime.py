@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 
-from theforge.tool_runtime import (
+from theforge.runners.tool_runtime import (
     MAX_TOOL_OUTPUT_BYTES,
     TOOL_NAME_MAP,
     TOOL_REGISTRY,

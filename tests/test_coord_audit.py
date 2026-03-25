@@ -16,9 +16,9 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
-from theforge.coord_audit import generate_audit_log, has_review_approve
-from theforge.coord_state import CoordinatorResult, CoordinatorState, Phase
-from theforge.runner import AgentResult
+from theforge.coordinator.audit import generate_audit_log, has_review_approve
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
 
@@ -220,7 +220,7 @@ class TestHasReviewApprove:
         }
         (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"3\n", stderr=b"")
-        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+        with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             assert has_review_approve(tmp_path, "my-spec", "main") is False
 
     def test_valid_approve_branch_merged(self, tmp_path: Path) -> None:
@@ -233,7 +233,7 @@ class TestHasReviewApprove:
         }
         (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"0\n", stderr=b"")
-        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+        with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
     def test_valid_approve_branch_absent(self, tmp_path: Path) -> None:
@@ -248,7 +248,7 @@ class TestHasReviewApprove:
         mock_result = subprocess.CompletedProcess(
             args=[], returncode=128, stdout=b"", stderr=b"unknown revision"
         )
-        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+        with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
     def test_no_approve_record_with_base_branch(self, tmp_path: Path) -> None:
@@ -272,7 +272,7 @@ class TestHasReviewApprove:
         }
         (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         with patch(
-            "theforge.coord_audit.subprocess.run",
+            "theforge.coordinator.audit.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="git", timeout=30),
         ):
             # Timeout → helper returns False → APPROVE is not stale → True
@@ -290,7 +290,7 @@ class TestHasReviewApprove:
         mock_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=b"not-a-number\n", stderr=b""
         )
-        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result):
+        with patch("theforge.coordinator.audit.subprocess.run", return_value=mock_result):
             # ValueError from int() → helper returns False → APPROVE is not stale → True
             assert has_review_approve(tmp_path, "my-spec", "main") is True
 
@@ -304,7 +304,9 @@ class TestHasReviewApprove:
         }
         (audits / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout=b"0\n", stderr=b"")
-        with patch("theforge.coord_audit.subprocess.run", return_value=mock_result) as mock_run:
+        with patch(
+            "theforge.coordinator.audit.subprocess.run", return_value=mock_result
+        ) as mock_run:
             result = has_review_approve(tmp_path, "my-spec", "main", branch="forge/my-spec")
         assert result is True
         # Verify the custom branch pattern was used in the git command
@@ -353,7 +355,7 @@ class TestFixPromptDispositions:
     def test_fix_prompt_includes_p1_dispositions(self, tmp_path: Path) -> None:
         """classified_p1s must appear with [disposition] prefix in the fix prompt."""
 
-        from theforge.coord_state import FindingRecord
+        from theforge.coordinator.state import FindingRecord
         from theforge.task import TaskStory, build_fix_prompt
 
         task = TaskStory(name="My Task", slug="my-task", story_path=tmp_path / "spec.md")

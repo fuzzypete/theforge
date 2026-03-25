@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .coord_state import CoordinatorState, FindingRecord
+    from .coordinator.state import CoordinatorState, FindingRecord
     from .review import ReviewFinding, ReviewResult
 
 JACCARD_THRESHOLD = 0.5
@@ -124,7 +124,7 @@ def update_finding_registry(
         List of FindingRecord objects classified this cycle (all severities).
         Callers use this list for disposition-gated exit criteria.
     """
-    from .coord_state import FindingRecord  # avoid circular at module level
+    from .coordinator.state import FindingRecord  # avoid circular at module level
 
     changed_files = _get_changed_files(workspace_path, prev_commit)
 

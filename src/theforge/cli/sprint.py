@@ -7,9 +7,9 @@ from pathlib import Path
 
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
-from theforge.coordinator import set_log_level as coordinator_set_log_level
-from theforge.runner import LogLevel
-from theforge.runner import set_log_level as runner_set_log_level
+from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
+from theforge.runners import LogLevel
+from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import run_sprint
 
 
@@ -17,7 +17,7 @@ def cmd_sprint(args: object) -> int:
     """Run multiple stories sequentially via a sprint manifest."""
     from theforge import daemon as _daemon
     from theforge import detach as _detach
-    from theforge.coord_util import _generate_run_id
+    from theforge.coordinator.util import _generate_run_id
 
     manifest_path = Path(args.manifest).resolve()
     if not manifest_path.exists():

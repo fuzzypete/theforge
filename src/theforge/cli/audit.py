@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.coordinator import _fmt_duration
+from theforge.coordinator.util import _fmt_duration
 
 
 def _cmd_audit_ideate(audit: dict) -> int:

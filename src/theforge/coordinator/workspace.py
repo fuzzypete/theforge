@@ -7,11 +7,14 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import coord_util as _cu
-from .config import ForgeConfig
-from .coord_gate import _run_gate
-from .runner import run_agent
-from .task import TaskStory as TaskSpec  # noqa: F401
+from theforge.config import ForgeConfig
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+
+from . import util as _cu
+from .gate import _run_gate
+
+# Populated lazily on first call to _resolve_merge_conflicts.
+run_agent = None
 
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
@@ -93,6 +96,11 @@ def _resolve_merge_conflicts(
         f"After resolving, run the project's test suite to verify nothing is broken."
     )
 
+    global run_agent
+    if run_agent is None:
+        import theforge.runners as _r  # noqa: PLC0415
+
+        run_agent = _r.run_agent
     _resolve_start = time.monotonic()
     resolve_result = run_agent(
         prompt=prompt,

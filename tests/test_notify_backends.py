@@ -133,7 +133,7 @@ def test_send_terminal_linux_calls_notify_send():
 
 
 def test_send_ntfy_calls_ntfy_publish():
-    with patch("theforge.coord_notify._ntfy_publish") as mock_pub:
+    with patch("theforge.coordinator.notify._ntfy_publish") as mock_pub:
         _send_ntfy("https://ntfy.sh/topic", "high", "Title", "Body")
         mock_pub.assert_called_once_with("https://ntfy.sh/topic", "Title", "Body", priority="high")
 
@@ -294,7 +294,7 @@ def test_send_slack_reads_webhook_url_from_secrets(monkeypatch):
 def test_escalate_notify_calls_send_notifications_when_ntfy_is_none():
     """_escalate_notify must call send_notifications for Slack backend even when ntfy is None."""
     from theforge.config import BackendConfig
-    from theforge.coord_notify import _escalate_notify
+    from theforge.coordinator.notify import _escalate_notify
 
     config = MagicMock()
     config.notifications.ntfy = None

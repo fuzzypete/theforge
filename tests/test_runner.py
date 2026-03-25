@@ -11,9 +11,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import theforge.runner as runner_mod
+import theforge.runners.cli as runner_mod
+from theforge.agent_types import AgentResult
 from theforge.config import ModelProfile
-from theforge.runner import AgentResult, LogLevel, log_agent_result, run_agent, run_agent_pool
+from theforge.log_level import LogLevel
+from theforge.runners import log_agent_result, run_agent, run_agent_pool
 
 
 @pytest.fixture
@@ -81,11 +83,16 @@ class TestHybridRunner:
             profile_name="api-reviewer",
             structured_data={"verdict": "APPROVE"},
         )
-        with patch("theforge.runner_api.run_api_agent", return_value=mock_result) as mock_api_run:
+        with patch("theforge.runners.api.run_api_agent", return_value=mock_result) as mock_api_run:
             result = run_agent(prompt="test", profile=api_profile, working_dir=tmp_path)
 
         mock_api_run.assert_called_once_with(
-            prompt="test", profile=api_profile, working_dir=tmp_path, quiet=False, secrets={}
+            prompt="test",
+            profile=api_profile,
+            working_dir=tmp_path,
+            quiet=False,
+            secrets={},
+            plain_text=False,
         )
         assert result == mock_result
 
@@ -108,7 +115,7 @@ class TestHybridRunner:
             raw={},
             profile_name="dev",
         )
-        with patch("theforge.runner_api.run_api_agent", return_value=mock_result) as mock_api:
+        with patch("theforge.runners.api.run_api_agent", return_value=mock_result) as mock_api:
             result = run_agent(
                 prompt="implement it", profile=dev_api_profile, working_dir=tmp_path
             )
@@ -119,12 +126,13 @@ class TestHybridRunner:
             working_dir=tmp_path,
             quiet=False,
             secrets={},
+            plain_text=False,
         )
         assert result == mock_result
 
     def test_run_agent_cli_dispatch(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """run_agent dispatches to CLI runner for CLI profiles."""
-        with patch("theforge.runner._run_claude") as mock_cli_run:
+        with patch("theforge.runners.cli._run_claude") as mock_cli_run:
             run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
         mock_cli_run.assert_called_once()
 
@@ -144,7 +152,9 @@ class TestHybridRunner:
                 return api_result
             return cli_result
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent_selector) as mock_run:
+        with patch(
+            "theforge.runners.cli.run_agent", side_effect=mock_run_agent_selector
+        ) as mock_run:
             results = run_agent_pool(
                 prompt="test", profiles=[dev_profile, api_profile], working_dir=tmp_path
             )
@@ -168,7 +178,7 @@ class TestRunAgentClaude:
                 )
             ]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc) as mock_popen:
             result = run_agent(
                 prompt="implement the thing",
                 profile=dev_profile,
@@ -205,7 +215,7 @@ class TestRunAgentClaude:
         import os
 
         mock_proc = _make_stream_mock([_result_line(result="done")])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc) as mock_popen:
             with patch.dict(os.environ, {"CLAUDECODE": "1"}):
                 run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
@@ -216,7 +226,7 @@ class TestRunAgentClaude:
         mock_proc = _make_stream_mock(
             [_result_line(result="continued.", session_id="sess-abc123")]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc) as mock_popen:
             run_agent(
                 prompt="continue",
                 profile=dev_profile,
@@ -238,7 +248,7 @@ class TestRunAgentClaude:
             allowed_tools=(),
         )
         mock_proc = _make_stream_mock([_result_line(result="done")])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc) as mock_popen:
             run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         cmd = mock_popen.call_args[0][0]
@@ -249,7 +259,7 @@ class TestRunAgentClaude:
             [_result_line(result="partial work", total_cost_usd=0.15)],
             returncode=1,
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -259,7 +269,7 @@ class TestRunAgentClaude:
 
     def test_non_json_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock(["plain text output"])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
@@ -269,7 +279,7 @@ class TestRunAgentClaude:
 
     def test_empty_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([], returncode=1, stderr="some error")
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -301,7 +311,7 @@ class TestRunAgentClaude:
         mock_proc.wait.return_value = -1
         mock_proc.poll.return_value = None
 
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -332,7 +342,7 @@ class TestRunAgentClaude:
         mock_proc.wait.return_value = -1
         mock_proc.poll.return_value = None
 
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -341,7 +351,7 @@ class TestRunAgentClaude:
 
     def test_cli_not_found(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runner.subprocess.Popen",
+            "theforge.runners.cli.subprocess.Popen",
             side_effect=FileNotFoundError(),
         ):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
@@ -355,7 +365,7 @@ class TestRunAgentClaude:
     ) -> None:
         """AgentResult.profile_name must be set to profile.name."""
         mock_proc = _make_stream_mock([_result_line(result="reviewed.", total_cost_usd=0.10)])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="review this", profile=review_profile, working_dir=tmp_path)
 
         assert result.profile_name == "review"
@@ -378,7 +388,7 @@ class TestRunAgentClaude:
         )
         runner_mod.set_log_level(LogLevel.VERBOSE)
         try:
-            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
                 run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
         finally:
             runner_mod.set_log_level(LogLevel.PROGRESS)
@@ -405,7 +415,7 @@ class TestRunAgentClaude:
             mock_proc = _make_stream_mock(
                 [summary_line, _result_line(result="done", total_cost_usd=0.01)]
             )
-            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
                 run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
             captured = capsys.readouterr()
             assert "↳ Read file.py (10 lines)" in captured.err
@@ -415,7 +425,7 @@ class TestRunAgentClaude:
             mock_proc2 = _make_stream_mock(
                 [summary_line, _result_line(result="done", total_cost_usd=0.01)]
             )
-            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc2):
+            with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc2):
                 run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path, quiet=True)
             captured2 = capsys.readouterr()
             assert "↳ [dev] Read file.py (10 lines)" in captured2.err
@@ -448,7 +458,7 @@ class TestRunAgentClaude:
         )
         runner_mod.set_log_level(LogLevel.VERBOSE)
         try:
-            with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+            with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
                 run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
         finally:
             runner_mod.set_log_level(LogLevel.PROGRESS)
@@ -462,7 +472,7 @@ class TestRunAgentClaude:
         mock_proc = _make_stream_mock(
             [json.dumps({"type": "assistant", "session_id": "sess-fallback"}) + "\n"]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
@@ -495,7 +505,7 @@ class TestClaudeSessionIdHelper:
         os.utime(old_file, (now - 20, now - 20))
         os.utime(new_file, (now - 5, now - 5))
 
-        with patch("theforge.runner.Path.home", return_value=tmp_path):
+        with patch("theforge.runners.cli.Path.home", return_value=tmp_path):
             sid = runner_mod._get_claude_session_id("", tmp_path, min_mtime=now - 10)
 
         assert sid == "sess-new"
@@ -506,7 +516,7 @@ class TestClaudeSessionIdHelper:
         claude_dir.mkdir(parents=True)
         (claude_dir / "sess-from-disk.jsonl").write_text("", encoding="utf-8")
 
-        with patch("theforge.runner.Path.home", return_value=tmp_path):
+        with patch("theforge.runners.cli.Path.home", return_value=tmp_path):
             sid = runner_mod._get_claude_session_id(
                 "",
                 tmp_path,
@@ -522,7 +532,7 @@ class TestRunAgentCostCoercion:
 
     def test_string_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="0.42")])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.42
@@ -530,14 +540,14 @@ class TestRunAgentCostCoercion:
 
     def test_null_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", cost_usd=None)])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd is None
 
     def test_garbage_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="not-a-number")])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd is None
@@ -564,7 +574,7 @@ class TestRunAgentModelUsage:
                 )
             ]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.123
@@ -581,7 +591,7 @@ class TestRunAgentModelUsage:
         self, dev_profile: ModelProfile, tmp_path: Path
     ) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.05)])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.model_usage == ()
@@ -612,7 +622,7 @@ class TestRunAgentModelUsage:
                 )
             ]
         )
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.20
@@ -680,7 +690,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=profiles,
@@ -704,7 +714,7 @@ class TestRunAgentPool:
             allowed_tools=(),
         )
         mock_proc = _make_stream_mock([_result_line(result="solo review", total_cost_usd=0.20)])
-        with patch("theforge.runner.subprocess.Popen", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.Popen", return_value=mock_proc):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=[profile],
@@ -750,7 +760,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=profiles,
@@ -797,7 +807,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
             run_agent_pool(
                 prompt="review",
                 profiles=profiles,
@@ -850,7 +860,7 @@ class TestRunAgentPool:
                 profile_name="solo",
             )
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
             results = run_agent_pool(
                 prompt="review",
                 profiles=[profile],
@@ -895,7 +905,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=profiles,
@@ -947,7 +957,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=slow_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=slow_agent):
             start = time.monotonic()
             results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
             elapsed = time.monotonic() - start
@@ -991,7 +1001,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=variable_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=variable_agent):
             results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
 
         assert results[0].profile_name == "slow"
@@ -1022,8 +1032,8 @@ class TestRunAgentPool:
             )
 
         with (
-            patch("theforge.runner.run_agent", side_effect=mock_run_agent),
-            patch("theforge.runner.ThreadPoolExecutor") as mock_executor,
+            patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent),
+            patch("theforge.runners.cli.ThreadPoolExecutor") as mock_executor,
         ):
             results = run_agent_pool(prompt="review", profiles=[profile], working_dir=tmp_path)
 
@@ -1074,7 +1084,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=flaky_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=flaky_agent):
             results = run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
 
         assert len(results) == 3
@@ -1118,7 +1128,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=mock_run_agent):
+        with patch("theforge.runners.cli.run_agent", side_effect=mock_run_agent):
             run_agent_pool(prompt="review", profiles=profiles, working_dir=tmp_path)
 
         captured = capsys.readouterr()
@@ -1175,7 +1185,7 @@ class TestRunAgentPool:
                 profile_name=profile.name,
             )
 
-        with patch("theforge.runner.run_agent", side_effect=capture_prompt):
+        with patch("theforge.runners.cli.run_agent", side_effect=capture_prompt):
             run_agent_pool(prompt="the shared prompt", profiles=profiles, working_dir=tmp_path)
 
         assert len(received_prompts) == 2
@@ -1213,7 +1223,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="Code looks good.", stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(
                 prompt="review this code",
                 profile=codex_profile,
@@ -1229,7 +1239,7 @@ class TestRunCodex:
 
     def test_codex_timeout(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runner.subprocess.run",
+            "theforge.runners.cli.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="npx", timeout=300),
         ):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
@@ -1241,7 +1251,7 @@ class TestRunCodex:
 
     def test_codex_not_found(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runner.subprocess.run",
+            "theforge.runners.cli.subprocess.run",
             side_effect=FileNotFoundError(),
         ):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
@@ -1252,7 +1262,7 @@ class TestRunCodex:
 
     def test_codex_command_structure(self, codex_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -1271,7 +1281,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="fallback stdout", stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
 
         assert result.output == "fallback stdout"
@@ -1280,7 +1290,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="partial work", stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
 
         assert result.success is False
@@ -1294,7 +1304,7 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="codex error"
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(prompt="test", profile=codex_profile, working_dir=tmp_path)
 
         assert result.output == "codex error"
@@ -1310,7 +1320,7 @@ class TestRunCodex:
             reasoning_effort="high",
         )
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -1322,7 +1332,7 @@ class TestRunCodex:
         self, codex_profile: ModelProfile, tmp_path: Path
     ) -> None:
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=codex_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -1340,7 +1350,7 @@ class TestRunCodex:
             reasoning_effort="medium",
         )
         mock_proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -1358,9 +1368,9 @@ class TestRunCodex:
             args=[], returncode=0, stdout="reviewed", stderr=""
         )
         # Patch _get_codex_session_id to prove it is never called in pool mode.
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             with patch(
-                "theforge.runner._get_codex_session_id", return_value="some-uuid"
+                "theforge.runners.cli._get_codex_session_id", return_value="some-uuid"
             ) as mock_extract:
                 result = run_agent(
                     prompt="review",
@@ -1379,9 +1389,9 @@ class TestRunCodex:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="reviewed", stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             with patch(
-                "theforge.runner._get_codex_session_id", return_value="abc-123"
+                "theforge.runners.cli._get_codex_session_id", return_value="abc-123"
             ) as mock_extract:
                 result = run_agent(
                     prompt="review",
@@ -1402,7 +1412,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(
                 prompt="review this code",
                 profile=gemini_profile,
@@ -1418,7 +1428,7 @@ class TestRunGemini:
 
     def test_gemini_timeout(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runner.subprocess.run",
+            "theforge.runners.cli.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="gemini", timeout=300),
         ):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
@@ -1430,7 +1440,7 @@ class TestRunGemini:
 
     def test_gemini_not_found(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runner.subprocess.run",
+            "theforge.runners.cli.subprocess.run",
             side_effect=FileNotFoundError(),
         ):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
@@ -1444,7 +1454,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=gemini_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -1465,7 +1475,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="my prompt", profile=gemini_profile, working_dir=tmp_path)
 
         call_kwargs = mock_run.call_args[1]
@@ -1478,7 +1488,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="plain text response", stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert result.success is True
@@ -1491,7 +1501,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="gemini error"
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert result.output == "gemini error"
@@ -1502,7 +1512,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc) as mock_run:
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc) as mock_run:
             run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert mock_run.call_args[1]["cwd"] == str(tmp_path)
@@ -1515,7 +1525,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(
                 prompt="review",
                 profile=gemini_profile,
@@ -1533,7 +1543,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             result = run_agent(
                 prompt="review",
                 profile=gemini_profile,
@@ -1554,7 +1564,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="not json at all", stderr=""
         )
-        with patch("theforge.runner.subprocess.run", return_value=mock_proc):
+        with patch("theforge.runners.cli.subprocess.run", return_value=mock_proc):
             # Test both sequential and pool modes
             result_seq = run_agent(
                 prompt="review",

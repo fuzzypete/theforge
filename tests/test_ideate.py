@@ -31,7 +31,7 @@ from theforge.ideate import (
     generate_ideation_audit,
     run_ideation,
 )
-from theforge.runner import AgentResult
+from theforge.runners import AgentResult
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ def _make_pool_side_effect(
     p2 = phase2_outputs or ["p2 A", "p2 B"]
     call_count = 0
 
-    def _pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
+    def _pool(*, prompt: str, profiles, working_dir: Path, **kwargs) -> list[AgentResult]:
         nonlocal call_count
         call_count += 1
         if call_count % 2 == 1:  # odd calls = Phase 1 (per round)
@@ -183,7 +183,7 @@ def _make_pool_side_effect(
 def _make_synth_side_effect(synth_output: str = _SYNTHESIS_OUTPUT, cost: float = 0.10):
     """Returns a run_agent side_effect for synthesis calls."""
 
-    def _synth(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def _synth(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(synth_output, profile.name, cost)
 
     return _synth
@@ -267,7 +267,7 @@ def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
     output_path = tmp_path / "specs" / "test-feature.md"
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -323,7 +323,7 @@ def test_single_model_overlong_spec_returns_failed(tmp_path: Path) -> None:
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
     long_output = f"SPEC:\n{_make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)}"
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(long_output, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -419,7 +419,7 @@ def test_single_model_spec_with_code_block_returns_failed(tmp_path: Path) -> Non
     spec_with_code = _make_spec_with_code_block()
     output = f"SPEC:\n{spec_with_code}"
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(output, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -474,7 +474,7 @@ def test_phase1_fanout(tmp_path: Path) -> None:
 
     captured_pool_calls: list[dict] = []
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
+    def mock_pool(*, prompt: str, profiles, working_dir: Path, **kwargs) -> list[AgentResult]:
         captured_pool_calls.append({"prompt": prompt, "profiles": profiles})
         return [_ok_result(f"phase1 output {p.name}", p.name) for p in profiles]
 
@@ -499,7 +499,7 @@ def test_phase2_includes_all_phase1_outputs(tmp_path: Path) -> None:
     captured_prompts: list[str] = []
     pool_call_count = 0
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
+    def mock_pool(*, prompt: str, profiles, working_dir: Path, **kwargs) -> list[AgentResult]:
         nonlocal pool_call_count
         pool_call_count += 1
         captured_prompts.append(prompt)
@@ -548,7 +548,7 @@ def test_single_model_pool_skips_crossreview(tmp_path: Path) -> None:
 
     agent_call_prompts: list[str] = []
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         agent_call_prompts.append(prompt)
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
@@ -569,7 +569,7 @@ def test_single_model_synthesis_produces_valid_spec(tmp_path: Path) -> None:
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
     output_path = tmp_path / "specs" / "solo-spec.md"
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -592,7 +592,7 @@ def test_single_model_preserves_human_decisions_section(tmp_path: Path) -> None:
     # Single-model prompts emit a SPEC: block; simulate that wrapping.
     single_model_output = f"SPEC:\n{spec_with_decisions}"
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(single_model_output, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -609,7 +609,7 @@ def test_single_model_no_human_decisions_section_gives_empty_divergence(tmp_path
     """Single-model output without ## Human Decisions Required → residual_divergence = []."""
     config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
 
     with patch("theforge.ideate.run_agent", side_effect=mock_agent):
@@ -770,11 +770,11 @@ SPEC:
     synth_outputs = iter([_SYNTHESIS_OUTPUT, clean_synthesis])
     captured_pool_prompts: list[str] = []
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
+    def mock_pool(*, prompt: str, profiles, working_dir: Path, **kwargs) -> list[AgentResult]:
         captured_pool_prompts.append(prompt)
         return [_ok_result("output", p.name) for p in profiles]
 
-    def mock_synth(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_synth(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _ok_result(next(synth_outputs), profile.name)
 
     with (
@@ -799,7 +799,7 @@ def test_phase1_agent_failure_returns_failed_result(tmp_path: Path) -> None:
     """A failed Phase 1 pool result should return a failed IdeationResult immediately."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    def mock_pool(*, prompt: str, profiles, working_dir: Path) -> list[AgentResult]:
+    def mock_pool(*, prompt: str, profiles, working_dir: Path, **kwargs) -> list[AgentResult]:
         # Phase 1 pool returns a failed result for reviewer-a
         return [
             _fail_result("TIMEOUT: exceeded limit", profiles[0].name),
@@ -819,7 +819,7 @@ def test_synthesis_failure_returns_failed_result(tmp_path: Path) -> None:
     """A failed synthesis agent should return a failed IdeationResult."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
 
-    def mock_synth(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_synth(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         return _fail_result("ERROR: synthesis agent crashed", "synthesis")
 
     with (
@@ -838,7 +838,7 @@ def test_single_model_no_pool_calls(tmp_path: Path) -> None:
 
     call_count = 0
 
-    def mock_agent(*, prompt: str, profile, working_dir: Path) -> AgentResult:
+    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
         nonlocal call_count
         call_count += 1
         return _ok_result(_SYNTHESIS_OUTPUT, "solo")
@@ -1065,6 +1065,73 @@ def _make_ideation_result_cli(tmp_path: Path, *, write_spec: bool = True) -> Ide
         total_cost_usd=0.42,
         human_decision_required=False,
     )
+
+
+def test_none_cost_usd_does_not_crash_accumulation(tmp_path: Path) -> None:
+    """cost_usd=None from a pool agent must not crash total_cost accumulation."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    def pool_with_none_cost(*, prompt, profiles, working_dir, **kwargs):
+        return [
+            AgentResult(
+                success=True,
+                output=p1,
+                session_id=None,
+                cost_usd=None,
+                exit_code=0,
+                raw={},
+                profile_name=p.name,
+            )
+            for p, p1 in zip(profiles, ["p1 A", "p1 B"])
+        ]
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=pool_with_none_cost),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(cost=0.10)),
+    ):
+        result = run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert result.total_cost_usd is not None
+    assert result.total_cost_usd >= 0.0
+
+
+def test_plain_text_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
+    """run_agent_pool is called with plain_text=True during ideation phases."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    captured_kwargs: list[dict] = []
+
+    def capturing_pool(*, prompt, profiles, working_dir, **kwargs):
+        captured_kwargs.append(kwargs)
+        return [_ok_result("p1 A", _REVIEWER_A.name), _ok_result("p1 B", _REVIEWER_B.name)]
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=capturing_pool),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert all(kw.get("plain_text") is True for kw in captured_kwargs)
+
+
+def test_secrets_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
+    """config.secrets are forwarded to run_agent_pool during ideation."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    from dataclasses import replace
+
+    config = replace(config, secrets={"GOOGLE_API_KEY": "test-key"})
+    captured_secrets: list[dict] = []
+
+    def capturing_pool(*, prompt, profiles, working_dir, **kwargs):
+        captured_secrets.append(kwargs.get("secrets", {}))
+        return [_ok_result("p1 A", _REVIEWER_A.name), _ok_result("p1 B", _REVIEWER_B.name)]
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=capturing_pool),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert all("GOOGLE_API_KEY" in s for s in captured_secrets)
 
 
 def _make_ideate_args(brief="build a thing", *, output=None, rounds=2, dry_run=False, config=None):

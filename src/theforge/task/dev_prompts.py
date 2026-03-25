@@ -1,7 +1,7 @@
 from pathlib import Path
 from textwrap import dedent
 
-from theforge.coord_state import CycleHistory
+from theforge.coordinator.state import CycleHistory
 
 from .plan_parser import PlanData
 from .story import TaskStory

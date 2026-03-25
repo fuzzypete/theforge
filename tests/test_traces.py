@@ -12,7 +12,7 @@ from coord_test_helpers import (
     _shell_with_gate,
 )
 
-from theforge.coordinator import run_task
+from theforge.coordinator.engine import run_task
 from theforge.traces import write_trace
 
 
@@ -58,9 +58,9 @@ def test_write_trace_empty_content(tmp_path):
 # ── Coordinator-level trace tests ─────────────────────────────────────
 
 
-@patch("theforge.coordinator.run_agent_pool")
-@patch("theforge.coordinator.run_agent")
-@patch("theforge.coord_util._run_shell")
+@patch("theforge.coordinator.engine.run_agent_pool")
+@patch("theforge.coordinator.engine.run_agent")
+@patch("theforge.coordinator.util._run_shell")
 def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, tmp_path):
     """After REQUEST_CHANGES, fix-cycle trace must be 2-dev-*.txt, not overwrite 1-dev-*.txt."""
     config = _make_config(tmp_path)
@@ -104,9 +104,9 @@ def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, t
     assert out1 != out2, "iteration-1 and iteration-2 traces must not have the same content"
 
 
-@patch("theforge.coordinator.run_agent_pool")
-@patch("theforge.coordinator.run_agent")
-@patch("theforge.coord_util._run_shell")
+@patch("theforge.coordinator.engine.run_agent_pool")
+@patch("theforge.coordinator.engine.run_agent")
+@patch("theforge.coordinator.util._run_shell")
 def test_dev_traces_written_for_iteration_3(mock_shell, mock_agent, mock_pool, tmp_path):
     """After two REQUEST_CHANGES cycles, trace files 1-3 must all exist with distinct content."""
     from dataclasses import replace
