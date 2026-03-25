@@ -1547,8 +1547,8 @@ class TestFixPromptRouting:
 
     @patch("theforge.coordinator.engine.build_fix_prompt")
     @patch("theforge.coordinator.engine.build_dev_prompt")
-    @patch("theforge.coordinator.notify._ntfy_publish")
-    @patch("theforge.coordinator.notify._ntfy_poll_reply")
+    @patch("theforge.coordinator.remote_gates._ntfy_publish")
+    @patch("theforge.coordinator.remote_gates._ntfy_poll_reply")
     @patch("theforge.coordinator.engine.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1605,8 +1605,8 @@ class TestFixPromptRouting:
 
     @patch("theforge.coordinator.engine.build_fix_prompt")
     @patch("theforge.coordinator.engine.build_dev_prompt")
-    @patch("theforge.coordinator.notify._ntfy_publish")
-    @patch("theforge.coordinator.notify._ntfy_poll_reply")
+    @patch("theforge.coordinator.remote_gates._ntfy_publish")
+    @patch("theforge.coordinator.remote_gates._ntfy_poll_reply")
     @patch("theforge.coordinator.engine.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")

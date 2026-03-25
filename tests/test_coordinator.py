@@ -5207,8 +5207,8 @@ class TestProjectLocalLogDir:
             return _FakeResult()
 
         with (
-            patch("theforge.sprint.run_task", side_effect=_fake_run_task),
-            patch("theforge.sprint.generate_audit_log", return_value={"task": {}}),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.runner.generate_audit_log", return_value={"task": {}}),
         ):
             run_sprint(config, manifest_path)
 

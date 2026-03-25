@@ -1319,7 +1319,9 @@ class TestDeepSeekProvider:
         mock_client = MagicMock()
         self._mock_review_response(mock_client)
 
-        with patch("theforge.runners.api._deepseek_client", return_value=mock_client):
+        with patch(
+            "theforge.runners.adapters.deepseek._deepseek_client", return_value=mock_client
+        ):
             result = _run_deepseek("review this", profile)
 
         assert result.success
@@ -1334,7 +1336,9 @@ class TestDeepSeekProvider:
         mock_client = MagicMock()
         self._mock_review_response(mock_client)
 
-        with patch("theforge.runners.api._deepseek_client", return_value=mock_client):
+        with patch(
+            "theforge.runners.adapters.deepseek._deepseek_client", return_value=mock_client
+        ):
             result = _run_deepseek("review this", profile)
 
         assert result.success
