@@ -20,7 +20,8 @@ def _block_real_notifications():
         patch("theforge.coordinator.engine._ntfy_publish"),
         patch("theforge.coordinator.notify._notify"),
         patch("theforge.coordinator.notify._ntfy_publish"),
-        patch("theforge.sprint._notify"),
+        patch("theforge.coordinator.remote_gates._ntfy_publish"),
+        patch("theforge.sprint.runner._notify"),
         # notify_backends.send_notifications dispatches to _send_terminal
         # directly (not via coord_notify._notify), so patch it here too.
         patch("theforge.notify_backends._send_terminal"),

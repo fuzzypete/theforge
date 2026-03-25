@@ -1,176 +1,42 @@
-"""Sprint mode: run multiple stories sequentially through the full pipeline.
-
-A sprint is defined by a YAML manifest listing story paths to run in order,
-with an aggregate budget ceiling (Claude costs only).
-"""
+"""Sprint runner: parallel story scheduling and the run_sprint entry point."""
 
 from __future__ import annotations
 
 import datetime
-import subprocess
 import sys
 import threading
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
-from .artifacts import AUDIT_PATH, ensure_parent_dir
-from .config import ForgeConfig
-from .coordinator.audit import generate_audit_log, has_review_approve
-from .coordinator.engine import (
+from ..artifacts import AUDIT_PATH, ensure_parent_dir
+from ..config import ForgeConfig
+from ..coordinator.audit import generate_audit_log
+from ..coordinator.engine import (
     CoordinatorResult,
     CoordinatorState,
     Phase,
     StructuredLogger,
     _fmt_duration,
     _generate_run_id,
-    _is_remote_mode,
     _notify,
     _ntfy_publish,
-    _run_gate,
     run_from_dev,
     run_from_review,
     run_task,
 )
-from .coordinator.workspace import _merge_branch
-from .task import TaskStory as TaskSpec  # noqa: F401
-
-
-@dataclass
-class SprintManifest:
-    """Parsed sprint.yaml manifest."""
-
-    name: str
-    budget_usd: float
-    stories: list[str]  # relative paths to story files
-    max_parallel: int | None = None
-
-
-@dataclass
-class SprintResult:
-    """Aggregate result from running a sprint."""
-
-    name: str
-    specs_total: int
-    specs_succeeded: int
-    specs_failed: int
-    specs_skipped: int  # ALREADY_DONE or budget-stopped
-    total_cost_usd: float
-    budget_usd: float
-    results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
-    stopped_reason: str | None = None  # why sprint stopped early, if it did
-
-
-def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
-    """Load and validate a sprint.yaml manifest.
-
-    Raises ValueError if the manifest is invalid.
-    """
-    if not manifest_path.exists():
-        raise ValueError(f"Sprint manifest not found: {manifest_path}")
-
-    with open(manifest_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-
-    if not isinstance(raw, dict):
-        raise ValueError(f"Sprint manifest must be a YAML mapping: {manifest_path}")
-
-    name = raw.get("name")
-    if not name or not isinstance(name, str):
-        raise ValueError("Sprint manifest must have a non-empty 'name' field")
-
-    budget_usd = raw.get("budget_usd")
-    if budget_usd is None:
-        raise ValueError("Sprint manifest must have a 'budget_usd' field")
-    try:
-        budget_usd = float(budget_usd)
-    except (TypeError, ValueError):
-        raise ValueError(f"Sprint 'budget_usd' must be a number, got {budget_usd!r}")
-    if budget_usd <= 0:
-        raise ValueError(f"Sprint 'budget_usd' must be > 0, got {budget_usd}")
-
-    max_parallel_raw = raw.get("max_parallel")
-    if max_parallel_raw is not None:
-        if not isinstance(max_parallel_raw, int):
-            raise ValueError(f"Sprint 'max_parallel' must be an integer, got {max_parallel_raw!r}")
-        if max_parallel_raw < 1:
-            raise ValueError(f"Sprint 'max_parallel' must be >= 1, got {max_parallel_raw}")
-    max_parallel = max_parallel_raw
-
-    # Accept both 'stories' (new) and 'specs' (deprecated) keys
-    stories = raw.get("stories")
-    if stories is None:
-        specs_legacy = raw.get("specs")
-        if specs_legacy is not None:
-            import logging as _logging
-
-            _logging.getLogger(__name__).warning(
-                "Sprint manifest uses deprecated 'specs:' key — rename to 'stories:'"
-            )
-            stories = specs_legacy
-    if not stories or not isinstance(stories, list):
-        raise ValueError("Sprint manifest must have a non-empty 'stories' list")
-    if not all(isinstance(s, str) for s in stories):
-        raise ValueError("All entries in 'stories' must be strings (file paths)")
-
-    return SprintManifest(
-        name=name, budget_usd=budget_usd, stories=stories, max_parallel=max_parallel
-    )
-
-
-def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[Path]:
-    """Resolve and validate all story paths. Raises ValueError if any are missing."""
-    resolved: list[Path] = []
-    missing: list[str] = []
-    for spec_str in manifest.stories:
-        path = (project_root / spec_str).resolve()
-        if not path.exists():
-            missing.append(spec_str)
-        else:
-            resolved.append(path)
-    if missing:
-        raise ValueError(
-            f"Sprint manifest references {len(missing)} missing story/stories:\n"
-            + "\n".join(f"  {s}" for s in missing)
-        )
-    return resolved
-
-
-def _build_task_from_story(story_path: Path) -> TaskSpec:
-    """Build a TaskStory from a story file using frontmatter if available."""
-    # Import here to avoid circular imports; cli._build_task is essentially the same logic
-    text = story_path.read_text(encoding="utf-8")
-    fm: dict = {}
-    if text.startswith("---"):
-        end = text.find("---", 3)
-        if end != -1:
-            try:
-                parsed = yaml.safe_load(text[3:end].strip()) or {}
-                if isinstance(parsed, dict):
-                    fm = parsed
-            except yaml.YAMLError:
-                pass
-
-    slug = fm.get("slug") or story_path.stem
-    name = fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title())
-    raw_deps = fm.get("depends_on", [])
-    if isinstance(raw_deps, str):
-        depends_on = [raw_deps]
-    elif isinstance(raw_deps, list):
-        depends_on = [str(d) for d in raw_deps]
-    else:
-        depends_on = []
-    return TaskSpec(
-        name=name,
-        story_path=story_path,
-        slug=slug,
-        pytest_target=fm.get("pytest_target"),
-        gate_override=fm.get("gate"),
-        depends_on=depends_on,
-    )
+from ..coordinator.workspace import _merge_branch
+from ..task import TaskStory as TaskSpec  # noqa: F401
+from .audit import _write_sprint_audit, _write_sprint_summary
+from .dag import StoryDAG, StoryTriage, _triage_spec, build_dag
+from .manifest import (
+    SprintResult,
+    _build_task_from_story,
+    _validate_story_paths,
+    load_sprint_manifest,
+)
 
 
 def _log(msg: str) -> None:
@@ -184,108 +50,17 @@ def _story_header(idx: int, total: int, slug: str) -> str:
     return prefix + dashes
 
 
-@dataclass
-class StoryTriage:
-    """Result of triaging a story for sprint resume."""
-
-    story_path: str
-    action: str  # "skip_merged", "skip", "review", "dev", "full"
-    reason: str
-    worktree_path: Path | None = None
-    slug: str = ""
-
-
-class StoryDAG:
-    """Dependency-aware scheduler for concurrent story execution.
-
-    Tracks two distinct states per story:
-    - _completed: stories that satisfied their dependencies (merged or ALREADY_DONE).
-      Used to unlock downstream stories in ready().
-    - _finished: all stories that are done processing (any outcome).
-      Used by is_done() to detect completion.
-
-    mark_complete() adds to both sets (story ran and satisfied deps).
-    mark_skipped() adds only to _finished (story is done but deps not satisfied).
-    """
-
-    def __init__(self, tasks: list[TaskSpec]) -> None:
-        self._tasks: dict[str, TaskSpec] = {t.slug: t for t in tasks}
-        self._deps: dict[str, set[str]] = {t.slug: set(t.depends_on) for t in tasks}
-        self._completed: set[str] = set()  # satisfied: merged or ALREADY_DONE
-        self._finished: set[str] = set()  # all done: any outcome
-
-    def ready(self) -> list[TaskSpec]:
-        """Return tasks that are not finished and whose deps are all completed."""
-        return [
-            task
-            for slug, task in self._tasks.items()
-            if slug not in self._finished
-            and all(dep in self._completed for dep in self._deps[slug])
-        ]
-
-    def mark_complete(self, slug: str) -> None:
-        """Story satisfied deps (merged / ALREADY_DONE). Unlocks dependents."""
-        self._completed.add(slug)
-        self._finished.add(slug)
-
-    def mark_skipped(self, slug: str) -> None:
-        """Story finished without satisfying deps (failed / budget / blocked)."""
-        self._finished.add(slug)
-
-    def is_done(self) -> bool:
-        """True when every task has been finished (any outcome)."""
-        return len(self._finished) == len(self._tasks)
-
-    def unmet_deps(self, slug: str) -> list[str]:
-        """Dependency slugs that are not yet completed (for skip messages)."""
-        return [dep for dep in self._deps[slug] if dep not in self._completed]
-
-    def remaining(self) -> list[TaskSpec]:
-        """Tasks not yet finished (not in _finished)."""
-        return [task for slug, task in self._tasks.items() if slug not in self._finished]
-
-
-def build_dag(tasks: list[TaskSpec]) -> StoryDAG:
-    """Build a StoryDAG from a list of TaskSpec objects.
-
-    Raises ValueError if:
-    - any depends_on slug references a story not present in the manifest
-    - circular dependencies are detected
-    """
-    known_slugs = {t.slug for t in tasks}
-
-    # Validate all depends_on slugs exist in the manifest
-    for task in tasks:
-        missing = [dep for dep in task.depends_on if dep not in known_slugs]
-        if missing:
-            raise ValueError(
-                f"Story '{task.slug}' depends on unknown slug(s): {', '.join(missing)}. "
-                f"All depends_on slugs must reference stories in the sprint manifest."
-            )
-
-    # Detect circular dependencies via DFS (gray/white/black coloring)
-    deps = {t.slug: list(t.depends_on) for t in tasks}
-    visited: set[str] = set()
-    in_stack: set[str] = set()
-
-    def _dfs(slug: str) -> None:
-        visited.add(slug)
-        in_stack.add(slug)
-        for dep in deps[slug]:
-            if dep in in_stack:
-                raise ValueError(
-                    f"Circular dependency detected: '{slug}' → '{dep}'. "
-                    f"Sprint manifest contains a dependency cycle."
-                )
-            if dep not in visited:
-                _dfs(dep)
-        in_stack.discard(slug)
-
-    for task in tasks:
-        if task.slug not in visited:
-            _dfs(task.slug)
-
-    return StoryDAG(tasks)
+def _read_prior_sprint_cost(project_root: Path) -> float:
+    """Read total_cost_usd from the prior sprint-audit.yaml, if it exists."""
+    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
+    if not audit_path.exists():
+        return 0.0
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
+    except (OSError, ValueError, TypeError):
+        return 0.0
 
 
 def _run_single_story(
@@ -441,144 +216,6 @@ def _classify_and_record(
     return delta_succeeded, delta_failed, delta_skipped
 
 
-def _triage_spec(
-    story_path: str,
-    config: ForgeConfig,
-    project_root: Path,
-) -> StoryTriage:
-    """Determine the optimal re-entry point for a story.
-
-    Decision tree:
-      merged to base?           → skip_merged
-      no worktree?              → full
-      0 commits ahead?          → full (stale; run_task will clean up)
-      gate passes?              → review
-      gate fails?               → dev
-    """
-    full_path = (project_root / story_path).resolve()
-    task = _build_task_from_story(full_path)
-    slug = task.slug
-
-    branch = config.workspace.branch_pattern.format(slug=slug)
-    base_branch = config.workspace.base_branch
-    worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
-
-    # 1. Check if already merged to base branch
-    # --is-ancestor alone is not enough: a branch created at main HEAD with
-    # zero new commits also passes --is-ancestor.  We must also verify the
-    # branch has commits that diverge from main (i.e. it's not just pointing
-    # at the same commit or an older one).
-    try:
-        merge_result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", branch, base_branch],
-            cwd=str(project_root),
-            capture_output=True,
-            timeout=30,
-        )
-        if merge_result.returncode == 0:
-            # Verify branch actually has unique commits (not just at base HEAD)
-            ahead_result = subprocess.run(
-                ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
-                cwd=str(project_root),
-                capture_output=True,
-                timeout=30,
-            )
-            ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
-            if ahead_count > 0:
-                return StoryTriage(
-                    story_path=story_path,
-                    action="skip_merged",
-                    reason=f"already merged to {base_branch}",
-                    worktree_path=None,
-                    slug=slug,
-                )
-            # ahead_count == 0: branch exists at base HEAD, not truly merged —
-            # fall through to worktree checks below
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass  # Branch may not exist yet — treat as not merged
-
-    # 2. Check if worktree exists
-    if not worktree_path.exists():
-        return StoryTriage(
-            story_path=story_path,
-            action="full",
-            reason="no worktree found",
-            worktree_path=None,
-            slug=slug,
-        )
-
-    # 3. Check commits ahead of base branch
-    try:
-        log_result = subprocess.run(
-            ["git", "log", f"{base_branch}..{branch}", "--oneline"],
-            cwd=str(project_root),
-            capture_output=True,
-            timeout=30,
-        )
-        commits_ahead = [
-            ln
-            for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
-            if ln.strip()
-        ]
-    except (subprocess.TimeoutExpired, OSError):
-        commits_ahead = []
-
-    if not commits_ahead:
-        # Stale worktree: 0 commits ahead of base. run_task WORKSPACE phase will
-        # recreate it from scratch. Pass worktree_path=None so callers don't reuse it.
-        return StoryTriage(
-            story_path=story_path,
-            action="full",
-            reason=f"worktree exists but 0 commits ahead of {base_branch} (stale)",
-            worktree_path=None,
-            slug=slug,
-        )
-
-    # 4. Check audit trail for a prior review APPROVE
-    if has_review_approve(project_root, slug, base_branch, branch):
-        return StoryTriage(
-            story_path=story_path,
-            action="skip",
-            reason=f"prior APPROVE in audit trail ({len(commits_ahead)} commits ahead)",
-            worktree_path=worktree_path,
-            slug=slug,
-        )
-
-    # 5. Gate pre-check to decide REVIEW vs DEV entry
-    gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
-
-    if gate_err is None and gate_decision == "PASS":
-        return StoryTriage(
-            story_path=story_path,
-            action="review",
-            reason=f"worktree exists, gate passes ({len(commits_ahead)} commits ahead)",
-            worktree_path=worktree_path,
-            slug=slug,
-        )
-
-    reason_detail = gate_err or f"gate returned {gate_decision}"
-    return StoryTriage(
-        story_path=story_path,
-        action="dev",
-        reason=f"worktree exists, gate fails ({reason_detail})",
-        worktree_path=worktree_path,
-        slug=slug,
-    )
-
-
-def _read_prior_sprint_cost(project_root: Path) -> float:
-    """Read total_cost_usd from the prior sprint-audit.yaml, if it exists."""
-    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
-    if not audit_path.exists():
-        return 0.0
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
-    except (OSError, ValueError, TypeError):
-        return 0.0
-
-
 def run_sprint(
     config: ForgeConfig,
     manifest_path: Path,
@@ -654,7 +291,7 @@ def run_sprint(
     prior_cost = 0.0
     results: list[tuple[str, CoordinatorResult]] = []
     if notify and config.notifications.backend not in ("ntfy", "none"):
-        from .notify_backends import send_notifications
+        from ..notify_backends import send_notifications
 
         send_notifications(
             config,
@@ -742,7 +379,7 @@ def run_sprint(
                             f"Budget exhausted (${cumulative:.2f} >= ${manifest.budget_usd:.2f})"
                         )
                         if notify and config.notifications.backend not in ("ntfy", "none"):
-                            from .notify_backends import send_notifications
+                            from ..notify_backends import send_notifications
 
                             send_notifications(
                                 config,
@@ -956,16 +593,13 @@ def run_sprint(
         if config.notifications.backend != "none":
             _notify(
                 f"TheForge: {manifest.name}",
-                f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed"
-                f" — ${final_cost:.2f}  {_fmt_duration(_sprint_elapsed)}",
+                f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed",
             )
-        # R10: ntfy summary notification when remote mode is active
-        if _is_remote_mode(notify, config):
-            assert config.notifications.ntfy is not None
-            _ntfy_title = f'TheForge sprint complete \u2014 "{manifest.name}"'
+        if config.notifications.ntfy is not None:
+            _ntfy_title = f'TheForge: sprint done \u2014 "{manifest.name}"'
             _ntfy_body_lines = [
                 f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
-                f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
+                f"Total cost: ${final_cost:.2f}   Duration: {_sprint_dur}",
             ]
             if stopped_reason:
                 _ntfy_body_lines.append(f"Stopped: {stopped_reason}")
@@ -976,7 +610,7 @@ def run_sprint(
                 priority=config.notifications.ntfy.priority,
             )
         if config.notifications.backend not in ("ntfy", "none"):
-            from .notify_backends import send_notifications
+            from ..notify_backends import send_notifications
 
             _sc_title = f'TheForge sprint complete \u2014 "{manifest.name}"'
             _sc_body_lines = [
@@ -1025,8 +659,8 @@ def run_sprint(
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
-        from .coordinator.hooks import build_post_sprint_payload
-        from .coordinator.hooks import run_hook as _run_hook
+        from ..coordinator.hooks import build_post_sprint_payload
+        from ..coordinator.hooks import run_hook as _run_hook
 
         _stories = []
         for spec_str, res in results:
@@ -1067,200 +701,3 @@ def run_sprint(
         )
 
     return sprint_result
-
-
-def _write_sprint_audit(
-    manifest: SprintManifest,
-    result: SprintResult,
-    story_paths: list[Path],
-    started_at: datetime.datetime,
-    finished_at: datetime.datetime,
-    duration: float,
-    project_root: Path,
-    story_times: "dict[str, tuple[datetime.datetime, datetime.datetime]] | None" = None,
-    batch_assignments: "dict[str, int] | None" = None,
-    slug_map: "dict[str, str] | None" = None,
-) -> None:
-    """Write sprint-audit.yaml to the project root."""
-    story_times = story_times or {}
-    batch_assignments = batch_assignments or {}
-    slug_map = slug_map or {}
-
-    # Build per-spec entries
-    spec_entries = []
-    results_by_spec = {spec_str: res for spec_str, res in result.results}
-
-    for spec_str, story_path in zip(manifest.stories, story_paths):
-        if spec_str in results_by_spec:
-            res = results_by_spec[spec_str]
-            preflight = res.state.preflight_verdict or "PROCEED"
-            outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
-
-            # Build reviews summary for this spec
-            reviews_summary = []
-            for i, meta in enumerate(res.state.review_cycle_metadata):
-                cycle_entry: dict = {
-                    "cycle": i + 1,
-                    "pool": meta.pool_models,
-                    "successful": meta.successful,
-                    "failed": meta.failed,
-                    "synthesized": meta.synthesized,
-                    "parse_retries": meta.parse_retries,
-                }
-                if i < len(res.state.review_results):
-                    r = res.state.review_results[i]
-                    cycle_entry["verdict"] = r.verdict
-                    cycle_entry["p1_count"] = sum(1 for f in r.findings if f.severity == "P1")
-                    cycle_entry["p2_count"] = sum(1 for f in r.findings if f.severity == "P2")
-                reviews_summary.append(cycle_entry)
-
-            slug = slug_map.get(spec_str, story_path.stem)
-            entry: dict = {
-                "path": spec_str,
-                "outcome": outcome,
-                "cost_usd": round(res.state.total_cost, 4),
-                "preflight": preflight,
-                "merge": res.merge is not None and res.merge.get("merged", False),
-                "reviews": reviews_summary,
-            }
-            if slug in story_times:
-                entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
-                entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
-            else:
-                entry["started_at"] = None
-                entry["finished_at"] = None
-            entry["batch"] = batch_assignments.get(slug, 0)
-        else:
-            # Skipped due to budget or pre-skip (resume)
-            entry = {
-                "path": spec_str,
-                "outcome": "SKIPPED",
-                "cost_usd": 0.0,
-                "preflight": None,
-                "merge": False,
-                "reviews": [],
-                "started_at": None,
-                "finished_at": None,
-                "batch": batch_assignments.get(slug_map.get(spec_str, story_path.stem), 0),
-            }
-        spec_entries.append(entry)
-
-    audit = {
-        "sprint": {
-            "name": manifest.name,
-            "budget_usd": manifest.budget_usd,
-            "max_parallel": manifest.max_parallel,
-            "total_cost_usd": round(result.total_cost_usd, 4),
-            "budget_note": "Costs reflect Claude invocations only; Codex/Gemini report $0.00",
-            "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "duration_seconds": round(duration, 1),
-            "specs_total": result.specs_total,
-            "specs_succeeded": result.specs_succeeded,
-            "specs_failed": result.specs_failed,
-            "specs_skipped": result.specs_skipped,
-            "stopped_reason": result.stopped_reason,
-        },
-        "specs": spec_entries,
-    }
-
-    audits_dir = project_root / ".forge" / "audits"
-    audits_dir.mkdir(parents=True, exist_ok=True)
-    audit_path = audits_dir / "sprint-audit.yaml"
-    with open(audit_path, "w", encoding="utf-8") as f:
-        yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
-    # Append to history log (JSONL, never overwritten).
-    history_path = audits_dir / "history.jsonl"
-    try:
-        import json
-
-        with open(history_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(audit, default=str) + "\n")
-    except OSError:
-        pass
-    _log(f"Audit written: {audit_path}")
-
-
-def _write_sprint_summary(
-    manifest: SprintManifest,
-    result: SprintResult,
-    story_paths: list[Path],
-    started_at: datetime.datetime,
-    finished_at: datetime.datetime,
-    duration: float,
-    sprint_log_dir: Path,
-    story_times: "dict[str, tuple[datetime.datetime, datetime.datetime]] | None" = None,
-    batch_assignments: "dict[str, int] | None" = None,
-    slug_map: "dict[str, str] | None" = None,
-) -> None:
-    """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/."""
-    story_times = story_times or {}
-    batch_assignments = batch_assignments or {}
-    slug_map = slug_map or {}
-
-    spec_entries = []
-    results_by_spec = {spec_str: res for spec_str, res in result.results}
-
-    for spec_str, story_path in zip(manifest.stories, story_paths):
-        slug = slug_map.get(spec_str, story_path.stem)
-        if spec_str in results_by_spec:
-            res = results_by_spec[spec_str]
-            preflight = res.state.preflight_verdict or "PROCEED"
-            outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
-            last_verdict = ""
-            if res.state.review_results:
-                last_verdict = res.state.review_results[-1].verdict
-            elif res.success:
-                last_verdict = "APPROVE"
-            entry: dict = {
-                "path": spec_str,
-                "slug": slug,
-                "outcome": outcome,
-                "verdict": last_verdict or None,
-                "cost_usd": round(res.state.total_cost, 4),
-                "preflight": preflight,
-                "merge": res.merge is not None and res.merge.get("merged", False),
-            }
-            if slug in story_times:
-                entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
-                entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
-            entry["batch"] = batch_assignments.get(slug, 0)
-        else:
-            entry = {
-                "path": spec_str,
-                "slug": slug,
-                "outcome": "SKIPPED",
-                "verdict": None,
-                "cost_usd": 0.0,
-                "preflight": None,
-                "merge": False,
-                "batch": batch_assignments.get(slug, 0),
-            }
-        spec_entries.append(entry)
-
-    summary = {
-        "sprint": {
-            "name": manifest.name,
-            "budget_usd": manifest.budget_usd,
-            "max_parallel": manifest.max_parallel,
-            "total_cost_usd": round(result.total_cost_usd, 4),
-            "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "duration_seconds": round(duration, 1),
-            "specs_total": result.specs_total,
-            "specs_succeeded": result.specs_succeeded,
-            "specs_failed": result.specs_failed,
-            "specs_skipped": result.specs_skipped,
-            "stopped_reason": result.stopped_reason,
-        },
-        "stories": spec_entries,
-    }
-
-    try:
-        sprint_log_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = sprint_log_dir / "sprint-summary.yaml"
-        with open(summary_path, "w", encoding="utf-8") as f:
-            yaml.dump(summary, f, default_flow_style=False, sort_keys=False)
-        _log(f"Sprint summary written: {summary_path}")
-    except Exception as exc:
-        _log(f"Warning: sprint summary write failed: {exc}")

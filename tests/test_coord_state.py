@@ -810,7 +810,7 @@ class TestCampaignAuditWrites:
             message="Done",
         )
 
-    @patch("theforge.sprint.run_task")
+    @patch("theforge.sprint.runner.run_task")
     def test_campaign_writes_worktree_audit(self, mock_run_task, tmp_path):
         """After run_sprint(), the spec worktree contains .forge/audit.yaml."""
         from theforge.sprint import run_sprint
@@ -839,7 +839,7 @@ class TestCampaignAuditWrites:
         assert audit["reviews"][0]["failed"] == ["codex"]
         assert audit["reviews"][0].get("failed_detail", {}).get("codex") == "exit=1"
 
-    @patch("theforge.sprint.run_task")
+    @patch("theforge.sprint.runner.run_task")
     def test_sprint_audit_includes_review_summary(self, mock_run_task, tmp_path):
         """sprint-audit.yaml has reviews list per spec with pool/successful/failed fields."""
         from theforge.sprint import run_sprint
@@ -875,7 +875,7 @@ class TestCampaignAuditWrites:
         assert cycle["p1_count"] == 0
         assert cycle["p2_count"] == 0
 
-    @patch("theforge.sprint.run_task")
+    @patch("theforge.sprint.runner.run_task")
     def test_campaign_already_done_no_worktree_audit(self, mock_run_task, tmp_path):
         """ALREADY_DONE specs do not write a worktree audit (no worktree was created)."""
         from theforge.coordinator.engine import CoordinatorResult, CoordinatorState

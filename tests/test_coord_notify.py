@@ -43,18 +43,14 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
-    _is_remote_mode,
-    _ntfy_poll_reply,
-    _ntfy_reply_url,
-    run_task,
-)
-from theforge.coordinator.notify import (
+from theforge.coordinator.engine import Phase, _is_remote_mode, run_task
+from theforge.coordinator.ntfy_client import (
     _ntfy_poll_plan_reply,
+    _ntfy_poll_reply,
     _ntfy_publish,
-    _plan_review_remote,
+    _ntfy_reply_url,
 )
+from theforge.coordinator.remote_gates import _plan_review_remote
 from theforge.coordinator.state import CoordinatorState
 
 
@@ -244,7 +240,9 @@ class TestNtfyPublish:
             captured["body"] = req.data.decode("utf-8")
             return _Resp()
 
-        with patch("theforge.coordinator.notify.urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch(
+            "theforge.coordinator.ntfy_client.urllib.request.urlopen", side_effect=fake_urlopen
+        ):
             _ntfy_publish(
                 "https://ntfy.sh/example-topic",
                 "TheForge: ✓ done — demo",
@@ -301,9 +299,9 @@ class TestNtfyPublish:
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
-            patch("theforge.coordinator.notify._ntfy_publish"),
+            patch("theforge.coordinator.remote_gates._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_reply",
+                "theforge.coordinator.remote_gates._ntfy_poll_reply",
                 return_value=("approve", None),
             ),
         ):
@@ -331,9 +329,9 @@ class TestNtfyPublish:
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
-            patch("theforge.coordinator.notify._ntfy_publish"),
+            patch("theforge.coordinator.remote_gates._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_reply",
+                "theforge.coordinator.remote_gates._ntfy_poll_reply",
                 return_value=("escalate", None),
             ),
         ):
@@ -365,9 +363,9 @@ class TestNtfyPublish:
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
-            patch("theforge.coordinator.notify._ntfy_publish", side_effect=capture_ntfy),
+            patch("theforge.coordinator.remote_gates._ntfy_publish", side_effect=capture_ntfy),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_reply",
+                "theforge.coordinator.remote_gates._ntfy_poll_reply",
                 return_value=("timeout", None),
             ),
         ):
@@ -410,8 +408,10 @@ class TestNtfyPublish:
             patch("theforge.coordinator.engine.run_agent", side_effect=dev_side_effect),
             patch("theforge.coordinator.engine.run_agent_pool", return_value=approve_result),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
-            patch("theforge.coordinator.notify._ntfy_publish"),
-            patch("theforge.coordinator.notify._ntfy_poll_reply", side_effect=poll_side_effect),
+            patch("theforge.coordinator.remote_gates._ntfy_publish"),
+            patch(
+                "theforge.coordinator.remote_gates._ntfy_poll_reply", side_effect=poll_side_effect
+            ),
         ):
             result = run_task(config, task, interactive=True, notify=True)
 
@@ -456,8 +456,10 @@ class TestNtfyPublish:
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
-            patch("theforge.coordinator.notify._ntfy_publish"),
-            patch("theforge.coordinator.notify._ntfy_poll_reply", side_effect=poll_side_effect),
+            patch("theforge.coordinator.remote_gates._ntfy_publish"),
+            patch(
+                "theforge.coordinator.remote_gates._ntfy_poll_reply", side_effect=poll_side_effect
+            ),
         ):
             result = run_task(config, task, interactive=True, notify=True)
 
@@ -483,9 +485,9 @@ class TestNtfyPollReply:
         resp = self._make_resp(['{"event":"message","message":"approve"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("approve", None)
@@ -495,9 +497,9 @@ class TestNtfyPollReply:
         resp = self._make_resp(['{"event":"message","message":"extend"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("extend", None)
@@ -507,9 +509,9 @@ class TestNtfyPollReply:
         resp = self._make_resp(['{"event":"message","message":"escalate"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("escalate", None)
@@ -519,9 +521,9 @@ class TestNtfyPollReply:
         resp = self._make_resp(['{"event":"message","message":"reject: fix the bug"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("reject", "fix the bug")
@@ -531,9 +533,9 @@ class TestNtfyPollReply:
         resp = self._make_resp(['{"event":"message","message":"reject:"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("reject", None)
@@ -550,9 +552,11 @@ class TestNtfyPollReply:
 
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", side_effect=fake_urlopen),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch(
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen", side_effect=fake_urlopen
+            ),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
 
@@ -574,9 +578,11 @@ class TestNtfyPollReply:
         # deadline=60s; first poll at t=0 < 60; sleep; second poll at t=1 < 60; returns
         monotonic_vals = iter([0.0, 0.0, 1.0, 1.0, 1.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", side_effect=fake_urlopen),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch(
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen", side_effect=fake_urlopen
+            ),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
 
@@ -592,11 +598,11 @@ class TestNtfyPollReply:
         monotonic_vals = iter([0.0, 0.0, 10.0, 61.0])
         with (
             patch(
-                "theforge.coordinator.notify.urllib.request.urlopen",
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen",
                 side_effect=Exception("no data"),
             ),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("timeout", None)
@@ -617,10 +623,12 @@ class TestNtfyPollReply:
         # t=0 (deadline check), t=0 (after failed parse, compute sleep), t=1 (loop check), t=1, t=1
         monotonic_vals = iter([0.0, 0.0, 1.0, 1.0, 1.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", side_effect=fake_urlopen),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
             patch(
-                "theforge.coordinator.notify.time.sleep",
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen", side_effect=fake_urlopen
+            ),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch(
+                "theforge.coordinator.ntfy_client.time.sleep",
                 side_effect=lambda s: sleep_args.append(s),
             ),
         ):
@@ -641,9 +649,9 @@ class TestNtfyPollReply:
         )
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == ("approve", None)
@@ -665,9 +673,9 @@ class TestNtfyPollPlanReply:
         resp = self._make_resp(['{"event":"message","message":"approve"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == "approve"
@@ -677,9 +685,9 @@ class TestNtfyPollPlanReply:
         resp = self._make_resp(['{"event":"message","message":"regenerate"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == "regenerate"
@@ -689,9 +697,9 @@ class TestNtfyPollPlanReply:
         resp = self._make_resp(['{"event":"message","message":"abandon"}'])
         monotonic_vals = iter([0.0, 0.0, 0.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", return_value=resp),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.urllib.request.urlopen", return_value=resp),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == "abandon"
@@ -701,11 +709,11 @@ class TestNtfyPollPlanReply:
         monotonic_vals = iter([0.0, 0.0, 10.0, 61.0])
         with (
             patch(
-                "theforge.coordinator.notify.urllib.request.urlopen",
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen",
                 side_effect=Exception("no data"),
             ),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == "timeout"
@@ -723,9 +731,11 @@ class TestNtfyPollPlanReply:
 
         monotonic_vals = iter([0.0, 0.0, 1.0, 1.0, 1.0])
         with (
-            patch("theforge.coordinator.notify.urllib.request.urlopen", side_effect=fake_urlopen),
-            patch("theforge.coordinator.notify.time.monotonic", side_effect=monotonic_vals),
-            patch("theforge.coordinator.notify.time.sleep"),
+            patch(
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen", side_effect=fake_urlopen
+            ),
+            patch("theforge.coordinator.ntfy_client.time.monotonic", side_effect=monotonic_vals),
+            patch("theforge.coordinator.ntfy_client.time.sleep"),
         ):
             result = _ntfy_poll_plan_reply("https://ntfy.sh/reply-topic", 1700000000, 60)
         assert result == "abandon"
@@ -776,10 +786,10 @@ class TestPlanReviewRemote:
         with (
             patch("theforge.coordinator.notify._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_plan_reply",
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply",
                 return_value="approve",
             ),
-            patch("theforge.coordinator.notify.time.time", return_value=1700000000),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=1700000000),
         ):
             result = _plan_review_remote(state, "# Plan\n\nDetails.", workspace, task, config)
 
@@ -797,10 +807,10 @@ class TestPlanReviewRemote:
         with (
             patch("theforge.coordinator.notify._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_plan_reply",
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply",
                 return_value="regenerate",
             ),
-            patch("theforge.coordinator.notify.time.time", return_value=1700000000),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=1700000000),
         ):
             result = _plan_review_remote(state, "# Plan", workspace, task, config)
 
@@ -826,9 +836,10 @@ class TestPlanReviewRemote:
         with (
             patch("theforge.coordinator.notify._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_plan_reply", side_effect=poll_side_effect
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply",
+                side_effect=poll_side_effect,
             ),
-            patch("theforge.coordinator.notify.time.time", return_value=1700000000),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=1700000000),
         ):
             result = _plan_review_remote(state, "# Plan", workspace, task, config)
 
@@ -859,9 +870,10 @@ class TestPlanReviewRemote:
         with (
             patch("theforge.coordinator.notify._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_plan_reply", side_effect=poll_side_effect
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply",
+                side_effect=poll_side_effect,
             ),
-            patch("theforge.coordinator.notify.time.time", return_value=initial_ts),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=initial_ts),
         ):
             result = _plan_review_remote(state, "# Plan", workspace, task, config)
 
@@ -889,9 +901,10 @@ class TestPlanReviewRemote:
         with (
             patch("theforge.coordinator.notify._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_plan_reply", side_effect=poll_side_effect
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply",
+                side_effect=poll_side_effect,
             ),
-            patch("theforge.coordinator.notify.time.time", return_value=1700000000),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=1700000000),
         ):
             result = _plan_review_remote(state, "# Plan", workspace, task, config)
 
@@ -909,10 +922,10 @@ class TestPlanReviewRemote:
         with (
             patch("theforge.coordinator.notify._ntfy_publish"),
             patch(
-                "theforge.coordinator.notify._ntfy_poll_plan_reply",
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply",
                 return_value="timeout",
             ),
-            patch("theforge.coordinator.notify.time.time", return_value=1700000000),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=1700000000),
         ):
             result = _plan_review_remote(state, "# Plan", workspace, task, config)
 
@@ -934,9 +947,11 @@ class TestPlanReviewRemote:
             publish_calls.append({"url": url, "title": title, "body": body, **kwargs})
 
         with (
-            patch("theforge.coordinator.notify._ntfy_publish", side_effect=capture_publish),
-            patch("theforge.coordinator.notify._ntfy_poll_plan_reply", return_value="approve"),
-            patch("theforge.coordinator.notify.time.time", return_value=1700000000),
+            patch("theforge.coordinator.remote_gates._ntfy_publish", side_effect=capture_publish),
+            patch(
+                "theforge.coordinator.remote_gates._ntfy_poll_plan_reply", return_value="approve"
+            ),
+            patch("theforge.coordinator.remote_gates.time.time", return_value=1700000000),
         ):
             _plan_review_remote(state, plan_text, workspace, task, config)
 
