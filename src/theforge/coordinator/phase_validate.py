@@ -21,6 +21,7 @@ from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _log, _log_phase, _log_verbose
+from .workspace_reader import _get_handoff_content, _get_raw_dev_notes
 
 
 class _ValidateOutcome(Enum):
@@ -140,7 +141,7 @@ def _run_validate_phase(
                 # Auto-commit: synthesize message from handoff, don't
                 # re-invoke the agent (full-prompt retry burns tokens and
                 # times out — the agent already wrote the code).
-                dev_notes = mod._get_raw_dev_notes(config, workspace_path)
+                dev_notes = _get_raw_dev_notes(config, workspace_path)
                 if dev_notes:
                     first_line = dev_notes.strip().splitlines()[0][:72]
                     commit_msg = first_line
@@ -189,7 +190,7 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        handoff_text = mod._get_handoff_content(config, workspace_path)
+        handoff_text = _get_handoff_content(config, workspace_path)
         state.human_feedback = (
             f"Gate output (last {config.validation.gate_output_tail_chars} chars):\n"
             f"{gate_output_tail}\n\n"
