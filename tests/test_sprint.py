@@ -28,16 +28,10 @@ from theforge.coordinator.engine import (
     _osa_quote,
     run_task,
 )
-from theforge.sprint import (
-    StoryDAG,
-    StoryTriage,
-    _build_task_from_story,
-    _classify_and_record,
-    _triage_spec,
-    build_dag,
-    load_sprint_manifest,
-    run_sprint,
-)
+from theforge.sprint import load_sprint_manifest, run_sprint
+from theforge.sprint.dag import StoryDAG, StoryTriage, _triage_spec, build_dag
+from theforge.sprint.manifest import _build_task_from_story
+from theforge.sprint.runner import _classify_and_record
 
 # ── Helpers ──────────────────────────────────────────────────────────
 

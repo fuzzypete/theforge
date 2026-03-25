@@ -107,14 +107,16 @@ from .notify import (  # noqa: F401
     _notify,
     _ntfy_crash_notify,
     _ntfy_done_notify,
+    _osa_quote,
+    _plan_review_interactive,
+)
+from .ntfy_client import (  # noqa: F401
     _ntfy_poll_reply,
     _ntfy_publish,
     _ntfy_reply_url,
-    _osa_quote,
+)
+from .pending_hitl import (  # noqa: F401
     _pending_plan_review,
-    _plan_review_interactive,
-    _plan_review_remote,
-    _remote_human_review,
 )
 from .preflight import (  # noqa: F401
     _apply_complexity_adaptation,
@@ -126,6 +128,10 @@ from .preflight import (  # noqa: F401
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _persistent_p1_descriptions,
+)
+from .remote_gates import (  # noqa: F401
+    _plan_review_remote,
+    _remote_human_review,
 )
 from .signals import (  # noqa: E402, F401
     _fire_post_run_hook,

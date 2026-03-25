@@ -5005,7 +5005,7 @@ class TestPerRunLogCapture:
         import sys
         import threading
 
-        from theforge.coordinator.engine import _begin_run_log_tee
+        from theforge.coordinator.log_tee import _begin_run_log_tee
         from theforge.coordinator.logging import StructuredLogger
 
         log_dir = tmp_path / "logs"
@@ -5040,7 +5040,7 @@ class TestPerRunLogCapture:
         """_begin_run_log_tee installs tee when called from the main thread."""
         import sys
 
-        from theforge.coordinator.engine import _begin_run_log_tee, _end_run_log_tee
+        from theforge.coordinator.log_tee import _begin_run_log_tee, _end_run_log_tee
         from theforge.coordinator.logging import StructuredLogger
 
         log_dir = tmp_path / "logs"

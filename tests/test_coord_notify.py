@@ -43,18 +43,14 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
-    _is_remote_mode,
-    _ntfy_poll_reply,
-    _ntfy_reply_url,
-    run_task,
-)
-from theforge.coordinator.notify import (
+from theforge.coordinator.engine import Phase, _is_remote_mode, run_task
+from theforge.coordinator.ntfy_client import (
     _ntfy_poll_plan_reply,
+    _ntfy_poll_reply,
     _ntfy_publish,
-    _plan_review_remote,
+    _ntfy_reply_url,
 )
+from theforge.coordinator.remote_gates import _plan_review_remote
 from theforge.coordinator.state import CoordinatorState
 
 

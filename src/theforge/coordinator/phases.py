@@ -44,19 +44,23 @@ from .gate import (
 from .logging import StructuredLogger
 from .notify import (
     _escalate_gate_interactive,
-    _escalate_gate_remote,
     _escalate_notify,
     _is_pending_file_mode,
     _is_remote_mode,
+)
+from .pending_hitl import (
     _pending_escalate_gate,
     _pending_human_review,
-    _remote_human_review,
 )
 from .preflight import (
     _escalate_dev_model,
     _find_registry_key_for_profile,
     _has_persistent_p1,
     _persistent_p1_descriptions,
+)
+from .remote_gates import (
+    _escalate_gate_remote,
+    _remote_human_review,
 )
 from .state import (
     CoordinatorResult,
