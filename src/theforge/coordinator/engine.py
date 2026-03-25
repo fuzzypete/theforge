@@ -63,7 +63,6 @@ from theforge.review import (  # noqa: F401
     plan_review_findings_to_text,
     review_to_dev_handoff,
 )
-from theforge.runners import LogLevel, log_agent_result, run_agent, run_agent_pool
 from theforge.sessions import load_sessions, save_sessions
 from theforge.story_validator import validate_story
 from theforge.task import (  # noqa: F401
@@ -150,6 +149,44 @@ from .workspace import (  # noqa: F401
     _remove_worktree,
     _resolve_merge_conflicts,
 )
+
+# ── Lazy runner symbols ───────────────────────────────────────────────
+# Populated by _ensure_runners() at entry points; names exist here so
+# mock.patch("theforge.coordinator.engine.run_agent") keeps working.
+run_agent = None
+run_agent_pool = None
+log_agent_result = None
+LogLevel = None
+
+# ── Lazy runner import ────────────────────────────────────────────────
+
+
+def _ensure_runners() -> None:
+    """Import theforge.runners and bind its symbols into this module's namespace.
+
+    Called at each public entry point so the runners package is not imported
+    at module load time.  Only fills None slots — preserves any mock patches
+    applied by tests before the entry point is called.
+    """
+    global run_agent, run_agent_pool, log_agent_result, LogLevel
+    if (
+        run_agent is not None
+        and run_agent_pool is not None
+        and log_agent_result is not None
+        and LogLevel is not None
+    ):
+        return
+    import theforge.runners as _r  # noqa: PLC0415
+
+    if run_agent is None:
+        run_agent = _r.run_agent
+    if run_agent_pool is None:
+        run_agent_pool = _r.run_agent_pool
+    if log_agent_result is None:
+        log_agent_result = _r.log_agent_result
+    if LogLevel is None:
+        LogLevel = _r.LogLevel
+
 
 # ── Story log directory helpers ───────────────────────────────────────
 
@@ -1218,6 +1255,7 @@ def run_task(
         auto_merge: When True, merge the feature branch into base_branch after
             a successful APPROVE. Does NOT merge on ESCALATE or ALREADY_DONE.
     """
+    _ensure_runners()
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
@@ -2414,6 +2452,7 @@ def run_from_review(
         interactive: When True, pause at HUMAN_REVIEW for operator input.
         auto_merge: When True, merge the feature branch after APPROVE.
     """
+    _ensure_runners()
     setup = _setup_resume_entry(
         config,
         task,
@@ -2503,6 +2542,7 @@ def run_from_dev(
         interactive: When True, pause at HUMAN_REVIEW for operator input.
         auto_merge: When True, merge the feature branch after APPROVE.
     """
+    _ensure_runners()
     setup = _setup_resume_entry(
         config,
         task,
@@ -2580,6 +2620,7 @@ def run_review_only(
     Returns a CoordinatorResult with phase=DONE (APPROVE) or ESCALATE
     (REQUEST_CHANGES — no DEV retry in review-only mode).
     """
+    _ensure_runners()
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _ro_task_start = time.monotonic()

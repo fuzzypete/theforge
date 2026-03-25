@@ -26,7 +26,6 @@ from theforge.review import (
     _best_individual_result,
     review_to_dev_handoff,
 )
-from theforge.runners import log_agent_result
 from theforge.sessions import save_sessions
 from theforge.task import TaskStory as TaskSpec  # noqa: F401
 from theforge.traces import write_trace
@@ -1355,6 +1354,8 @@ def _run_dev_phase(
     state.dev_handoff_snapshots.append(_handoff_snap)
     state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
+    from theforge.runners import log_agent_result  # noqa: PLC0415
+
     log_agent_result(dev_result, "DEV")
     _dev_cost_str = (
         "${:.2f}".format(dev_result.cost_usd) if dev_result.cost_usd is not None else "unknown"
