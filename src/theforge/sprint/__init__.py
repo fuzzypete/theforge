@@ -1,6 +1,6 @@
 """theforge.sprint — sprint mode package."""
 
-from .dag import StoryDAG, StoryTriage, _triage_spec, build_dag  # noqa: F401
+from .dag import StoryDAG, StoryTriage, _run_gate, _triage_spec, build_dag  # noqa: F401
 from .manifest import (  # noqa: F401
     SprintManifest,
     SprintResult,
@@ -12,7 +12,6 @@ from .runner import (  # noqa: F401
     _merge_branch,
     _notify,
     _ntfy_publish,
-    _run_gate,
     run_from_dev,
     run_from_review,
     run_sprint,
