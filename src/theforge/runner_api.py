@@ -1053,7 +1053,7 @@ def _run_anthropic(
 
 
 def _run_google(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None, *, plain_text: bool = False
 ) -> AgentResult:
     """Run agent via Google Gemini API."""
     import google.genai as genai
@@ -1061,20 +1061,29 @@ def _run_google(
 
     merged = {**os.environ, **(secrets or {})}
     client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
-    schema = _sanitize_schema_for_google(review_json_schema())
 
     try:
-        response = client.models.generate_content(
-            model=profile.model,
-            contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=schema,
-                temperature=0,
-            ),
-        )
-        output_text = response.text
-        structured_data = json.loads(output_text)
+        if plain_text:
+            response = client.models.generate_content(
+                model=profile.model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(temperature=0),
+            )
+            output_text = response.text
+            structured_data = None
+        else:
+            schema = _sanitize_schema_for_google(review_json_schema())
+            response = client.models.generate_content(
+                model=profile.model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    temperature=0,
+                ),
+            )
+            output_text = response.text
+            structured_data = json.loads(output_text)
 
         usage = response.usage_metadata
         input_tokens = usage.prompt_token_count if usage else 0
@@ -2119,6 +2128,7 @@ def run_api_agent(
     working_dir: Path,
     quiet: bool = False,
     secrets: dict[str, str] | None = None,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run a text-judgment agent via API.
 
@@ -2167,7 +2177,10 @@ def run_api_agent(
                 raw={},
                 profile_name=profile.name,
             )
-        result = runner_fn(prompt, profile, secrets)
+        if profile.provider == "google" and plain_text:
+            result = runner_fn(prompt, profile, secrets, plain_text=True)
+        else:
+            result = runner_fn(prompt, profile, secrets)
 
     if not quiet:
         status = "OK" if result.success else "FAIL"

@@ -85,7 +85,7 @@ class TestHybridRunner:
             result = run_agent(prompt="test", profile=api_profile, working_dir=tmp_path)
 
         mock_api_run.assert_called_once_with(
-            prompt="test", profile=api_profile, working_dir=tmp_path, quiet=False, secrets={}
+            prompt="test", profile=api_profile, working_dir=tmp_path, quiet=False, secrets={}, plain_text=False
         )
         assert result == mock_result
 
@@ -119,6 +119,7 @@ class TestHybridRunner:
             working_dir=tmp_path,
             quiet=False,
             secrets={},
+            plain_text=False,
         )
         assert result == mock_result
 

@@ -190,6 +190,7 @@ def run_agent(
     quiet: bool = False,
     is_pool: bool = False,
     secrets: dict[str, str] | None = None,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run an agent using the transport specified in its profile.
 
@@ -211,6 +212,7 @@ def run_agent(
             working_dir=working_dir,
             quiet=quiet,
             secrets=secrets or {},
+            plain_text=plain_text,
         )
 
     runners = {
@@ -254,6 +256,7 @@ def run_agent_pool(
     working_dir: Path,
     session_ids: list[str | None] | None = None,
     secrets: dict[str, str] | None = None,
+    plain_text: bool = False,
 ) -> list[AgentResult]:
     """Run multiple agents concurrently, each with its own prompt or a shared prompt.
 
@@ -279,6 +282,7 @@ def run_agent_pool(
                 session_id=sid,
                 fallback_to_file=False,
                 secrets=secrets,
+                plain_text=plain_text,
             )
         ]
 
@@ -302,6 +306,7 @@ def run_agent_pool(
                 quiet=True,
                 is_pool=True,
                 secrets=secrets,
+                plain_text=plain_text,
             )
         finally:
             agent_durations[idx] = time.monotonic() - t0
