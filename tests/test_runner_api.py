@@ -9,9 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from theforge.agent_types import AgentResult, ModelUsage
 from theforge.config import ModelProfile
-from theforge.runner import AgentResult, ModelUsage
-from theforge.runner_api import (
+from theforge.runners.api import (
     SUBMIT_PLAN_REVIEW,
     SUBMIT_REVIEW,
     AgentLoopManager,
@@ -26,7 +26,7 @@ from theforge.runner_api import (
     _run_loop_openai,
     run_api_agent,
 )
-from theforge.tool_runtime import TOOL_REGISTRY
+from theforge.runners.tool_runtime import TOOL_REGISTRY
 
 
 def _make_profile(
@@ -70,7 +70,7 @@ class TestEmptyAllowedToolsSingleShot:
         mock_result.cost_usd = 0.01
 
         mock_fn = MagicMock(return_value=mock_result)
-        with patch.dict("theforge.runner_api.PROVIDER_RUNNERS", {"openai": mock_fn}):
+        with patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"openai": mock_fn}):
             run_api_agent(
                 prompt="review this",
                 profile=profile,
@@ -441,7 +441,7 @@ class TestAgentLoopLifecycle:
         )
         # Fast-forward time past deadline
         past_deadline = time.monotonic() + 999
-        with patch("theforge.runner_api.time") as mock_time:
+        with patch("theforge.runners.api.time") as mock_time:
             mock_time.monotonic.return_value = past_deadline
             result = manager.run(
                 initial_messages=[{"role": "user", "content": "go"}],
@@ -826,7 +826,7 @@ class TestTimeNudge:
                 usage=_make_usage(),
             )
 
-        with patch("theforge.runner_api.time") as mock_time:
+        with patch("theforge.runners.api.time") as mock_time:
             mock_time.monotonic = lambda: current_time[0]
             profile = _make_profile(timeout_seconds=100)
             manager = AgentLoopManager(
@@ -896,7 +896,7 @@ class TestFinalization:
         )
         # Force immediate timeout
         past_deadline = time.monotonic() + 999
-        with patch("theforge.runner_api.time") as mock_time:
+        with patch("theforge.runners.api.time") as mock_time:
             mock_time.monotonic.return_value = past_deadline
             result = manager.run(
                 initial_messages=[{"role": "user", "content": "go"}],
@@ -1067,7 +1067,7 @@ class TestRunApiAgentLoopIntegration:
         mock_result.cost_usd = None
 
         mock_fn = MagicMock(return_value=mock_result)
-        with patch.dict("theforge.runner_api._LOOP_RUNNERS", {"openai": mock_fn}):
+        with patch.dict("theforge.runners.api._LOOP_RUNNERS", {"openai": mock_fn}):
             run_api_agent(
                 prompt="review",
                 profile=profile,
@@ -1125,7 +1125,7 @@ class TestRateLimitRetry:
         manager = self._make_manager(tmp_path)
         manager._adapter = adapter
 
-        with patch("theforge.runner_api.time") as mock_time:
+        with patch("theforge.runners.api.time") as mock_time:
             # monotonic values: first check not timed out, remaining check, second check
             mock_time.monotonic.side_effect = [
                 manager._deadline - 200,  # check 1: not timed out
@@ -1170,7 +1170,7 @@ class TestRateLimitRetry:
         # Make deadline appear very close (5s left, first backoff = 30s)
         near_deadline = manager._deadline - 5
 
-        with patch("theforge.runner_api.time") as mock_time:
+        with patch("theforge.runners.api.time") as mock_time:
             mock_time.monotonic.return_value = near_deadline
             mock_time.sleep = MagicMock()
             with pytest.raises(RuntimeError, match="429"):
@@ -1182,7 +1182,7 @@ class TestRateLimitRetry:
         """After _MAX_RATE_LIMIT_RETRIES retries, raises the last exception."""
         import pytest
 
-        from theforge.runner_api import _MAX_RATE_LIMIT_RETRIES
+        from theforge.runners.api import _MAX_RATE_LIMIT_RETRIES
 
         call_count = [0]
 
@@ -1193,7 +1193,7 @@ class TestRateLimitRetry:
         manager = self._make_manager(tmp_path, timeout_seconds=9999)
         manager._adapter = adapter
 
-        with patch("theforge.runner_api.time") as mock_time:
+        with patch("theforge.runners.api.time") as mock_time:
             mock_time.monotonic.return_value = manager._deadline - 9000
             mock_time.sleep = MagicMock()
             with pytest.raises(RuntimeError, match="429"):
@@ -1319,7 +1319,7 @@ class TestDeepSeekProvider:
         mock_client = MagicMock()
         self._mock_review_response(mock_client)
 
-        with patch("theforge.runner_api._deepseek_client", return_value=mock_client):
+        with patch("theforge.runners.api._deepseek_client", return_value=mock_client):
             result = _run_deepseek("review this", profile)
 
         assert result.success
@@ -1334,7 +1334,7 @@ class TestDeepSeekProvider:
         mock_client = MagicMock()
         self._mock_review_response(mock_client)
 
-        with patch("theforge.runner_api._deepseek_client", return_value=mock_client):
+        with patch("theforge.runners.api._deepseek_client", return_value=mock_client):
             result = _run_deepseek("review this", profile)
 
         assert result.success
@@ -1349,7 +1349,7 @@ class TestDeepSeekProvider:
         mock_result.success = True
         mock_result.cost_usd = None
         mock_fn = MagicMock(return_value=mock_result)
-        with patch.dict("theforge.runner_api.PROVIDER_RUNNERS", {"deepseek": mock_fn}):
+        with patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"deepseek": mock_fn}):
             run_api_agent(prompt="review", profile=profile, working_dir=tmp_path, quiet=True)
         mock_fn.assert_called_once()
 
@@ -1359,7 +1359,7 @@ class TestDeepSeekProvider:
         mock_result.success = True
         mock_result.cost_usd = None
         mock_fn = MagicMock(return_value=mock_result)
-        with patch.dict("theforge.runner_api._LOOP_RUNNERS", {"deepseek": mock_fn}):
+        with patch.dict("theforge.runners.api._LOOP_RUNNERS", {"deepseek": mock_fn}):
             run_api_agent(prompt="review", profile=profile, working_dir=tmp_path, quiet=True)
         mock_fn.assert_called_once_with("review", profile, tmp_path, None)
 
@@ -1368,21 +1368,21 @@ class TestWriteFileHandler:
     """Unit tests for the write_file tool handler."""
 
     def test_write_creates_file(self, tmp_path):
-        from theforge.tool_runtime import _handle_write_file
+        from theforge.runners.tool_runtime import _handle_write_file
 
         result = _handle_write_file(path="hello.py", content="x = 1\n", working_dir=tmp_path)
         assert "hello.py" in result
         assert (tmp_path / "hello.py").read_text() == "x = 1\n"
 
     def test_write_overwrites_existing_file(self, tmp_path):
-        from theforge.tool_runtime import _handle_write_file
+        from theforge.runners.tool_runtime import _handle_write_file
 
         (tmp_path / "a.py").write_text("old content", encoding="utf-8")
         _handle_write_file(path="a.py", content="new content", working_dir=tmp_path)
         assert (tmp_path / "a.py").read_text() == "new content"
 
     def test_write_creates_parent_directories(self, tmp_path):
-        from theforge.tool_runtime import _handle_write_file
+        from theforge.runners.tool_runtime import _handle_write_file
 
         result = _handle_write_file(
             path="nested/deep/file.py", content="# hi\n", working_dir=tmp_path
@@ -1391,7 +1391,7 @@ class TestWriteFileHandler:
         assert "nested/deep/file.py" in result
 
     def test_write_rejects_path_traversal(self, tmp_path):
-        from theforge.tool_runtime import _handle_write_file
+        from theforge.runners.tool_runtime import _handle_write_file
 
         result = _handle_write_file(path="../outside.py", content="bad", working_dir=tmp_path)
         assert result.startswith("Error: path traversal rejected")
@@ -1402,7 +1402,7 @@ class TestEditFileHandler:
     """Unit tests for the edit_file tool handler."""
 
     def test_edit_replaces_unique_string(self, tmp_path):
-        from theforge.tool_runtime import _handle_edit_file
+        from theforge.runners.tool_runtime import _handle_edit_file
 
         (tmp_path / "f.py").write_text("def foo(): pass\n", encoding="utf-8")
         result = _handle_edit_file(
@@ -1415,7 +1415,7 @@ class TestEditFileHandler:
         assert (tmp_path / "f.py").read_text() == "def foo(): return 1\n"
 
     def test_edit_errors_on_zero_matches(self, tmp_path):
-        from theforge.tool_runtime import _handle_edit_file
+        from theforge.runners.tool_runtime import _handle_edit_file
 
         (tmp_path / "f.py").write_text("x = 1\n", encoding="utf-8")
         result = _handle_edit_file(
@@ -1429,7 +1429,7 @@ class TestEditFileHandler:
         assert (tmp_path / "f.py").read_text() == "x = 1\n"
 
     def test_edit_errors_on_multiple_matches(self, tmp_path):
-        from theforge.tool_runtime import _handle_edit_file
+        from theforge.runners.tool_runtime import _handle_edit_file
 
         (tmp_path / "f.py").write_text("x = 1\nx = 1\n", encoding="utf-8")
         result = _handle_edit_file(
@@ -1443,7 +1443,7 @@ class TestEditFileHandler:
         assert (tmp_path / "f.py").read_text() == "x = 1\nx = 1\n"
 
     def test_edit_errors_on_missing_file(self, tmp_path):
-        from theforge.tool_runtime import _handle_edit_file
+        from theforge.runners.tool_runtime import _handle_edit_file
 
         result = _handle_edit_file(
             path="nonexistent.py",
@@ -1454,7 +1454,7 @@ class TestEditFileHandler:
         assert result.startswith("Error: FileNotFoundError")
 
     def test_edit_rejects_path_traversal(self, tmp_path):
-        from theforge.tool_runtime import _handle_edit_file
+        from theforge.runners.tool_runtime import _handle_edit_file
 
         result = _handle_edit_file(
             path="../outside.py",
@@ -1469,7 +1469,7 @@ class TestDevAgentApiLoop:
     """Full AgentLoopManager tests exercising write_file and edit_file tools for dev use."""
 
     def _make_dev_manager(self, tmp_path, adapter) -> AgentLoopManager:
-        from theforge.tool_runtime import TOOL_REGISTRY
+        from theforge.runners.tool_runtime import TOOL_REGISTRY
 
         profile = _make_profile(
             name="dev",
@@ -1617,7 +1617,7 @@ class TestDiagnosticLogging:
             {"function": {"name": "grep"}},
             {"function": {"name": SUBMIT_REVIEW}},
         ]
-        import theforge.runner_api as ra
+        import theforge.runners.api as ra
 
         logged = []
 
@@ -1670,7 +1670,7 @@ class TestDiagnosticLogging:
         (tmp_path / "x.py").write_text("foo = 1\n", encoding="utf-8")
         manager = self._make_manager(tmp_path, adapter)
 
-        import theforge.runner_api as ra
+        import theforge.runners.api as ra
 
         logged = []
 
@@ -1725,7 +1725,7 @@ class TestDiagnosticLogging:
 
         manager = self._make_manager(tmp_path, adapter, max_iterations=15)
 
-        import theforge.runner_api as ra
+        import theforge.runners.api as ra
 
         normal_logged = []
         verbose_logged = []
@@ -1774,7 +1774,7 @@ class TestDiagnosticLogging:
 
         manager = self._make_manager(tmp_path, adapter)
 
-        import theforge.runner_api as ra
+        import theforge.runners.api as ra
 
         logged = []
 
@@ -1814,7 +1814,7 @@ class TestDiagnosticLogging:
         (tmp_path / "x.py").write_text("content\n", encoding="utf-8")
         manager = self._make_manager(tmp_path, adapter, max_iterations=3)
 
-        import theforge.runner_api as ra
+        import theforge.runners.api as ra
 
         normal_logged = []
 
@@ -1856,7 +1856,7 @@ class TestDiagnosticLogging:
 
         manager = self._make_manager(tmp_path, adapter, max_iterations=2)
 
-        import theforge.runner_api as ra
+        import theforge.runners.api as ra
 
         normal_logged = []
 
@@ -2000,7 +2000,7 @@ class TestLocalEndpointCostZeroing:
         mock_httpx = MagicMock()
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
-            patch("theforge.runner_api.AgentLoopManager") as MockManager,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
         ):
             MockManager.return_value.run.return_value = mock_result
             result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
@@ -2084,9 +2084,9 @@ class TestToolCallingFallback:
 
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
-            patch("theforge.runner_api.AgentLoopManager") as MockManager,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
             patch.dict(
-                "theforge.runner_api.PROVIDER_RUNNERS",
+                "theforge.runners.api.PROVIDER_RUNNERS",
                 {"openai": MagicMock(return_value=fallback_result)},
             ),
         ):
@@ -2108,7 +2108,7 @@ class TestToolCallingFallback:
 
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
-            patch("theforge.runner_api.AgentLoopManager") as MockManager,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
         ):
             MockManager.return_value.run.side_effect = bad_request
             with pytest.raises(FakeBadRequestError):

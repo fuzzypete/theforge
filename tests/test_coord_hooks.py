@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from theforge.coord_hooks import (
+from theforge.coordinator.hooks import (
     build_post_merge_payload,
     build_post_run_payload,
     build_post_sprint_payload,
@@ -77,7 +77,7 @@ def _make_task(slug="my-feature", story_path=None):
 
 
 def _make_state(review_results=None, gate_decisions=None):
-    from theforge.coord_state import CoordinatorState
+    from theforge.coordinator.state import CoordinatorState
 
     state = CoordinatorState()
     state.started_at = "2026-01-01T00:00:00+00:00"
@@ -90,7 +90,7 @@ def _make_state(review_results=None, gate_decisions=None):
 
 
 def _make_result(success=True, state=None):
-    from theforge.coord_state import CoordinatorResult, Phase
+    from theforge.coordinator.state import CoordinatorResult, Phase
 
     if state is None:
         state = _make_state()
@@ -314,7 +314,7 @@ class TestBuildPostRunPayload:
 
 class TestBuildPostRunPayloadPrNumber:
     def test_pr_number_extracted_from_url(self):
-        from theforge.coord_state import CoordinatorResult, Phase
+        from theforge.coordinator.state import CoordinatorResult, Phase
 
         config = _make_config()
         task = _make_task()
@@ -341,7 +341,7 @@ class TestBuildPostRunPayloadPrNumber:
         assert payload["pr_number"] is None
 
     def test_pr_number_null_when_action_not_pr(self):
-        from theforge.coord_state import CoordinatorResult, Phase
+        from theforge.coordinator.state import CoordinatorResult, Phase
 
         config = _make_config()
         task = _make_task()
@@ -358,7 +358,7 @@ class TestBuildPostRunPayloadPrNumber:
         assert payload["pr_number"] is None
 
     def test_pr_number_null_when_pr_url_missing(self):
-        from theforge.coord_state import CoordinatorResult, Phase
+        from theforge.coordinator.state import CoordinatorResult, Phase
 
         config = _make_config()
         task = _make_task()

@@ -20,7 +20,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.runner import AgentResult, LogLevel  # noqa: F401
+from theforge.runners import AgentResult, LogLevel  # noqa: F401
 from theforge.task import TaskStory
 
 

@@ -19,10 +19,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .config import ForgeConfig
-    from .coord_logging import StructuredLogger
-    from .coord_state import CoordinatorResult, CoordinatorState
-    from .task import TaskStory as TaskSpec  # noqa: F401
+    from theforge.config import ForgeConfig
+    from theforge.task import TaskStory as TaskSpec  # noqa: F401
+
+    from .logging import StructuredLogger
+    from .state import CoordinatorResult, CoordinatorState
 
 
 @dataclass

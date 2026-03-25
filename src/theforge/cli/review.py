@@ -8,10 +8,10 @@ from pathlib import Path
 
 from theforge.cli.shared import _build_task, _find_config, _write_audit
 from theforge.config import load_config
-from theforge.coordinator import run_from_review
-from theforge.coordinator import set_log_level as coordinator_set_log_level
-from theforge.runner import LogLevel
-from theforge.runner import set_log_level as runner_set_log_level
+from theforge.coordinator.engine import run_from_review
+from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
+from theforge.runners import LogLevel
+from theforge.runners import set_log_level as runner_set_log_level
 
 
 def cmd_review(args: object) -> int:

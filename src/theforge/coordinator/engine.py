@@ -43,11 +43,47 @@ from pathlib import Path
 
 import yaml
 
-from . import coord_util as _cu
-from .artifacts import PLAN_PATH, ensure_parent_dir, resolve_handoff_path, resolve_plan_path
-from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
-from .coord_audit import has_review_approve
-from .coord_gate import (  # noqa: F401
+from theforge.artifacts import (
+    PLAN_PATH,
+    ensure_parent_dir,
+    resolve_handoff_path,
+    resolve_plan_path,
+)
+from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
+from theforge.devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
+from theforge.review import (  # noqa: F401
+    PlanReviewResult,
+    ReviewResult,
+    _try_parse_review,
+    merge_plan_review_results,
+    merge_review_results,
+    parse_plan_review_output,
+    parse_review_json,
+    parse_review_output,
+    plan_review_findings_to_text,
+    review_to_dev_handoff,
+)
+from theforge.runners import LogLevel, log_agent_result, run_agent, run_agent_pool
+from theforge.sessions import load_sessions, save_sessions
+from theforge.story_validator import validate_story
+from theforge.task import (  # noqa: F401
+    TaskSpec,
+    TaskStory,
+    build_dev_prompt,
+    build_fix_prompt,
+    build_handoff_fix_prompt,
+    build_plan_prompt,
+    build_plan_review_prompt,
+    build_preflight_prompt,
+    build_review_prompt,
+    parse_plan_output,
+)
+from theforge.task import load_story as load_spec
+from theforge.traces import write_trace
+
+from . import util as _cu
+from .audit import has_review_approve
+from .gate import (  # noqa: F401
     _auto_commit_side_effects,
     _is_gate_skip,
     _parse_dirty_files,
@@ -57,8 +93,8 @@ from .coord_gate import (  # noqa: F401
 )
 
 # ── Structured logging ────────────────────────────────────────────────
-from .coord_logging import StructuredLogger  # noqa: F401
-from .coord_notify import (  # noqa: F401
+from .logging import StructuredLogger  # noqa: F401
+from .notify import (  # noqa: F401
     _escalate_notify,
     _human_review,
     _is_pending_file_mode,
@@ -75,7 +111,7 @@ from .coord_notify import (  # noqa: F401
     _plan_review_remote,
     _remote_human_review,
 )
-from .coord_preflight import (  # noqa: F401
+from .preflight import (  # noqa: F401
     _apply_complexity_adaptation,
     _escalate_dev_model,
     _find_registry_info_for_profile,
@@ -88,14 +124,14 @@ from .coord_preflight import (  # noqa: F401
 )
 
 # ── Re-exports for backward compatibility ────────────────────────────
-from .coord_state import (  # noqa: F401
+from .state import (  # noqa: F401
     CoordinatorResult,
     CoordinatorState,
     CycleHistory,
     Phase,
     ReviewCycleMetadata,
 )
-from .coord_util import (  # noqa: F401
+from .util import (  # noqa: F401
     _LOG_LEVEL,
     _fmt_cost,
     _fmt_duration,
@@ -106,7 +142,7 @@ from .coord_util import (  # noqa: F401
     resolve_timeout,
     set_log_level,
 )
-from .coord_workspace import (  # noqa: F401
+from .workspace import (  # noqa: F401
     _create_workspace,
     _fmt_age,
     _is_stale_worktree,
@@ -114,38 +150,6 @@ from .coord_workspace import (  # noqa: F401
     _remove_worktree,
     _resolve_merge_conflicts,
 )
-from .devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
-from .review import (  # noqa: F401
-    PlanReviewResult,
-    ReviewResult,
-    _try_parse_review,
-    merge_plan_review_results,
-    merge_review_results,
-    parse_plan_review_output,
-    parse_review_json,
-    parse_review_output,
-    plan_review_findings_to_text,
-    review_to_dev_handoff,
-)
-from .runner import LogLevel, log_agent_result, run_agent, run_agent_pool
-from .sessions import load_sessions, save_sessions
-from .story_validator import validate_story
-from .task import (  # noqa: F401
-    TaskSpec,
-    TaskStory,
-    build_dev_prompt,
-    build_fix_prompt,
-    build_handoff_fix_prompt,
-    build_plan_prompt,
-    build_plan_review_prompt,
-    build_preflight_prompt,
-    build_review_prompt,
-    parse_plan_output,
-)
-from .task import (
-    load_story as load_spec,
-)
-from .traces import write_trace
 
 # ── Story log directory helpers ───────────────────────────────────────
 
@@ -341,8 +345,8 @@ def _fire_post_run_hook(
     """Fire the post_run lifecycle hook if configured. Best-effort; never raises."""
     if not (config.hooks and config.hooks.post_run):
         return
-    from .coord_hooks import build_post_run_payload
-    from .coord_hooks import run_hook as _run_hook
+    from .hooks import build_post_run_payload
+    from .hooks import run_hook as _run_hook
 
     _run_hook(
         config.hooks.post_run,
@@ -496,14 +500,14 @@ def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
 
 # ── Phase handlers (extracted to coord_phases.py) ────────────────────
 
-from .coord_phases import (  # noqa: E402, F401
+from .phases import (  # noqa: E402, F401
     _finalize_approve,
     _ReviewOutcome,
     _ValidateOutcome,
 )
-from .coord_phases import _run_dev_phase as _run_dev_phase_impl  # noqa: E402
-from .coord_phases import _run_review_phase as _run_review_phase_impl  # noqa: E402
-from .coord_phases import _run_validate_phase as _run_validate_phase_impl  # noqa: E402
+from .phases import _run_dev_phase as _run_dev_phase_impl  # noqa: E402
+from .phases import _run_review_phase as _run_review_phase_impl  # noqa: E402
+from .phases import _run_validate_phase as _run_validate_phase_impl  # noqa: E402
 
 
 def _run_dev_phase(
@@ -1296,8 +1300,8 @@ def run_task(
 
         # ── PRE_RUN hook ──────────────────────────────────────────────
         if config.hooks and config.hooks.pre_run:
-            from .coord_hooks import build_pre_run_payload
-            from .coord_hooks import run_hook as _run_hook
+            from .hooks import build_pre_run_payload
+            from .hooks import run_hook as _run_hook
 
             _pre_payload = build_pre_run_payload(task, _run_id, config)
             _pre_result = _run_hook(
@@ -2779,4 +2783,4 @@ def run_review_only(
 
 # ── Audit ────────────────────────────────────────────────────────────
 
-from .coord_audit import generate_audit_log  # noqa: E402, F401
+from .audit import generate_audit_log  # noqa: E402, F401

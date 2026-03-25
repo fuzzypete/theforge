@@ -19,9 +19,8 @@ import yaml
 
 from .artifacts import AUDIT_PATH, ensure_parent_dir
 from .config import ForgeConfig
-from .coord_audit import has_review_approve
-from .coord_workspace import _merge_branch
-from .coordinator import (
+from .coordinator.audit import generate_audit_log, has_review_approve
+from .coordinator.engine import (
     CoordinatorResult,
     CoordinatorState,
     Phase,
@@ -32,11 +31,11 @@ from .coordinator import (
     _notify,
     _ntfy_publish,
     _run_gate,
-    generate_audit_log,
     run_from_dev,
     run_from_review,
     run_task,
 )
+from .coordinator.workspace import _merge_branch
 from .task import TaskStory as TaskSpec  # noqa: F401
 
 
@@ -1026,8 +1025,8 @@ def run_sprint(
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
-        from .coord_hooks import build_post_sprint_payload
-        from .coord_hooks import run_hook as _run_hook
+        from .coordinator.hooks import build_post_sprint_payload
+        from .coordinator.hooks import run_hook as _run_hook
 
         _stories = []
         for spec_str, res in results:

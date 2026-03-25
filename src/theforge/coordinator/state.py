@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from .review import ReviewResult
-    from .runner import AgentResult
-    from .story_validator import StoryValidationResult
-    from .task import PlanData
+    from theforge.agent_types import AgentResult
+    from theforge.review import ReviewResult
+    from theforge.story_validator import StoryValidationResult
+    from theforge.task import PlanData
 
 # ── Phase enum ────────────────────────────────────────────────────────
 

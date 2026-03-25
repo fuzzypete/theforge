@@ -6,8 +6,8 @@ from dataclasses import replace as _dc_replace
 
 import yaml
 
-from .config import MODEL_REGISTRY, ForgeConfig, ModelProfile
-from .review import ReviewFinding
+from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
+from theforge.review import ReviewFinding
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
 

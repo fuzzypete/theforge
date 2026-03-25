@@ -215,7 +215,7 @@ def _parse_profile(
     # Build allowed_tools tuple. For API profiles, normalize capitalized names to canonical names.
     if tools is not None:
         if provider:
-            from theforge.tool_runtime import TOOL_NAME_MAP
+            from theforge.runners.tool_runtime import TOOL_NAME_MAP
 
             allowed_tools_tuple = tuple(TOOL_NAME_MAP.get(t, t) for t in tools)
         else:

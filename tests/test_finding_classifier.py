@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from theforge.coord_state import CoordinatorState, FindingRecord
+from theforge.coordinator.state import CoordinatorState, FindingRecord
 from theforge.finding_classifier import (
     _fingerprint,
     _jaccard,

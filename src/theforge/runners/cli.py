@@ -16,26 +16,15 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
-from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, cast
 
-from .config import ModelProfile
+from theforge.agent_types import AgentResult, ModelUsage
+from theforge.log_level import _LOG_LEVEL, LogLevel, set_log_level  # noqa: F401
 
-# ── Log level ─────────────────────────────────────────────────────────
+from ..config import ModelProfile
 
-
-class LogLevel(IntEnum):
-    PROGRESS = 0  # default: phase transitions, agent start/done, verdicts
-    VERBOSE = 1  # adds tool activity, heartbeats, raw output
-
-
-_LOG_LEVEL: LogLevel = LogLevel.PROGRESS
-
-
-def set_log_level(level: LogLevel) -> None:
-    global _LOG_LEVEL
-    _LOG_LEVEL = level
+# ── Logging helpers ───────────────────────────────────────────────────
 
 
 def _log(msg: str) -> None:
@@ -43,36 +32,10 @@ def _log(msg: str) -> None:
 
 
 def _log_verbose(msg: str) -> None:
-    if _LOG_LEVEL >= LogLevel.VERBOSE:
+    from theforge.log_level import _LOG_LEVEL as _LL
+
+    if _LL >= LogLevel.VERBOSE:
         print(f"[forge] {msg}", file=sys.stderr, flush=True)
-
-
-@dataclass(frozen=True)
-class ModelUsage:
-    """Per-model token and cost breakdown from a single agent invocation."""
-
-    model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_creation_tokens: int
-    cost_usd: float | None
-
-
-@dataclass(frozen=True)
-class AgentResult:
-    """Structured result from an agent invocation."""
-
-    success: bool  # subprocess returned 0
-    output: str  # agent's text response
-    session_id: str | None  # for --resume on follow-up
-    cost_usd: float | None  # total invocation cost
-    exit_code: int  # raw exit code
-    raw: dict[str, Any]  # full parsed JSON (if available)
-    profile_name: str = ""  # identifies which profile produced this result
-    model_usage: tuple[ModelUsage, ...] = ()  # per-model breakdown (Claude only)
-    structured_data: dict | None = None  # NEW: parsed JSON for API reviewers
-    startup_failure: bool = False  # True when the agent couldn't start at all
 
 
 # ── Heartbeat helper ─────────────────────────────────────────────────
@@ -204,7 +167,7 @@ def run_agent(
     its own stdout stream. Codex and Gemini are affected.
     """
     if profile.mode == "api":
-        from . import runner_api
+        from theforge.runners import api as runner_api
 
         return runner_api.run_api_agent(
             prompt=prompt,

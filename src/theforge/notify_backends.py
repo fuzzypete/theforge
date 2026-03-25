@@ -15,7 +15,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from . import coord_util as _cu
+from .coordinator import util as _cu
 
 if TYPE_CHECKING:
     from .config import ForgeConfig
@@ -95,7 +95,7 @@ def _send_terminal(title: str, body: str) -> None:
 
 def _send_ntfy(url: str, priority: str, title: str, body: str) -> None:
     """Send an ntfy push notification."""
-    from .coord_notify import _ntfy_publish
+    from .coordinator.notify import _ntfy_publish
 
     _ntfy_publish(url, title, body, priority=priority)
 

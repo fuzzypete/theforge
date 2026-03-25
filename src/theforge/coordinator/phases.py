@@ -18,15 +18,26 @@ from types import ModuleType
 
 import yaml
 
-from . import coord_util as _cu
-from . import finding_classifier as _fc
-from .config import MODEL_REGISTRY, ForgeConfig
-from .coord_gate import (
+from theforge import finding_classifier as _fc
+from theforge.config import MODEL_REGISTRY, ForgeConfig
+from theforge.review import (
+    ReviewFinding,
+    ReviewResult,
+    _best_individual_result,
+    review_to_dev_handoff,
+)
+from theforge.runners import log_agent_result
+from theforge.sessions import save_sessions
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.traces import write_trace
+
+from . import util as _cu
+from .gate import (
     _is_gate_skip,
     _run_gate_full,
 )
-from .coord_logging import StructuredLogger
-from .coord_notify import (
+from .logging import StructuredLogger
+from .notify import (
     _escalate_gate_interactive,
     _escalate_gate_remote,
     _escalate_notify,
@@ -37,26 +48,21 @@ from .coord_notify import (
     _pending_human_review,
     _remote_human_review,
 )
-from .coord_preflight import (
+from .preflight import (
     _escalate_dev_model,
     _find_registry_key_for_profile,
     _has_persistent_p1,
     _persistent_p1_descriptions,
 )
-from .coord_state import (
+from .state import (
     CoordinatorResult,
     CoordinatorState,
     CycleHistory,
     Phase,
     ReviewCycleMetadata,
 )
-from .coord_util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
-from .coord_workspace import _merge_branch
-from .review import ReviewFinding, ReviewResult, _best_individual_result, review_to_dev_handoff
-from .runner import log_agent_result
-from .sessions import save_sessions
-from .task import TaskStory as TaskSpec  # noqa: F401
-from .traces import write_trace
+from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
+from .workspace import _merge_branch
 
 _pr_log = logging.getLogger(__name__)
 
@@ -304,8 +310,8 @@ def _finalize_approve(
                 error=merge_info.get("error"),
             )
         if merge_info["merged"] and config.hooks and config.hooks.post_merge:
-            from .coord_hooks import build_post_merge_payload
-            from .coord_hooks import run_hook as _run_hook
+            from .hooks import build_post_merge_payload
+            from .hooks import run_hook as _run_hook
 
             _pm_payload = build_post_merge_payload(task.slug, branch_name, run_id, config)
             _run_hook(

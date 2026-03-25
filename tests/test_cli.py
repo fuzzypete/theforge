@@ -29,9 +29,9 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coord_state import CoordinatorState
-from theforge.coordinator import CoordinatorResult, Phase
-from theforge.runner import AgentResult
+from theforge.coordinator.engine import CoordinatorResult, Phase
+from theforge.coordinator.state import CoordinatorState
+from theforge.runners import AgentResult
 
 # ── Helpers (kept for TestBuildTask / TestFindConfig) ─────────────────
 

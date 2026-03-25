@@ -32,9 +32,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coord_state import CoordinatorState
-from theforge.coord_util import _generate_run_id
-from theforge.coordinator import (
+from theforge.coordinator.engine import (
     Phase,
     StructuredLogger,
     _fmt_duration,
@@ -42,7 +40,9 @@ from theforge.coordinator import (
     generate_audit_log,
     run_task,
 )
-from theforge.runner import AgentResult
+from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.util import _generate_run_id
+from theforge.runners import AgentResult
 from theforge.story_validator import StoryValidationResult
 
 
@@ -253,9 +253,9 @@ class TestStructuredLoggingIntegration:
             log=LogConfig(log_file=str(log_file), enabled=True),
         )
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_run_task_emits_lifecycle_events(self, mock_shell, mock_agent, mock_pool, tmp_path):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -312,9 +312,9 @@ class TestStructuredLoggingIntegration:
             assert "task" in entry
             assert "event" in entry
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_result_includes_output_tail(self, mock_shell, mock_agent, mock_pool, tmp_path):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -358,9 +358,9 @@ class TestStructuredLoggingIntegration:
         output_tail = gate_events[0]["output_tail"]
         assert len(output_tail) <= 500
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_review_result_event_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -394,9 +394,9 @@ class TestStructuredLoggingIntegration:
         assert ev["p2_count"] == 0
         assert "cost_usd" in ev
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_escalate_event_emitted_on_gate_failure(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -442,10 +442,13 @@ class TestStructuredLoggingIntegration:
         workspace.mkdir(parents=True, exist_ok=True)
 
         with (
-            patch("theforge.coordinator.run_agent_pool") as mock_pool,
-            patch("theforge.coordinator.run_agent") as mock_agent,
-            patch("theforge.coord_util._run_shell") as mock_shell,
-            patch("theforge.coordinator.StructuredLogger.emit", side_effect=OSError("disk full")),
+            patch("theforge.coordinator.engine.run_agent_pool") as mock_pool,
+            patch("theforge.coordinator.engine.run_agent") as mock_agent,
+            patch("theforge.coordinator.util._run_shell") as mock_shell,
+            patch(
+                "theforge.coordinator.engine.StructuredLogger.emit",
+                side_effect=OSError("disk full"),
+            ),
         ):
             mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
             mock_agent.side_effect = [
@@ -470,7 +473,7 @@ class TestStructuredLoggingIntegration:
 class TestGetCommitLog:
     """Tests for the _get_commit_log() helper."""
 
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.util._run_shell")
     def test_success_clean_worktree(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Returns commit log when command succeeds and worktree is clean."""
         log = "abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests"
@@ -479,21 +482,21 @@ class TestGetCommitLog:
         assert result == log
         assert "WARNING" not in result
 
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.util._run_shell")
     def test_no_commits_clean(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Returns placeholder when no commits ahead of base."""
         mock_shell.side_effect = [(True, ""), (True, "")]  # clean, no commits
         result = _get_commit_log(tmp_path, "main")
         assert result == "(no commits ahead of base branch)"
 
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.util._run_shell")
     def test_command_fails(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Returns placeholder when git command fails."""
         mock_shell.side_effect = [(True, ""), (False, "")]  # clean, log fails
         result = _get_commit_log(tmp_path, "main")
         assert result == "(no commits ahead of base branch)"
 
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_with_commits(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Appends warning when worktree has uncommitted changes."""
         log = "abc1234 feat(foo): implement the thing"
@@ -503,7 +506,7 @@ class TestGetCommitLog:
         assert "WARNING" in result
         assert "uncommitted" in result
 
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_no_commits(self, mock_shell: MagicMock, tmp_path: Path) -> None:
         """Warns about uncommitted changes even when no commits ahead."""
         mock_shell.side_effect = [(True, " M src/foo.py\n"), (True, "")]
@@ -541,9 +544,9 @@ def test_fmt_duration_hours():
 class TestAuditReviewPoolFields:
     """Tests for generate_audit_log() review pool field serialization."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_audit_review_pool_fields_populated(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """When pool has 2 reviewers and one fails, audit has correct pool/successful/failed."""
         config = _make_pool_config(
@@ -613,9 +616,9 @@ class TestAuditReviewPoolFields:
         assert cycle["successful"] == ["opus"]
         assert cycle["failed"] == ["codex"]
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_audit_failed_reviewer_detail(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Failed reviewer includes exit code in failed_detail."""
         config = _make_pool_config(
@@ -682,9 +685,9 @@ class TestAuditReviewPoolFields:
         assert "codex" in cycle["failed_detail"]
         assert "exit=1" in cycle["failed_detail"]["codex"]
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_audit_synthesized_flag_false_degraded(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -771,7 +774,11 @@ class TestCampaignAuditWrites:
 
     def _make_fake_result(self, tmp_path: Path) -> object:
         """Build a fake CoordinatorResult with one APPROVE review cycle."""
-        from theforge.coordinator import CoordinatorResult, CoordinatorState, ReviewCycleMetadata
+        from theforge.coordinator.engine import (
+            CoordinatorResult,
+            CoordinatorState,
+            ReviewCycleMetadata,
+        )
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -871,7 +878,7 @@ class TestCampaignAuditWrites:
     @patch("theforge.sprint.run_task")
     def test_campaign_already_done_no_worktree_audit(self, mock_run_task, tmp_path):
         """ALREADY_DONE specs do not write a worktree audit (no worktree was created)."""
-        from theforge.coordinator import CoordinatorResult, CoordinatorState
+        from theforge.coordinator.engine import CoordinatorResult, CoordinatorState
         from theforge.sprint import run_sprint
 
         config = _make_config(tmp_path)

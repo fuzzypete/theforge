@@ -34,9 +34,9 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
-from theforge.coord_gate import _read_gate_decision
-from theforge.coord_state import CoordinatorState
-from theforge.coordinator import Phase, run_from_review, run_task
+from theforge.coordinator.engine import Phase, run_from_review, run_task
+from theforge.coordinator.gate import _read_gate_decision
+from theforge.coordinator.state import CoordinatorState
 from theforge.task import TaskStory
 
 # ── Local helpers ─────────────────────────────────────────────────────
@@ -120,9 +120,9 @@ def _make_task_with_gate_override(tmp_path: Path, gate_override: str | None) -> 
 class TestCoordinatorStaleHandoff:
     """Test that stale handoff.yaml is deleted before running the gate."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_stale_handoff_not_reused(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """A PASS from a prior gate run must not leak through on gate failure."""
         config = _make_config(tmp_path)
@@ -207,9 +207,9 @@ class TestGateDecisionFallback:
 class TestCoordinatorDirtyWorktree:
     """Test that the coordinator catches uncommitted changes after gate PASS."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_auto_commits_no_retry(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -238,7 +238,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coordinator.phases.subprocess.run") as mock_subprocess:
             result = run_task(config, task)
 
         assert result.success is True
@@ -250,9 +250,9 @@ class TestCoordinatorDirtyWorktree:
         )
         assert mock_subprocess.call_args[0][0] == ["git", "commit", "-m", mock.ANY]
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_auto_commits_even_at_max_iterations(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -292,7 +292,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coordinator.phases.subprocess.run") as mock_subprocess:
             result = run_task(config, task)
 
         assert result.success is True
@@ -301,9 +301,9 @@ class TestCoordinatorDirtyWorktree:
             c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
         )
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_handoff_file_not_flagged_as_dirty(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """handoff.yaml in git status output is excluded from dirty check."""
         config = _make_config(tmp_path)
@@ -332,9 +332,9 @@ class TestCoordinatorDirtyWorktree:
         assert result.success is True
         assert result.phase == Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_handoff_dirty_worktree_unchanged(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Regression guard: handoff mode still filters handoff.yaml from dirty check."""
         config = _make_config(tmp_path)  # handoff_file="handoff.yaml"
@@ -366,9 +366,9 @@ class TestCoordinatorDirtyWorktree:
         assert result.success is True
         assert result.phase == Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dirty_files_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Dirty files after gate PASS → coordinator auto-commits, no retry."""
         config = _make_config(tmp_path)
@@ -401,7 +401,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coord_phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coordinator.phases.subprocess.run") as mock_subprocess:
             result = run_task(config, task)
 
         assert result.success is True
@@ -412,9 +412,9 @@ class TestCoordinatorDirtyWorktree:
             c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
         )
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_untracked_file_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Tracked + untracked files → coordinator auto-commits both."""
         config = _make_config(tmp_path)
@@ -447,7 +447,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coord_phases.subprocess.run"):
+        with patch("theforge.coordinator.phases.subprocess.run"):
             result = run_task(config, task)
 
         assert result.success is True
@@ -461,9 +461,9 @@ class TestCoordinatorDirtyWorktree:
 class TestDevZeroChangeGuard:
     """Dev retry that produces no changes should escalate, not re-review identical code."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dev_retry_no_changes_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Dev iteration 2 produces no diff and no dirty files → ESCALATE."""
         config = _make_config(tmp_path)
@@ -534,16 +534,18 @@ class TestDevZeroChangeGuard:
             result.stdout = b""
             return result
 
-        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+        with patch(
+            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+        ):
             result = run_task(config, task)
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert "no changes" in result.message.lower()
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dev_retry_with_dirty_files_proceeds(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -597,15 +599,17 @@ class TestDevZeroChangeGuard:
             result.stdout = b""
             return result
 
-        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+        with patch(
+            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+        ):
             result = run_task(config, task)
 
         assert result.success is True
         assert result.phase == Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_retry_no_changes_does_not_escalate(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -659,16 +663,18 @@ class TestDevZeroChangeGuard:
             r.stdout = b""
             return r
 
-        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+        with patch(
+            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+        ):
             result = run_task(config, task)
 
         # Should complete successfully — gate retry is not a review retry
         assert result.success is True
         assert result.phase == Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_post_review_gate_retry_no_changes_does_not_escalate(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -747,7 +753,9 @@ class TestDevZeroChangeGuard:
             r.stdout = b""
             return r
 
-        with patch("theforge.coord_phases.subprocess.run", side_effect=subprocess_side_effect):
+        with patch(
+            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+        ):
             result = run_task(config, task)
 
         assert result.success is True
@@ -760,9 +768,9 @@ class TestDevZeroChangeGuard:
 class TestExitCodeGateMode:
     """Test gate validation using exit code instead of handoff file."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Exit code 0 → PASS in exit-code mode."""
         config = _make_exit_code_config(tmp_path)
@@ -781,9 +789,9 @@ class TestExitCodeGateMode:
         assert result.success is True
         assert result.phase == Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_fail_then_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Exit code non-zero → FAIL, then 0 → PASS on retry."""
         config = _make_exit_code_config(tmp_path)
@@ -803,9 +811,9 @@ class TestExitCodeGateMode:
         assert result.state.dev_iteration == 2  # needed a retry
         assert result.state.gate_decisions == ["FAIL", "PASS"]
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_exhaustion(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Gate always fails → ESCALATE after max iterations."""
         config = _make_exit_code_config(tmp_path)
@@ -821,9 +829,9 @@ class TestExitCodeGateMode:
         assert result.success is False
         assert result.phase == Phase.ESCALATE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_infrastructure_failure_escalates_immediately(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -849,9 +857,9 @@ class TestExitCodeGateMode:
         assert result.phase == Phase.ESCALATE
         assert "infrastructure" in result.message.lower() or "timeout" in result.message.lower()
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_blocked_in_exit_code_mode(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -876,9 +884,9 @@ class TestExitCodeGateMode:
         assert result.success is False
         assert result.phase != Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_dirty_worktree_detected(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Exit-code mode: dirty files detected (empty handoff_file must not cause false-clean)."""
         config = _make_exit_code_config(tmp_path)
@@ -904,9 +912,9 @@ class TestExitCodeGateMode:
         assert result.success is False
         assert result.phase != Phase.DONE
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_gate_timeout_is_error(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Timeout in exit-code mode returns error message (not FAIL), escalates immediately."""
         config = _make_exit_code_config(tmp_path)
@@ -935,9 +943,9 @@ class TestExitCodeGateMode:
         msg = result.message.lower()
         assert "timed out" in msg or "gate_timeout" in msg
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_infrastructure_error_is_error(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -967,9 +975,9 @@ class TestExitCodeGateMode:
         # Escalated as infrastructure error, not retried as FAIL
         assert result.state.dev_iteration == 1  # no retries consumed
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_test_failure_is_fail(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Normal non-zero exit (tests failing) returns FAIL and is retried."""
         config = _make_exit_code_config(tmp_path)
@@ -997,9 +1005,9 @@ class TestExitCodeGateMode:
 class TestPytestTargetSubstitution:
     """Test that {pytest_target} in gate_command is replaced from TaskStory."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_pytest_target_substituted(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Gate command should contain the task's pytest_target, not the placeholder."""
         config = _make_exit_code_config(tmp_path)
@@ -1041,9 +1049,9 @@ class TestPytestTargetSubstitution:
         assert "tests/test_specific.py" in gate_cmds[0]
         assert "{pytest_target}" not in gate_cmds[0]
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_pytest_target_defaults_to_tests(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """When pytest_target is None, defaults to 'tests/'."""
         config = _make_exit_code_config(tmp_path)
@@ -1083,9 +1091,9 @@ class TestPytestTargetSubstitution:
 class TestGateOverride:
     """Tests for spec-level gate override feature."""
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_none_skips_validation(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -1127,9 +1135,9 @@ class TestGateOverride:
         # PASS should have been recorded
         assert "PASS" in result.state.gate_decisions
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_custom_command(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """gate_override='make lint' runs that command instead of global gate."""
         config = _make_config(tmp_path)
@@ -1170,9 +1178,9 @@ class TestGateOverride:
             f"Global gate was called unexpectedly: {called_cmds}"
         )
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_custom_command_fail(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """Custom gate command returning non-zero exit code produces FAIL and triggers retry."""
         config = _make_config(tmp_path)
@@ -1207,9 +1215,9 @@ class TestGateOverride:
         assert result.phase == Phase.ESCALATE
         assert any(d == "FAIL" for d in result.state.gate_decisions)
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_absent_uses_global(self, mock_shell, mock_agent, mock_pool, tmp_path):
         """No gate_override → uses config.validation.gate_command (backward compat)."""
         config = _make_config(tmp_path)
@@ -1269,9 +1277,9 @@ class TestGateOverride:
         # Non-string gate must be stripped to avoid AttributeError in _is_gate_skip
         assert "gate" not in fm
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_none_case_insensitive(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -1318,11 +1326,11 @@ class TestGateOverride:
 class TestFixPromptRouting:
     """Tests that the coordinator routes to build_fix_prompt on iteration 2+."""
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_iteration_1_uses_dev_prompt(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
     ):
@@ -1345,11 +1353,11 @@ class TestFixPromptRouting:
         mock_dev_prompt.assert_called_once()
         mock_fix_prompt.assert_not_called()
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_iteration_2_with_review_findings_uses_fix_prompt(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
     ):
@@ -1382,11 +1390,11 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 1  # only iter 1
         assert mock_fix_prompt.call_count == 1  # iter 2 uses fix prompt
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_failure_retry_uses_dev_prompt_not_fix_prompt(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
     ):
@@ -1415,11 +1423,11 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 2
         mock_fix_prompt.assert_not_called()
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_fix_prompt_receives_review_findings(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
     ):
@@ -1453,11 +1461,11 @@ class TestFixPromptRouting:
         assert len(call_kwargs["review_findings"]) > 0
         assert call_kwargs["iteration"] >= 1
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_gate_failure_after_review_uses_dev_prompt(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
     ):
@@ -1495,11 +1503,11 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 2
         assert mock_fix_prompt.call_count == 1
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_run_from_review_first_dev_uses_dev_prompt(
         self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
     ):
@@ -1537,13 +1545,13 @@ class TestFixPromptRouting:
         mock_dev_prompt.assert_not_called()
         assert mock_fix_prompt.call_count == 1
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coord_notify._ntfy_publish")
-    @patch("theforge.coord_notify._ntfy_poll_reply")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.notify._ntfy_publish")
+    @patch("theforge.coordinator.notify._ntfy_poll_reply")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_extend_on_approve_with_no_findings_uses_dev_prompt(
         self,
         mock_shell,
@@ -1595,13 +1603,13 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 2
         mock_fix_prompt.assert_not_called()
 
-    @patch("theforge.coordinator.build_fix_prompt")
-    @patch("theforge.coordinator.build_dev_prompt")
-    @patch("theforge.coord_notify._ntfy_publish")
-    @patch("theforge.coord_notify._ntfy_poll_reply")
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.build_fix_prompt")
+    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.notify._ntfy_publish")
+    @patch("theforge.coordinator.notify._ntfy_poll_reply")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_extend_after_request_changes_uses_fix_prompt(
         self,
         mock_shell,
@@ -1733,10 +1741,10 @@ class TestCreatePR:
             raw_yaml={},
         )
 
-    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.phases.subprocess.run")
     def test_push_before_pr_create(self, mock_run, tmp_path):
         """_create_pr pushes branch before calling gh pr create."""
-        from theforge.coord_phases import _create_pr
+        from theforge.coordinator.phases import _create_pr
 
         config = self._make_pr_config(tmp_path)
         spec = tmp_path / "spec.md"
@@ -1773,10 +1781,10 @@ class TestCreatePR:
         pr_call = mock_run.call_args_list[1]
         assert pr_call[0][0][:3] == ["gh", "pr", "create"]
 
-    @patch("theforge.coord_phases.subprocess.run")
+    @patch("theforge.coordinator.phases.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):
         """If git push fails, _create_pr returns failure without calling gh."""
-        from theforge.coord_phases import _create_pr
+        from theforge.coordinator.phases import _create_pr
 
         config = self._make_pr_config(tmp_path)
         spec = tmp_path / "spec.md"

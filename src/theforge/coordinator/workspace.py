@@ -7,11 +7,12 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import coord_util as _cu
-from .config import ForgeConfig
-from .coord_gate import _run_gate
-from .runner import run_agent
-from .task import TaskStory as TaskSpec  # noqa: F401
+from theforge.config import ForgeConfig
+from theforge.runners import run_agent
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+
+from . import util as _cu
+from .gate import _run_gate
 
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120

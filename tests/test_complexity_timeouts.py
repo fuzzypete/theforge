@@ -20,9 +20,9 @@ from theforge.config import (
     WorkspaceConfig,
     load_config,
 )
-from theforge.coord_util import resolve_timeout
-from theforge.coordinator import run_task
-from theforge.runner import AgentResult
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.util import resolve_timeout
+from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
 # ── resolve_timeout ────────────────────────────────────────────────────
@@ -214,9 +214,9 @@ def _get_call_profile(mock_agent, call_idx: int) -> ModelProfile:
 
 
 class TestDevPhaseTimeout:
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dev_uses_large_timeout_for_large_complexity(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -245,9 +245,9 @@ class TestDevPhaseTimeout:
         dev_profile_used = _get_call_profile(mock_agent, 1)
         assert dev_profile_used.timeout_seconds == 1800
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dev_uses_medium_timeout_for_medium_complexity(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -276,9 +276,9 @@ class TestDevPhaseTimeout:
         dev_profile_used = _get_call_profile(mock_agent, 1)
         assert dev_profile_used.timeout_seconds == 900
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dev_falls_back_to_base_when_no_override(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -301,9 +301,9 @@ class TestDevPhaseTimeout:
         dev_profile_used = _get_call_profile(mock_agent, 1)
         assert dev_profile_used.timeout_seconds == DEFAULT_DEV_PROFILE.timeout_seconds
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_dev_logs_complexity_suffix_when_override_equals_base(
         self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
     ):
@@ -338,9 +338,9 @@ class TestDevPhaseTimeout:
 
 
 class TestPlanPhaseTimeout:
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_plan_uses_large_timeout_for_large_complexity(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -366,9 +366,9 @@ class TestPlanPhaseTimeout:
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 1800
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_plan_falls_back_to_base_when_no_override(
         self, mock_shell, mock_agent, mock_pool, tmp_path
     ):
@@ -393,9 +393,9 @@ class TestPlanPhaseTimeout:
         plan_profile_used = _get_call_profile(mock_agent, 1)
         assert plan_profile_used.timeout_seconds == 600
 
-    @patch("theforge.coordinator.run_agent_pool")
-    @patch("theforge.coordinator.run_agent")
-    @patch("theforge.coord_util._run_shell")
+    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_plan_logs_complexity_suffix_when_override_equals_base(
         self, mock_shell, mock_agent, mock_pool, tmp_path, capsys
     ):

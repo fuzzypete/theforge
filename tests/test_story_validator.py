@@ -3,7 +3,7 @@
 from unittest.mock import patch
 
 from theforge.config import DEFAULT_DEV_PROFILE
-from theforge.runner import AgentResult
+from theforge.runners import AgentResult
 from theforge.story_validator import (
     _extract_yaml_block,
     _make_fast_profile,

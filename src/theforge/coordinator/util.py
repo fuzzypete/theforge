@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .runner import LogLevel
+from theforge.log_level import LogLevel
 
 # ── Log level ─────────────────────────────────────────────────────────
 

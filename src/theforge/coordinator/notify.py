@@ -14,14 +14,15 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import coord_util as _cu
-from .artifacts import PLAN_PATH
+from theforge.artifacts import PLAN_PATH
+from theforge.config import ForgeConfig
+from theforge.review import ReviewResult
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+
+from . import util as _cu
 
 if TYPE_CHECKING:
-    from . import coord_state as _cs
-from .config import ForgeConfig
-from .review import ReviewResult
-from .task import TaskStory as TaskSpec  # noqa: F401
+    from . import state as _cs
 
 
 def _osa_quote(s: str) -> str:
@@ -96,7 +97,7 @@ def _escalate_notify(
         except Exception:
             pass
     if config.notifications.backend not in ("ntfy", "none"):
-        from .notify_backends import send_notifications
+        from theforge.notify_backends import send_notifications
 
         send_notifications(
             config,
@@ -129,7 +130,7 @@ def _ntfy_crash_notify(
         except Exception:
             pass
     if config.notifications.backend not in ("ntfy", "none"):
-        from .notify_backends import send_notifications
+        from theforge.notify_backends import send_notifications
 
         send_notifications(config, title, body)
 
@@ -161,7 +162,7 @@ def _ntfy_done_notify(
         except Exception:
             pass
     if config.notifications.backend not in ("ntfy", "none"):
-        from .notify_backends import send_notifications
+        from theforge.notify_backends import send_notifications
 
         send_notifications(config, title, body)
 
@@ -737,8 +738,9 @@ def _pending_human_review(
     Returns (decision, feedback) where decision is one of:
     approve | reject | escalate | extend | timeout
     """
+    from theforge.notify_backends import send_notifications
+
     from . import pending as _pending
-    from .notify_backends import send_notifications
 
     p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
@@ -804,8 +806,9 @@ def _pending_escalate_gate(
     run_id: str = "",
 ) -> str:
     """Pending-file-based escalate gate. Returns 'approve' | 'reject' | 'continue'."""
+    from theforge.notify_backends import send_notifications
+
     from . import pending as _pending
-    from .notify_backends import send_notifications
 
     timeout_seconds = config.notifications.human_review_timeout_seconds
     approve_count = sum(1 for v in reviewer_verdicts.values() if v == "APPROVE")
@@ -868,8 +871,9 @@ def _pending_plan_review(
     run_id: str = "",
 ) -> str:
     """Pending-file-based plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
+    from theforge.notify_backends import send_notifications
+
     from . import pending as _pending
-    from .notify_backends import send_notifications
 
     timeout_seconds = config.plan_review.timeout_seconds
     first_3_lines = "\n".join(plan_text.splitlines()[:3])
