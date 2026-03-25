@@ -1,0 +1,263 @@
+"""DEV phase handler.
+
+Owns the _run_dev_phase function: prompt routing, dev agent invocation,
+budget enforcement, and zero-change guard (review-driven retry only).
+"""
+
+from __future__ import annotations
+
+import subprocess
+import time
+from dataclasses import replace as _dc_replace
+from pathlib import Path
+from types import ModuleType
+
+import yaml
+
+from theforge.config import ForgeConfig
+from theforge.sessions import save_sessions
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.traces import write_trace
+
+from .gate import _is_gate_skip
+from .logging import StructuredLogger
+from .notify import _escalate_notify
+from .state import CoordinatorResult, CoordinatorState, Phase
+from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
+
+
+def _run_dev_phase(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskSpec,
+    story_content: str,
+    workspace_path: Path,
+    branch_name: str,
+    *,
+    notify: bool,
+    logger: StructuredLogger | None,
+    mod: ModuleType,
+) -> CoordinatorResult | None:
+    """Run one DEV iteration. Returns CoordinatorResult on budget escalation, else None.
+
+    Caller must increment state.dev_iteration and _dev_calls_this_cycle before calling.
+    Mutates state in-place (appends dev_results, updates dev_session_id, etc.).
+    """
+    _log_phase(
+        state.phase,
+        f"{config.dev_profile.model}  iter={state.dev_iteration}",
+    )
+    if logger:
+        logger._safe_emit("phase_start", phase="DEV", iteration=state.dev_iteration)
+
+    # Capture HEAD before the dev agent runs — used by finding_classifier for git diff.
+    # Best-effort: any failure is silently ignored (non-critical for correctness).
+    try:
+        _head_proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=10,
+        )
+        if _head_proc.returncode == 0:
+            state.last_dev_start_commit = _head_proc.stdout.decode().strip()
+    except Exception:  # noqa: BLE001  # best-effort, any error is harmless
+        pass
+
+    _gate_cmd = (
+        task.gate_override
+        if task.gate_override is not None and not _is_gate_skip(task.gate_override)
+        else config.validation.gate_command
+    )
+    _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
+    if state.retry_reason == "timeout_resume":
+        prompt = (
+            state.human_feedback
+            or "You were cut off by a timeout. Continue from where you left off."
+        )
+        state.retry_reason = None
+        state.human_feedback = None
+    elif state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
+        prompt = mod.build_fix_prompt(
+            task,
+            workspace_path=workspace_path,
+            branch_name=branch_name,
+            review_findings=state.last_review_findings,
+            gate_command=_gate_cmd,
+            gate_skipped=_is_gate_skip(task.gate_override),
+            iteration=state.dev_iteration,
+            cycle_history=state.cycle_history or None,
+            escalation_note=state.escalation_note,
+            handoff_file=config.validation.handoff_file,
+            plan_output=state.plan_structured
+            if state.plan_structured is not None
+            else state.plan_output,
+            classified_p1s=[r for r in state.finding_registry if r.severity == "P1"] or None,
+        )
+        state.escalation_note = None  # consumed
+    else:
+        prompt = mod.build_dev_prompt(
+            task,
+            workspace_path=workspace_path,
+            branch_name=branch_name,
+            story_content=story_content,
+            gate_command=_gate_cmd,
+            gate_skipped=_is_gate_skip(task.gate_override),
+            review_findings=state.last_review_findings,
+            human_feedback=state.human_feedback,
+            preflight_output=(state.preflight_result.output if state.preflight_result else None),
+            plan_output=state.plan_structured
+            if state.plan_structured is not None
+            else state.plan_output,
+            plan_review_advisory=state.plan_agent_review_findings,
+            iteration=state.dev_iteration,
+            escalation_note=state.escalation_note,
+            cycle_history=state.cycle_history or None,
+            handoff_file=config.validation.handoff_file,
+        )
+        state.escalation_note = None  # consumed
+    state.retry_reason = None  # consumed
+
+    write_trace(
+        workspace_path / ".forge/traces" / f"{state.dev_trace_count}-dev-prompt.txt",
+        prompt,
+    )
+
+    _dev_timeout = resolve_timeout(
+        config.dev_profile.timeout_seconds,
+        config.dev_profile.timeout_medium_seconds,
+        config.dev_profile.timeout_large_seconds,
+        state.preflight_complexity,
+    )
+    _dev_override_active = (
+        state.preflight_complexity == "large"
+        and config.dev_profile.timeout_large_seconds is not None
+    ) or (
+        state.preflight_complexity == "medium"
+        and config.dev_profile.timeout_medium_seconds is not None
+    )
+    if _dev_override_active:
+        _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
+    else:
+        _log(f"  Dev timeout: {_dev_timeout}s")
+    _dev_profile = _dc_replace(config.dev_profile, timeout_seconds=_dev_timeout)
+
+    _dev_start = time.monotonic()
+    dev_result = mod.run_agent(
+        prompt=prompt,
+        profile=_dev_profile,
+        working_dir=workspace_path,
+        session_id=state.dev_session_id,
+        secrets=config.secrets,
+    )
+    _dev_elapsed = time.monotonic() - _dev_start
+    write_trace(
+        workspace_path / ".forge/traces" / f"{state.dev_trace_count}-dev-output.txt",
+        dev_result.output,
+    )
+    # Write dev iteration log to durable story log dir
+    if state.log_dir is not None:
+        write_trace(
+            state.log_dir / f"dev-iter-{state.dev_iteration}-{config.dev_profile.name}.log",
+            dev_result.output or "",
+        )
+    state.dev_results.append(dev_result)
+    state.dev_durations.append(_dev_elapsed)
+    # Capture handoff snapshot for audit trail
+    _handoff_snap: dict | None = None
+    if config.validation.handoff_file:
+        try:
+            _handoff_path = workspace_path / config.validation.handoff_file
+            _handoff_snap = yaml.safe_load(_handoff_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    state.dev_handoff_snapshots.append(_handoff_snap)
+    state.dev_session_id = dev_result.session_id or state.dev_session_id
+    save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
+    from theforge.runners import log_agent_result  # noqa: PLC0415
+
+    log_agent_result(dev_result, "DEV")
+    _dev_cost_str = (
+        "${:.2f}".format(dev_result.cost_usd) if dev_result.cost_usd is not None else "unknown"
+    )
+    _log(f"  ✓ DEV   {_dev_cost_str}  {_fmt_duration(_dev_elapsed)}")
+    if logger:
+        logger._safe_emit(
+            "phase_end",
+            phase="DEV",
+            outcome="success" if dev_result.success else "failure",
+            cost_usd=dev_result.cost_usd,
+            duration_s=round(_dev_elapsed, 2),
+        )
+
+    if state.total_dev_cost > config.dev_profile.budget_usd:
+        state.phase = Phase.ESCALATE
+        state.error = (
+            f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
+            f"(limit ${config.dev_profile.budget_usd:.4f})"
+        )
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("escalate", reason=state.error, phase="DEV")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    if not dev_result.success:
+        _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
+        # Don't immediately escalate — try validation anyway,
+        # the agent may have committed partial work + run the gate
+
+    # ── Zero-change guard (review-driven retry only) ─────────────────
+    # If the coordinator retried DEV after review REQUEST_CHANGES and the dev
+    # agent produced no changes (no commits, no dirty files), escalate immediately.
+    # Without this guard the coordinator sends the identical code back to review,
+    # the finding classifier sees no diff, classifies new P1s as net_new
+    # (non-blocking), and the story passes with unfixed code.
+    # Only applies when THIS dev pass was entered for review_changes or extend —
+    # gate retries and timeout resumes may legitimately produce no code changes.
+    _is_review_driven = _dev_entry_reason in ("review_changes", "extend")
+    if _is_review_driven and state.last_dev_start_commit:
+        _has_commits = False
+        _has_dirty = False
+        try:
+            _diff_proc = subprocess.run(
+                ["git", "diff", "--quiet", state.last_dev_start_commit, "HEAD"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=10,
+            )
+            _has_commits = _diff_proc.returncode != 0  # exit 1 = diff exists
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _status_proc = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                timeout=10,
+            )
+            _has_dirty = bool(_status_proc.stdout.strip())
+        except Exception:  # noqa: BLE001
+            pass
+        if not _has_commits and not _has_dirty:
+            state.phase = Phase.ESCALATE
+            state.error = (
+                "Dev retry produced no changes — escalating to avoid re-reviewing identical code"
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("escalate", reason=state.error, phase="DEV")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
+
+    return None
