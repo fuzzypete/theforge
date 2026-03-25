@@ -1,9 +1,0 @@
-name: "Full project refactor — package structure"
-budget_usd: 200
-auto_merge: true
-stories:
-  - stories/coordinator-runners-package-split.md
-  - stories/backlog/refactor-coordinator-internal-split.md
-  - stories/backlog/refactor-runners-internal-split.md
-  - stories/backlog/refactor-top-level-audit.md
-  - stories/backlog/refactor-import-boundary-enforcement.md
