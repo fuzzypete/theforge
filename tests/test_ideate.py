@@ -1067,6 +1067,67 @@ def _make_ideation_result_cli(tmp_path: Path, *, write_spec: bool = True) -> Ide
     )
 
 
+def test_none_cost_usd_does_not_crash_accumulation(tmp_path: Path) -> None:
+    """cost_usd=None from a pool agent must not crash total_cost accumulation."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+
+    def pool_with_none_cost(*, prompt, profiles, working_dir, **kwargs):
+        return [
+            AgentResult(
+                success=True, output=p1, session_id=None,
+                cost_usd=None, exit_code=0, raw={}, profile_name=p.name,
+            )
+            for p, p1 in zip(profiles, ["p1 A", "p1 B"])
+        ]
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=pool_with_none_cost),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(cost=0.10)),
+    ):
+        result = run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert result.total_cost_usd is not None
+    assert result.total_cost_usd >= 0.0
+
+
+def test_plain_text_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
+    """run_agent_pool is called with plain_text=True during ideation phases."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    captured_kwargs: list[dict] = []
+
+    def capturing_pool(*, prompt, profiles, working_dir, **kwargs):
+        captured_kwargs.append(kwargs)
+        return [_ok_result("p1 A", _REVIEWER_A.name), _ok_result("p1 B", _REVIEWER_B.name)]
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=capturing_pool),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert all(kw.get("plain_text") is True for kw in captured_kwargs)
+
+
+def test_secrets_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
+    """config.secrets are forwarded to run_agent_pool during ideation."""
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
+    from dataclasses import replace
+    config = replace(config, secrets={"GOOGLE_API_KEY": "test-key"})
+    captured_secrets: list[dict] = []
+
+    def capturing_pool(*, prompt, profiles, working_dir, **kwargs):
+        captured_secrets.append(kwargs.get("secrets", {}))
+        return [_ok_result("p1 A", _REVIEWER_A.name), _ok_result("p1 B", _REVIEWER_B.name)]
+
+    with (
+        patch("theforge.ideate.run_agent_pool", side_effect=capturing_pool),
+        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect()),
+    ):
+        run_ideation(config, "Build a feature", None, max_rounds=1)
+
+    assert all("GOOGLE_API_KEY" in s for s in captured_secrets)
+
+
 def _make_ideate_args(brief="build a thing", *, output=None, rounds=2, dry_run=False, config=None):
     return argparse.Namespace(
         brief=brief, output=output, rounds=rounds, dry_run=dry_run, config=config

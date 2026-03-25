@@ -18,7 +18,7 @@ The `theforge` source tree has grown past the point where a flat module layout c
 - Dependency direction is strictly layered: `sprint → coordinator → runners`. No reverse edges, no circular imports.
 - Any shared types that currently create cross-boundary imports are relocated to break the cycles.
 - Sprint and small stable modules (review, schemas, artifacts, task, sessions, traces) remain as top-level modules.
-- Big-bang migration: all moves and import updates in one pass. No compatibility shims. The test suite is the safety net.
+- No backward-compat re-export chains or compatibility shims introduced to preserve old import paths.
 - 500 lines is an inspection threshold for modules. Splitting is driven by cohesion, not the number alone.
 
 ## Acceptance Criteria

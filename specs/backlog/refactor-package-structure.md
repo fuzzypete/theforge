@@ -11,7 +11,7 @@ Critically, the structure must prevent future bloat — not just clean up curren
 - `make test` and `make lint` must pass throughout
 - CLI behavior and config semantics remain unchanged
 - No new features — purely structural
-- Must be executable incrementally, not as one big bang
+- Migration must leave `make test` passing at the end — no compat shims to preserve broken intermediate states
 
 ## Acceptance criteria
 
