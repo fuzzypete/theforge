@@ -7,9 +7,10 @@ import json
 import subprocess
 from pathlib import Path
 
-from .config import ForgeConfig
-from .coord_state import CoordinatorResult, CoordinatorState
-from .task import TaskStory as TaskSpec  # noqa: F401
+from theforge.config import ForgeConfig
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+
+from .state import CoordinatorResult, CoordinatorState
 
 
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:

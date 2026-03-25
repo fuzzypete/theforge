@@ -7,11 +7,12 @@ from pathlib import Path
 
 import yaml
 
-from . import coord_util as _cu
-from .artifacts import ensure_parent_dir, resolve_handoff_path
-from .config import ForgeConfig
-from .task import TaskStory as TaskSpec  # noqa: F401
-from .traces import write_trace
+from theforge.artifacts import ensure_parent_dir, resolve_handoff_path
+from theforge.config import ForgeConfig
+from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.traces import write_trace
+
+from . import util as _cu
 
 
 def _parse_dirty_files(raw_output: str) -> list[str]:

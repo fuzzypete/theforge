@@ -15,15 +15,15 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
-from theforge.coord_audit import generate_audit_log
-from theforge.coord_state import (
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.state import (
     CoordinatorResult,
     CoordinatorState,
     Phase,
     ReviewCycleMetadata,
 )
 from theforge.review import ReviewFinding, ReviewResult
-from theforge.runner import AgentResult
+from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
 # ── Fixtures ──────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 from textwrap import dedent
 
-from theforge.coord_state import CycleHistory
+from theforge.coordinator.state import CycleHistory
 
 from .story import TaskStory
 

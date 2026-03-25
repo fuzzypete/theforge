@@ -8,10 +8,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from theforge.agent_types import AgentResult
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
-from theforge.runner import AgentResult
-from theforge.runner_api import run_api_agent
+from theforge.runners.api import run_api_agent
 
 _CHECK_PROVIDERS_PROMPT = (
     "Review this change: -    x = 1\n+    x = 2\nVerdict: APPROVE. No findings."

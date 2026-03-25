@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import coord_util as _cu
+from .coordinator import util as _cu
 
 
 def write_trace(path: Path, content: str) -> None:

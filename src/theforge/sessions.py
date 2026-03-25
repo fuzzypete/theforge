@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import coord_util as _cu
+from .coordinator import util as _cu
 
 _SESSIONS_FILE = ".forge/sessions.json"
 

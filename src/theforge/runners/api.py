@@ -13,12 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
-from .runner import AgentResult, ModelUsage, _log, _log_verbose
-from .schemas import review_json_schema
-from .tool_runtime import TOOL_REGISTRY, ToolDef
+from theforge.agent_types import AgentResult, ModelUsage
+from theforge.runners.cli import _log, _log_verbose
+from theforge.runners.tool_runtime import TOOL_REGISTRY, ToolDef
+from theforge.schemas import review_json_schema
 
 if TYPE_CHECKING:
-    from .config import ModelProfile
+    from theforge.config import ModelProfile
 
 
 def _sanitize_schema_for_google(schema: dict) -> dict:
@@ -1053,7 +1054,11 @@ def _run_anthropic(
 
 
 def _run_google(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None, *, plain_text: bool = False
+    prompt: str,
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None = None,
+    *,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run agent via Google Gemini API."""
     import google.genai as genai

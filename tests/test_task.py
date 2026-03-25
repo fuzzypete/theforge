@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from theforge.coord_state import CycleHistory
+from theforge.coordinator.state import CycleHistory
 from theforge.review import ReviewFinding, ReviewResult, review_to_dev_handoff
 from theforge.task import (
     PlanData,
@@ -338,7 +338,7 @@ class TestBuildDevPromptEscalation:
 
     def test_cycle_history_rendered_when_provided(self, tmp_path):
         """Cycle history is injected into build_dev_prompt on reject path (post-cycle 1+)."""
-        from theforge.coord_state import CycleHistory
+        from theforge.coordinator.state import CycleHistory
 
         task = _make_task(tmp_path)
         history = [

@@ -20,7 +20,7 @@ from theforge.config import (
     SprintConfig,
     WorkspaceConfig,
 )
-from theforge.coordinator import (
+from theforge.coordinator.engine import (
     CoordinatorResult,
     CoordinatorState,
     Phase,
@@ -513,9 +513,9 @@ class TestEscalationNotifications:
 
         task = TaskStory(name="Test", story_path=spec_path, slug="my-slug")
 
-        with patch("theforge.coord_notify._notify") as mock_notify:
+        with patch("theforge.coordinator.notify._notify") as mock_notify:
             with patch(
-                "theforge.coordinator._create_workspace",
+                "theforge.coordinator.engine._create_workspace",
                 return_value=(None, None, "disk full"),
             ):
                 result = run_task(config, task, notify=True)
@@ -539,9 +539,9 @@ class TestEscalationNotifications:
         task = TaskStory(name="Test", story_path=spec_path, slug="my-slug")
         long_error = "x" * 200
 
-        with patch("theforge.coord_notify._notify") as mock_notify:
+        with patch("theforge.coordinator.notify._notify") as mock_notify:
             with patch(
-                "theforge.coordinator._create_workspace",
+                "theforge.coordinator.engine._create_workspace",
                 return_value=(None, None, long_error),
             ):
                 run_task(config, task, notify=True)
@@ -561,9 +561,9 @@ class TestEscalationNotifications:
 
         task = TaskStory(name="Test", story_path=spec_path, slug="my-slug")
 
-        with patch("theforge.coord_notify._notify") as mock_notify:
+        with patch("theforge.coordinator.notify._notify") as mock_notify:
             with patch(
-                "theforge.coordinator._create_workspace",
+                "theforge.coordinator.engine._create_workspace",
                 return_value=(None, None, "disk full"),
             ):
                 run_task(config, task, notify=False)
@@ -574,15 +574,17 @@ class TestEscalationNotifications:
 class TestNotifyFunction:
     def test_notify_fail_silent(self) -> None:
         """_notify swallows subprocess errors and never raises."""
-        with patch("theforge.coord_notify.shutil.which", return_value="/usr/bin/osascript"):
-            with patch("theforge.coord_notify.subprocess.run", side_effect=OSError("broken pipe")):
+        with patch("theforge.coordinator.notify.shutil.which", return_value="/usr/bin/osascript"):
+            with patch(
+                "theforge.coordinator.notify.subprocess.run", side_effect=OSError("broken pipe")
+            ):
                 # Must not raise
                 _notify("Title", "Body")
 
     def test_notify_noop_without_osascript(self) -> None:
         """_notify does nothing when osascript is not available."""
-        with patch("theforge.coord_notify.shutil.which", return_value=None):
-            with patch("theforge.coord_notify.subprocess.run") as mock_run:
+        with patch("theforge.coordinator.notify.shutil.which", return_value=None):
+            with patch("theforge.coordinator.notify.subprocess.run") as mock_run:
                 _notify("Title", "Body")
 
         mock_run.assert_not_called()

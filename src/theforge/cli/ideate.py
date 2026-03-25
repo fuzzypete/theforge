@@ -12,8 +12,8 @@ import yaml
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
 from theforge.ideate import generate_ideation_audit, run_ideation
-from theforge.runner import LogLevel
-from theforge.runner import set_log_level as runner_set_log_level
+from theforge.runners import LogLevel
+from theforge.runners import set_log_level as runner_set_log_level
 
 
 def cmd_ideate(args: object) -> int:

@@ -22,7 +22,7 @@ from pathlib import Path
 import yaml
 
 from .config import ForgeConfig
-from .runner import run_agent, run_agent_pool
+from .runners import run_agent, run_agent_pool
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -504,7 +504,13 @@ def run_ideation(
             _log("  ▸ Phase 1   generating spec (single-model)...")
             single_prompt = _build_single_model_prompt(current_brief, config=config)
             agent_start = time.monotonic()
-            result = run_agent(prompt=single_prompt, profile=pool[0], working_dir=working_dir, secrets=config.secrets, plain_text=True)
+            result = run_agent(
+                prompt=single_prompt,
+                profile=pool[0],
+                working_dir=working_dir,
+                secrets=config.secrets,
+                plain_text=True,
+            )
             agent_elapsed = time.monotonic() - agent_start
             total_cost += result.cost_usd or 0.0
             _log(f"  ↳ {pool[0].name} done ({agent_elapsed:.0f}s)")
@@ -558,7 +564,13 @@ def run_ideation(
         phase1_outputs: dict[str, str] = {}
 
         p1_start = time.monotonic()
-        p1_results = run_agent_pool(prompt=phase1_prompt, profiles=pool, working_dir=working_dir, secrets=config.secrets, plain_text=True)
+        p1_results = run_agent_pool(
+            prompt=phase1_prompt,
+            profiles=pool,
+            working_dir=working_dir,
+            secrets=config.secrets,
+            plain_text=True,
+        )
         p1_elapsed = time.monotonic() - p1_start
         # Accumulate all pool costs before checking failures so partial runs
         # are fully accounted for in total_cost_usd.
@@ -586,7 +598,13 @@ def run_ideation(
         phase2_prompt = _build_phase2_prompt(current_brief, phase1_outputs)
 
         p2_start = time.monotonic()
-        p2_results = run_agent_pool(prompt=phase2_prompt, profiles=pool, working_dir=working_dir, secrets=config.secrets, plain_text=True)
+        p2_results = run_agent_pool(
+            prompt=phase2_prompt,
+            profiles=pool,
+            working_dir=working_dir,
+            secrets=config.secrets,
+            plain_text=True,
+        )
         p2_elapsed = time.monotonic() - p2_start
         # Accumulate all pool costs before checking failures.
         for r in p2_results:

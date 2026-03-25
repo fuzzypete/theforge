@@ -31,7 +31,7 @@ from theforge.ideate import (
     generate_ideation_audit,
     run_ideation,
 )
-from theforge.runner import AgentResult
+from theforge.runners import AgentResult
 
 # ── Fixtures ─────────────────────────────────────────────────────────
 
@@ -1074,8 +1074,13 @@ def test_none_cost_usd_does_not_crash_accumulation(tmp_path: Path) -> None:
     def pool_with_none_cost(*, prompt, profiles, working_dir, **kwargs):
         return [
             AgentResult(
-                success=True, output=p1, session_id=None,
-                cost_usd=None, exit_code=0, raw={}, profile_name=p.name,
+                success=True,
+                output=p1,
+                session_id=None,
+                cost_usd=None,
+                exit_code=0,
+                raw={},
+                profile_name=p.name,
             )
             for p, p1 in zip(profiles, ["p1 A", "p1 B"])
         ]
@@ -1112,6 +1117,7 @@ def test_secrets_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
     """config.secrets are forwarded to run_agent_pool during ideation."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
     from dataclasses import replace
+
     config = replace(config, secrets={"GOOGLE_API_KEY": "test-key"})
     captured_secrets: list[dict] = []
 

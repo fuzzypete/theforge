@@ -14,7 +14,8 @@ from theforge.artifacts import (
 from theforge.config import (
     ForgeConfig,
 )
-from theforge.coordinator import CoordinatorResult, generate_audit_log
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.state import CoordinatorResult
 from theforge.task import TaskSpec, TaskStory, build_dev_prompt, build_review_prompt, load_story
 
 _SECRETS_FILE = ".forge/.env"
