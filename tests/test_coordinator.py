@@ -5679,7 +5679,7 @@ class TestSigtermHandler:
 
         with (
             patch("os.kill"),
-            patch("theforge.coordinator.engine._ntfy_crash_notify") as mock_crash_notify,
+            patch("theforge.coordinator.notify._ntfy_crash_notify") as mock_crash_notify,
         ):
             handler(_signal.SIGTERM, None)
 
