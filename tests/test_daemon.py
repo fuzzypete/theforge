@@ -351,11 +351,13 @@ def test_state_update_fn_called_in_run_sprint(tmp_path: Path) -> None:
     def recording_fn(update: dict) -> None:
         updates.append(update)
 
-    with patch("theforge.sprint.run_task", return_value=mock_result):
-        with patch("theforge.sprint._triage_spec"):
-            with patch("theforge.sprint._write_sprint_audit"):
-                with patch("theforge.sprint._write_sprint_summary"):
-                    with patch("theforge.sprint._validate_story_paths", return_value=[story_path]):
+    with patch("theforge.sprint.runner.run_task", return_value=mock_result):
+        with patch("theforge.sprint.runner._triage_spec"):
+            with patch("theforge.sprint.runner._write_sprint_audit"):
+                with patch("theforge.sprint.runner._write_sprint_summary"):
+                    with patch(
+                        "theforge.sprint.runner._validate_story_paths", return_value=[story_path]
+                    ):
                         run_sprint(
                             mock_config,
                             manifest_path,

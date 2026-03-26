@@ -28,16 +28,10 @@ from theforge.coordinator.engine import (
     _osa_quote,
     run_task,
 )
-from theforge.sprint import (
-    StoryDAG,
-    StoryTriage,
-    _build_task_from_story,
-    _classify_and_record,
-    _triage_spec,
-    build_dag,
-    load_sprint_manifest,
-    run_sprint,
-)
+from theforge.sprint import load_sprint_manifest, run_sprint
+from theforge.sprint.dag import StoryDAG, StoryTriage, _triage_spec, build_dag
+from theforge.sprint.manifest import _build_task_from_story
+from theforge.sprint.runner import _classify_and_record
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -204,7 +198,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=2.0)
         result_b = _make_coordinator_result(success=True, cost=3.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]):
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]):
             sprint_result = run_sprint(config, manifest_path)
 
         assert sprint_result.specs_total == 2
@@ -234,7 +228,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
         result_b = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]):
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]):
             sprint_result = run_sprint(config, manifest_path)
 
         assert sprint_result.specs_succeeded == 1
@@ -252,7 +246,7 @@ class TestRunSprint:
             success=True, cost=0.15, preflight_verdict="ALREADY_DONE", phase=Phase.DONE
         )
 
-        with patch("theforge.sprint.run_task", return_value=result):
+        with patch("theforge.sprint.runner.run_task", return_value=result):
             sprint_result = run_sprint(config, manifest_path)
 
         assert sprint_result.specs_succeeded == 0
@@ -272,7 +266,7 @@ class TestRunSprint:
         # First spec costs 6.0, which exceeds the $5 budget
         result_a = _make_coordinator_result(success=True, cost=6.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint_result = run_sprint(config, manifest_path)
 
         # Only spec A ran; B and C were skipped
@@ -295,7 +289,7 @@ class TestRunSprint:
         # First spec costs exactly the budget
         result_a = _make_coordinator_result(success=True, cost=3.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint_result = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
@@ -308,7 +302,7 @@ class TestRunSprint:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint.run_task", return_value=result_a) as mock_run:
+        with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run:
             run_sprint(config, manifest_path, auto_merge=True)
 
         _, kwargs = mock_run.call_args
@@ -321,7 +315,7 @@ class TestRunSprint:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint.run_task", return_value=result_a) as mock_run:
+        with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run:
             run_sprint(config, manifest_path, interactive=True)
 
         _, kwargs = mock_run.call_args
@@ -342,7 +336,7 @@ class TestRunSprint:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=1.5, merged=True)
 
-        with patch("theforge.sprint.run_task", return_value=result_a):
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
             run_sprint(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
@@ -366,7 +360,7 @@ class TestRunSprint:
 
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint.run_task", return_value=result_a):
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
             run_sprint(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
@@ -397,7 +391,7 @@ class TestRunSprint:
             merge={"attempted": True, "merged": False, "error": "dirty working tree"},
         )
 
-        with patch("theforge.sprint.run_task", return_value=result_failed_merge):
+        with patch("theforge.sprint.runner.run_task", return_value=result_failed_merge):
             sprint_result = run_sprint(config, manifest_path, auto_merge=True)
 
         # Sprint counts as succeeded (task itself passed), but merge did not happen
@@ -437,8 +431,8 @@ class TestSprintNotifications:
         )
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint._notify") as mock_notify:
-            with patch("theforge.sprint.run_task", return_value=result_a):
+        with patch("theforge.sprint.runner._notify") as mock_notify:
+            with patch("theforge.sprint.runner.run_task", return_value=result_a):
                 run_sprint(config, manifest_path, notify=True)
 
         mock_notify.assert_called_once()
@@ -453,8 +447,8 @@ class TestSprintNotifications:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint._notify"):
-            with patch("theforge.sprint.run_task", return_value=result_a) as mock_run_task:
+        with patch("theforge.sprint.runner._notify"):
+            with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run_task:
                 run_sprint(config, manifest_path, notify=True)
 
         _, kwargs = mock_run_task.call_args
@@ -467,7 +461,7 @@ class TestSprintNotifications:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint.run_task", return_value=result_a) as mock_run_task:
+        with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run_task:
             run_sprint(config, manifest_path, notify=False)
 
         _, kwargs = mock_run_task.call_args
@@ -480,8 +474,8 @@ class TestSprintNotifications:
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint._notify") as mock_notify:
-            with patch("theforge.sprint.run_task", return_value=result_a):
+        with patch("theforge.sprint.runner._notify") as mock_notify:
+            with patch("theforge.sprint.runner.run_task", return_value=result_a):
                 run_sprint(config, manifest_path, notify=False)
 
         mock_notify.assert_not_called()
@@ -495,8 +489,8 @@ class TestSprintNotifications:
         assert config.notifications.backend == "none"
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
-        with patch("theforge.sprint._notify") as mock_notify:
-            with patch("theforge.sprint.run_task", return_value=result_a):
+        with patch("theforge.sprint.runner._notify") as mock_notify:
+            with patch("theforge.sprint.runner.run_task", return_value=result_a):
                 run_sprint(config, manifest_path, notify=True)
 
         mock_notify.assert_not_called()
@@ -616,7 +610,7 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
@@ -639,7 +633,7 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
@@ -666,8 +660,8 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
-            with patch("theforge.sprint._run_gate", return_value=("PASS", None, "")):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint.dag._run_gate", return_value=("PASS", None, "")):
                 triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "review"
@@ -693,8 +687,8 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
-            with patch("theforge.sprint._run_gate", return_value=("FAIL", "tests failed", "")):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint.dag._run_gate", return_value=("FAIL", "tests failed", "")):
                 triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "dev"
@@ -711,7 +705,7 @@ class TestTriageSpec:
                 m.returncode = 1  # not merged
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
@@ -737,7 +731,7 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
@@ -774,7 +768,7 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "skip"
@@ -801,8 +795,8 @@ class TestTriageSpec:
                 m.stdout = b""
             return m
 
-        with patch("theforge.sprint.subprocess.run", side_effect=_mock_run):
-            with patch("theforge.sprint._run_gate", return_value=("PASS", None, "")):
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            with patch("theforge.sprint.dag._run_gate", return_value=("PASS", None, "")):
                 triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "review"
@@ -834,8 +828,8 @@ class TestResumeSprintSkipApproved:
             slug="feature-a",
         )
 
-        with patch("theforge.sprint._triage_spec", return_value=skip_triage):
-            with patch("theforge.sprint.run_task") as mock_run_task:
+        with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
+            with patch("theforge.sprint.runner.run_task") as mock_run_task:
                 result = run_sprint(config, manifest_path, resume=True)
 
         mock_run_task.assert_not_called()
@@ -856,8 +850,8 @@ class TestResumeSprintIntegration:
             worktree_path=None,
         )
 
-        with patch("theforge.sprint._triage_spec", return_value=merged_triage):
-            with patch("theforge.sprint.run_task") as mock_run:
+        with patch("theforge.sprint.runner._triage_spec", return_value=merged_triage):
+            with patch("theforge.sprint.runner.run_task") as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
         mock_run.assert_not_called()
@@ -881,9 +875,11 @@ class TestResumeSprintIntegration:
         )
         coord_result = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint._triage_spec", return_value=dev_triage):
-            with patch("theforge.sprint.run_from_dev", return_value=coord_result) as mock_dev:
-                with patch("theforge.sprint.run_task") as mock_task:
+        with patch("theforge.sprint.runner._triage_spec", return_value=dev_triage):
+            with patch(
+                "theforge.sprint.runner.run_from_dev", return_value=coord_result
+            ) as mock_dev:
+                with patch("theforge.sprint.runner.run_task") as mock_task:
                     result = run_sprint(config, manifest_path, resume=True)
 
         mock_dev.assert_called_once()
@@ -922,8 +918,8 @@ class TestResumeSprintIntegration:
                 return merged_triage
             return full_triage
 
-        with patch("theforge.sprint._triage_spec", side_effect=triage_side_effect):
-            with patch("theforge.sprint.run_task") as mock_run:
+        with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.runner.run_task") as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
         # Merged spec should be succeeded, not budget-skipped
@@ -948,9 +944,11 @@ class TestResumeSprintIntegration:
         )
         coord_result = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint._triage_spec", return_value=review_triage):
-            with patch("theforge.sprint.run_from_review", return_value=coord_result) as mock_rev:
-                with patch("theforge.sprint.run_task") as mock_task:
+        with patch("theforge.sprint.runner._triage_spec", return_value=review_triage):
+            with patch(
+                "theforge.sprint.runner.run_from_review", return_value=coord_result
+            ) as mock_rev:
+                with patch("theforge.sprint.runner.run_task") as mock_task:
                     result = run_sprint(config, manifest_path, resume=True)
 
         mock_rev.assert_called_once()
@@ -978,8 +976,8 @@ class TestResumeSprintIntegration:
         )
         coord_result = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint._triage_spec", return_value=full_triage):
-            with patch("theforge.sprint.run_task", return_value=coord_result):
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result):
                 result = run_sprint(config, manifest_path, resume=True)
 
         # total should be prior (3.50) + new (1.00)
@@ -1005,8 +1003,8 @@ class TestResumeSprintIntegration:
             worktree_path=None,
         )
 
-        with patch("theforge.sprint._triage_spec", return_value=full_triage):
-            with patch("theforge.sprint.run_task") as mock_run:
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.runner.run_task") as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
         # Spec should be skipped — prior cost alone exceeds budget
@@ -1022,8 +1020,8 @@ class TestResumeSprintIntegration:
         config = _make_config(tmp_path)
         coord_result = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint._triage_spec") as mock_triage:
-            with patch("theforge.sprint.run_task", return_value=coord_result) as mock_task:
+        with patch("theforge.sprint.runner._triage_spec") as mock_triage:
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_task:
                 result = run_sprint(config, manifest_path, resume=False)
 
         mock_triage.assert_not_called()
@@ -1068,7 +1066,7 @@ class TestSprintDependencies:
         # Spec A succeeds but does NOT merge (merge=None)
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             result = run_sprint(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 1  # only spec-a ran (spec-b skipped, no more specs)
@@ -1086,7 +1084,9 @@ class TestSprintDependencies:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             result = run_sprint(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 2
@@ -1103,7 +1103,9 @@ class TestSprintDependencies:
         result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
         result_b = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             result = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 2
@@ -1139,8 +1141,8 @@ class TestSprintDependencies:
                 return merged_triage
             return full_triage
 
-        with patch("theforge.sprint._triage_spec", side_effect=triage_side_effect):
-            with patch("theforge.sprint.run_task", return_value=result_b) as mock_run:
+        with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
         # spec-a was skip_merged (counted as succeeded), spec-b ran successfully
@@ -1176,8 +1178,8 @@ class TestSprintDependencies:
                 return approved_triage
             return full_triage
 
-        with patch("theforge.sprint._triage_spec", side_effect=triage_side_effect):
-            with patch("theforge.sprint.run_task", return_value=result_b) as mock_run:
+        with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
         # spec-a was skip (prior APPROVE) — should satisfy dep so spec-b runs
@@ -1198,7 +1200,9 @@ class TestSprintDependencies:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result_c = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_c]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_c]
+        ) as mock_run:
             result = run_sprint(config, manifest_path)
 
         # A ran, B was skipped (dependency failed), C still ran
@@ -1217,7 +1221,9 @@ class TestSprintDependencies:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             run_sprint(config, manifest_path, auto_merge=False)
 
         # First call (spec-a) must have auto_merge=True due to eager merge
@@ -1236,7 +1242,9 @@ class TestSprintDependencies:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             run_sprint(config, manifest_path, auto_merge=False)
 
         # Neither call should override auto_merge
@@ -1255,7 +1263,9 @@ class TestSprintDependencies:
         )
         result_b = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             result = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 2  # both specs ran
@@ -1356,7 +1366,7 @@ class TestMaxParallelPrecedence:
         manifest_path = self._make_manifest(tmp_path, max_parallel=2)
         config = _make_config_with_sprint(tmp_path, sprint_max_parallel=3)
 
-        with patch("theforge.sprint.run_task") as mock_run:
+        with patch("theforge.sprint.runner.run_task") as mock_run:
             mock_run.return_value = _make_coordinator_result(success=True)
             run_sprint(config, manifest_path)
 
@@ -1369,7 +1379,7 @@ class TestMaxParallelPrecedence:
         manifest_path = self._make_manifest(tmp_path, max_parallel=None)
         config = _make_config_with_sprint(tmp_path, sprint_max_parallel=3)
 
-        with patch("theforge.sprint.run_task") as mock_run:
+        with patch("theforge.sprint.runner.run_task") as mock_run:
             mock_run.return_value = _make_coordinator_result(success=True)
             result = run_sprint(config, manifest_path)
 
@@ -1381,7 +1391,7 @@ class TestMaxParallelPrecedence:
         manifest_path = self._make_manifest(tmp_path, max_parallel=None)
         config = _make_config(tmp_path)  # SprintConfig defaults to max_parallel=1
 
-        with patch("theforge.sprint.run_task") as mock_run:
+        with patch("theforge.sprint.runner.run_task") as mock_run:
             mock_run.return_value = _make_coordinator_result(success=True)
             run_sprint(config, manifest_path)
 
@@ -1538,7 +1548,7 @@ class TestParallelIndependentStories:
             _make_coordinator_result(success=True, cost=1.0),
         ]
 
-        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 3
@@ -1568,7 +1578,7 @@ class TestParallelIndependentStories:
             _make_coordinator_result(success=True, cost=1.0),
         ]
 
-        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 3
@@ -1594,7 +1604,7 @@ class TestParallelIndependentStories:
             _make_coordinator_result(success=True, cost=1.0),
         ]
 
-        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
             run_sprint(config, manifest_path, auto_merge=True)
 
         # In parallel mode, workers get auto_merge=False; merging is done in main thread
@@ -1618,7 +1628,7 @@ class TestParallelDependencyGating:
         # A succeeds but does NOT merge → B should be skipped
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1  # only A ran
@@ -1640,7 +1650,9 @@ class TestParallelDependencyGating:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
         result_b = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 2
@@ -1660,7 +1672,7 @@ class TestParallelDependencyGating:
 
         result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
@@ -1693,7 +1705,9 @@ class TestParallelBudgetPooling:
         result_a = _make_coordinator_result(success=True, cost=1.0)
         result_b = _make_coordinator_result(success=True, cost=1.0)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         # C was budget-skipped; A and B both ran (both submitted before cost accumulated)
@@ -1716,7 +1730,7 @@ class TestParallelBudgetPooling:
 
         result_a = _make_coordinator_result(success=True, cost=1.5)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
@@ -1807,7 +1821,9 @@ class TestMergeOrdering:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a, result_b]) as mock_run:
+        with patch(
+            "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
+        ) as mock_run:
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 2
@@ -1834,7 +1850,7 @@ class TestMaxParallel1Fallback:
             _make_coordinator_result(success=True, cost=2.0),
         ]
 
-        with patch("theforge.sprint.run_task", side_effect=results) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 3
@@ -1859,7 +1875,7 @@ class TestMaxParallel1Fallback:
         # A succeeds but does NOT merge → B should be skipped (same as old behavior)
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
-        with patch("theforge.sprint.run_task", side_effect=[result_a]) as mock_run:
+        with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
@@ -1928,7 +1944,7 @@ class TestWorkerExceptionHandling:
         result_b = _make_coordinator_result(success=True, cost=1.0)
 
         with patch(
-            "theforge.sprint.run_task",
+            "theforge.sprint.runner.run_task",
             side_effect=[RuntimeError("agent crashed"), result_b],
         ):
             sprint = run_sprint(config, manifest_path)
@@ -1950,7 +1966,7 @@ class TestWorkerExceptionHandling:
         config = _make_config(tmp_path)
 
         with patch(
-            "theforge.sprint.run_task",
+            "theforge.sprint.runner.run_task",
             side_effect=[RuntimeError("agent crashed")],
         ):
             sprint = run_sprint(config, manifest_path)
@@ -1987,8 +2003,8 @@ class TestParallelMergeOrderingParallelMode:
             return {"merged": True}
 
         with (
-            patch("theforge.sprint.run_task", side_effect=[result_a, result_b]),
-            patch("theforge.sprint._merge_branch", side_effect=_fake_merge),
+            patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]),
+            patch("theforge.sprint.runner._merge_branch", side_effect=_fake_merge),
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 

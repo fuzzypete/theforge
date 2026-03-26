@@ -32,11 +32,9 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import os
 import signal
 import subprocess
 import sys as _sys
-import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -90,6 +88,14 @@ from .gate import (  # noqa: F401
     _run_gate,
     _run_gate_full,
 )
+from .log_tee import (  # noqa: E402, F401
+    _begin_run_log_tee,
+    _end_run_log_tee,
+    _make_story_log_dir,
+    _safe_signal,
+    _TeeStderr,
+    _write_log_artifact,
+)
 
 # ── Structured logging ────────────────────────────────────────────────
 from .logging import StructuredLogger  # noqa: F401
@@ -101,14 +107,16 @@ from .notify import (  # noqa: F401
     _notify,
     _ntfy_crash_notify,
     _ntfy_done_notify,
+    _osa_quote,
+    _plan_review_interactive,
+)
+from .ntfy_client import (  # noqa: F401
     _ntfy_poll_reply,
     _ntfy_publish,
     _ntfy_reply_url,
-    _osa_quote,
+)
+from .pending_hitl import (  # noqa: F401
     _pending_plan_review,
-    _plan_review_interactive,
-    _plan_review_remote,
-    _remote_human_review,
 )
 from .preflight import (  # noqa: F401
     _apply_complexity_adaptation,
@@ -120,6 +128,15 @@ from .preflight import (  # noqa: F401
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _persistent_p1_descriptions,
+)
+from .remote_gates import (  # noqa: F401
+    _plan_review_remote,
+    _remote_human_review,
+)
+from .signals import (  # noqa: E402, F401
+    _fire_post_run_hook,
+    _make_sigterm_handler,
+    _set_timeout_resume,
 )
 
 # ── Re-exports for backward compatibility ────────────────────────────
@@ -186,213 +203,6 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
     if LogLevel is None:
         LogLevel = _r.LogLevel
-
-
-# ── Story log directory helpers ───────────────────────────────────────
-
-
-def _safe_signal(signum, handler):
-    """Register a signal handler only from the main thread.
-
-    Worker threads (e.g. parallel sprint) cannot register signal handlers.
-    Returns the previous handler if registered, or None if skipped.
-    """
-    if threading.current_thread() is threading.main_thread():
-        return signal.signal(signum, handler)
-    return None
-
-
-def _make_story_log_dir(
-    config: "ForgeConfig",
-    task_slug: str,
-    sprint_name: "str | None" = None,
-) -> "Path | None":
-    """Create and return the per-story log directory under <project_root>/.forge/logs/.
-
-    For sprint runs: <project_root>/.forge/logs/<sprint-name>/<slug>/
-    For standalone runs: <project_root>/.forge/logs/<slug>/
-
-    Returns the created Path on success, or None on failure (best-effort).
-    """
-    try:
-        if sprint_name:
-            log_dir = config.project_root / ".forge" / "logs" / sprint_name / task_slug
-        else:
-            log_dir = config.project_root / ".forge" / "logs" / task_slug
-        log_dir.mkdir(parents=True, exist_ok=True)
-        return log_dir
-    except Exception:
-        return None
-
-
-def _write_log_artifact(log_dir: "Path | None", relative_path: str, content: str) -> None:
-    """Write content to <log_dir>/<relative_path>. Best-effort; never raises."""
-    if log_dir is None:
-        return
-    try:
-        dest = log_dir / relative_path
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(content, encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001
-        _cu._log(f"Warning: log artifact write failed for {relative_path}: {exc}")
-
-
-# ── Per-run log tee ──────────────────────────────────────────────────
-
-
-class _TeeStderr:
-    """Write-through wrapper that copies every stderr write to a log file."""
-
-    def __init__(self, original: object, log_fh: object) -> None:
-        self._orig = original
-        self._fh = log_fh
-
-    def write(self, s: str) -> int:
-        self._orig.write(s)
-        try:
-            self._fh.write(s)
-            self._fh.flush()
-        except Exception:
-            pass  # best-effort; never crash the coordinator
-        return len(s)
-
-    def flush(self) -> None:
-        self._orig.flush()
-        try:
-            self._fh.flush()
-        except Exception:
-            pass
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._orig, name)
-
-
-def _begin_run_log_tee(
-    config: "ForgeConfig",
-    logger: "StructuredLogger",
-    task_slug: str,
-    log_dir: "Path | None" = None,
-) -> "tuple[object, object] | None":
-    """Open per-run log file and install tee on sys.stderr.
-
-    Returns (fh, orig_stderr) on success, or None if logging is disabled or
-    the file cannot be opened (best-effort; never raises).
-    """
-    if not config.log.enabled:
-        return None
-    if threading.current_thread() is not threading.main_thread():
-        return None  # skip in worker threads; parallel sprints avoid cross-story tee stacking
-    try:
-        if log_dir is not None:
-            per_run_path = log_dir / f"run-{logger._run_id}.log"
-        else:
-            per_run_path = logger._log_path.parent / f"{task_slug}-{logger._run_id}.log"
-        per_run_path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(per_run_path, "a", encoding="utf-8")  # noqa: SIM115
-        orig = _sys.stderr
-        _sys.stderr = _TeeStderr(orig, fh)
-        return (fh, orig)
-    except Exception:
-        return None
-
-
-def _end_run_log_tee(tee_state: "tuple[object, object] | None") -> None:
-    """Restore sys.stderr and close the per-run log file."""
-    if tee_state is None:
-        return
-    fh, orig = tee_state
-    try:
-        _sys.stderr = orig
-        fh.close()
-    except Exception:
-        pass
-
-
-def _make_sigterm_handler(
-    logger: "StructuredLogger",
-    tee_state: "tuple[object, object] | None",
-    prev_handler: object,
-    state: "CoordinatorState | None" = None,
-    task_start: float = 0.0,
-    task: "TaskSpec | None" = None,
-    config: "ForgeConfig | None" = None,
-) -> object:
-    """Return a SIGTERM handler that emits run_end:crashed, closes the tee, and re-raises.
-
-    Note on SIGKILL: SIGKILL (signal 9) cannot be intercepted by user-space code on
-    any POSIX operating system — the kernel delivers it unconditionally without calling
-    signal handlers. Crash diagnostics therefore cover SIGTERM only. SIGKILL kills are
-    not observable by this handler.
-    """
-
-    def _handler(signum: int, frame: object) -> None:
-        uptime = time.monotonic() - task_start
-        try:
-            sig_name = signal.Signals(signum).name
-        except (ValueError, AttributeError):
-            sig_name = str(signum)
-        extra: dict[str, object] = {
-            "signal": signum,
-            "signal_name": sig_name,
-            "uptime_seconds": round(uptime, 1),
-        }
-        if state is not None:
-            extra["phase_at_crash"] = state.phase.name if state.phase is not None else "UNKNOWN"
-            extra["iteration_at_crash"] = state.dev_iteration
-            extra["cost_at_crash"] = round(state.total_cost, 6)
-        extra["last_event"] = logger.last_event
-        logger._safe_emit("run_end", outcome="crashed", **extra)
-        if state is not None and task is not None and config is not None:
-            try:
-                _ntfy_crash_notify(task, state, config, uptime)
-            except Exception:
-                pass
-        _end_run_log_tee(tee_state)
-        # Restore the previous handler before re-raising so we don't recurse.
-        try:
-            _safe_signal(signal.SIGTERM, prev_handler or signal.SIG_DFL)
-        except Exception:
-            pass
-        os.kill(os.getpid(), signum)
-
-    return _handler
-
-
-# ── Shell helper ─────────────────────────────────────────────────────
-
-
-def _set_timeout_resume(state: CoordinatorState, gate_result: str) -> None:
-    """Mark state for a timeout-resume retry with a short continuation prompt."""
-    state.retry_reason = "timeout_resume"
-    state.human_feedback = (
-        "You were cut off by a timeout. Continue from where you left off. "
-        f"Gate result: {gate_result}"
-    )
-
-
-def _fire_post_run_hook(
-    config: "ForgeConfig",
-    state: "CoordinatorState",
-    task: "TaskSpec",
-    result: "CoordinatorResult",
-    run_id: str,
-    elapsed: float,
-    logger: "StructuredLogger | None",
-) -> None:
-    """Fire the post_run lifecycle hook if configured. Best-effort; never raises."""
-    if not (config.hooks and config.hooks.post_run):
-        return
-    from .hooks import build_post_run_payload
-    from .hooks import run_hook as _run_hook
-
-    _run_hook(
-        config.hooks.post_run,
-        build_post_run_payload(state, config, task, result, run_id, elapsed),
-        config.hooks.timeout_seconds,
-        "post_run",
-        logger,
-        secrets=config.secrets,
-    )
 
 
 def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:

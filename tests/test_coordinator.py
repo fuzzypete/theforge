@@ -5005,7 +5005,7 @@ class TestPerRunLogCapture:
         import sys
         import threading
 
-        from theforge.coordinator.engine import _begin_run_log_tee
+        from theforge.coordinator.log_tee import _begin_run_log_tee
         from theforge.coordinator.logging import StructuredLogger
 
         log_dir = tmp_path / "logs"
@@ -5040,7 +5040,7 @@ class TestPerRunLogCapture:
         """_begin_run_log_tee installs tee when called from the main thread."""
         import sys
 
-        from theforge.coordinator.engine import _begin_run_log_tee, _end_run_log_tee
+        from theforge.coordinator.log_tee import _begin_run_log_tee, _end_run_log_tee
         from theforge.coordinator.logging import StructuredLogger
 
         log_dir = tmp_path / "logs"
@@ -5207,8 +5207,8 @@ class TestProjectLocalLogDir:
             return _FakeResult()
 
         with (
-            patch("theforge.sprint.run_task", side_effect=_fake_run_task),
-            patch("theforge.sprint.generate_audit_log", return_value={"task": {}}),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.runner.generate_audit_log", return_value={"task": {}}),
         ):
             run_sprint(config, manifest_path)
 
@@ -5679,7 +5679,7 @@ class TestSigtermHandler:
 
         with (
             patch("os.kill"),
-            patch("theforge.coordinator.engine._ntfy_crash_notify") as mock_crash_notify,
+            patch("theforge.coordinator.notify._ntfy_crash_notify") as mock_crash_notify,
         ):
             handler(_signal.SIGTERM, None)
 

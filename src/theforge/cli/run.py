@@ -29,7 +29,7 @@ from theforge.coordinator.engine import set_log_level as coordinator_set_log_lev
 from theforge.coordinator.state import parse_phase_name
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
-from theforge.sprint import _triage_spec
+from theforge.sprint.dag import _triage_spec
 
 
 def cmd_run(args: "argparse.Namespace") -> int:
