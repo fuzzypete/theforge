@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from theforge.agent_types import AgentResult, ModelUsage
-from theforge.runners.cli import _log, _log_verbose
+from theforge.runners.cli import _log
 from theforge.runners.loop_manager import (
     _RESPONSES_API_MODELS,
     AgentLoopManager,

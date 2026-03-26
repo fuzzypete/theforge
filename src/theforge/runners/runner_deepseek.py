@@ -69,7 +69,6 @@ def _make_deepseek_finalizer(
     DeepSeek's Chat Completions API supports JSON mode (json_object) but not
     structured output (json_schema).  Using json_schema returns HTTP 400.
     """
-    from theforge.agent_types import ModelUsage
     from theforge.runners.runner_openai import (
         _make_openai_usage,
         _translate_messages_openai_chat,
@@ -129,8 +128,8 @@ def _run_loop_deepseek(
     secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run DeepSeek provider in agent loop mode (OpenAI Chat Completions)."""
-    from theforge.runners.submit_tools import _build_registry_tools, _build_submit_tools_openai
     from theforge.runners.runner_openai import _make_openai_chat_adapter
+    from theforge.runners.submit_tools import _build_registry_tools, _build_submit_tools_openai
 
     client = _deepseek_client(profile, secrets)
     tools = _build_registry_tools(profile)

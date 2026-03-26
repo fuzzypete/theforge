@@ -17,14 +17,12 @@ from typing import TYPE_CHECKING, Callable
 
 from theforge.agent_types import AgentResult
 from theforge.runners.runner_anthropic import _run_anthropic, _run_loop_anthropic
-from theforge.runners.runner_deepseek import _deepseek_client, _run_deepseek, _run_loop_deepseek
+from theforge.runners.runner_deepseek import _run_deepseek, _run_loop_deepseek
 from theforge.runners.runner_google import (
-    _make_google_adapter,
     _run_google,
     _run_loop_google,
-    _sanitize_schema_for_google,
 )
-from theforge.runners.runner_openai import _openai_result, _run_loop_openai, _run_openai
+from theforge.runners.runner_openai import _run_loop_openai, _run_openai
 
 if TYPE_CHECKING:
     pass
