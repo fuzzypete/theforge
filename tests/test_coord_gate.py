@@ -238,7 +238,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coordinator.phase_review.subprocess.run") as mock_subprocess:
             result = run_task(config, task)
 
         assert result.success is True
@@ -292,7 +292,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coordinator.phase_review.subprocess.run") as mock_subprocess:
             result = run_task(config, task)
 
         assert result.success is True
@@ -401,7 +401,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.phases.subprocess.run") as mock_subprocess:
+        with patch("theforge.coordinator.phase_review.subprocess.run") as mock_subprocess:
             result = run_task(config, task)
 
         assert result.success is True
@@ -447,7 +447,7 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.phases.subprocess.run"):
+        with patch("theforge.coordinator.phase_review.subprocess.run"):
             result = run_task(config, task)
 
         assert result.success is True
@@ -535,7 +535,7 @@ class TestDevZeroChangeGuard:
             return result
 
         with patch(
-            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+            "theforge.coordinator.phase_review.subprocess.run", side_effect=subprocess_side_effect
         ):
             result = run_task(config, task)
 
@@ -600,7 +600,7 @@ class TestDevZeroChangeGuard:
             return result
 
         with patch(
-            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+            "theforge.coordinator.phase_review.subprocess.run", side_effect=subprocess_side_effect
         ):
             result = run_task(config, task)
 
@@ -664,7 +664,7 @@ class TestDevZeroChangeGuard:
             return r
 
         with patch(
-            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+            "theforge.coordinator.phase_review.subprocess.run", side_effect=subprocess_side_effect
         ):
             result = run_task(config, task)
 
@@ -754,7 +754,7 @@ class TestDevZeroChangeGuard:
             return r
 
         with patch(
-            "theforge.coordinator.phases.subprocess.run", side_effect=subprocess_side_effect
+            "theforge.coordinator.phase_review.subprocess.run", side_effect=subprocess_side_effect
         ):
             result = run_task(config, task)
 
@@ -1741,7 +1741,7 @@ class TestCreatePR:
             raw_yaml={},
         )
 
-    @patch("theforge.coordinator.phases.subprocess.run")
+    @patch("theforge.coordinator.phase_review.subprocess.run")
     def test_push_before_pr_create(self, mock_run, tmp_path):
         """_create_pr pushes branch before calling gh pr create."""
         from theforge.coordinator.phases import _create_pr
@@ -1781,7 +1781,7 @@ class TestCreatePR:
         pr_call = mock_run.call_args_list[1]
         assert pr_call[0][0][:3] == ["gh", "pr", "create"]
 
-    @patch("theforge.coordinator.phases.subprocess.run")
+    @patch("theforge.coordinator.phase_review.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):
         """If git push fails, _create_pr returns failure without calling gh."""
         from theforge.coordinator.phases import _create_pr

@@ -1871,7 +1871,7 @@ class TestCoordinatorSessionResume:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.phases.subprocess.run"):
+        with patch("theforge.coordinator.phase_review.subprocess.run"):
             result = run_task(config, task)
 
         assert result.success is True
@@ -5365,7 +5365,7 @@ class TestEscalateGate:
                 message="human approved via escalate gate",
             )
 
-        with patch("theforge.coordinator.phases._run_escalate_gate", side_effect=mock_gate):
+        with patch("theforge.coordinator.phase_review._run_escalate_gate", side_effect=mock_gate):
             mock_agent2 = mock_agent
             mock_pool2 = mock_pool
             mock_agent2.side_effect = _preflight_then(
@@ -5407,7 +5407,7 @@ class TestEscalateGate:
                 message="human approved via escalate gate",
             )
 
-        with patch("theforge.coordinator.phases._run_escalate_gate", side_effect=mock_gate):
+        with patch("theforge.coordinator.phase_review._run_escalate_gate", side_effect=mock_gate):
             mock_agent.side_effect = _preflight_then(
                 _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             )
@@ -5446,7 +5446,7 @@ class TestEscalateGate:
                 message="escalated",
             )
 
-        with patch("theforge.coordinator.phases._run_escalate_gate", side_effect=mock_gate):
+        with patch("theforge.coordinator.phase_review._run_escalate_gate", side_effect=mock_gate):
             mock_agent.side_effect = _preflight_then(
                 _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
             )
@@ -5497,7 +5497,7 @@ class TestEscalateGate:
                 message="escalated after continue",
             )
 
-        with patch("theforge.coordinator.phases._run_escalate_gate", side_effect=mock_gate):
+        with patch("theforge.coordinator.phase_review._run_escalate_gate", side_effect=mock_gate):
             mock_agent.side_effect = _preflight_then(
                 # DEV for cycle 1, DEV for continue cycle
                 _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
