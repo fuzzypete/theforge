@@ -48,7 +48,6 @@ from theforge.artifacts import (
     resolve_plan_path,
 )
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
-from theforge.devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
 from theforge.review import (  # noqa: F401
     PlanReviewResult,
     ReviewResult,
@@ -230,123 +229,8 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"ERROR: {e}"
 
 
-# ── Commit log extraction ──────────────────────────────────────────
-
-
-def _has_uncommitted_changes(workspace_path: Path) -> bool:
-    """Check if the worktree has uncommitted changes (staged or unstaged)."""
-    ok, status = _cu._run_shell("git status --porcelain", workspace_path)
-    return ok and bool(status.strip())
-
-
-def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
-    """Get the commit log vs the base branch (like a PR commit list).
-
-    If the worktree has uncommitted changes, appends a warning so reviewers
-    know the commits don't tell the full story.
-    """
-    dirty = _has_uncommitted_changes(workspace_path)
-
-    ok, log = _cu._run_shell(
-        f"git log {base_branch}..HEAD --format='%h %s' --reverse", workspace_path
-    )
-
-    parts: list[str] = []
-    if ok and log:
-        parts.append(log)
-    else:
-        parts.append("(no commits ahead of base branch)")
-
-    if dirty:
-        parts.append(
-            "\n⚠ WARNING: Worktree has uncommitted changes not reflected above. "
-            "Run `git diff` and `git diff --cached` to see them."
-        )
-
-    return "\n".join(parts)
-
-
-def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
-    """Read the configured handoff content as text for the reviewer."""
-    if not config.validation.handoff_file:
-        return "(exit-code gate mode — no handoff file)"
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is not None and handoff_path.exists():
-        return handoff_path.read_text(encoding="utf-8")
-    return f"({config.validation.handoff_file} not found)"
-
-
-def _get_raw_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
-    """Extract raw dev_notes from the configured handoff file, or None if absent."""
-    if not config.validation.handoff_file:
-        return None
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is None or not handoff_path.exists():
-        return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(handoff_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    val = data.get("dev_notes")
-    if isinstance(val, str) and val.strip():
-        return val
-    return None
-
-
-def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff | None:
-    """Parse and validate the dev handoff from the configured handoff file.
-
-    Returns None only when there's no handoff file at all (exit-code gate mode).
-    Returns DevHandoff with parse_errors when dev_notes is missing/blank or
-    fails schema validation — so the retry loop can request a rewrite.
-    """
-    if not config.validation.handoff_file:
-        return None
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is None or not handoff_path.exists():
-        return None
-    raw = _get_raw_dev_notes(config, workspace_path)
-    if raw is None:
-        try:
-            handoff_label = str(handoff_path.relative_to(workspace_path))
-        except ValueError:
-            handoff_label = str(handoff_path)
-        return DevHandoff(
-            summary="",
-            commits=[],
-            acceptance_criteria=[],
-            story_deviations=[],
-            deferred_items=[],
-            gate_result="",
-            parse_errors=[f"dev_notes field is missing or blank in {handoff_label}"],
-            raw={},
-        )
-    return parse_dev_handoff(raw)
-
-
-def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
-    """Extract dev_notes from the configured handoff file as reviewer text.
-
-    If the dev handoff is valid structured YAML, formats it as structured
-    markdown sections. Falls back to raw text if parsing fails.
-    """
-    raw = _get_raw_dev_notes(config, workspace_path)
-    if raw is None:
-        return None
-    handoff = parse_dev_handoff(raw)
-    if handoff.parse_errors:
-        # Fall back to raw text when structured parsing fails
-        return raw
-    formatted = dev_handoff_to_reviewer_text(handoff)
-    return formatted if formatted else raw
-
-
+# ── Commit log / handoff context (moved to review_context.py) ─────────
 # ── Phase handlers (extracted to coord_phases.py) ────────────────────
-
 from .phases import (  # noqa: E402, F401
     _finalize_approve,
     _ReviewOutcome,
@@ -355,6 +239,14 @@ from .phases import (  # noqa: E402, F401
 from .phases import _run_dev_phase as _run_dev_phase_impl  # noqa: E402
 from .phases import _run_review_phase as _run_review_phase_impl  # noqa: E402
 from .phases import _run_validate_phase as _run_validate_phase_impl  # noqa: E402
+from .review_context import (  # noqa: E402, F401
+    _get_commit_log,
+    _get_dev_notes,
+    _get_handoff_content,
+    _get_raw_dev_notes,
+    _has_uncommitted_changes,
+    _parse_dev_handoff,
+)
 
 
 def _run_dev_phase(
@@ -435,6 +327,10 @@ def _run_validate_phase(
     )
 
 
+# ── Review pool (moved to review_pool.py) ─────────────────────────
+from .review_pool import _run_review_pool as _run_review_pool_impl  # noqa: E402
+
+
 def _run_review_pool(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -450,306 +346,22 @@ def _run_review_pool(
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
 ) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
-    """Run the review pool and merge results.
-
-    Returns (successful, failed, merged_result, individual_parsed, named_parsed).
-
-    Updates *meta* in-place (successful, failed, failed_detail, parse_retries).
-    merged_result is None when all reviewers failed or budget exceeded;
-    in that case state.phase and state.error are already set — caller
-    just needs to call _escalate_notify and return a CoordinatorResult.
-
-    individual_parsed contains per-reviewer ReviewResult objects that passed
-    schema validation (after per-reviewer retries).  Callers use this for
-    best-individual fallback when the merged result has parse errors.
-
-    named_parsed contains (profile_name, ReviewResult) pairs aligned 1:1 with
-    successful agents (before parse-error filtering).  Used for PR review
-    attribution in build_post_run_payload().
-
-    When multiple reviewers succeed, results are merged deterministically:
-    strictest verdict wins, findings are unioned. No LLM synthesis call.
-
-    Per-reviewer parse retries: for each reviewer whose initial output has parse
-    errors, up to max_review_parse_retries corrective prompts are sent via
-    run_agent (all modes — API and CLI).  meta.parse_retries accumulates the
-    sum of all per-reviewer retries attempted.
-
-    Args:
-        review_prompts: Pre-built prompts. If None, builds them (with role-aware
-            prompts when review_role is configured). Pass explicitly to control
-            prompt construction (e.g. run_review_only always uses generic prompts).
-        enforce_budgets: When True (default), enforces per-profile budgets.
-            When False (run_review_only), skips budget checks.
-        max_review_parse_retries: Per-reviewer parse retry budget.
-    """
-    pool_size = len(config.review_pool)
-
-    if review_prompts is None:
-        commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
-        handoff_content = _get_handoff_content(config, workspace_path)
-        dev_notes = _get_dev_notes(config, workspace_path)
-
-        review_prompts = (
-            [
-                build_review_prompt(
-                    task,
-                    story_content=story_content,
-                    commit_log=commit_log,
-                    workspace_path=str(workspace_path),
-                    branch=branch_name,
-                    handoff_content=handoff_content,
-                    mode=p.mode,
-                    review_role=p.review_role,
-                    dev_notes=dev_notes,
-                    cycle_history=state.cycle_history if state.cycle_history else None,
-                )
-                for p in config.review_pool
-            ]
-            if any(p.review_role for p in config.review_pool)
-            else build_review_prompt(
-                task,
-                story_content=story_content,
-                commit_log=commit_log,
-                workspace_path=str(workspace_path),
-                branch=branch_name,
-                handoff_content=handoff_content,
-                mode=config.review_pool[0].mode,
-                dev_notes=dev_notes,
-                cycle_history=state.cycle_history if state.cycle_history else None,
-            )
-        )
-    _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
-    _pool_start = time.monotonic()
-    pool_session_ids = [state.reviewer_session_ids.get(p.name) for p in config.review_pool]
-    for _p, _sid in zip(config.review_pool, pool_session_ids):
-        _tag = f"resuming {_sid[:8]}" if _sid else "new session"
-        _log_verbose(f"  reviewer {_p.name}: {_tag}")
-    pool_results = run_agent_pool(
-        prompt=review_prompts,
-        profiles=config.review_pool,
-        working_dir=workspace_path,
-        session_ids=pool_session_ids,
-        secrets=config.secrets,
-    )
-    _pool_elapsed = time.monotonic() - _pool_start
-    for profile, result in zip(config.review_pool, pool_results):
-        if result.session_id:
-            state.reviewer_session_ids[profile.name] = result.session_id
-    save_sessions(
+    """Thin wrapper: delegates to review_pool._run_review_pool with this module as mod."""
+    return _run_review_pool_impl(
+        state,
+        config,
+        task,
+        story_content,
         workspace_path,
-        state.dev_session_id,
-        state.reviewer_session_ids,
-        state.plan_review_session_ids,
+        branch_name,
+        meta,
+        notify=notify,
+        review_prompts=review_prompts,
+        enforce_budgets=enforce_budgets,
+        pool_attempt=pool_attempt,
+        max_review_parse_retries=max_review_parse_retries,
+        mod=_sys.modules[__name__],
     )
-    _per_agent_dur = _pool_elapsed / max(len(pool_results), 1)
-    _cycle_num = state.review_cycle + 1
-    for r in pool_results:
-        state.review_agent_results.append(r)
-        state.review_durations.append(_per_agent_dur)
-        log_agent_result(r, f"REVIEW/{r.profile_name}")
-        write_trace(
-            workspace_path
-            / ".forge/traces"
-            / f"{_cycle_num}-{pool_attempt}-review-{r.profile_name}.txt",
-            r.output,
-        )
-        # Write raw reviewer output to durable story log dir
-        _write_log_artifact(
-            state.log_dir,
-            f"review-cycle-{_cycle_num}/{r.profile_name}.yaml",
-            r.output or "",
-        )
-
-    # Per-profile budget enforcement BEFORE synthesis — exclude over-budget
-    # reviewers from this cycle's results rather than killing the whole run.
-    _budget_excluded: set[str] = set()
-    if enforce_budgets:
-        for profile in config.review_pool:
-            profile_cost = sum(
-                r.cost_usd if r.cost_usd is not None else 0.0
-                for r in state.review_agent_results
-                if r.profile_name == profile.name
-            )
-            if profile_cost > profile.budget_usd:
-                _log(
-                    f"  ⚠ {profile.name} over budget: "
-                    f"${profile_cost:.4f} > ${profile.budget_usd:.4f} — "
-                    f"excluding from this cycle"
-                )
-                _budget_excluded.add(profile.name)
-
-    if _budget_excluded:
-        pool_results = [r for r in pool_results if r.profile_name not in _budget_excluded]
-        if not pool_results:
-            # All reviewers excluded — escalate
-            state.phase = Phase.ESCALATE
-            _excluded = ", ".join(sorted(_budget_excluded))
-            state.error = f"All reviewers over budget ({_excluded}) — no reviews to synthesize"
-            return [], [], None, [], []
-
-    successful = [r for r in pool_results if r.success]
-    failed_results = [r for r in pool_results if not r.success]
-
-    for f in failed_results:
-        _log_verbose(f"Pool reviewer failed: {f.profile_name} (exit={f.exit_code})")
-
-    meta.successful = [r.profile_name for r in successful]
-    meta.failed = [r.profile_name for r in failed_results]
-    meta.failed_detail = {
-        r.profile_name: (
-            f"exit={r.exit_code}: {r.output[:200].strip()}" if r.output else f"exit={r.exit_code}"
-        )
-        for r in failed_results
-    }
-
-    if not successful:
-        state.phase = Phase.ESCALATE
-        failed_desc = ", ".join(f"{r.profile_name} (exit={r.exit_code})" for r in failed_results)
-        state.error = f"All {len(pool_results)} review agent(s) failed: {failed_desc}"
-        return successful, failed_results, None, [], []
-
-    _synthesis_path = (
-        workspace_path / ".forge/traces" / f"{_cycle_num}-{pool_attempt}-synthesis.txt"
-    )
-
-    # ── Parse initial outputs ─────────────────────────────────────────
-    parsed_results: list[ReviewResult] = []
-    for r in successful:
-        if r.structured_data:
-            parsed_results.append(parse_review_json(r.structured_data))
-        else:
-            parsed_results.append(parse_review_output(r.output))
-    names = [r.profile_name for r in successful]
-
-    # ── Per-reviewer parse retry (all modes) ─────────────────────────
-    # For each reviewer whose initial output has parse errors, send a corrective
-    # prompt via run_agent up to max_review_parse_retries times.
-    # meta.parse_retries accumulates the sum of per-reviewer retries attempted.
-    _profile_by_name = {p.name: p for p in config.review_pool}
-    _corrective_yaml_structure = (
-        "verdict: APPROVE | REQUEST_CHANGES\n"
-        'summary: "one-line summary"\n'
-        "findings:\n"
-        "  - severity: P1 | P2\n"
-        '    file: "path"\n'
-        "    line: <number or null>\n"
-        '    description: "what is wrong"\n'
-        '    suggestion: "how to fix"\n'
-        "story_compliance:\n"
-        "  matches_spec: true | false\n"
-        "  mismatches: []\n"
-        "test_coverage:\n"
-        "  adequate: true | false\n"
-        "  gaps: []\n"
-    )
-    for i, (name, parsed) in enumerate(zip(names, parsed_results)):
-        if not parsed.parse_errors:
-            continue
-        _prof = _profile_by_name.get(name)
-        if _prof is None:
-            continue
-        # Capture original AgentResult for this reviewer (session_id + raw output)
-        _original_result = successful[i]
-        for _retry_num in range(1, max_review_parse_retries + 1):
-            _error_desc = "; ".join(parsed.parse_errors)
-            _log(
-                f"  ↻ {name} parse failed (retry {_retry_num}/{max_review_parse_retries}): "
-                f"{_error_desc[:120]}"
-            )
-            # Build corrective prompt — mode-specific to avoid re-review
-            if _prof.mode == "api":
-                # Include original output so the agent can reformat without re-reviewing
-                _original_output = _original_result.output or ""
-                _retry_prompt = (
-                    "Your previous output (reproduced below) had schema/parse errors:\n"
-                    + _error_desc
-                    + "\n\nReformat your output as valid YAML. Do NOT re-review the code.\n\n"
-                    "Required YAML structure:\n"
-                    + _corrective_yaml_structure
-                    + "\n\nYour previous output:\n"
-                    + _original_output
-                )
-            else:
-                # CLI: prompt is simpler — session continuity via session_id handles context
-                _retry_prompt = (
-                    "Your previous review output had schema/parse errors:\n"
-                    + _error_desc
-                    + "\n\nReformat your output as valid YAML. Do NOT re-review the code.\n\n"
-                    "Required YAML structure:\n" + _corrective_yaml_structure
-                )
-            _retry_result = run_agent(
-                prompt=_retry_prompt,
-                profile=_prof,
-                working_dir=workspace_path,
-                quiet=True,
-                secrets=config.secrets,
-                session_id=_original_result.session_id if _prof.mode == "cli" else None,
-            )
-            meta.parse_retries += 1
-            if not _retry_result.success:
-                _log_verbose(
-                    f"  {name} retry {_retry_num} agent failed (exit={_retry_result.exit_code})"
-                )
-                break
-            _retried = _try_parse_review(_retry_result.output, _retry_result.structured_data)
-            if _retried is not None:
-                _log(f"  ✓ {name} retry {_retry_num} succeeded")
-                parsed_results[i] = _retried
-                state.review_agent_results.append(_retry_result)
-                write_trace(
-                    workspace_path
-                    / ".forge/traces"
-                    / f"{_cycle_num}-{pool_attempt}-review-{name}-retry{_retry_num}.txt",
-                    _retry_result.output,
-                )
-                break
-            else:
-                _log_verbose(
-                    f"  {name} retry {_retry_num} still has parse errors: "
-                    f"{parse_review_output(_retry_result.output).parse_errors}"
-                )
-                parsed = ReviewResult(
-                    verdict="REQUEST_CHANGES",
-                    summary="",
-                    findings=[],
-                    story_matches=False,
-                    story_mismatches=[],
-                    test_adequate=False,
-                    test_gaps=[],
-                    parse_errors=[_error_desc],
-                    raw_yaml={},
-                )
-
-    # Individual parsed results (no parse errors) — used by caller for fallback
-    individual_parsed: list[ReviewResult] = [p for p in parsed_results if not p.parse_errors]
-
-    # Named pairs aligned 1:1 with successful agents (before parse filtering).
-    # Reviewers with persistent parse errors are included with whatever partial
-    # data was extracted; callers that use this for PR review attribution will
-    # post a COMMENT with potentially empty findings/summary for those reviewers.
-    named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
-
-    # ── Merge ─────────────────────────────────────────────────────────
-    if len(successful) == 1:
-        merged = parsed_results[0]
-    else:
-        _log_verbose(
-            f"Merging {len(successful)} review outputs (+{len(failed_results)} failed excluded)"
-        )
-        merged = merge_review_results(parsed_results, names)
-
-    _synthesis_content = yaml.dump(
-        dataclasses.asdict(merged), default_flow_style=False, allow_unicode=True
-    )
-    write_trace(_synthesis_path, _synthesis_content)
-    # Write synthesized result to durable story log dir
-    _write_log_artifact(
-        state.log_dir,
-        f"review-cycle-{_cycle_num}/synthesized.yaml",
-        _synthesis_content,
-    )
-    return successful, failed_results, merged, individual_parsed, named_parsed
 
 
 def _setup_resume_entry(

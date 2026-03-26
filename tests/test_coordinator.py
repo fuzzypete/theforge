@@ -447,7 +447,7 @@ class TestCoordinatorHybridRunner:
         merged_review = result.state.review_results[0]
         assert merged_review.verdict == "APPROVE"
 
-    @patch("theforge.coordinator.engine.build_review_prompt")
+    @patch("theforge.coordinator.review_pool.build_review_prompt")
     @patch("theforge.coordinator.engine.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
