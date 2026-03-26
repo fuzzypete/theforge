@@ -253,7 +253,7 @@ class TestStructuredLoggingIntegration:
             log=LogConfig(log_file=str(log_file), enabled=True),
         )
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_run_task_emits_lifecycle_events(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -312,7 +312,7 @@ class TestStructuredLoggingIntegration:
             assert "task" in entry
             assert "event" in entry
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_gate_result_includes_output_tail(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -358,7 +358,7 @@ class TestStructuredLoggingIntegration:
         output_tail = gate_events[0]["output_tail"]
         assert len(output_tail) <= 500
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_review_result_event_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -394,7 +394,7 @@ class TestStructuredLoggingIntegration:
         assert ev["p2_count"] == 0
         assert "cost_usd" in ev
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalate_event_emitted_on_gate_failure(
@@ -442,7 +442,7 @@ class TestStructuredLoggingIntegration:
         workspace.mkdir(parents=True, exist_ok=True)
 
         with (
-            patch("theforge.coordinator.engine.run_agent_pool") as mock_pool,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
             patch("theforge.coordinator.engine.run_agent") as mock_agent,
             patch("theforge.coordinator.util._run_shell") as mock_shell,
             patch(
@@ -544,7 +544,7 @@ def test_fmt_duration_hours():
 class TestAuditReviewPoolFields:
     """Tests for generate_audit_log() review pool field serialization."""
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_audit_review_pool_fields_populated(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -616,7 +616,7 @@ class TestAuditReviewPoolFields:
         assert cycle["successful"] == ["opus"]
         assert cycle["failed"] == ["codex"]
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_audit_failed_reviewer_detail(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -685,7 +685,7 @@ class TestAuditReviewPoolFields:
         assert "codex" in cycle["failed_detail"]
         assert "exit=1" in cycle["failed_detail"]["codex"]
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_audit_synthesized_flag_false_degraded(

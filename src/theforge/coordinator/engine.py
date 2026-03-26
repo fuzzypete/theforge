@@ -328,41 +328,9 @@ def _run_validate_phase(
 
 
 # ── Review pool (moved to review_pool.py) ─────────────────────────
-from .review_pool import _run_review_pool as _run_review_pool_impl  # noqa: E402
-
-
-def _run_review_pool(
-    state: CoordinatorState,
-    config: ForgeConfig,
-    task: TaskSpec,
-    story_content: str,
-    workspace_path: Path,
-    branch_name: str,
-    meta: ReviewCycleMetadata,
-    *,
-    notify: bool,
-    review_prompts: str | list[str] | None = None,
-    enforce_budgets: bool = True,
-    pool_attempt: int = 0,
-    max_review_parse_retries: int = 0,
-) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
-    """Thin wrapper: delegates to review_pool._run_review_pool with this module as mod."""
-    return _run_review_pool_impl(
-        state,
-        config,
-        task,
-        story_content,
-        workspace_path,
-        branch_name,
-        meta,
-        notify=notify,
-        review_prompts=review_prompts,
-        enforce_budgets=enforce_budgets,
-        pool_attempt=pool_attempt,
-        max_review_parse_retries=max_review_parse_retries,
-        mod=_sys.modules[__name__],
-    )
-
+# Re-exported here so that phases.py (which calls mod._run_review_pool)
+# continues to resolve it via the engine module's namespace.
+from .review_pool import _run_review_pool  # noqa: E402, F401
 
 # ── Resume entry setup (moved to run_setup.py) ─────────────────────
 from .run_setup import _setup_resume_entry  # noqa: E402, F401

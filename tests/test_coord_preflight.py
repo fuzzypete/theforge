@@ -52,7 +52,7 @@ from theforge.review import ReviewFinding
 class TestCoordinatorPreflight:
     """Test the PREFLIGHT phase: classify spec before expensive dev cycles."""
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_proceed_continues_to_dev(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -77,7 +77,7 @@ class TestCoordinatorPreflight:
         assert result.state.preflight_verdict == "PROCEED"
         assert len(result.state.dev_results) == 1
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     @patch("theforge.coordinator.engine.has_review_approve", return_value=True)
@@ -106,7 +106,7 @@ class TestCoordinatorPreflight:
         assert mock_agent.call_count == 1
         mock_pool.assert_not_called()
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_blocked_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -131,7 +131,7 @@ class TestCoordinatorPreflight:
         assert len(result.state.dev_results) == 0
         mock_pool.assert_not_called()
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_agent_failure_proceeds(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -156,7 +156,7 @@ class TestCoordinatorPreflight:
         assert result.state.preflight_verdict == "PROCEED"
         assert "failed" in result.state.preflight_reason.lower()
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_unparseable_proceeds(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -182,7 +182,7 @@ class TestCoordinatorPreflight:
         assert result.phase == Phase.DONE
         assert result.state.preflight_verdict == "PROCEED"
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_cost_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -205,7 +205,7 @@ class TestCoordinatorPreflight:
         assert audit["preflight"]["cost_usd"] == 0.08
         assert "already" in audit["preflight"]["reason"].lower()
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_preflight_file_path_warning_proceeds(
@@ -471,7 +471,7 @@ criteria_checked: []
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coordinator.engine.run_agent", side_effect=fake_run_agent),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW, APPROVE_REVIEW], pool_names),
             ),
         ):
@@ -509,7 +509,7 @@ criteria_checked: []
         with (
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coordinator.engine.run_agent", side_effect=fake_run_agent),
-            patch("theforge.coordinator.engine.run_agent_pool", side_effect=fake_run_pool),
+            patch("theforge.coordinator.review_pool.run_agent_pool", side_effect=fake_run_pool),
         ):
             run_task(config, task)
 
@@ -586,7 +586,7 @@ criteria_checked: []
                 ],
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], [config.review_pool[0].name]),
             ),
         ):
@@ -625,7 +625,7 @@ criteria_checked: []
                     _make_agent_result(),  # dev
                 ],
             ),
-            patch("theforge.coordinator.engine.run_agent_pool", side_effect=fake_run_pool),
+            patch("theforge.coordinator.review_pool.run_agent_pool", side_effect=fake_run_pool),
         ):
             result = run_task(config, task)
 
@@ -801,7 +801,7 @@ test_coverage:
 class TestDevModelEscalationIntegration:
     """Integration tests for dev model escalation on persistent P1s."""
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalation_swaps_dev_model(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -857,7 +857,7 @@ class TestDevModelEscalationIntegration:
         # After escalation, dev should have used opus
         assert "opus" in dev_profiles
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalation_max_once(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -895,7 +895,7 @@ class TestDevModelEscalationIntegration:
         # Escalation flag is set at most once
         assert result.state.dev_escalated is True
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalation_only_with_smart_config(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -937,7 +937,7 @@ class TestDevModelEscalationIntegration:
         # No escalation happened
         assert result.state.dev_escalated is False
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalation_skipped_when_budget_exhausted(
@@ -985,7 +985,7 @@ class TestDevModelEscalationIntegration:
 class TestPlanPhase:
     """Tests for the PLAN phase (implementation planning between PREFLIGHT and DEV)."""
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_runs_for_medium_complexity(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1030,7 +1030,7 @@ class TestPlanPhase:
         # .forge/plan.md written to workspace
         assert (workspace / ".forge" / "plan.md").exists()
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_skipped_for_small_complexity(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1067,7 +1067,7 @@ class TestPlanPhase:
         assert result.state.plan_output is None
         assert not (workspace / ".forge" / "plan.md").exists()
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_skipped_when_disabled(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1117,7 +1117,7 @@ class TestPlanPhase:
         assert mock_agent.call_count == 2
         assert result.state.plan_output is None
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_failure_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1163,7 +1163,7 @@ class TestPlanPhase:
         # Review pool should NOT have run
         assert mock_pool.call_count == 0
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_cost_included_in_total_cost(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1207,7 +1207,7 @@ class TestPlanPhase:
             0.50 + 0.50 + 0.05 + 0.20 + state.total_story_validation_cost
         )
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_not_rerun_on_dev_retry(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1252,7 +1252,7 @@ class TestPlanPhase:
         assert result.state.plan_output is not None
         assert "Implementation Plan" in result.state.plan_output
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_injection_copies_file_and_skips_agent(
@@ -1296,7 +1296,7 @@ class TestPlanPhase:
         assert result.state.plan_results == []
         assert (workspace / ".forge" / "plan.md").read_text(encoding="utf-8") == plan_content
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_injection_missing_file_aborts_before_workspace(
@@ -1315,7 +1315,7 @@ class TestPlanPhase:
         assert mock_agent.call_count == 0
         assert mock_shell.call_count == 0
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_injection_unreadable_file_aborts_before_workspace(
@@ -1342,7 +1342,7 @@ class TestPlanPhase:
         assert mock_agent.call_count == 0
         assert mock_shell.call_count == 0
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_injection_non_utf8_file_aborts_before_workspace(
@@ -1585,7 +1585,7 @@ class TestCycleHistoryAccumulation:
 class TestApprovePathCycleHistory:
     """Integration tests verifying APPROVE path records cycle history."""
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_approve_records_cycle_in_history(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1613,7 +1613,7 @@ class TestEscalationNoteOnRejectPath:
     """Integration test: escalation note is delivered on reject-after-escalation path."""
 
     @patch("theforge.coordinator.engine._human_review")
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalation_note_in_prompt_after_reject(

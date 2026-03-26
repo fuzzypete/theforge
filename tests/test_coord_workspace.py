@@ -96,7 +96,7 @@ class TestCoordinatorAutoMerge:
 
         return side_effect
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_success_on_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -125,7 +125,7 @@ class TestCoordinatorAutoMerge:
         assert result.merge["error"] is None
         assert "Merged." in result.message
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_false_no_merge(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -150,7 +150,7 @@ class TestCoordinatorAutoMerge:
         assert result.merge is not None
         assert result.merge["action"] == "none"
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_no_merge_on_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -175,7 +175,7 @@ class TestCoordinatorAutoMerge:
         assert result.phase == Phase.ESCALATE
         assert result.merge is None  # no merge attempted on ESCALATE
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_ff_fails_falls_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -199,7 +199,7 @@ class TestCoordinatorAutoMerge:
         assert result.merge is not None
         assert result.merge["merged"] is True  # fell back to --no-edit and succeeded
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_safety_no_base_branch(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -235,7 +235,7 @@ class TestCoordinatorAutoMerge:
         assert result.merge["error"] is not None
         assert "not found" in result.merge["error"]
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_safety_dirty_project_root(
@@ -279,7 +279,7 @@ class TestCoordinatorAutoMerge:
         assert result.merge["error"] is not None
         assert "Uncommitted" in result.merge["error"]
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_safety_no_commits_ahead(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -316,7 +316,7 @@ class TestCoordinatorAutoMerge:
         assert result.merge["merged"] is False
         assert "no commits" in result.merge["error"]
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_merge_info_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -346,7 +346,7 @@ class TestCoordinatorAutoMerge:
         assert merge["base_branch"] == "main"
         assert merge["error"] is None
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_false_no_merge_key_in_audit(
@@ -424,7 +424,7 @@ class TestCoordinatorAutoPush:
         return side_effect
 
     @patch("theforge.coordinator.workspace.subprocess.run")
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_push_after_merge(
@@ -460,7 +460,7 @@ class TestCoordinatorAutoPush:
         assert push_calls[0].args[0] == ["git", "push", "origin", "main"]
 
     @patch("theforge.coordinator.workspace.subprocess.run")
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_push_disabled_by_default(
@@ -494,7 +494,7 @@ class TestCoordinatorAutoPush:
         assert len(push_calls) == 0
 
     @patch("theforge.coordinator.workspace.subprocess.run")
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_push_failure_non_fatal(
@@ -859,7 +859,7 @@ class TestConflictResolution:
 
         return side_effect
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.workspace.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -892,7 +892,7 @@ class TestConflictResolution:
         assert result.merge["merged"] is True
         assert result.merge["error"] is None
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.workspace.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -959,7 +959,7 @@ class TestConflictResolution:
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_conflict_too_many_files_skipped(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -988,7 +988,7 @@ class TestConflictResolution:
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_no_conflict_no_resolution(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -1042,7 +1042,7 @@ class TestConflictResolution:
         # Only preflight + dev agent calls -- no conflict resolver call
         assert agent_calls["n"] == 2
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.workspace.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")

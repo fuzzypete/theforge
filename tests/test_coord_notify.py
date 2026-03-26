@@ -87,7 +87,7 @@ class TestCoordinatorHumanReview:
 
     # ── test_interactive_approve ──────────────────────────────────────
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_interactive_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -109,7 +109,7 @@ class TestCoordinatorHumanReview:
 
     # ── test_interactive_reject_loops_back ────────────────────────────
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_interactive_reject_loops_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -138,7 +138,7 @@ class TestCoordinatorHumanReview:
 
     # ── test_interactive_escalate ─────────────────────────────────────
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_interactive_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -159,7 +159,7 @@ class TestCoordinatorHumanReview:
 
     # ── test_auto_mode_skips_human_review ─────────────────────────────
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_mode_skips_human_review(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -182,7 +182,7 @@ class TestCoordinatorHumanReview:
 
     # ── test_interactive_on_exhausted_cycles ─────────────────────────
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_interactive_on_exhausted_cycles(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -295,7 +295,7 @@ class TestNtfyPublish:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -325,7 +325,7 @@ class TestNtfyPublish:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -359,7 +359,7 @@ class TestNtfyPublish:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -406,7 +406,7 @@ class TestNtfyPublish:
 
         with (
             patch("theforge.coordinator.engine.run_agent", side_effect=dev_side_effect),
-            patch("theforge.coordinator.engine.run_agent_pool", return_value=approve_result),
+            patch("theforge.coordinator.review_pool.run_agent_pool", return_value=approve_result),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coordinator.remote_gates._ntfy_publish"),
             patch(
@@ -452,7 +452,7 @@ class TestNtfyPublish:
         with (
             patch("theforge.coordinator.engine.run_agent", side_effect=dev_side_effect),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -988,7 +988,7 @@ class TestNtfyTerminalNotifications:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -1040,7 +1040,7 @@ test_coverage:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([long_approve], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -1072,7 +1072,7 @@ test_coverage:
                 ),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([REQUEST_CHANGES_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -1138,7 +1138,7 @@ test_coverage:
                 ),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([long_p1_review], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -1191,7 +1191,7 @@ test_coverage:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -1215,7 +1215,7 @@ test_coverage:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
@@ -1239,7 +1239,7 @@ test_coverage:
                 side_effect=_preflight_then(_make_agent_result(output="Done.")),
             ),
             patch(
-                "theforge.coordinator.engine.run_agent_pool",
+                "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),

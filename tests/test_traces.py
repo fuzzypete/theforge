@@ -58,7 +58,7 @@ def test_write_trace_empty_content(tmp_path):
 # ── Coordinator-level trace tests ─────────────────────────────────────
 
 
-@patch("theforge.coordinator.engine.run_agent_pool")
+@patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.engine.run_agent")
 @patch("theforge.coordinator.util._run_shell")
 def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, tmp_path):
@@ -104,7 +104,7 @@ def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, t
     assert out1 != out2, "iteration-1 and iteration-2 traces must not have the same content"
 
 
-@patch("theforge.coordinator.engine.run_agent_pool")
+@patch("theforge.coordinator.review_pool.run_agent_pool")
 @patch("theforge.coordinator.engine.run_agent")
 @patch("theforge.coordinator.util._run_shell")
 def test_dev_traces_written_for_iteration_3(mock_shell, mock_agent, mock_pool, tmp_path):

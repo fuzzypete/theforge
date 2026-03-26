@@ -5,18 +5,12 @@ Orchestrates the multi-reviewer pool for a single review cycle:
 - Enforces per-profile budgets
 - Retries parse errors per-reviewer
 - Merges results deterministically (strictest verdict wins, findings unioned)
-
-Runner callables (run_agent_pool, run_agent, log_agent_result) are
-accessed through a ``mod`` parameter that points to coordinator.engine's
-module namespace. This lets tests patch at the engine level without
-requiring additional patch targets.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import time
-import types
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,6 +24,7 @@ from theforge.review import (
     parse_review_json,
     parse_review_output,
 )
+from theforge.runners import log_agent_result, run_agent, run_agent_pool
 from theforge.sessions import save_sessions
 from theforge.task import TaskSpec, build_review_prompt
 from theforge.traces import write_trace
@@ -60,7 +55,6 @@ def _run_review_pool(
     enforce_budgets: bool = True,
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
-    mod: types.ModuleType,
 ) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 
@@ -94,13 +88,7 @@ def _run_review_pool(
         enforce_budgets: When True (default), enforces per-profile budgets.
             When False (run_review_only), skips budget checks.
         max_review_parse_retries: Per-reviewer parse retry budget.
-        mod: coordinator.engine module — provides run_agent, run_agent_pool,
-            log_agent_result as lazy-loaded globals.
     """
-    run_agent_pool = mod.run_agent_pool
-    run_agent = mod.run_agent
-    log_agent_result = mod.log_agent_result
-
     pool_size = len(config.review_pool)
 
     if review_prompts is None:
