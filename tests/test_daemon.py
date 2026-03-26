@@ -289,7 +289,7 @@ def test_launchd_install_creates_plist(forge_root: Path) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         plist_path = Path(tmpdir) / "com.theforge.daemon.plist"
 
-        with patch("theforge.daemon._LAUNCHD_PLIST_PATH", plist_path):
+        with patch("theforge.daemon_launchd._LAUNCHD_PLIST_PATH", plist_path):
             with patch("subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(returncode=0)
                 result_path = install_launchd(forge_root, forge_bin)
