@@ -515,7 +515,7 @@ def _run_loop_openai(
     """Run OpenAI provider in agent loop mode."""
     import openai
 
-    from theforge.runners.api import _build_registry_tools, _build_submit_tools_openai
+    from theforge.runners.submit_tools import _build_registry_tools, _build_submit_tools_openai
 
     tools = _build_registry_tools(profile)
     is_responses = profile.model in _RESPONSES_API_MODELS

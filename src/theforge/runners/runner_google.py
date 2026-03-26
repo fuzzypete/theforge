@@ -427,7 +427,7 @@ def _run_loop_google(
     secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run Google provider in agent loop mode."""
-    from theforge.runners.api import _build_registry_tools, _build_submit_tools_google
+    from theforge.runners.submit_tools import _build_registry_tools, _build_submit_tools_google
 
     tools = _build_registry_tools(profile)
     # Google adapter wraps declarations into genai_types.Tool objects internally

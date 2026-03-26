@@ -129,7 +129,7 @@ def _run_loop_deepseek(
     secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run DeepSeek provider in agent loop mode (OpenAI Chat Completions)."""
-    from theforge.runners.api import _build_registry_tools, _build_submit_tools_openai
+    from theforge.runners.submit_tools import _build_registry_tools, _build_submit_tools_openai
     from theforge.runners.runner_openai import _make_openai_chat_adapter
 
     client = _deepseek_client(profile, secrets)

@@ -220,7 +220,7 @@ def _make_anthropic_finalizer(
     """Build an Anthropic finalizer using tool_choice to force submit_review."""
     import anthropic
 
-    from theforge.runners.api import _build_submit_tools_anthropic
+    from theforge.runners.submit_tools import _build_submit_tools_anthropic
 
     merged = {**os.environ, **(secrets or {})}
     client = anthropic.Anthropic(
@@ -289,7 +289,7 @@ def _run_loop_anthropic(
     secrets: dict[str, str] | None = None,
 ) -> AgentResult:
     """Run Anthropic provider in agent loop mode."""
-    from theforge.runners.api import _build_registry_tools, _build_submit_tools_anthropic
+    from theforge.runners.submit_tools import _build_registry_tools, _build_submit_tools_anthropic
 
     tools = _build_registry_tools(profile)
     tool_schemas = [t.to_anthropic_tool() for t in tools] + _build_submit_tools_anthropic()
