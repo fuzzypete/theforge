@@ -1323,7 +1323,7 @@ class TestDeepSeekProvider:
         mock_client = MagicMock()
         self._mock_review_response(mock_client)
 
-        with patch("theforge.runners.loop_runners._deepseek_client", return_value=mock_client):
+        with patch("theforge.runners.runner_deepseek._deepseek_client", return_value=mock_client):
             result = _run_deepseek("review this", profile)
 
         assert result.success
@@ -1338,7 +1338,7 @@ class TestDeepSeekProvider:
         mock_client = MagicMock()
         self._mock_review_response(mock_client)
 
-        with patch("theforge.runners.loop_runners._deepseek_client", return_value=mock_client):
+        with patch("theforge.runners.runner_deepseek._deepseek_client", return_value=mock_client):
             result = _run_deepseek("review this", profile)
 
         assert result.success
@@ -2004,7 +2004,7 @@ class TestLocalEndpointCostZeroing:
         mock_httpx = MagicMock()
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
-            patch("theforge.runners.loop_runners.AgentLoopManager") as MockManager,
+            patch("theforge.runners.runner_openai.AgentLoopManager") as MockManager,
         ):
             MockManager.return_value.run.return_value = mock_result
             result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
@@ -2088,7 +2088,7 @@ class TestToolCallingFallback:
 
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
-            patch("theforge.runners.loop_runners.AgentLoopManager") as MockManager,
+            patch("theforge.runners.runner_openai.AgentLoopManager") as MockManager,
             patch.dict(
                 "theforge.runners.loop_runners.PROVIDER_RUNNERS",
                 {"openai": MagicMock(return_value=fallback_result)},
@@ -2112,7 +2112,7 @@ class TestToolCallingFallback:
 
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
-            patch("theforge.runners.loop_runners.AgentLoopManager") as MockManager,
+            patch("theforge.runners.runner_openai.AgentLoopManager") as MockManager,
         ):
             MockManager.return_value.run.side_effect = bad_request
             with pytest.raises(FakeBadRequestError):
