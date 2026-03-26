@@ -1,25 +1,25 @@
 """CLI subprocess wrapper for invoking LLM agents.
 
 Dispatches to the appropriate CLI based on ModelProfile.cli.
-Supports Claude Code, Codex (OpenAI), and Gemini (Google) CLIs.
+Provider-specific runners live in dedicated modules:
+  - runner_claude.py  — Claude Code CLI
+  - runner_codex.py   — OpenAI Codex CLI
+  - runner_gemini.py  — Google Gemini CLI
 """
 
 from __future__ import annotations
 
-import json
-import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import cast
 
-from theforge.agent_types import AgentResult, ModelUsage
+from theforge.agent_types import AgentResult, ModelUsage  # noqa: F401
 from theforge.log_level import _LOG_LEVEL, LogLevel, set_log_level  # noqa: F401
 
 from ..config import ModelProfile
@@ -87,28 +87,6 @@ def _run_with_heartbeat(
     return outcome, elapsed
 
 
-def _parse_model_usage(result_json: dict[str, Any]) -> tuple[ModelUsage, ...]:
-    """Extract per-model usage breakdown from Claude CLI JSON output."""
-    raw_usage = result_json.get("modelUsage", {})
-    if not isinstance(raw_usage, dict):
-        return ()
-    usages = []
-    for model_name, data in raw_usage.items():
-        if not isinstance(data, dict):
-            continue
-        usages.append(
-            ModelUsage(
-                model=model_name,
-                input_tokens=int(data.get("inputTokens", 0)),
-                output_tokens=int(data.get("outputTokens", 0)),
-                cache_read_tokens=int(data.get("cacheReadInputTokens", 0)),
-                cache_creation_tokens=int(data.get("cacheCreationInputTokens", 0)),
-                cost_usd=float(data.get("costUSD", 0.0)),
-            )
-        )
-    return tuple(usages)
-
-
 def _handle_exception(
     exc: BaseException,
     *,
@@ -167,7 +145,7 @@ def run_agent(
     its own stdout stream. Codex and Gemini are affected.
     """
     if profile.mode == "api":
-        from theforge.runners import api as runner_api
+        from theforge.runners import api as runner_api  # noqa: PLC0415
 
         return runner_api.run_api_agent(
             prompt=prompt,
@@ -178,38 +156,57 @@ def run_agent(
             plain_text=plain_text,
         )
 
-    runners = {
-        "claude": _run_claude,
-        "codex": _run_codex,
-        "gemini": _run_gemini,
-    }
+    cli = profile.cli
 
-    runner_fn = runners.get(profile.cli)
-    if runner_fn is None:
-        return AgentResult(
-            success=False,
-            output=f"Unknown CLI: {profile.cli!r}. Supported: {list(runners.keys())}",
-            session_id=None,
-            cost_usd=None,
-            exit_code=-1,
-            raw={},
-            profile_name=profile.name,
-            startup_failure=True,
+    if cli == "claude":
+        from .runner_claude import _run_claude  # noqa: PLC0415
+
+        return _run_claude(
+            prompt=prompt,
+            profile=profile,
+            working_dir=working_dir,
+            session_id=session_id,
+            fallback_to_file=fallback_to_file,
+            quiet=quiet,
+            secrets=secrets,
         )
 
-    runner_kwargs: dict[str, Any] = {
-        "prompt": prompt,
-        "profile": profile,
-        "working_dir": working_dir,
-        "session_id": session_id,
-        "quiet": quiet,
-        "secrets": secrets or {},
-    }
-    if profile.cli == "claude":
-        runner_kwargs["fallback_to_file"] = fallback_to_file
-    if profile.cli in ("codex", "gemini"):
-        runner_kwargs["is_pool"] = is_pool
-    return runner_fn(**runner_kwargs)
+    if cli == "codex":
+        from .runner_codex import _run_codex  # noqa: PLC0415
+
+        return _run_codex(
+            prompt=prompt,
+            profile=profile,
+            working_dir=working_dir,
+            session_id=session_id,
+            quiet=quiet,
+            is_pool=is_pool,
+            secrets=secrets,
+        )
+
+    if cli == "gemini":
+        from .runner_gemini import _run_gemini  # noqa: PLC0415
+
+        return _run_gemini(
+            prompt=prompt,
+            profile=profile,
+            working_dir=working_dir,
+            session_id=session_id,
+            quiet=quiet,
+            is_pool=is_pool,
+            secrets=secrets,
+        )
+
+    return AgentResult(
+        success=False,
+        output=f"Unknown CLI: {cli!r}. Supported: ['claude', 'codex', 'gemini']",
+        session_id=None,
+        cost_usd=None,
+        exit_code=-1,
+        raw={},
+        profile_name=profile.name,
+        startup_failure=True,
+    )
 
 
 def run_agent_pool(
@@ -303,546 +300,6 @@ def run_agent_pool(
     )
     assert all(r is not None for r in results), "BUG: pool finished with unfilled result slots"
     return cast(list[AgentResult], results)
-
-
-# ── Claude Code CLI ──────────────────────────────────────────────────
-
-
-def _format_tool_input_preview(inp: dict[str, Any]) -> str:
-    """Return a short preview string for a tool's input dict."""
-    if not inp:
-        return ""
-    for v in inp.values():
-        if isinstance(v, str):
-            return v[:120]
-    return str(inp)[:120]
-
-
-def _process_stream_event(line: str, label: str = "", *, label_prefix: str = "") -> None:
-    """Process a single JSONL stream event and print tool activity to stderr.
-
-    label: accepted for API compatibility but not used for formatting.
-    label_prefix: if non-empty, prepended to tool activity lines
-        (e.g. "[reviewer-a] "). Callers set this only in parallel pool mode.
-    """
-    if not line:
-        return
-    try:
-        event = json.loads(line)
-    except json.JSONDecodeError:
-        return
-
-    event_type = event.get("type")
-
-    if event_type == "tool_use_summary":
-        summary = event.get("summary", "")
-        if summary:
-            _log_verbose(f"  ↳ {label_prefix}{summary}")
-    elif event_type == "assistant":
-        message = event.get("message", {})
-        content = message.get("content", [])
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "tool_use":
-                tool_name = item.get("name", "?")
-                inp = item.get("input", {})
-                preview = _format_tool_input_preview(inp)
-                _log_verbose(f"  ↳ {label_prefix}{tool_name}: {preview}")
-
-
-def _get_claude_session_id(
-    output: str,
-    cwd: Path,
-    *,
-    fallback_to_file: bool = True,
-    min_mtime: float | None = None,
-) -> str | None:
-    """Extract a Claude session id from stream output or transcript files."""
-    for line in output.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            event = json.loads(stripped)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        sid = event.get("session_id")
-        if isinstance(sid, str) and sid:
-            return sid
-
-    if not fallback_to_file:
-        return None
-
-    claude_projects = Path.home() / ".claude" / "projects"
-    if not claude_projects.is_dir():
-        return None
-
-    try:
-        project_slug = str(cwd.resolve()).replace("/", "-")
-        project_dir = claude_projects / project_slug
-        if not project_dir.is_dir():
-            return None
-
-        candidates = []
-        for path in project_dir.glob("*.jsonl"):
-            mtime = path.stat().st_mtime
-            if min_mtime is not None and mtime <= min_mtime:
-                continue
-            candidates.append((mtime, path))
-    except OSError:
-        return None
-
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: item[0])[1].stem
-
-
-def _run_claude(
-    *,
-    prompt: str,
-    profile: ModelProfile,
-    working_dir: Path,
-    session_id: str | None = None,
-    fallback_to_file: bool = True,
-    quiet: bool = False,
-    secrets: dict[str, str] | None = None,
-) -> AgentResult:
-    """Invoke `claude -p --output-format stream-json --verbose` as a subprocess."""
-    cmd: list[str] = [
-        "claude",
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--model",
-        profile.model,
-    ]
-
-    if profile.allowed_tools:
-        cmd.extend(["--allowedTools", " ".join(profile.allowed_tools)])
-
-    if session_id:
-        cmd.extend(["--resume", session_id])
-
-    # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
-    env = {**os.environ, **(secrets or {})}
-    env.pop("CLAUDECODE", None)
-
-    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
-    if not quiet:
-        _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
-
-    start_wall = time.time()
-    start = time.monotonic()
-    deadline = start + profile.timeout_seconds
-    timed_out = False
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=str(working_dir),
-            env=env,
-        )
-        assert proc.stdin is not None
-        proc.stdin.write(prompt)
-        proc.stdin.close()
-
-        lines: list[str] = []
-        assert proc.stdout is not None
-
-        # Enforce wall-clock timeout on the streaming loop via a watchdog thread.
-        # proc.wait(timeout=...) only fires after stdout is drained, which never
-        # happens if the agent streams indefinitely.
-        def _watchdog() -> None:
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(remaining)
-            if proc.poll() is None:
-                proc.kill()
-
-        watchdog = threading.Thread(target=_watchdog, daemon=True)
-        watchdog.start()
-
-        lp = f"[{label}] " if quiet else ""
-        for line in proc.stdout:
-            lines.append(line)
-            _process_stream_event(line.strip(), label_prefix=lp)
-            if time.monotonic() > deadline:
-                proc.kill()
-                timed_out = True
-                break
-
-        proc.wait()
-    except FileNotFoundError:
-        return AgentResult(
-            success=False,
-            output="ERROR: 'claude' CLI not found. Is it installed?",
-            session_id=None,
-            cost_usd=None,
-            exit_code=-1,
-            raw={},
-            profile_name=profile.name,
-        )
-
-    if timed_out or (time.monotonic() - start) >= profile.timeout_seconds * 1.05:
-        timed_out = True
-
-    if timed_out:
-        partial_output = "".join(lines)
-        return AgentResult(
-            success=False,
-            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
-            session_id=_get_claude_session_id(
-                partial_output,
-                working_dir,
-                fallback_to_file=fallback_to_file,
-                min_mtime=start_wall,
-            ),
-            cost_usd=None,
-            exit_code=-9,
-            raw={},
-            profile_name=profile.name,
-        )
-
-    elapsed = time.monotonic() - start
-    if not quiet:
-        _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
-
-    # Find the result line (type=result) in the JSONL stream
-    result_json: dict[str, Any] = {}
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            event = json.loads(stripped)
-            if event.get("type") == "result":
-                result_json = event
-                break
-        except (json.JSONDecodeError, ValueError):
-            continue
-
-    if not result_json:
-        raw_output = "".join(lines).strip()
-        stderr_text = ""
-        if proc.stderr:
-            try:
-                stderr_text = proc.stderr.read()
-            except Exception:
-                pass
-        return AgentResult(
-            success=proc.returncode == 0,
-            output=raw_output or stderr_text or "(no output)",
-            session_id=_get_claude_session_id(
-                raw_output or stderr_text,
-                working_dir,
-                fallback_to_file=fallback_to_file,
-                min_mtime=start_wall,
-            ),
-            cost_usd=None,
-            exit_code=proc.returncode,
-            raw={},
-            profile_name=profile.name,
-        )
-
-    try:
-        raw_cost = result_json.get("total_cost_usd")
-        cost = float(raw_cost) if raw_cost is not None else None
-    except (TypeError, ValueError):
-        cost = None
-
-    return AgentResult(
-        success=proc.returncode == 0,
-        output=result_json.get("result", "".join(lines)),
-        session_id=result_json.get("session_id"),
-        cost_usd=cost,
-        exit_code=proc.returncode,
-        raw=result_json,
-        profile_name=profile.name,
-        model_usage=_parse_model_usage(result_json),
-    )
-
-
-# ── Codex CLI ────────────────────────────────────────────────────────
-
-
-def _get_codex_session_id(*, min_mtime: float) -> str | None:
-    """Return the newest codex session ID created after min_mtime.
-
-    Scans ~/.codex/session_index.jsonl for entries whose updated_at timestamp
-    is strictly after min_mtime (epoch seconds). Same pattern as the Claude
-    transcript-file fallback in _get_claude_session_id().
-    """
-    index_file = Path.home() / ".codex" / "session_index.jsonl"
-    try:
-        lines = index_file.read_text().splitlines()
-    except OSError:
-        return None
-
-    best_id: str | None = None
-    best_ts: float | None = None
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        sid = entry.get("id")
-        updated = entry.get("updated_at")
-        if not sid or not updated:
-            continue
-        try:
-            dt = datetime.fromisoformat(updated.replace("Z", "+00:00"))
-            ts = dt.timestamp()
-        except ValueError:
-            continue
-        if ts > min_mtime and (best_ts is None or ts > best_ts):
-            best_ts = ts
-            best_id = sid
-    return best_id
-
-
-def _run_codex(
-    *,
-    prompt: str,
-    profile: ModelProfile,
-    working_dir: Path,
-    session_id: str | None = None,
-    quiet: bool = False,
-    is_pool: bool = False,
-    secrets: dict[str, str] | None = None,
-) -> AgentResult:
-    """Invoke `npx @openai/codex exec --full-auto` as a subprocess.
-
-    Output is captured via a temp file using `-o <file>`;
-    falls back to stdout if the file is empty.
-
-    Session ID extraction scans ~/.codex/session_index.jsonl for the newest
-    entry after the run start. This is safe for sequential (single-reviewer)
-    runs but not for parallel pools — when is_pool=True we return None to
-    avoid misattributing a concurrent invocation's session to this one.
-    """
-    fd, output_path_str = tempfile.mkstemp(suffix=".txt", prefix="forge_codex_")
-    os.close(fd)
-    output_file = Path(output_path_str)
-
-    # Resume: `codex exec resume <id> [flags] -` (prompt via stdin).
-    # Fresh start: `codex exec [flags] <prompt>` (prompt as positional arg).
-    if session_id:
-        cmd: list[str] = [
-            "npx",
-            "@openai/codex",
-            "exec",
-            "resume",
-            session_id,
-            "--full-auto",
-            "-m",
-            profile.model,
-        ]
-        if profile.reasoning_effort:
-            cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-        cmd += ["-C", str(working_dir), "-o", str(output_file), "-"]
-        stdin_prompt: str | None = prompt
-    else:
-        cmd = [
-            "npx",
-            "@openai/codex",
-            "exec",
-            "--full-auto",
-            "-m",
-            profile.model,
-        ]
-        if profile.reasoning_effort:
-            cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-        cmd += ["-C", str(working_dir), "-o", str(output_file), prompt]
-        stdin_prompt = None
-
-    start_wall = time.time()
-    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
-    _codex_env = {**os.environ, **(secrets or {})}
-    outcome, elapsed = _run_with_heartbeat(
-        run_fn=lambda: subprocess.run(
-            cmd,
-            input=stdin_prompt,
-            capture_output=True,
-            text=True,
-            timeout=profile.timeout_seconds,
-            env=_codex_env,
-        ),
-        label=label,
-        profile=profile,
-        cli_name="npx @openai/codex",
-        quiet=quiet,
-    )
-
-    try:
-        if outcome.exception:
-            result = _handle_exception(
-                outcome.exception, profile=profile, cli_name="npx @openai/codex"
-            )
-            if result:
-                return result
-            raise outcome.exception
-
-        proc = outcome.proc
-        assert proc is not None
-        if not quiet:
-            _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
-
-        # Read output file; fall back to stdout then stderr
-        output_text = ""
-        try:
-            content = output_file.read_text(encoding="utf-8").strip()
-            if content:
-                output_text = content
-        except OSError:
-            pass
-
-        if not output_text:
-            output_text = proc.stdout or proc.stderr or "(no output)"
-
-        # Try JSON parse for structured response
-        result_json: dict[str, Any] = {}
-        try:
-            result_json = json.loads(output_text)
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Only extract session_id for sequential runs; parallel pools risk
-        # picking up a sibling invocation's entry from the global index.
-        extracted_sid = None if is_pool else _get_codex_session_id(min_mtime=start_wall)
-
-        if result_json:
-            return AgentResult(
-                success=proc.returncode == 0,
-                output=result_json.get("result", output_text),
-                session_id=extracted_sid,
-                cost_usd=None,
-                exit_code=proc.returncode,
-                raw=result_json,
-                profile_name=profile.name,
-            )
-
-        return AgentResult(
-            success=proc.returncode == 0,
-            output=output_text,
-            session_id=extracted_sid,
-            cost_usd=None,
-            exit_code=proc.returncode,
-            raw={},
-            profile_name=profile.name,
-        )
-    finally:
-        try:
-            output_file.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-# ── Gemini CLI ───────────────────────────────────────────────────────
-
-
-def _run_gemini(
-    *,
-    prompt: str,
-    profile: ModelProfile,
-    working_dir: Path,
-    session_id: str | None = None,
-    quiet: bool = False,
-    is_pool: bool = False,
-    secrets: dict[str, str] | None = None,
-) -> AgentResult:
-    """Invoke `npx @google/gemini-cli -p <prompt> --yolo -m <model> -o json` as a subprocess.
-
-    Session resume: gemini --resume accepts "latest", an index number, or a UUID.
-    Sessions are scoped to the current working directory. We return "latest" so the
-    next sequential call resumes the same project session. This is only safe for
-    single-reviewer runs — parallel pools get session_id=None because "--resume latest"
-    is not invocation-scoped and two concurrent gemini reviewers would trample each
-    other's context.
-    """
-    cmd: list[str] = ["npx", "@google/gemini-cli"]
-    if session_id:
-        cmd += ["--resume", session_id]
-    cmd += [
-        "-p",
-        prompt,
-        "--yolo",
-        "-m",
-        profile.model,
-        "-o",
-        "json",
-    ]
-
-    # NOTE: Gemini CLI has no --config flag for thinking config.
-    # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.
-    # The model uses its default thinking level.
-
-    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
-    _gemini_env = {**os.environ, **(secrets or {})}
-    outcome, elapsed = _run_with_heartbeat(
-        run_fn=lambda: subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(working_dir),
-            timeout=profile.timeout_seconds,
-            env=_gemini_env,
-        ),
-        label=label,
-        profile=profile,
-        cli_name="gemini",
-        quiet=quiet,
-    )
-
-    if outcome.exception:
-        result = _handle_exception(outcome.exception, profile=profile, cli_name="gemini")
-        if result:
-            return result
-        raise outcome.exception
-
-    proc = outcome.proc
-    assert proc is not None
-    if not quiet:
-        _log_verbose(f"  ... {label} done ({elapsed:.0f}s)")
-
-    # Parse JSON output (-o json requests structured response).
-    # The gemini CLI emits preamble lines (e.g. "YOLO mode is enabled.") to
-    # stdout before the JSON object, so find the first '{' and parse from there.
-    result_json: dict[str, Any] = {}
-    json_start = proc.stdout.find("{")
-    json_candidate = proc.stdout[json_start:] if json_start != -1 else proc.stdout
-    try:
-        result_json = json.loads(json_candidate)
-    except (json.JSONDecodeError, ValueError):
-        # Don't return "latest" on parse failure: the CLI may have exited before
-        # creating a resumable session, so resuming would attach to stale context.
-        return AgentResult(
-            success=proc.returncode == 0,
-            output=proc.stdout or proc.stderr or "(no output)",
-            session_id=None,
-            cost_usd=None,
-            exit_code=proc.returncode,
-            raw={},
-            profile_name=profile.name,
-        )
-
-    # "latest" is only safe for sequential single-reviewer runs; parallel pools
-    # would trample each other since --resume latest is not invocation-scoped.
-    resume_sid = None if is_pool else "latest"
-    return AgentResult(
-        success=proc.returncode == 0,
-        output=result_json.get("response", result_json.get("result", proc.stdout)),
-        session_id=resume_sid,
-        cost_usd=None,
-        exit_code=proc.returncode,
-        raw=result_json,
-        profile_name=profile.name,
-    )
 
 
 def log_agent_result(result: AgentResult, role: str) -> None:

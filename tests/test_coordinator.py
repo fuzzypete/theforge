@@ -2637,6 +2637,7 @@ class TestVerboseFlagEnablesToolLines:
 
     def test_verbose_prints_tool_lines(self, capsys):
         import theforge.runners.cli as runner_mod
+        import theforge.runners.runner_claude as runner_claude_mod
 
         runner_mod.set_log_level(LogLevel.VERBOSE)
         try:
@@ -2645,7 +2646,7 @@ class TestVerboseFlagEnablesToolLines:
                 '{"type": "assistant", "message": {"content": '
                 '[{"type": "tool_use", "name": "Read", "input": {"file_path": "/foo.py"}}]}}'
             )
-            runner_mod._process_stream_event(tool_event, "test-label")
+            runner_claude_mod._process_stream_event(tool_event, "test-label")
             captured = capsys.readouterr()
             assert "↳ Read" in captured.err
         finally:
@@ -2653,13 +2654,14 @@ class TestVerboseFlagEnablesToolLines:
 
     def test_progress_suppresses_tool_lines(self, capsys):
         import theforge.runners.cli as runner_mod
+        import theforge.runners.runner_claude as runner_claude_mod
 
         runner_mod.set_log_level(LogLevel.PROGRESS)
         tool_event = (
             '{"type": "assistant", "message": {"content": '
             '[{"type": "tool_use", "name": "Read", "input": {"file_path": "/foo.py"}}]}}'
         )
-        runner_mod._process_stream_event(tool_event, "test-label")
+        runner_claude_mod._process_stream_event(tool_event, "test-label")
         captured = capsys.readouterr()
         assert "↳ Read" not in captured.err
 
