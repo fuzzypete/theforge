@@ -1871,7 +1871,7 @@ class TestCoordinatorSessionResume:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.phase_review.subprocess.run"):
+        with patch("theforge.coordinator.phase_review_finalize.subprocess.run"):
             result = run_task(config, task)
 
         assert result.success is True
