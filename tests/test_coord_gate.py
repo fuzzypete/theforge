@@ -1744,7 +1744,7 @@ class TestCreatePR:
     @patch("theforge.coordinator.phase_review.subprocess.run")
     def test_push_before_pr_create(self, mock_run, tmp_path):
         """_create_pr pushes branch before calling gh pr create."""
-        from theforge.coordinator.phases import _create_pr
+        from theforge.coordinator.phase_review import _create_pr
 
         config = self._make_pr_config(tmp_path)
         spec = tmp_path / "spec.md"
@@ -1784,7 +1784,7 @@ class TestCreatePR:
     @patch("theforge.coordinator.phase_review.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):
         """If git push fails, _create_pr returns failure without calling gh."""
-        from theforge.coordinator.phases import _create_pr
+        from theforge.coordinator.phase_review import _create_pr
 
         config = self._make_pr_config(tmp_path)
         spec = tmp_path / "spec.md"

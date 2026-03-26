@@ -1438,7 +1438,7 @@ class TestCycleHistoryAccumulation:
     def test_append_cycle_history_adds_entry(self):
         """_append_cycle_history appends a CycleHistory entry to state."""
         from theforge.coordinator.engine import CoordinatorState
-        from theforge.coordinator.phases import _append_cycle_history
+        from theforge.coordinator.phase_review import _append_cycle_history
         from theforge.review import ReviewFinding, ReviewResult
 
         state = CoordinatorState()
@@ -1473,7 +1473,7 @@ class TestCycleHistoryAccumulation:
     def test_cycle_history_capped_at_3(self):
         """History is capped at 3 entries; oldest is dropped."""
         from theforge.coordinator.engine import CoordinatorState, CycleHistory
-        from theforge.coordinator.phases import _append_cycle_history
+        from theforge.coordinator.phase_review import _append_cycle_history
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -1505,7 +1505,7 @@ class TestCycleHistoryAccumulation:
     def test_cycle_numbers_monotonic_after_cap(self):
         """Cycle numbers remain monotonically increasing even after trimming."""
         from theforge.coordinator.engine import CoordinatorState
-        from theforge.coordinator.phases import _append_cycle_history
+        from theforge.coordinator.phase_review import _append_cycle_history
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -1531,7 +1531,7 @@ class TestCycleHistoryAccumulation:
     def test_cycle_numbers_monotonically_increase(self):
         """Cycle numbers use a counter independent of list length."""
         from theforge.coordinator.engine import CoordinatorState
-        from theforge.coordinator.phases import _append_cycle_history
+        from theforge.coordinator.phase_review import _append_cycle_history
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -1554,7 +1554,7 @@ class TestCycleHistoryAccumulation:
     def test_p1_descriptions_truncated(self):
         """P1 finding descriptions in history are truncated to 200 chars."""
         from theforge.coordinator.engine import CoordinatorState
-        from theforge.coordinator.phases import _append_cycle_history
+        from theforge.coordinator.phase_review import _append_cycle_history
         from theforge.review import ReviewFinding, ReviewResult
 
         state = CoordinatorState()

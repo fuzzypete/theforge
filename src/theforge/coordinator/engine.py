@@ -422,14 +422,10 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
 # ── Workspace reader (extracted to workspace_reader.py) ───────────────
 
 # ── Phase handlers (extracted to coord_phases.py) ────────────────────
-from .phases import (  # noqa: E402, F401
-    _finalize_approve,
-    _ReviewOutcome,
-    _ValidateOutcome,
-)
-from .phases import _run_dev_phase as _run_dev_phase_impl  # noqa: E402
-from .phases import _run_review_phase as _run_review_phase_impl  # noqa: E402
-from .phases import _run_validate_phase as _run_validate_phase_impl  # noqa: E402
+from .phase_dev import _run_dev_phase as _run_dev_phase_impl  # noqa: E402
+from .phase_review import _finalize_approve, _ReviewOutcome  # noqa: E402, F401
+from .phase_validate import _run_validate_phase as _run_validate_phase_impl, _ValidateOutcome  # noqa: E402, F401
+from .phase_review import _run_review_phase as _run_review_phase_impl  # noqa: E402
 from .workspace_reader import (  # noqa: E402, F401
     _get_commit_log,
     _get_dev_notes,
