@@ -867,7 +867,91 @@ def run_task(
                 pass
 
 
-# ── Review-from-existing-worktree mode (full iteration loop) ─────────
+# ── Shared resume coordinator (run_from_review / run_from_dev) ────────
+
+
+def _run_resume_coordinator(
+    config: ForgeConfig,
+    task: TaskSpec,
+    workspace_path: Path,
+    *,
+    initial_phase: Phase,
+    skip_dev_first_iter: bool,
+    interactive: bool,
+    auto_merge: bool,
+    notify: bool,
+    run_id: str | None,
+    sprint_name: str | None,
+    state_update_fn: "Callable[[dict], None] | None",
+) -> CoordinatorResult:
+    """Shared body for run_from_review and run_from_dev.
+
+    Both entry points reuse an existing worktree, differ only in which phase
+    they start at and whether the first coordinator loop iteration skips DEV.
+    """
+    _ensure_runners()
+    setup = _setup_resume_entry(
+        config,
+        task,
+        workspace_path,
+        initial_phase=initial_phase,
+        notify=notify,
+        run_id=run_id,
+    )
+    if isinstance(setup, CoordinatorResult):
+        return setup
+    state, logger, branch_name, story_content, _task_start = setup
+    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
+
+    _tee: tuple[object, object] | None = None
+    _prev_sigterm: object = None
+    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
+    if _tee is not None:
+        _prev_sigterm = _safe_signal(
+            signal.SIGTERM,
+            _make_sigterm_handler(
+                logger,
+                _tee,
+                signal.getsignal(signal.SIGTERM),
+                state=state,
+                task_start=_task_start,
+                task=task,
+                config=config,
+            ),
+        )
+    try:
+        result = _coordinator_loop(
+            state,
+            config,
+            task,
+            story_content,
+            _task_start,
+            interactive=interactive,
+            auto_merge=auto_merge,
+            skip_dev_first_iter=skip_dev_first_iter,
+            notify=notify,
+            logger=logger,
+            state_update_fn=state_update_fn,
+        )
+        _total_elapsed = time.monotonic() - _task_start
+        _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
+        logger._safe_emit(
+            "run_end",
+            outcome="done" if result.success else "escalate",
+            total_cost_usd=round(state.total_cost, 6),
+            total_duration_s=round(_total_elapsed, 2),
+        )
+        return result
+    finally:
+        _end_run_log_tee(_tee)
+        if _prev_sigterm is not None:
+            try:
+                _safe_signal(signal.SIGTERM, _prev_sigterm)
+            except Exception:
+                pass
+
+
+# ── Resume entry points ───────────────────────────────────────────────
 
 
 def run_from_review(
@@ -897,70 +981,19 @@ def run_from_review(
         interactive: When True, pause at HUMAN_REVIEW for operator input.
         auto_merge: When True, merge the feature branch after APPROVE.
     """
-    _ensure_runners()
-    setup = _setup_resume_entry(
+    return _run_resume_coordinator(
         config,
         task,
         workspace_path,
         initial_phase=Phase.REVIEW,
+        skip_dev_first_iter=True,
+        interactive=interactive,
+        auto_merge=auto_merge,
         notify=notify,
         run_id=run_id,
+        sprint_name=sprint_name,
+        state_update_fn=state_update_fn,
     )
-    if isinstance(setup, CoordinatorResult):
-        return setup
-    state, logger, branch_name, story_content, _task_start = setup
-    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
-
-    _tee: tuple[object, object] | None = None
-    _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
-    if _tee is not None:
-        _prev_sigterm = _safe_signal(
-            signal.SIGTERM,
-            _make_sigterm_handler(
-                logger,
-                _tee,
-                signal.getsignal(signal.SIGTERM),
-                state=state,
-                task_start=_task_start,
-                task=task,
-                config=config,
-            ),
-        )
-    try:
-        # First iteration starts at REVIEW (skip DEV+VALIDATE for existing worktree).
-        result = _coordinator_loop(
-            state,
-            config,
-            task,
-            story_content,
-            _task_start,
-            interactive=interactive,
-            auto_merge=auto_merge,
-            skip_dev_first_iter=True,
-            notify=notify,
-            logger=logger,
-            state_update_fn=state_update_fn,
-        )
-        _total_elapsed = time.monotonic() - _task_start
-        _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
-        logger._safe_emit(
-            "run_end",
-            outcome="done" if result.success else "escalate",
-            total_cost_usd=round(state.total_cost, 6),
-            total_duration_s=round(_total_elapsed, 2),
-        )
-        return result
-    finally:
-        _end_run_log_tee(_tee)
-        if _prev_sigterm is not None:
-            try:
-                _safe_signal(signal.SIGTERM, _prev_sigterm)
-            except Exception:
-                pass
-
-
-# ── Dev-from-existing-worktree mode ─────────────────────────────────
 
 
 def run_from_dev(
@@ -987,66 +1020,19 @@ def run_from_dev(
         interactive: When True, pause at HUMAN_REVIEW for operator input.
         auto_merge: When True, merge the feature branch after APPROVE.
     """
-    _ensure_runners()
-    setup = _setup_resume_entry(
+    return _run_resume_coordinator(
         config,
         task,
         workspace_path,
         initial_phase=Phase.DEV,
+        skip_dev_first_iter=False,
+        interactive=interactive,
+        auto_merge=auto_merge,
         notify=notify,
         run_id=run_id,
+        sprint_name=sprint_name,
+        state_update_fn=state_update_fn,
     )
-    if isinstance(setup, CoordinatorResult):
-        return setup
-    state, logger, branch_name, story_content, _task_start = setup
-    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
-
-    _tee: tuple[object, object] | None = None
-    _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
-    if _tee is not None:
-        _prev_sigterm = _safe_signal(
-            signal.SIGTERM,
-            _make_sigterm_handler(
-                logger,
-                _tee,
-                signal.getsignal(signal.SIGTERM),
-                state=state,
-                task_start=_task_start,
-                task=task,
-                config=config,
-            ),
-        )
-    try:
-        result = _coordinator_loop(
-            state,
-            config,
-            task,
-            story_content,
-            _task_start,
-            interactive=interactive,
-            auto_merge=auto_merge,
-            skip_dev_first_iter=False,
-            notify=notify,
-            logger=logger,
-            state_update_fn=state_update_fn,
-        )
-        _total_elapsed = time.monotonic() - _task_start
-        _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
-        logger._safe_emit(
-            "run_end",
-            outcome="done" if result.success else "escalate",
-            total_cost_usd=round(state.total_cost, 6),
-            total_duration_s=round(_total_elapsed, 2),
-        )
-        return result
-    finally:
-        _end_run_log_tee(_tee)
-        if _prev_sigterm is not None:
-            try:
-                _safe_signal(signal.SIGTERM, _prev_sigterm)
-            except Exception:
-                pass
 
 
 # ── Review-only mode ─────────────────────────────────────────────────
