@@ -648,10 +648,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_approve(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -659,6 +660,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -683,10 +685,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_edit_approve(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -702,6 +705,7 @@ class TestPlanReview:
             return "approve"
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -722,10 +726,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_regenerate(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -736,6 +741,7 @@ class TestPlanReview:
         plan_v2 = "# Plan\n\nRegenerated plan."
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output=plan_v1, cost_usd=0.10),
@@ -759,10 +765,11 @@ class TestPlanReview:
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_abandon(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -770,6 +777,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -786,10 +794,11 @@ class TestPlanReview:
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_regen_twice_abandons(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, tmp_path
     ):
         config = dataclasses.replace(
             _make_plan_review_config(tmp_path),
@@ -802,6 +811,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -822,10 +832,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_skipped_on_injection(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -835,6 +846,7 @@ class TestPlanReview:
         plan_file.write_text("# Injected plan\n\nUse this.", encoding="utf-8")
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="Implemented."),
@@ -853,10 +865,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_skipped_when_disabled(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path, enabled=False)
         task = _make_task(tmp_path)
@@ -864,6 +877,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -902,12 +916,13 @@ class TestPlanReview:
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_terminal_used_without_interactive_flag(
         self,
         mock_shell,
-        mock_agent,
+        mock_agent, mock_plan_agent,
         mock_pool,
         mock_plan_review,
         tmp_path,
@@ -919,6 +934,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -938,10 +954,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_remote")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_remote_ntfy_approve(
-        self, mock_shell, mock_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
     ):
         """Non-interactive + ntfy configured → _plan_review_remote is called."""
         config = _make_ntfy_plan_review_config(tmp_path)
@@ -950,6 +967,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nNtfy plan.", cost_usd=0.10),
@@ -969,10 +987,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_remote")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_remote_ntfy_abandon(
-        self, mock_shell, mock_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
     ):
         """Non-interactive + ntfy + remote returns abandon → run fails at PLAN_REVIEW."""
         config = _make_ntfy_plan_review_config(tmp_path)
@@ -981,6 +1000,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nNtfy plan.", cost_usd=0.10),
@@ -995,10 +1015,11 @@ class TestPlanReview:
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_advisory_without_ntfy_uses_terminal(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, tmp_path
     ):
         """Advisory mode without ntfy → terminal prompt is used (not auto-approve)."""
         config = _make_plan_review_config(tmp_path, mode="advisory")
@@ -1007,6 +1028,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nAdvisory plan.", cost_usd=0.10),
@@ -1025,10 +1047,11 @@ class TestPlanReview:
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_abandon_phase_not_escalate(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1036,6 +1059,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -1050,10 +1074,11 @@ class TestPlanReview:
 
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_reread_error(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1065,6 +1090,7 @@ class TestPlanReview:
             return "approve"
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -1081,10 +1107,11 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_regen_tracks_both_costs(
-        self, mock_shell, mock_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1092,6 +1119,7 @@ class TestPlanReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -1128,12 +1156,13 @@ class TestStoryValidation:
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_spec_validation_pass_continues_to_plan(
         self,
         mock_shell,
-        mock_agent,
+        mock_agent, mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1150,6 +1179,7 @@ class TestStoryValidation:
 
         mock_validate.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nThe plan.", cost_usd=0.10),
@@ -1173,12 +1203,13 @@ class TestStoryValidation:
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_spec_validation_warn_logs_and_continues(
         self,
         mock_shell,
-        mock_agent,
+        mock_agent, mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1205,6 +1236,7 @@ class TestStoryValidation:
             ],
         )
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nThe plan.", cost_usd=0.10),
@@ -1230,12 +1262,13 @@ class TestStoryValidation:
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_spec_validation_skipped_on_plan_injection(
         self,
         mock_shell,
-        mock_agent,
+        mock_agent, mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1251,6 +1284,7 @@ class TestStoryValidation:
         plan_file.write_text("# Injected plan\n\nUse this.", encoding="utf-8")
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="Implemented."),
@@ -1267,12 +1301,13 @@ class TestStoryValidation:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_spec_validation_skipped_for_small_complexity(
         self,
         mock_shell,
-        mock_agent,
+        mock_agent, mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_human_review,
@@ -1285,6 +1320,7 @@ class TestStoryValidation:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_SMALL, cost_usd=0.05),
             _make_agent_result(success=True, output="Implemented."),
@@ -1302,12 +1338,13 @@ class TestStoryValidation:
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_spec_validation_warn_scope_appears_in_audit(
         self,
         mock_shell,
-        mock_agent,
+        mock_agent, mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1337,6 +1374,7 @@ class TestStoryValidation:
             ],
         )
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nThe plan.", cost_usd=0.10),
@@ -4177,10 +4215,11 @@ def _make_plan_agent_review_config(tmp_path: Path) -> ForgeConfig:
 class TestPlanAgentReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_approve(
-        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_human_review, tmp_path
     ):
         """Agent returns APPROVE, pipeline continues to DEV."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4189,6 +4228,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.10),
@@ -4221,10 +4261,11 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_p1_blocking_triggers_regen(
-        self, mock_shell, mock_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
     ):
         """P1 findings block — plan regenerated, second review APPROVE."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4233,6 +4274,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
@@ -4274,10 +4316,11 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_p0_reject_then_approve(
-        self, mock_shell, mock_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
     ):
         """P0 finding blocks — plan regenerated, second review APPROVE."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4286,6 +4329,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
@@ -4326,10 +4370,11 @@ class TestPlanAgentReview:
         assert len(result.state.plan_review_results) == 2
 
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_double_p0_reject_escalates(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
     ):
         """Two P0 REJECTs, run escalates with findings."""
         config = dataclasses.replace(
@@ -4343,6 +4388,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
@@ -4379,10 +4425,11 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_model_escalation_on_repeated_rejection(
-        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_human_review, tmp_path
     ):
         """After 2 plan rejections, planner model escalates sonnet→opus; 3rd review approves."""
         config = dataclasses.replace(
@@ -4400,6 +4447,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             # preflight
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
@@ -4465,10 +4513,11 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_disabled_by_default(
-        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_human_review, tmp_path
     ):
         """Config without plan_agent_review section — PLAN_REVIEW is skipped."""
         config = _make_config(tmp_path)
@@ -4477,6 +4526,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = _preflight_then(
             _make_agent_result(success=True, output="Implemented.")
         )
@@ -4491,10 +4541,11 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_skipped_on_plan_injection(
-        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_human_review, tmp_path
     ):
         """`--plan` flag skips agent review."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4505,6 +4556,7 @@ class TestPlanAgentReview:
         plan_file.write_text("# Injected plan\n\nUse this.", encoding="utf-8")
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="Implemented."),
@@ -4520,9 +4572,10 @@ class TestPlanAgentReview:
         assert len(result.state.plan_review_results) == 0
 
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_agent_review_parse_failure(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_plan_agent_review_parse_failure(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
         """Agent produces garbage — treated as REJECT, escalates after max retries."""
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
@@ -4535,6 +4588,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
@@ -4569,10 +4623,11 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_cost_in_audit(
-        self, mock_shell, mock_agent, mock_pool, mock_human_review, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_human_review, tmp_path
     ):
         """Plan review cost appears in audit log."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4581,6 +4636,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.10),
@@ -4608,10 +4664,11 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_regen_receives_rejection_findings(
-        self, mock_shell, mock_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
     ):
         """Regenerated plan prompt includes rejection findings from P0 review."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4620,6 +4677,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
@@ -4664,10 +4722,11 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_p0_from_one_reviewer_rejects(
-        self, mock_shell, mock_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
     ):
         """Pool: P0 from one reviewer + APPROVE from another -> merged REJECT."""
         pool_config = dataclasses.replace(
@@ -4699,6 +4758,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nBad plan.", cost_usd=0.10),
@@ -4749,9 +4809,10 @@ class TestPlanAgentReview:
         assert len(result.state.plan_review_results) == 4  # 2 reviewers x 2 rounds
 
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_review_pool_all_fail_rejects(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_plan_review_pool_all_fail_rejects(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
         """Pool: all reviewers fail (exit_code != 0) -> REJECT."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
@@ -4785,6 +4846,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
@@ -4810,10 +4872,11 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_p1_blocking_triggers_regen(
-        self, mock_shell, mock_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
     ):
         """Pool: P1s from multiple reviewers block — regen triggered, findings attributed."""
         pool_config = dataclasses.replace(
@@ -4845,6 +4908,7 @@ class TestPlanAgentReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
         mock_agent.side_effect = [
             _make_agent_result(success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
