@@ -28,6 +28,7 @@ from theforge.review import (
 )
 from theforge.sessions import save_sessions
 from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.task import build_review_prompt
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -47,6 +48,7 @@ from .notify import (
     _escalate_notify,
     _is_pending_file_mode,
     _is_remote_mode,
+    _ntfy_done_notify,
 )
 from .pending_hitl import (
     _pending_escalate_gate,
@@ -62,6 +64,7 @@ from .remote_gates import (
     _escalate_gate_remote,
     _remote_human_review,
 )
+from .review_context import _get_commit_log, _get_dev_notes, _get_handoff_content
 from .state import (
     CoordinatorResult,
     CoordinatorState,
@@ -1161,3 +1164,188 @@ def _run_dev_phase(
             )
 
     return None
+
+
+# ── Review-only phase ─────────────────────────────────────────────────
+
+
+def _run_review_only_phase(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskSpec,
+    story_content: str,
+    workspace_path: Path,
+    branch_name: str,
+    *,
+    notify: bool,
+    logger: StructuredLogger | None,
+    task_start: float,
+    mod: ModuleType,
+) -> CoordinatorResult:
+    """Run the REVIEW phase for the review-only entry point.
+
+    No DEV retry: REQUEST_CHANGES → ESCALATE immediately.
+    Accesses ``mod._run_review_pool`` so that
+    ``patch('theforge.coordinator.engine._run_review_pool')`` keeps working
+    in tests.
+    """
+    state.phase = Phase.REVIEW
+    if logger:
+        logger._safe_emit("phase_start", phase="REVIEW", iteration=1)
+    state.review_cycle = 1
+    state.dev_iteration = 0
+    _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
+    _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
+
+    commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
+    handoff_content = _get_handoff_content(config, workspace_path)
+    dev_notes = _get_dev_notes(config, workspace_path)
+    review_prompt = build_review_prompt(
+        task,
+        story_content=story_content,
+        commit_log=commit_log,
+        workspace_path=str(workspace_path),
+        branch=branch_name,
+        handoff_content=handoff_content,
+        mode=config.review_pool[0].mode,
+        dev_notes=dev_notes,
+        cycle_history=None,
+    )
+
+    meta = ReviewCycleMetadata(
+        pool_models=[p.name for p in config.review_pool],
+        successful=[],
+        failed=[],
+        synthesized=False,
+    )
+    state.review_cycle_metadata.append(meta)
+
+    _pool_start = time.monotonic()
+    successful, failed_results, parsed_review, _individual, _named_parsed = mod._run_review_pool(
+        state,
+        config,
+        task,
+        story_content,
+        workspace_path,
+        branch_name,
+        meta,
+        notify=notify,
+        review_prompts=review_prompt,
+        enforce_budgets=False,
+    )
+    state.last_cycle_reviewer_results = _named_parsed
+    _pool_elapsed = time.monotonic() - _pool_start
+
+    if parsed_review is None:
+        _log(f"✗ ESCALATE   {state.error}")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    state.review_results.append(parsed_review)
+
+    if parsed_review.parse_errors:
+        _log_verbose(f"Review parse errors: {parsed_review.parse_errors}")
+        canonical_summary = f"PARSE ERROR: {parsed_review.summary}"
+        parsed_review = ReviewResult(
+            verdict="REQUEST_CHANGES",
+            summary=canonical_summary,
+            findings=parsed_review.findings,
+            story_matches=parsed_review.story_matches,
+            story_mismatches=parsed_review.story_mismatches,
+            test_adequate=parsed_review.test_adequate,
+            test_gaps=parsed_review.test_gaps,
+            parse_errors=parsed_review.parse_errors,
+            raw_yaml=parsed_review.raw_yaml,
+        )
+        state.review_results[-1] = parsed_review
+
+    _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
+
+    _log(f"  Summary: {parsed_review.summary}")
+    _ro_findings_by_sev: dict[str, list] = {}
+    for _f in parsed_review.findings:
+        _ro_findings_by_sev.setdefault(_f.severity, []).append(_f)
+    for _sev in sorted(_ro_findings_by_sev):
+        for _f in _ro_findings_by_sev[_sev]:
+            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
+            _log(f"  [{_sev}]{_loc} {_f.description}")
+    _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
+    _ro_elapsed = _pool_elapsed
+
+    if logger:
+        logger._safe_emit(
+            "review_result",
+            verdict=parsed_review.verdict,
+            p1_count=_ro_p1,
+            p2_count=_ro_p2,
+            cost_usd=round(_ro_cost, 6),
+        )
+
+    if parsed_review.verdict == "APPROVE":
+        state.phase = Phase.DONE
+        _dur = _fmt_duration(_ro_elapsed)
+        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_dur}")
+        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(_ro_elapsed)}")
+        if logger:
+            logger._safe_emit(
+                "phase_end",
+                phase="REVIEW",
+                outcome="approve",
+                cost_usd=round(_ro_cost, 6),
+                duration_s=round(_ro_elapsed, 2),
+            )
+            logger._safe_emit(
+                "run_end",
+                outcome="done",
+                total_cost_usd=round(state.total_cost, 6),
+                total_duration_s=round(time.monotonic() - task_start, 2),
+            )
+        _ntfy_done_notify(
+            task, state, config, notify, parsed_review.summary, _ro_elapsed, branch_name
+        )
+        return CoordinatorResult(
+            success=True,
+            phase=state.phase,
+            state=state,
+            message=(f"Task '{task.name}' review-only: APPROVE. Branch: {branch_name}"),
+        )
+
+    # REQUEST_CHANGES — no DEV retry in review-only mode
+    state.phase = Phase.ESCALATE
+    p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    state.error = (
+        f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
+    )
+    _log(
+        f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2"
+        f"  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
+    )
+    _log(f"✗ ESCALATE   {state.error}")
+    if logger:
+        logger._safe_emit(
+            "phase_end",
+            phase="REVIEW",
+            outcome="escalate",
+            cost_usd=round(_ro_cost, 6),
+            duration_s=round(_ro_elapsed, 2),
+        )
+        logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+        logger._safe_emit(
+            "run_end",
+            outcome="escalate",
+            total_cost_usd=round(state.total_cost, 6),
+            total_duration_s=round(time.monotonic() - task_start, 2),
+        )
+    _escalate_notify(task, state, notify, config)
+    return CoordinatorResult(
+        success=False,
+        phase=state.phase,
+        state=state,
+        message=state.error,
+    )

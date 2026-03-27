@@ -38,8 +38,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-import yaml
-
 from theforge.artifacts import (
     PLAN_PATH,
     ensure_parent_dir,
@@ -73,8 +71,7 @@ from theforge.task import (  # noqa: F401
 )
 from theforge.task import load_story as load_spec
 
-from . import util as _cu
-from .audit import has_review_approve
+from .audit import has_review_approve  # noqa: F401  – resolved via mod= in preflight_flow
 from .gate import (  # noqa: F401
     _auto_commit_side_effects,
     _is_gate_skip,
@@ -748,291 +745,46 @@ def run_task(
             return result
 
         # ── PREFLIGHT ──────────────────────────────────────────────────
-        state.phase = Phase.PREFLIGHT
-        if state_update_fn is not None:
-            state_update_fn({"phase": "PREFLIGHT", "iteration": 0, "cost_usd": state.total_cost})
-        preflight_profile = config.preflight_profile
-        _log_phase(state.phase, preflight_profile.model)
-        logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
+        from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
 
-        preflight_prompt = build_preflight_prompt(task, story_content=story_content)
-
-        _preflight_start = time.monotonic()
-        preflight_result = run_agent(
-            prompt=preflight_prompt,
-            profile=preflight_profile,
-            working_dir=workspace_path,
-            secrets=config.secrets,
+        config, _pf_result, _pf_already_done_loop = _run_preflight_phase(
+            state,
+            config,
+            task,
+            story_content,
+            workspace_path,
+            branch_name,
+            notify=notify,
+            logger=logger,
+            task_start=_task_start,
+            state_update_fn=state_update_fn,
+            stop_phase=stop_phase,
+            mod=_sys.modules[__name__],
         )
-        _preflight_elapsed = time.monotonic() - _preflight_start
-        state.preflight_duration_s = _preflight_elapsed
-        state.preflight_result = preflight_result
-        log_agent_result(preflight_result, "PREFLIGHT")
-
-        if preflight_result.success:
-            verdict, reason = _parse_preflight_verdict(preflight_result.output)
-        else:
-            # Agent failed — don't block on a broken preflight, proceed
-            verdict, reason = (
-                "PROCEED",
-                f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
-            )
-            # A story complex enough to time out preflight is almost certainly
-            # non-trivial. Default to large so the plan phase fires and the
-            # strong dev model is used.
-            state.preflight_complexity = "large"
-            _log("  ⚠ PREFLIGHT failed — defaulting complexity to large")
-
-        state.preflight_verdict = verdict
-        state.preflight_reason = reason
-
-        # ── Warnings parsing (non-blocking advisories) ─────────────────
-        if preflight_result.success:
-            _warnings = _parse_preflight_warnings(preflight_result.output)
-            state.preflight_warnings = _warnings
-            if _warnings:
-                _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
-
-        # ── Complexity parsing + adaptive model swapping ───────────────
-        if preflight_result.success:
-            complexity = _parse_preflight_complexity(preflight_result.output)
-            state.preflight_complexity = complexity
-            _log(f"  Complexity: {complexity} (from preflight)")
-        else:
-            # state.preflight_complexity already set to "large" above
-            complexity = state.preflight_complexity
-            _log(f"  Complexity: {complexity} (preflight failed — using fallback)")
-
-        if config.smart_config_models is not None:
-            config = _apply_complexity_adaptation(config, complexity)
-
-        # ── Adaptive assignment ────────────────────────────────────
-        if config.assignment.enabled and config.agents:
-            from .assignment import (
-                PHASE_TIER as _PHASE_TIER,
-            )
-            from .assignment import (
-                _normalize_complexity as _norm_complexity,
-            )
-            from .assignment import (
-                _pick_agent as _pick_agt,
-            )
-            from .assignment import (
-                _promote_tier as _prom_tier,
-            )
-            from .assignment import (
-                assign_models as _assign_models,
-            )
-            from .assignment import (
-                load_escalation_history as _load_esc_history,
-            )
-
-            _history_path = config.project_root / ".forge" / "assignment_history.yaml"
-            _esc_history = _load_esc_history(_history_path)
-
-            # Build explicit_profiles from profiles: key (non-adaptive overrides).
-            # Classic config (smart_config_models is None) means profiles: was used;
-            # compare against defaults by identity to detect explicitly-set roles.
-            # Smart config (smart_config_models set) auto-generates profiles —
-            # adaptive assignment should override them freely.
-            from .config import (
-                DEFAULT_DEV_PROFILE as _DEF_DEV,
-            )
-            from .config import (
-                DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
-            )
-
-            _explicit: dict[str, ModelProfile] = {}
-            _explicit_roles: set[str] = set()
-            if config.smart_config_models is None:
-                if config.dev_profile is not _DEF_DEV:
-                    _explicit["dev"] = config.dev_profile
-                    _explicit_roles.add("dev")
-                if config.preflight_profile is not _DEF_PRE:
-                    _explicit["preflight"] = config.preflight_profile
-                    _explicit_roles.add("preflight")
-                # Detect explicit review pool and plan review config
-                if config.review_pool and not config.review_pool_is_default:
-                    _explicit_roles.add("review_pool")
-                if not config.plan_model_is_default:
-                    _explicit_roles.add("planner")
-                if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-                    _explicit_roles.add("plan_agent_review")
-
-            _decision = _assign_models(
-                config.agents,
-                config.assignment,
-                complexity,
-                _esc_history,
-                _explicit if _explicit else None,
-                state.sprint_promotions,
-            )
-
-            # Update config with adaptive assignments
-            import dataclasses as _dc
-
-            _replace_kwargs: dict = {
-                "dev_profile": _decision.dev,
-                "preflight_profile": _decision.preflight,
-            }
-            if _decision.code_reviewers:
-                if "review_pool" not in _explicit_roles:
-                    _replace_kwargs["review_pool"] = _decision.code_reviewers
-                else:
-                    _log("  [adaptive] review_pool: explicit override preserved")
-            config = _dc.replace(config, **_replace_kwargs)
-
-            # Stash adaptive decisions for PLAN and PLAN_REVIEW phases
-            state._adaptive_decision = _decision
-            state._explicit_roles = _explicit_roles
-
-            # Update sprint_promotions if promotion occurred
-            _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-            _dev_agent = _pick_agt(config.agents, _dev_base_tier)
-            _dev_name = _dev_agent.name if _dev_agent else ""
-            if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
-                from .assignment import _check_promotion as _chk_prom
-
-                _prom = _chk_prom(
-                    _norm_complexity(complexity),
-                    _dev_name,
-                    _esc_history,
-                    state.sprint_promotions,
-                )
-                if _prom is not None:
-                    _promoted_tier = _prom_tier(_dev_base_tier)
-                    state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
-                    _log_verbose(
-                        f"[adaptive] {_norm_complexity(complexity)} dev promoted "
-                        f"{_dev_name} → tier {_promoted_tier} (sticky for sprint)"
-                    )
-
-            # Log all rationale lines at verbose
-            _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
-            for _phase, _reason in _decision.rationale.items():
-                _log_verbose(f"[adaptive] {_phase}: {_reason}")
-
-        _log(f"  ✓ PREFLIGHT   {verdict}")
-        _log_verbose(f"  Reason: {reason}")
-        logger._safe_emit(
-            "phase_end",
-            phase="PREFLIGHT",
-            outcome=verdict.lower(),
-            cost_usd=preflight_result.cost_usd,
-            duration_s=round(_preflight_elapsed, 2),
-        )
-        # Write preflight.yaml artifact
-        _preflight_artifact = {
-            "verdict": verdict,
-            "reason": reason,
-            "complexity": state.preflight_complexity,
-            "cost_usd": preflight_result.cost_usd,
-            "duration_s": round(_preflight_elapsed, 2),
-        }
-        _write_log_artifact(
-            state.log_dir,
-            "preflight.yaml",
-            yaml.dump(_preflight_artifact, default_flow_style=False, allow_unicode=True),
-        )
-
-        # ── stop_phase gate (PREFLIGHT) ───────────────────────
-        if stop_phase is not None and stop_phase == Phase.PREFLIGHT:
-            return CoordinatorResult(
-                success=True,
-                phase=Phase.PREFLIGHT,
-                state=state,
-                message=f"Stopped at --until {stop_phase.name.lower()}",
-            )
-
-        if verdict == "ALREADY_DONE":
-            # Guard: if commits exist on the branch but no prior review APPROVE, the
-            # dev work was never reviewed (interrupted run). Resume from REVIEW instead
-            # of short-circuiting to DONE.
-            ok_log, log_out = _cu._run_shell(
-                f"git log {config.workspace.base_branch}..{branch_name} --oneline",
-                config.project_root,
-            )
-            commits_ahead = (
-                [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
-            )
-            if commits_ahead and not has_review_approve(
-                config.project_root, task.slug, config.workspace.base_branch, branch_name
-            ):
-                n = len(commits_ahead)
-                _log(
-                    f"  ↻ ALREADY_DONE overridden — {n} commit{'s' if n != 1 else ''} on "
-                    f"{branch_name} without prior APPROVE; resuming from REVIEW"
-                )
-                logger._safe_emit(
-                    "phase_end",
-                    phase="PREFLIGHT",
-                    outcome="already_done_override",
-                    reason="commits_ahead_no_approve",
-                )
-                result = _coordinator_loop(
-                    state,
-                    config,
-                    task,
-                    story_content,
-                    _task_start,
-                    interactive=interactive,
-                    auto_merge=auto_merge,
-                    skip_dev_first_iter=True,
-                    notify=notify,
-                    logger=logger,
-                    state_update_fn=state_update_fn,
-                )
-                logger._safe_emit(
-                    "run_end",
-                    outcome="done" if result.success else "escalate",
-                    total_cost_usd=round(state.total_cost, 6),
-                    total_duration_s=round(time.monotonic() - _task_start, 2),
-                )
-                return result
-
-            state.phase = Phase.DONE
-            elapsed = time.monotonic() - _task_start
-            _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(elapsed)}")
-            logger._safe_emit(
-                "run_end",
-                outcome="already_done",
-                total_cost_usd=round(state.total_cost, 6),
-                total_duration_s=round(elapsed, 2),
-            )
-            _ntfy_done_notify(
-                task,
+        if _pf_result is not None:
+            return _pf_result
+        if _pf_already_done_loop:
+            # ALREADY_DONE override: commits on branch without prior APPROVE → resume REVIEW
+            result = _coordinator_loop(
                 state,
                 config,
-                notify,
-                reason or "Spec already satisfied.",
-                elapsed,
-                branch_name,
+                task,
+                story_content,
+                _task_start,
+                interactive=interactive,
+                auto_merge=auto_merge,
+                skip_dev_first_iter=True,
+                notify=notify,
+                logger=logger,
+                state_update_fn=state_update_fn,
             )
-            return CoordinatorResult(
-                success=True,
-                phase=state.phase,
-                state=state,
-                message=f"Preflight: spec already implemented. {reason}",
-            )
-
-        if verdict == "BLOCKED":
-            state.phase = Phase.ESCALATE
-            state.error = f"Preflight: spec is blocked. {reason}"
-            _log(f"✗ ESCALATE   {state.error}")
-            logger._safe_emit("escalate", reason=state.error, phase="PREFLIGHT")
             logger._safe_emit(
                 "run_end",
-                outcome="escalate",
+                outcome="done" if result.success else "escalate",
                 total_cost_usd=round(state.total_cost, 6),
                 total_duration_s=round(time.monotonic() - _task_start, 2),
             )
-            _escalate_notify(task, state, notify, config)
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
+            return result
 
         # verdict == "PROCEED" — continue to DEV (possibly via PLAN)
 
@@ -1046,7 +798,7 @@ def run_task(
             story_content,
             workspace_path,
             plan_path,
-            preflight_result,
+            state.preflight_result,
             notify=notify,
             logger=logger,
             run_id=_run_id,
@@ -1354,164 +1106,19 @@ def run_review_only(
 
     story_content = load_spec(task.story_path)
 
-    # ── REVIEW ────────────────────────────────────────────────────────
-    state.phase = Phase.REVIEW
-    logger._safe_emit("phase_start", phase="REVIEW", iteration=1)
-    state.review_cycle = 1
-    state.dev_iteration = 0
-    _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
-    _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
+    from .phases import _run_review_only_phase  # noqa: PLC0415
 
-    # Build generic prompt (no review_role) — review-only always used this
-    commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
-    handoff_content = _get_handoff_content(config, workspace_path)
-    dev_notes = _get_dev_notes(config, workspace_path)
-    review_prompt = build_review_prompt(
-        task,
-        story_content=story_content,
-        commit_log=commit_log,
-        workspace_path=str(workspace_path),
-        branch=branch_name,
-        handoff_content=handoff_content,
-        mode=config.review_pool[0].mode,
-        dev_notes=dev_notes,
-        cycle_history=None,  # run_review_only is always a standalone cycle
-    )
-
-    meta = ReviewCycleMetadata(
-        pool_models=[p.name for p in config.review_pool],
-        successful=[],
-        failed=[],
-        synthesized=False,
-    )
-    state.review_cycle_metadata.append(meta)
-
-    _pool_start = time.monotonic()
-    successful, failed_results, parsed_review, _individual, _named_parsed = _run_review_pool(
+    return _run_review_only_phase(
         state,
         config,
         task,
         story_content,
         workspace_path,
         branch_name,
-        meta,
         notify=notify,
-        review_prompts=review_prompt,
-        enforce_budgets=False,
-    )
-    state.last_cycle_reviewer_results = _named_parsed
-    _pool_elapsed = time.monotonic() - _pool_start
-
-    if parsed_review is None:
-        # All reviewers failed — state.error already set
-        _log(f"✗ ESCALATE   {state.error}")
-        _escalate_notify(task, state, notify, config)
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
-        )
-
-    state.review_results.append(parsed_review)
-
-    if parsed_review.parse_errors:
-        _log_verbose(f"Review parse errors: {parsed_review.parse_errors}")
-        canonical_summary = f"PARSE ERROR: {parsed_review.summary}"
-        parsed_review = ReviewResult(
-            verdict="REQUEST_CHANGES",
-            summary=canonical_summary,
-            findings=parsed_review.findings,
-            story_matches=parsed_review.story_matches,
-            story_mismatches=parsed_review.story_mismatches,
-            test_adequate=parsed_review.test_adequate,
-            test_gaps=parsed_review.test_gaps,
-            parse_errors=parsed_review.parse_errors,
-            raw_yaml=parsed_review.raw_yaml,
-        )
-        state.review_results[-1] = parsed_review
-
-    _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
-    _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
-
-    _log(f"  Summary: {parsed_review.summary}")
-    _ro_findings_by_sev: dict[str, list] = {}
-    for _f in parsed_review.findings:
-        _ro_findings_by_sev.setdefault(_f.severity, []).append(_f)
-    for _sev in sorted(_ro_findings_by_sev):
-        for _f in _ro_findings_by_sev[_sev]:
-            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
-            _log(f"  [{_sev}]{_loc} {_f.description}")
-    _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
-    _ro_elapsed = _pool_elapsed
-
-    logger._safe_emit(
-        "review_result",
-        verdict=parsed_review.verdict,
-        p1_count=_ro_p1,
-        p2_count=_ro_p2,
-        cost_usd=round(_ro_cost, 6),
-    )
-
-    if parsed_review.verdict == "APPROVE":
-        state.phase = Phase.DONE
-        _dur = _fmt_duration(_ro_elapsed)
-        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  ${_ro_cost:.2f}  {_dur}")
-        _log(f"✓ DONE   total=${state.total_cost:.2f}  {_fmt_duration(_ro_elapsed)}")
-        logger._safe_emit(
-            "phase_end",
-            phase="REVIEW",
-            outcome="approve",
-            cost_usd=round(_ro_cost, 6),
-            duration_s=round(_ro_elapsed, 2),
-        )
-        logger._safe_emit(
-            "run_end",
-            outcome="done",
-            total_cost_usd=round(state.total_cost, 6),
-            total_duration_s=round(time.monotonic() - _ro_task_start, 2),
-        )
-        _ntfy_done_notify(
-            task, state, config, notify, parsed_review.summary, _ro_elapsed, branch_name
-        )
-        return CoordinatorResult(
-            success=True,
-            phase=state.phase,
-            state=state,
-            message=(f"Task '{task.name}' review-only: APPROVE. Branch: {branch_name}"),
-        )
-
-    # REQUEST_CHANGES — no DEV retry in review-only mode
-    state.phase = Phase.ESCALATE
-    p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
-    state.error = (
-        f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
-    )
-    _log(
-        f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2"
-        f"  ${_ro_cost:.2f}  {_fmt_duration(_ro_elapsed)}"
-    )
-    _log(f"✗ ESCALATE   {state.error}")
-    logger._safe_emit(
-        "phase_end",
-        phase="REVIEW",
-        outcome="escalate",
-        cost_usd=round(_ro_cost, 6),
-        duration_s=round(_ro_elapsed, 2),
-    )
-    logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
-    logger._safe_emit(
-        "run_end",
-        outcome="escalate",
-        total_cost_usd=round(state.total_cost, 6),
-        total_duration_s=round(time.monotonic() - _ro_task_start, 2),
-    )
-    _escalate_notify(task, state, notify, config)
-    return CoordinatorResult(
-        success=False,
-        phase=state.phase,
-        state=state,
-        message=state.error,
+        logger=logger,
+        task_start=_ro_task_start,
+        mod=_sys.modules[__name__],
     )
 
 
