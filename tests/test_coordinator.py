@@ -652,7 +652,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_approve(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -689,7 +696,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_edit_approve(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -730,7 +744,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_regenerate(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -836,7 +857,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_skipped_on_injection(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -869,7 +897,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_skipped_when_disabled(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
     ):
         config = _make_plan_review_config(tmp_path, enabled=False)
         task = _make_task(tmp_path)
@@ -922,7 +957,8 @@ class TestPlanReview:
     def test_plan_review_terminal_used_without_interactive_flag(
         self,
         mock_shell,
-        mock_agent, mock_plan_agent,
+        mock_agent,
+        mock_plan_agent,
         mock_pool,
         mock_plan_review,
         tmp_path,
@@ -958,7 +994,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_remote_ntfy_approve(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_remote_review,
+        mock_human_review,
+        tmp_path,
     ):
         """Non-interactive + ntfy configured → _plan_review_remote is called."""
         config = _make_ntfy_plan_review_config(tmp_path)
@@ -991,7 +1034,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_remote_ntfy_abandon(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_remote_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_remote_review,
+        mock_human_review,
+        tmp_path,
     ):
         """Non-interactive + ntfy + remote returns abandon → run fails at PLAN_REVIEW."""
         config = _make_ntfy_plan_review_config(tmp_path)
@@ -1111,7 +1161,14 @@ class TestPlanReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_regen_tracks_both_costs(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, mock_plan_review, mock_human_review, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_pool,
+        mock_plan_review,
+        mock_human_review,
+        tmp_path,
     ):
         config = _make_plan_review_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1162,7 +1219,8 @@ class TestStoryValidation:
     def test_spec_validation_pass_continues_to_plan(
         self,
         mock_shell,
-        mock_agent, mock_plan_agent,
+        mock_agent,
+        mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1209,7 +1267,8 @@ class TestStoryValidation:
     def test_spec_validation_warn_logs_and_continues(
         self,
         mock_shell,
-        mock_agent, mock_plan_agent,
+        mock_agent,
+        mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1268,7 +1327,8 @@ class TestStoryValidation:
     def test_spec_validation_skipped_on_plan_injection(
         self,
         mock_shell,
-        mock_agent, mock_plan_agent,
+        mock_agent,
+        mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -1307,7 +1367,8 @@ class TestStoryValidation:
     def test_spec_validation_skipped_for_small_complexity(
         self,
         mock_shell,
-        mock_agent, mock_plan_agent,
+        mock_agent,
+        mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_human_review,
@@ -1344,7 +1405,8 @@ class TestStoryValidation:
     def test_spec_validation_warn_scope_appears_in_audit(
         self,
         mock_shell,
-        mock_agent, mock_plan_agent,
+        mock_agent,
+        mock_plan_agent,
         mock_pool,
         mock_validate,
         mock_plan_review,
@@ -4265,7 +4327,14 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_p1_blocking_triggers_regen(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
     ):
         """P1 findings block — plan regenerated, second review APPROVE."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4320,7 +4389,14 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_p0_reject_then_approve(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
     ):
         """P0 finding blocks — plan regenerated, second review APPROVE."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4575,7 +4651,9 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_agent_review_parse_failure(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_agent_review_parse_failure(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Agent produces garbage — treated as REJECT, escalates after max retries."""
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
@@ -4668,7 +4746,14 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_regen_receives_rejection_findings(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
     ):
         """Regenerated plan prompt includes rejection findings from P0 review."""
         config = _make_plan_agent_review_config(tmp_path)
@@ -4726,7 +4811,14 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_p0_from_one_reviewer_rejects(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
     ):
         """Pool: P0 from one reviewer + APPROVE from another -> merged REJECT."""
         pool_config = dataclasses.replace(
@@ -4812,7 +4904,9 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_review_pool_all_fail_rejects(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_review_pool_all_fail_rejects(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Pool: all reviewers fail (exit_code != 0) -> REJECT."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
@@ -4876,7 +4970,14 @@ class TestPlanAgentReview:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_p1_blocking_triggers_regen(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_plan_pool, mock_human_review, mock_code_pool, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
     ):
         """Pool: P1s from multiple reviewers block — regen triggered, findings attributed."""
         pool_config = dataclasses.replace(

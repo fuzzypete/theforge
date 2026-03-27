@@ -56,7 +56,9 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_proceed_continues_to_dev(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_preflight_proceed_continues_to_dev(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """PROCEED verdict → normal dev→validate→review flow."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -113,7 +115,9 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_blocked_escalates(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_preflight_blocked_escalates(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """BLOCKED verdict → ESCALATE with reason."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -139,7 +143,9 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_agent_failure_proceeds(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_preflight_agent_failure_proceeds(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """If the preflight agent itself fails, fail-open to PROCEED."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -166,7 +172,9 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_unparseable_proceeds(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_preflight_unparseable_proceeds(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """If preflight output is not valid YAML, fail-open to PROCEED."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -194,7 +202,9 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_cost_in_audit(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_preflight_cost_in_audit(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Preflight cost appears in audit log."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -816,7 +826,9 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_escalation_swaps_dev_model(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_escalation_swaps_dev_model(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Persistent P1 across 2 cycles → dev model swapped to opus on next iteration."""
         config = _make_smart_config(tmp_path, max_review_cycles=3)
         task = _make_task(tmp_path)
@@ -874,7 +886,9 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_escalation_max_once(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_escalation_max_once(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Escalation happens at most once per run, even with multiple persistent P1 cycles."""
         config = _make_smart_config(tmp_path, max_review_cycles=5)
         task = _make_task(tmp_path)
@@ -914,7 +928,9 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_escalation_only_with_smart_config(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_escalation_only_with_smart_config(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Classic config (no smart_config_models) → no escalation even with persistent P1."""
         config = _make_config(tmp_path)
         # Verify no smart_config_models
@@ -1008,7 +1024,9 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_runs_for_medium_complexity(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_runs_for_medium_complexity(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """PLAN phase runs when preflight complexity is medium."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1055,7 +1073,9 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_skipped_for_small_complexity(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_skipped_for_small_complexity(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """PLAN phase is skipped when preflight complexity is small."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1094,7 +1114,9 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_skipped_when_disabled(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_skipped_when_disabled(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """PLAN phase is skipped when plan.enabled is False."""
         config = ForgeConfig(
             project="test",
@@ -1146,7 +1168,9 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_failure_escalates(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_failure_escalates(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """When PLAN agent fails, the run escalates (does not proceed blind)."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1194,7 +1218,9 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_cost_included_in_total_cost(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_cost_included_in_total_cost(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """total_cost includes plan cost."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1240,7 +1266,9 @@ class TestPlanPhase:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_plan_not_rerun_on_dev_retry(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_plan_not_rerun_on_dev_retry(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """On DEV retry (review sends REQUEST_CHANGES), PLAN does not re-run."""
         config = _make_plan_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1625,7 +1653,9 @@ class TestApprovePathCycleHistory:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_approve_records_cycle_in_history(self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path):
+    def test_approve_records_cycle_in_history(
+        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+    ):
         """Non-interactive APPROVE run records the approved cycle in state.cycle_history."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
