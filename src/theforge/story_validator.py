@@ -14,7 +14,17 @@ from typing import Any
 
 import yaml
 
-from .runners import run_agent
+# Lazy runner slot — None until first call; tests may replace with a mock.
+run_agent = None
+
+
+def _ensure_runner() -> None:
+    global run_agent
+    if run_agent is None:
+        from .runners import run_agent as _ra  # noqa: PLC0415
+
+        run_agent = _ra
+
 
 _VALIDATION_PROMPT = """\
 You are a story quality checker for a software development orchestrator.
@@ -200,6 +210,7 @@ def validate_story(
     prompt = _VALIDATION_PROMPT.format(story_content=story_content)
 
     try:
+        _ensure_runner()
         t0 = time.monotonic()
         agent_result = run_agent(
             prompt=prompt,
