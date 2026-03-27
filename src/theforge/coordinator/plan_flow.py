@@ -1,0 +1,773 @@
+"""PLAN and PLAN_REVIEW phase execution.
+
+Owns everything between PREFLIGHT PROCEED and the DEV loop:
+  - Optional story spec validation (advisory pre-PLAN check)
+  - Plan agent invocation
+  - Plan agent review pool (plan_agent_review config)
+  - Human plan review (pending-file, remote, interactive)
+  - Plan regeneration with model escalation
+  - Advisory plan validation against story criteria
+
+Called from run_task(); returns None to continue to DEV or a
+CoordinatorResult to stop early (abandon, escalate, or stop_phase).
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from theforge.artifacts import PLAN_PATH, ensure_parent_dir, resolve_plan_path
+from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
+from theforge.log_level import _LOG_LEVEL, LogLevel
+from theforge.review import (
+    PlanReviewResult,
+    merge_plan_review_results,
+    parse_plan_review_output,
+    plan_review_findings_to_text,
+)
+from theforge.sessions import save_sessions
+from theforge.task import TaskSpec, build_plan_prompt, build_plan_review_prompt, parse_plan_output
+from theforge.traces import write_trace
+
+from . import util as _cu
+from .log_tee import _write_log_artifact
+from .notify import (
+    _escalate_notify,
+    _is_pending_file_mode,
+    _is_remote_mode,
+    _plan_review_interactive,
+)
+from .pending_hitl import _pending_plan_review
+from .preflight import _escalate_dev_model, _find_registry_key_for_profile
+from .remote_gates import _plan_review_remote
+from .state import CoordinatorResult, CoordinatorState, Phase
+from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout
+
+if TYPE_CHECKING:
+    from theforge.agent_types import AgentResult
+    from theforge.coordinator.logging import StructuredLogger
+
+_log = _cu._log
+_log_verbose = _cu._log_verbose
+
+# ── Lazy runner slots ─────────────────────────────────────────────────
+# run_agent_pool: module-level slot, independently patchable for plan review
+# tests (patch theforge.coordinator.plan_flow.run_agent_pool).
+#
+# run_agent: NOT cached here. _get_run_agent() reads it from engine's slot
+# on every call so that test patches on theforge.coordinator.engine.run_agent
+# are automatically seen for plan agent and regen calls — the same contract
+# that phases.py honours via mod.run_agent.
+run_agent_pool = None
+
+
+def _ensure_runners() -> None:
+    global run_agent_pool
+    if run_agent_pool is not None:
+        return
+    import theforge.runners as _r  # noqa: PLC0415
+
+    run_agent_pool = _r.run_agent_pool
+
+
+def _get_run_agent():
+    """Return the current run_agent callable from engine's lazy slot.
+
+    Reading through engine rather than caching locally means test patches
+    on theforge.coordinator.engine.run_agent cover plan / regen calls here
+    without requiring a second patch target.
+    """
+    import theforge.coordinator.engine as _engine  # noqa: PLC0415
+
+    _engine._ensure_runners()
+    return _engine.run_agent
+
+
+def _run_plan_phase(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskSpec,
+    story_content: str,
+    workspace_path: Path,
+    plan_path: Path | None,
+    preflight_result: "AgentResult | None",
+    *,
+    notify: bool,
+    logger: "StructuredLogger | None",
+    run_id: str | None,
+    state_update_fn: "Callable[[dict], None] | None",
+) -> CoordinatorResult | None:
+    """Run SPEC VALIDATION → PLAN → PLAN_REVIEW for run_task.
+
+    Args:
+        plan_path: If not None, plan was injected via --plan; skip spec
+            validation and the plan agent invocation.
+        preflight_result: AgentResult from the preflight agent, or None if
+            preflight was skipped. Used to build the plan prompt.
+
+    Returns:
+        None to continue to the DEV loop, or a CoordinatorResult to stop
+        early (plan failure, review abandon, escalation).
+    """
+    _ensure_runners()
+
+    # ── SPEC VALIDATION ───────────────────────────────────────────────
+    _should_validate_spec = (
+        plan_path is None
+        and config.plan.enabled
+        and state.preflight_complexity in ("medium", "large")
+    )
+    if _should_validate_spec:
+        from theforge.story_validator import validate_story  # noqa: PLC0415
+
+        _fast_profile = (
+            dataclasses.replace(config.dev_profile, model="sonnet")
+            if "opus" in config.dev_profile.model.lower()
+            else config.dev_profile
+        )
+        _sv_result = validate_story(
+            story_content=story_content,
+            profile=_fast_profile,
+            working_dir=workspace_path,
+            secrets=config.secrets,
+        )
+        state.story_validation_result = _sv_result
+        if _sv_result.verdict == "WARN":
+            _log("⚠  Story validation: WARN — review findings before planning")
+            for _finding in _sv_result.findings:
+                _log(f"   [{_finding.category}] {_finding.description}")
+                if _finding.split_suggestion:
+                    _stories = _finding.split_suggestion.get("stories") or []
+                    for _story in _stories:
+                        _log(f"     → {_story.get('name', '?')}")
+
+    # ── PLAN ──────────────────────────────────────────────────────────
+    should_plan = (
+        plan_path is None
+        and config.plan.enabled
+        and state.preflight_complexity in ("medium", "large")
+    )
+    if not should_plan:
+        return None
+
+    state.phase = Phase.PLAN
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "PLAN",
+                "iteration": 0,
+                "cost_usd": state.total_cost,
+            }
+        )
+    _plan_timeout = resolve_timeout(
+        config.plan.timeout,
+        config.plan.timeout_medium,
+        config.plan.timeout_large,
+        state.preflight_complexity,
+    )
+    _plan_override_active = (
+        state.preflight_complexity == "large" and config.plan.timeout_large is not None
+    ) or (state.preflight_complexity == "medium" and config.plan.timeout_medium is not None)
+    if _plan_override_active:
+        _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
+    else:
+        _log(f"  Plan timeout: {_plan_timeout}s")
+
+    # Use adaptive planner if available and not explicitly configured
+    _adaptive = getattr(state, "_adaptive_decision", None)
+    _explicit_roles_now = getattr(state, "_explicit_roles", set())
+    if (
+        _adaptive is not None
+        and _adaptive.planner is not None
+        and "planner" not in _explicit_roles_now
+    ):
+        plan_profile = _adaptive.planner
+        plan_profile = dataclasses.replace(plan_profile, timeout_seconds=_plan_timeout)
+        _log(f"  [adaptive] planner: {plan_profile.model}")
+    else:
+        plan_profile = ModelProfile(
+            name="plan",
+            cli=config.plan.model,
+            model=config.plan.model_name,
+            budget_usd=config.plan.budget_usd,
+            timeout_seconds=_plan_timeout,
+            allowed_tools=config.preflight_profile.allowed_tools,
+        )
+    _log_phase(state.phase, plan_profile.model)
+    logger._safe_emit("phase_start", phase="PLAN", iteration=0)
+
+    plan_prompt = build_plan_prompt(
+        task,
+        story_content=story_content,
+        preflight_output=(
+            preflight_result.output if preflight_result and preflight_result.success else None
+        ),
+    )
+
+    _plan_start = time.monotonic()
+    plan_result = _get_run_agent()(
+        prompt=plan_prompt,
+        profile=plan_profile,
+        working_dir=workspace_path,
+        secrets=config.secrets,
+    )
+    _plan_elapsed = time.monotonic() - _plan_start
+    state.plan_durations.append(_plan_elapsed)
+    state.plan_results.append(plan_result)
+    state.plan_session_id = plan_result.session_id or state.plan_session_id
+    write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
+
+    if plan_result.success:
+        plan_text = plan_result.output
+        worktree_plan_path = workspace_path / PLAN_PATH
+        ensure_parent_dir(worktree_plan_path)
+        worktree_plan_path.write_text(plan_text, encoding="utf-8")
+        state.plan_output = plan_text
+        state.plan_structured = parse_plan_output(plan_text)
+        _log(f"  ✓ PLAN   {_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}")
+        logger._safe_emit(
+            "phase_end",
+            phase="PLAN",
+            outcome="success",
+            cost_usd=round(plan_result.cost_usd or 0.0, 6),
+            duration_s=round(_plan_elapsed, 2),
+        )
+
+        if config.plan_agent_review.enabled:
+            result = _run_plan_agent_review(
+                state=state,
+                config=config,
+                task=task,
+                story_content=story_content,
+                workspace_path=workspace_path,
+                plan_profile=plan_profile,
+                plan_text=plan_text,
+                preflight_result=preflight_result,
+                notify=notify,
+                logger=logger,
+            )
+            if result is not None:
+                return result
+
+        elif config.plan_review.enabled:
+            result = _run_human_plan_review(
+                state=state,
+                config=config,
+                task=task,
+                workspace_path=workspace_path,
+                plan_profile=plan_profile,
+                plan_text=plan_text,
+                plan_prompt=plan_prompt,
+                notify=notify,
+                logger=logger,
+                run_id=run_id,
+            )
+            if result is not None:
+                return result
+
+    else:
+        state.phase = Phase.ESCALATE
+        state.error = (
+            "PLAN phase failed — task requires a plan but the planning agent "
+            f"did not produce one (exit={plan_result.exit_code}). "
+            "Consider increasing plan timeout or simplifying the spec."
+        )
+        _log("  ✗ PLAN failed — escalating (not proceeding blind)")
+        logger._safe_emit("phase_end", phase="PLAN", outcome="escalate")
+        _log(f"✗ ESCALATE   {state.error}")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    # ── Plan validation (advisory, before DEV) ────────────────────────
+    if state.plan_structured is not None and state.workspace_path is not None:
+        from theforge.plan_validator import extract_story_criteria  # noqa: PLC0415
+        from theforge.plan_validator import validate_plan as _validate_plan  # noqa: PLC0415
+
+        _story_criteria = extract_story_criteria(story_content)
+        _pv_findings = _validate_plan(state.plan_structured, _story_criteria, state.workspace_path)
+        state.plan_validation_findings = _pv_findings
+        for _f in _pv_findings:
+            import logging as _logging  # noqa: PLC0415
+
+            _logging.getLogger(__name__).warning(
+                "Plan validation [%s]: %s", _f["check"], _f["message"]
+            )
+        if _pv_findings:
+            _log(
+                f"  ⚠ PLAN_VALIDATION  {len(_pv_findings)} finding(s) — "
+                f"advisory only, proceeding to DEV"
+            )
+        else:
+            _log("  ✓ PLAN_VALIDATION  all checks passed")
+
+    return None
+
+
+def _run_plan_agent_review(
+    *,
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskSpec,
+    story_content: str,
+    workspace_path: Path,
+    plan_profile: ModelProfile,
+    plan_text: str,
+    preflight_result: "AgentResult | None",
+    notify: bool,
+    logger: "StructuredLogger | None",
+) -> CoordinatorResult | None:
+    """Run agent-based plan review pool with regen loop.
+
+    Returns None to continue to DEV, or CoordinatorResult to stop early.
+    """
+    state.phase = Phase.PLAN_REVIEW
+    state.plan_review_mode = "agent"
+    _adaptive = getattr(state, "_adaptive_decision", None)
+    if (
+        _adaptive is not None
+        and _adaptive.plan_reviewers
+        and "plan_agent_review" not in state._explicit_roles
+    ):
+        par_profiles = _adaptive.plan_reviewers
+        _log(f"  [adaptive] plan_reviewers: {', '.join(p.model for p in par_profiles)}")
+    else:
+        par_profiles = config.plan_agent_review.profiles
+    _pool_names = [p.name for p in par_profiles]
+    _pool_label = "+".join(p.model for p in par_profiles)
+    if config.plan_review.enabled:
+        _log("  ⚠ Both plan_agent_review and plan_review enabled — agent review takes precedence")
+
+    _max = config.retry.max_plan_regen_attempts
+    for _attempt in range(_max + 1):
+        _log_phase(
+            state.phase,
+            f"agent review ({_pool_label}, {len(par_profiles)} reviewer(s))",
+        )
+        logger._safe_emit("phase_start", phase="PLAN_REVIEW", iteration=_attempt)
+
+        pr_prompt = build_plan_review_prompt(
+            task,
+            story_content=story_content,
+            plan_content=state.plan_structured or plan_text,
+            mode=par_profiles[0].mode,
+            preflight_output=(
+                preflight_result.output if preflight_result and preflight_result.success else None
+            ),
+            rejection_findings=state.plan_agent_review_findings,
+        )
+
+        _pr_start = time.monotonic()
+        _pool_session_ids = [state.plan_review_session_ids.get(p.name) for p in par_profiles]
+        pr_results = run_agent_pool(
+            prompt=pr_prompt,
+            profiles=par_profiles,
+            working_dir=workspace_path,
+            session_ids=_pool_session_ids,
+            secrets=config.secrets,
+        )
+        _pr_elapsed = time.monotonic() - _pr_start
+        state.plan_review_durations.append(_pr_elapsed)
+
+        for _prof, _res in zip(par_profiles, pr_results):
+            if _res.session_id:
+                state.plan_review_session_ids[_prof.name] = _res.session_id
+        state.plan_review_results.extend(pr_results)
+        save_sessions(
+            workspace_path,
+            state.dev_session_id,
+            state.reviewer_session_ids,
+            state.plan_review_session_ids,
+        )
+
+        _parsed_prs: list[PlanReviewResult] = []
+        for _prof, _res in zip(par_profiles, pr_results):
+            if not _res.success:
+                _log(
+                    f"  ✗ PLAN_REVIEW   {_prof.name} failed "
+                    f"(exit={_res.exit_code}) — treating as REJECT"
+                )
+                _parsed = parse_plan_review_output("")  # force parse error → REJECT
+            else:
+                _parsed = parse_plan_review_output(_res.output)
+
+            if _parsed.parse_errors:
+                _log(
+                    f"  ⚠ PLAN_REVIEW   {_prof.name} parse issues: "
+                    f"{'; '.join(_parsed.parse_errors)}"
+                )
+
+            # Advisory downgrade: REJECT with only P1/P2 (no P0, no parse_errors) → APPROVE
+            _has_p0 = any(f.severity == "P0" for f in _parsed.findings)
+            if (
+                _parsed.verdict == "REJECT"
+                and not _has_p0
+                and _parsed.findings
+                and not _parsed.parse_errors
+            ):
+                _log(
+                    f"  ✓ PLAN_REVIEW   {_prof.name} approve "
+                    f"(advisory {len(_parsed.findings)} findings)"
+                )
+                _parsed = PlanReviewResult(
+                    verdict="APPROVE",
+                    findings=_parsed.findings,
+                    parse_errors=[],
+                )
+            _parsed_prs.append(_parsed)
+
+        merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
+        _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
+
+        if merged_pr.verdict == "APPROVE":
+            state.plan_review_decision = "approve"
+            if merged_pr.findings:
+                findings_text = plan_review_findings_to_text(merged_pr)
+                state.plan_agent_review_findings = findings_text
+                _log(
+                    f"  ✓ PLAN_REVIEW   approve (merged, "
+                    f"{len(merged_pr.findings)} advisory)  "
+                    f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+                )
+                _log(f"  Advisory findings (passed to dev):\n{findings_text}")
+            else:
+                _log(
+                    f"  ✓ PLAN_REVIEW   approve (merged)  "
+                    f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+                )
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN_REVIEW",
+                outcome="approve",
+                cost_usd=round(_total_pr_cost, 6),
+                duration_s=round(_pr_elapsed, 2),
+            )
+            try:
+                _cu._run_shell(["git", "add", str(PLAN_PATH)], cwd=workspace_path)
+                _cu._run_shell(
+                    [
+                        "git",
+                        "commit",
+                        "-m",
+                        f"docs(plan): approved implementation plan for {task.slug}",
+                    ],
+                    cwd=workspace_path,
+                )
+                _log(f"  ✓ PLAN   committed {PLAN_PATH}")
+            except Exception as _commit_err:
+                _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
+            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+            for _pr_prof, _pr_res in zip(par_profiles, pr_results):
+                _write_log_artifact(
+                    state.log_dir, f"plan-review/{_pr_prof.name}.yaml", _pr_res.output or ""
+                )
+            return None  # continue to DEV
+
+        # REJECT path
+        findings_text = plan_review_findings_to_text(merged_pr)
+        state.plan_agent_review_findings = findings_text
+        _log(
+            f"  ✗ PLAN_REVIEW   reject (merged)  "
+            f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+        )
+        logger._safe_emit(
+            "phase_end",
+            phase="PLAN_REVIEW",
+            outcome="reject",
+            cost_usd=round(_total_pr_cost, 6),
+            duration_s=round(_pr_elapsed, 2),
+        )
+
+        state.plan_regen_count += 1
+
+        # Escalate planner model after N consecutive rejections
+        if (
+            state.plan_regen_count >= config.retry.plan_escalation_threshold
+            and not state.plan_escalated
+        ):
+            _curr_key = _find_registry_key_for_profile(plan_profile)
+            if _curr_key is not None and config.smart_config_models is not None:
+                _next_key = _escalate_dev_model(_curr_key, config.smart_config_models)
+                if _next_key is not None:
+                    _next_info = MODEL_REGISTRY[_next_key]
+                    _old_model = plan_profile.model
+                    _new_model = _next_info.model
+                    plan_profile = dataclasses.replace(
+                        plan_profile,
+                        cli=_next_info.cli,
+                        model=_next_info.model,
+                    )
+                    state.plan_escalated = True
+                    state.plan_escalation_note = (
+                        f"MODEL ESCALATION: The plan was rejected"
+                        f" {state.plan_regen_count} time(s). The previous"
+                        f" model ({_old_model}) was unable to produce an"
+                        f" acceptable plan. You are now running on an upgraded"
+                        f" model ({_new_model}). Key findings from prior"
+                        f" rejections: {findings_text}"
+                    )
+                    _log(
+                        f"  Plan escalation:"
+                        f" {_old_model} → {_new_model}"
+                        f" (rejected {state.plan_regen_count}x)"
+                    )
+                    logger._safe_emit(
+                        "plan_model_escalate",
+                        from_model=_old_model,
+                        to_model=_new_model,
+                        rejections=state.plan_regen_count,
+                    )
+                else:
+                    _log(
+                        "  Plan escalation: no higher tier available"
+                        " — continuing with current model"
+                    )
+
+        if state.plan_regen_count > config.retry.max_plan_regen_attempts:
+            state.plan_review_decision = "reject"
+            state.phase = Phase.ESCALATE
+            _max_regen = config.retry.max_plan_regen_attempts
+            state.error = (
+                f"Plan rejected {state.plan_regen_count} time(s)"
+                f" by agent reviewer"
+                f" (max_plan_regen_attempts={_max_regen})."
+                f" Findings:\n{findings_text}"
+            )
+            _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — escalating")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=state.error,
+            )
+
+        # REJECT → regenerate plan with findings
+        state.plan_review_decision = "regenerate"
+        _log(
+            f"  ↺ PLAN_REVIEW   reject → regenerating plan "
+            f"(attempt {state.plan_regen_count}/{_max})"
+        )
+        _log(f"  Findings:\n{findings_text}")
+
+        regen_prompt = build_plan_prompt(
+            task,
+            story_content=story_content,
+            preflight_output=(
+                preflight_result.output if preflight_result and preflight_result.success else None
+            ),
+        )
+        regen_prompt += (
+            "\n\n## Previous Plan Review Findings\n\n"
+            "The previous plan was REJECTED. Address these issues:\n\n"
+            f"{findings_text}\n"
+        )
+
+        if state.plan_escalation_note:
+            regen_prompt += f"\n\n## Model Escalation\n\n{state.plan_escalation_note}\n"
+
+        if _LOG_LEVEL >= LogLevel.VERBOSE:
+            regen_prompt += (
+                "\n\n## Session Continuity Check\n\n"
+                "Begin your response with exactly one line in this format:\n"
+                "PRIOR CONTEXT: [one sentence describing the key naming/filing "
+                "approach from your previous plan attempt]\n\n"
+                "This confirms you have access to your prior session context."
+            )
+
+        _plan_start = time.monotonic()
+        _resuming = state.plan_session_id is not None
+        _resume_tag = f"resuming {state.plan_session_id[:8]}" if _resuming else "new session"
+        _log(f"  Starting plan regen (model={plan_profile.model}, {_resume_tag})...")
+        plan_result = _get_run_agent()(
+            prompt=regen_prompt,
+            profile=plan_profile,
+            working_dir=workspace_path,
+            session_id=state.plan_session_id,
+            secrets=config.secrets,
+        )
+        _plan_elapsed = time.monotonic() - _plan_start
+        state.plan_durations.append(_plan_elapsed)
+        state.plan_results.append(plan_result)
+        state.plan_session_id = plan_result.session_id or state.plan_session_id
+        write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
+
+        if not plan_result.success:
+            state.phase = Phase.ESCALATE
+            state.error = "PLAN regeneration failed after agent review REJECT"
+            _log("  ✗ PLAN regen failed — escalating")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
+
+        plan_text = plan_result.output
+        worktree_plan_path = workspace_path / PLAN_PATH
+        ensure_parent_dir(worktree_plan_path)
+        worktree_plan_path.write_text(plan_text, encoding="utf-8")
+        state.plan_output = plan_text
+        state.plan_structured = parse_plan_output(plan_text)
+        _log(
+            "  ✓ PLAN (regenerated)  "
+            f"{_fmt_cost(plan_result.cost_usd)}  {_fmt_duration(_plan_elapsed)}"
+        )
+
+    # Loop exhausted without APPROVE — should not happen (guarded by regen_count check above)
+    return None
+
+
+def _run_human_plan_review(
+    *,
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskSpec,
+    workspace_path: Path,
+    plan_profile: ModelProfile,
+    plan_text: str,
+    plan_prompt: str,
+    notify: bool,
+    logger: "StructuredLogger | None",
+    run_id: str | None,
+) -> CoordinatorResult | None:
+    """Run human-in-the-loop plan review (pending-file, remote, or interactive).
+
+    Returns None to continue to DEV, or CoordinatorResult to stop early.
+    """
+    for _ in range(config.retry.max_plan_regen_attempts + 1):
+        state.phase = Phase.PLAN_REVIEW
+        _log_phase(state.phase, "waiting for human decision...")
+        _log(f"  Plan written to: {workspace_path / PLAN_PATH}")
+
+        _pr_start = time.monotonic()
+        if _is_pending_file_mode(notify, config):
+            plan_review_decision = _pending_plan_review(
+                state, plan_text, workspace_path, task, config, run_id=run_id
+            )
+        elif _is_remote_mode(notify, config):
+            plan_review_decision = _plan_review_remote(
+                state, plan_text, workspace_path, task, config
+            )
+        else:
+            plan_review_decision = _plan_review_interactive(state, plan_text, workspace_path, task)
+            state.plan_review_mode = "interactive"
+        state.plan_review_waited_seconds = time.monotonic() - _pr_start
+        state.plan_review_decision = plan_review_decision
+
+        if plan_review_decision == "approve":
+            try:
+                updated = resolve_plan_path(workspace_path).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                state.phase = Phase.ESCALATE
+                _unreadable_path = resolve_plan_path(workspace_path)
+                state.error = f"{_unreadable_path} unreadable after edit: {exc}"
+                _log(f"  ✗ PLAN_REVIEW   {state.error}")
+                _escalate_notify(task, state, notify, config)
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.error,
+                )
+            state.plan_output = updated
+            state.plan_structured = parse_plan_output(updated)
+            plan_text = updated
+            write_trace(workspace_path / ".forge/traces" / "plan.txt", updated)
+            _log(
+                "  ✓ PLAN_REVIEW   approve  "
+                f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
+            )
+            try:
+                _cu._run_shell(["git", "add", str(PLAN_PATH)], cwd=workspace_path)
+                _cu._run_shell(
+                    [
+                        "git",
+                        "commit",
+                        "-m",
+                        f"docs(plan): approved implementation plan for {task.slug}",
+                    ],
+                    cwd=workspace_path,
+                )
+                _log(f"  ✓ PLAN   committed {PLAN_PATH}")
+            except Exception as _commit_err:
+                _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
+            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+            return None  # continue to DEV
+
+        if plan_review_decision == "regenerate":
+            state.plan_regen_count += 1
+            if state.plan_regen_count > config.retry.max_plan_regen_attempts:
+                state.plan_review_decision = "abandon"
+                _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — abandoning")
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.PLAN_REVIEW,
+                    state=state,
+                    message=(f"Plan rejected {state.plan_regen_count} time(s) — abandoning."),
+                )
+
+            _max2 = config.retry.max_plan_regen_attempts
+            _log(
+                f"  ↺ PLAN_REVIEW   regenerate — re-running PLAN agent "
+                f"(attempt {state.plan_regen_count}/{_max2})"
+            )
+
+            _plan_start = time.monotonic()
+            plan_result = _get_run_agent()(
+                prompt=plan_prompt,
+                profile=plan_profile,
+                working_dir=workspace_path,
+                session_id=state.plan_session_id,
+                secrets=config.secrets,
+            )
+            _plan_elapsed = time.monotonic() - _plan_start
+            state.plan_durations.append(_plan_elapsed)
+            state.plan_results.append(plan_result)
+            state.plan_session_id = plan_result.session_id or state.plan_session_id
+            write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
+
+            if not plan_result.success:
+                state.phase = Phase.ESCALATE
+                state.error = "PLAN regeneration failed"
+                _log("  ✗ PLAN regen failed — escalating")
+                _escalate_notify(task, state, notify, config)
+                return CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=state.error,
+                )
+
+            plan_text = plan_result.output
+            worktree_plan_path = workspace_path / PLAN_PATH
+            ensure_parent_dir(worktree_plan_path)
+            worktree_plan_path.write_text(plan_text, encoding="utf-8")
+            state.plan_output = plan_text
+            state.plan_structured = parse_plan_output(plan_text)
+            _log(
+                "  ✓ PLAN (regenerated)  "
+                f"{_fmt_cost(plan_result.cost_usd)}"
+                f"  {_fmt_duration(_plan_elapsed)}"
+            )
+            continue
+
+        _log(f"  ✗ PLAN_REVIEW   abandoned — worktree preserved at {workspace_path}")
+        state.phase = Phase.PLAN_REVIEW
+        return CoordinatorResult(
+            success=False,
+            phase=Phase.PLAN_REVIEW,
+            state=state,
+            message="Plan review abandoned by human.",
+        )
+
+    return None  # loop exhausted (shouldn't reach here normally)

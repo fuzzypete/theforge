@@ -646,7 +646,7 @@ class TestAlreadyDoneOverride:
 
 class TestPlanReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -681,7 +681,7 @@ class TestPlanReview:
         assert mock_human_review.called
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -720,7 +720,7 @@ class TestPlanReview:
         assert mock_human_review.called
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -757,7 +757,7 @@ class TestPlanReview:
         assert mock_agent.call_count == 4
         assert mock_human_review.called
 
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -784,7 +784,7 @@ class TestPlanReview:
         assert workspace.exists()
         mock_pool.assert_not_called()
 
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -820,7 +820,7 @@ class TestPlanReview:
         mock_pool.assert_not_called()
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -851,7 +851,7 @@ class TestPlanReview:
         assert mock_human_review.called
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -900,7 +900,7 @@ class TestPlanReview:
         assert plan_text in captured.out
         assert f"Plan at: {workspace / '.forge/plan.md'}" in captured.err
 
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -936,7 +936,7 @@ class TestPlanReview:
         mock_plan_review.assert_called_once()
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_remote")
+    @patch("theforge.coordinator.plan_flow._plan_review_remote")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -967,7 +967,7 @@ class TestPlanReview:
         mock_remote_review.assert_called_once()
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_remote")
+    @patch("theforge.coordinator.plan_flow._plan_review_remote")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -993,7 +993,7 @@ class TestPlanReview:
         assert result.phase == Phase.PLAN_REVIEW
         mock_remote_review.assert_called_once()
 
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1023,7 +1023,7 @@ class TestPlanReview:
         assert result.state.plan_review_decision == "approve"
         mock_plan_review.assert_called_once()
 
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1048,7 +1048,7 @@ class TestPlanReview:
         assert result.phase == Phase.PLAN_REVIEW
         assert result.phase != Phase.ESCALATE
 
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1079,7 +1079,7 @@ class TestPlanReview:
         mock_pool.assert_not_called()
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1125,8 +1125,8 @@ class TestStoryValidation:
     """Tests for spec validation (pre-PLAN quality check)."""
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
-    @patch("theforge.coordinator.engine.validate_story")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1170,8 +1170,8 @@ class TestStoryValidation:
         assert len(result.state.plan_results) == 1
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
-    @patch("theforge.coordinator.engine.validate_story")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1227,8 +1227,8 @@ class TestStoryValidation:
         assert "AC-3 contradicts Requirement-2" in captured.err
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
-    @patch("theforge.coordinator.engine.validate_story")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1265,7 +1265,7 @@ class TestStoryValidation:
         mock_validate.assert_not_called()
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.validate_story")
+    @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1299,8 +1299,8 @@ class TestStoryValidation:
         mock_validate.assert_not_called()
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine._plan_review_interactive")
-    @patch("theforge.coordinator.engine.validate_story")
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.story_validator.validate_story")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -4176,7 +4176,7 @@ def _make_plan_agent_review_config(tmp_path: Path) -> ForgeConfig:
 
 class TestPlanAgentReview:
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_approve(
@@ -4220,7 +4220,7 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_p1_blocking_triggers_regen(
@@ -4273,7 +4273,7 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_p0_reject_then_approve(
@@ -4325,7 +4325,7 @@ class TestPlanAgentReview:
         assert len(result.state.plan_results) == 2
         assert len(result.state.plan_review_results) == 2
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_double_p0_reject_escalates(
@@ -4378,7 +4378,7 @@ class TestPlanAgentReview:
         assert mock_pool.call_count == 2
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_model_escalation_on_repeated_rejection(
@@ -4464,7 +4464,7 @@ class TestPlanAgentReview:
         assert "MODEL ESCALATION" in regen_prompt
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_disabled_by_default(
@@ -4490,7 +4490,7 @@ class TestPlanAgentReview:
         assert result.state.plan_review_decision is None
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_skipped_on_plan_injection(
@@ -4519,7 +4519,7 @@ class TestPlanAgentReview:
         assert result.state.plan_review_decision is None
         assert len(result.state.plan_review_results) == 0
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_parse_failure(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -4568,7 +4568,7 @@ class TestPlanAgentReview:
         assert mock_pool.call_count == 2
 
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_agent_review_cost_in_audit(
@@ -4607,7 +4607,7 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_regen_receives_rejection_findings(
@@ -4663,7 +4663,7 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_p0_from_one_reviewer_rejects(
@@ -4748,7 +4748,7 @@ class TestPlanAgentReview:
         assert result.state.plan_regen_count == 1
         assert len(result.state.plan_review_results) == 4  # 2 reviewers x 2 rounds
 
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_all_fail_rejects(self, mock_shell, mock_agent, mock_pool, tmp_path):
@@ -4809,7 +4809,7 @@ class TestPlanAgentReview:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine._human_review", return_value=("approve", None))
-    @patch("theforge.coordinator.engine.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_review_pool_p1_blocking_triggers_regen(
