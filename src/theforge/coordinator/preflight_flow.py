@@ -252,12 +252,16 @@ def _run_preflight_phase(
 
     # ── stop_phase gate ────────────────────────────────────────────────
     if stop_phase is not None and stop_phase == Phase.PREFLIGHT:
-        return config, CoordinatorResult(
-            success=True,
-            phase=Phase.PREFLIGHT,
-            state=state,
-            message=f"Stopped at --until {stop_phase.name.lower()}",
-        ), False
+        return (
+            config,
+            CoordinatorResult(
+                success=True,
+                phase=Phase.PREFLIGHT,
+                state=state,
+                message=f"Stopped at --until {stop_phase.name.lower()}",
+            ),
+            False,
+        )
 
     # ── ALREADY_DONE ──────────────────────────────────────────────────
     if verdict == "ALREADY_DONE":
@@ -265,9 +269,7 @@ def _run_preflight_phase(
             f"git log {config.workspace.base_branch}..{branch_name} --oneline",
             config.project_root,
         )
-        commits_ahead = (
-            [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
-        )
+        commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
         if commits_ahead and not has_review_approve(
             config.project_root, task.slug, config.workspace.base_branch, branch_name
         ):
@@ -305,12 +307,16 @@ def _run_preflight_phase(
             elapsed,
             branch_name,
         )
-        return config, CoordinatorResult(
-            success=True,
-            phase=state.phase,
-            state=state,
-            message=f"Preflight: spec already implemented. {reason}",
-        ), False
+        return (
+            config,
+            CoordinatorResult(
+                success=True,
+                phase=state.phase,
+                state=state,
+                message=f"Preflight: spec already implemented. {reason}",
+            ),
+            False,
+        )
 
     # ── BLOCKED ───────────────────────────────────────────────────────
     if verdict == "BLOCKED":
@@ -326,12 +332,16 @@ def _run_preflight_phase(
                 total_duration_s=round(time.monotonic() - task_start, 2),
             )
         _escalate_notify(task, state, notify, config)
-        return config, CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
-        ), False
+        return (
+            config,
+            CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            ),
+            False,
+        )
 
     # verdict == "PROCEED"
     return config, None, False
