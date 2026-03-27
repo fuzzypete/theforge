@@ -24,7 +24,6 @@ from theforge.review import (
     parse_review_json,
     parse_review_output,
 )
-from theforge.runners import log_agent_result, run_agent, run_agent_pool
 from theforge.sessions import save_sessions
 from theforge.task import TaskSpec, build_review_prompt
 from theforge.traces import write_trace
@@ -39,6 +38,27 @@ if TYPE_CHECKING:
 
 _log = _cu._log
 _log_verbose = _cu._log_verbose
+
+# ── Lazy runner slots ─────────────────────────────────────────────────
+# None until first call; tests may replace with mocks before calling
+# run_task. _ensure_runners() skips any slot that is already non-None.
+run_agent = None
+run_agent_pool = None
+log_agent_result = None
+
+
+def _ensure_runners() -> None:
+    global run_agent, run_agent_pool, log_agent_result
+    if run_agent is not None and run_agent_pool is not None and log_agent_result is not None:
+        return
+    import theforge.runners as _r  # noqa: PLC0415
+
+    if run_agent is None:
+        run_agent = _r.run_agent
+    if run_agent_pool is None:
+        run_agent_pool = _r.run_agent_pool
+    if log_agent_result is None:
+        log_agent_result = _r.log_agent_result
 
 
 def _run_review_pool(
@@ -89,6 +109,7 @@ def _run_review_pool(
             When False (run_review_only), skips budget checks.
         max_review_parse_retries: Per-reviewer parse retry budget.
     """
+    _ensure_runners()
     pool_size = len(config.review_pool)
 
     if review_prompts is None:
