@@ -55,36 +55,24 @@ _log = _cu._log
 _log_verbose = _cu._log_verbose
 
 # ── Lazy runner slots ─────────────────────────────────────────────────
-# run_agent_pool: module-level slot, independently patchable for plan review
-# tests (patch theforge.coordinator.plan_flow.run_agent_pool).
-#
-# run_agent: NOT cached here. _get_run_agent() reads it from engine's slot
-# on every call so that test patches on theforge.coordinator.engine.run_agent
-# are automatically seen for plan agent and regen calls — the same contract
-# that phases.py honours via mod.run_agent.
+# None until first call; tests may replace before calling run_task.
+# Patch targets:
+#   theforge.coordinator.plan_flow.run_agent      — plan agent + regen
+#   theforge.coordinator.plan_flow.run_agent_pool — plan review pool
+run_agent = None
 run_agent_pool = None
 
 
 def _ensure_runners() -> None:
-    global run_agent_pool
-    if run_agent_pool is not None:
+    global run_agent, run_agent_pool
+    if run_agent is not None and run_agent_pool is not None:
         return
     import theforge.runners as _r  # noqa: PLC0415
 
-    run_agent_pool = _r.run_agent_pool
-
-
-def _get_run_agent():
-    """Return the current run_agent callable from engine's lazy slot.
-
-    Reading through engine rather than caching locally means test patches
-    on theforge.coordinator.engine.run_agent cover plan / regen calls here
-    without requiring a second patch target.
-    """
-    import theforge.coordinator.engine as _engine  # noqa: PLC0415
-
-    _engine._ensure_runners()
-    return _engine.run_agent
+    if run_agent is None:
+        run_agent = _r.run_agent
+    if run_agent_pool is None:
+        run_agent_pool = _r.run_agent_pool
 
 
 def _run_plan_phase(
@@ -209,7 +197,7 @@ def _run_plan_phase(
     )
 
     _plan_start = time.monotonic()
-    plan_result = _get_run_agent()(
+    plan_result = run_agent(
         prompt=plan_prompt,
         profile=plan_profile,
         working_dir=workspace_path,
@@ -587,7 +575,7 @@ def _run_plan_agent_review(
         _resuming = state.plan_session_id is not None
         _resume_tag = f"resuming {state.plan_session_id[:8]}" if _resuming else "new session"
         _log(f"  Starting plan regen (model={plan_profile.model}, {_resume_tag})...")
-        plan_result = _get_run_agent()(
+        plan_result = run_agent(
             prompt=regen_prompt,
             profile=plan_profile,
             working_dir=workspace_path,
@@ -723,7 +711,7 @@ def _run_human_plan_review(
             )
 
             _plan_start = time.monotonic()
-            plan_result = _get_run_agent()(
+            plan_result = run_agent(
                 prompt=plan_prompt,
                 profile=plan_profile,
                 working_dir=workspace_path,
