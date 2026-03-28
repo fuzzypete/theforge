@@ -5398,7 +5398,7 @@ class TestProjectLocalLogDir:
 
         with (
             patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
-            patch("theforge.sprint.runner.generate_audit_log", return_value={"task": {}}),
+            patch("theforge.coordinator.audit.generate_audit_log", return_value={"task": {}}),
         ):
             run_sprint(config, manifest_path)
 
