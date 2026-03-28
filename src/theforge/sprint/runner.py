@@ -11,9 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from ..artifacts import AUDIT_PATH, ensure_parent_dir
 from ..config import ForgeConfig
-from ..coordinator.audit import generate_audit_log
 from ..coordinator.engine import (
     CoordinatorResult,
     CoordinatorState,
@@ -29,8 +27,9 @@ from ..coordinator.engine import (
 )
 from ..coordinator.workspace import _merge_branch
 from ..task import TaskStory as TaskSpec  # noqa: F401
-from .audit import _write_sprint_audit, _write_sprint_summary
+from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .dag import StoryDAG, StoryTriage, _triage_spec, build_dag
+from .display import _print_worker_status, _story_header
 from .manifest import (
     SprintResult,
     _build_task_from_story,
@@ -41,13 +40,6 @@ from .manifest import (
 
 def _log(msg: str) -> None:
     print(f"[sprint] {msg}", file=sys.stderr, flush=True)
-
-
-def _story_header(idx: int, total: int, slug: str) -> str:
-    """Format a story header line: [N/total] slug ─────... (fills to 60 chars)."""
-    prefix = f"[{idx}/{total}] {slug} "
-    dashes = "─" * max(0, 60 - len(prefix))
-    return prefix + dashes
 
 
 def _read_prior_sprint_cost(project_root: Path) -> float:
@@ -159,29 +151,6 @@ def _make_worker_phase_fn(
                 outer_fn(updates)
 
     return _update
-
-
-def _print_worker_status(
-    active: "dict[str, Future[object]]",
-    worker_phases: dict[str, str],
-    dag: StoryDAG,
-    total: int,
-) -> None:
-    """Print one status line per active worker, plus a summary of waiting stories."""
-    if not active:
-        return
-    lines = []
-    for slug in sorted(active):
-        phase = worker_phases.get(slug, "RUNNING")
-        lines.append(f"  [{slug}] {phase}")
-    waiting = dag.remaining()
-    waiting_active = [t for t in waiting if t.slug not in active]
-    if waiting_active:
-        names = ", ".join(t.slug for t in waiting_active[:5])
-        suffix = f" (+{len(waiting_active) - 5} more)" if len(waiting_active) > 5 else ""
-        lines.append(f"  waiting: {names}{suffix}")
-    if lines:
-        print("\n".join(lines), file=sys.stderr, flush=True)
 
 
 def _classify_and_record(
@@ -495,27 +464,7 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                # Write per-spec audit to worktree for diagnostics
-                workspace_path = config.project_root / config.workspace.path_pattern.format(
-                    slug=slug
-                )
-                if workspace_path.exists():
-                    audit_data = generate_audit_log(config, task, result)
-                    audit_path = workspace_path / AUDIT_PATH
-                    ensure_parent_dir(audit_path)
-                    with open(audit_path, "w", encoding="utf-8") as f:
-                        yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
-                    _log(f"Per-story audit written: {audit_path}")
-                # Copy audit to durable per-story log dir
-                if result.state.log_dir is not None:
-                    try:
-                        audit_data = generate_audit_log(config, task, result)
-                        _story_audit_path = result.state.log_dir / "audit.yaml"
-                        _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(_story_audit_path, "w", encoding="utf-8") as f:
-                            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
-                    except Exception:
-                        pass  # best-effort
+                _write_story_audit(config, task, result)
 
                 spec_cost = result.state.total_cost
                 icon = "✓" if result.success else "✗"

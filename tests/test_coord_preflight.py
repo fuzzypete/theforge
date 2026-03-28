@@ -1680,7 +1680,7 @@ class TestApprovePathCycleHistory:
 class TestEscalationNoteOnRejectPath:
     """Integration test: escalation note is delivered on reject-after-escalation path."""
 
-    @patch("theforge.coordinator.engine._human_review")
+    @patch("theforge.coordinator.phases._human_review")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.engine.run_agent")

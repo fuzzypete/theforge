@@ -6,10 +6,16 @@ import datetime
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
 from .manifest import SprintManifest, SprintResult
+
+if TYPE_CHECKING:
+    from ..config import ForgeConfig
+    from ..coordinator.engine import CoordinatorResult
+    from ..task import TaskStory as TaskSpec
 
 
 def _log(msg: str) -> None:
@@ -210,3 +216,35 @@ def _write_sprint_summary(
         _log(f"Sprint summary written: {summary_path}")
     except Exception as exc:
         _log(f"Warning: sprint summary write failed: {exc}")
+
+
+def _write_story_audit(
+    config: "ForgeConfig",
+    task: "TaskSpec",
+    result: "CoordinatorResult",
+) -> None:
+    """Write per-story audit.yaml to the worktree and the durable log directory.
+
+    Best-effort: silently ignores missing workspace or log dir.
+    """
+    from ..artifacts import AUDIT_PATH, ensure_parent_dir  # noqa: PLC0415
+    from ..coordinator.audit import generate_audit_log  # noqa: PLC0415
+
+    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+    if workspace_path.exists():
+        audit_data = generate_audit_log(config, task, result)
+        audit_path = workspace_path / AUDIT_PATH
+        ensure_parent_dir(audit_path)
+        with open(audit_path, "w", encoding="utf-8") as f:
+            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+        _log(f"Per-story audit written: {audit_path}")
+
+    if result.state.log_dir is not None:
+        try:
+            audit_data = generate_audit_log(config, task, result)
+            _story_audit_path = result.state.log_dir / "audit.yaml"
+            _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(_story_audit_path, "w", encoding="utf-8") as f:
+                yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+        except Exception:
+            pass  # best-effort
