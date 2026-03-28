@@ -33,7 +33,6 @@ from __future__ import annotations
 import datetime
 import signal
 import subprocess
-import sys as _sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -69,7 +68,6 @@ from theforge.task import (  # noqa: F401
 )
 from theforge.task import load_story as load_spec
 
-from .audit import has_review_approve  # noqa: F401  – resolved via mod= in preflight_flow
 from .gate import (  # noqa: F401
     _auto_commit_side_effects,
     _is_gate_skip,
@@ -157,8 +155,10 @@ from .workspace import (  # noqa: F401
 )
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
-# Populated by _ensure_runners() at entry points; names exist here so
-# mock.patch("theforge.coordinator.engine.run_agent") keeps working.
+# Populated by _ensure_runners() at entry points.
+# engine.run_agent owns the handoff-fix retry path only.
+# Preflight: patch theforge.coordinator.preflight_flow.run_agent
+# DEV:       patch theforge.coordinator.dev_phase.run_agent
 run_agent = None
 run_agent_pool = None
 log_agent_result = None
@@ -219,25 +219,12 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"ERROR: {e}"
 
 
-# ── Commit log / handoff context (moved to review_context.py) ─────────
-# ── Phase handlers (extracted to coord_phases.py) ────────────────────
-from .phases import (  # noqa: E402, F401  # noqa: E402
-    _finalize_approve,
-    _ReviewOutcome,
-    _run_dev_phase,
-    _run_review_phase,
-    _run_validate_phase,
-    _ValidateOutcome,
-)
-from .review_context import (  # noqa: E402, F401
-    _get_commit_log,
-    _get_dev_notes,
-    _has_uncommitted_changes,
-    _parse_dev_handoff,
-)
-
-# ── Resume entry setup (moved to run_setup.py) ─────────────────────
-from .run_setup import _setup_resume_entry  # noqa: E402, F401
+# ── Phase handlers ────────────────────────────────────────────────────
+from .dev_phase import _run_dev_phase  # noqa: E402
+from .review_context import _parse_dev_handoff  # noqa: E402
+from .review_phase import _ReviewOutcome, _run_review_only_phase, _run_review_phase  # noqa: E402
+from .run_setup import _setup_resume_entry  # noqa: E402
+from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
 
 
 def _coordinator_loop(
@@ -301,7 +288,6 @@ def _coordinator_loop(
                 branch_name,
                 notify=notify,
                 logger=logger,
-                mod=_sys.modules[__name__],
             )
             if escalation is not None:
                 return escalation
@@ -671,7 +657,6 @@ def run_task(
             task_start=_task_start,
             state_update_fn=state_update_fn,
             stop_phase=stop_phase,
-            mod=_sys.modules[__name__],
         )
         if _pf_result is not None:
             return _pf_result
@@ -1003,8 +988,6 @@ def run_review_only(
     state.branch_name = branch_name
 
     story_content = load_spec(task.story_path)
-
-    from .phases import _run_review_only_phase  # noqa: PLC0415
 
     return _run_review_only_phase(
         state,
