@@ -33,7 +33,6 @@ from __future__ import annotations
 import datetime
 import signal
 import subprocess
-import sys as _sys
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -69,7 +68,6 @@ from theforge.task import (  # noqa: F401
 )
 from theforge.task import load_story as load_spec
 
-from .audit import has_review_approve  # noqa: F401  – resolved via mod= in preflight_flow
 from .gate import (  # noqa: F401
     _auto_commit_side_effects,
     _is_gate_skip,
@@ -301,7 +299,6 @@ def _coordinator_loop(
                 branch_name,
                 notify=notify,
                 logger=logger,
-                mod=_sys.modules[__name__],
             )
             if escalation is not None:
                 return escalation
@@ -671,7 +668,6 @@ def run_task(
             task_start=_task_start,
             state_update_fn=state_update_fn,
             stop_phase=stop_phase,
-            mod=_sys.modules[__name__],
         )
         if _pf_result is not None:
             return _pf_result

@@ -29,6 +29,7 @@ from theforge.config import ForgeConfig
 from theforge.task import TaskSpec, build_preflight_prompt
 
 from . import util as _cu
+from .audit import has_review_approve
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
@@ -46,6 +47,26 @@ if TYPE_CHECKING:
 _log = _cu._log
 _log_verbose = _cu._log_verbose
 
+# ── Lazy runner slots ─────────────────────────────────────────────────
+# None until first call; tests may replace before calling run_task.
+# Patch targets:
+#   theforge.coordinator.preflight_flow.run_agent        — preflight agent call
+#   theforge.coordinator.preflight_flow.log_agent_result — preflight result logging
+run_agent = None
+log_agent_result = None
+
+
+def _ensure_runners() -> None:
+    global run_agent, log_agent_result
+    if run_agent is not None and log_agent_result is not None:
+        return
+    import theforge.runners as _r  # noqa: PLC0415
+
+    if run_agent is None:
+        run_agent = _r.run_agent
+    if log_agent_result is None:
+        log_agent_result = _r.log_agent_result
+
 
 def _run_preflight_phase(
     state: CoordinatorState,
@@ -60,7 +81,6 @@ def _run_preflight_phase(
     task_start: float,
     state_update_fn: "Callable[[dict], None] | None",
     stop_phase: Phase | None,
-    mod: object,
 ) -> tuple[ForgeConfig, CoordinatorResult | None, bool]:
     """Run the PREFLIGHT phase.
 
@@ -71,15 +91,8 @@ def _run_preflight_phase(
       caller enters ``_coordinator_loop`` with ``skip_dev_first_iter=True``.
     - ``result is None, already_done_loop is False`` — PROCEED; caller
       continues to ``_run_plan_phase``.
-
-    ``mod`` is the engine module (``sys.modules['theforge.coordinator.engine']``).
-    It is used to resolve ``run_agent`` and ``log_agent_result`` so that
-    ``patch('theforge.coordinator.engine.run_agent')`` keeps intercepting the
-    preflight agent call in tests.
     """
-    run_agent = mod.run_agent  # type: ignore[attr-defined]
-    log_agent_result = mod.log_agent_result  # type: ignore[attr-defined]
-    has_review_approve = mod.has_review_approve  # type: ignore[attr-defined]
+    _ensure_runners()
 
     state.phase = Phase.PREFLIGHT
     if state_update_fn is not None:
