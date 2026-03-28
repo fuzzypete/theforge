@@ -131,11 +131,9 @@ def cmd_init(args: "argparse.Namespace") -> int:
 def cmd_version(args: "argparse.Namespace") -> int:
     """Print the installed version of TheForge."""
 
-    try:
-        version = importlib.metadata.version("theforge")
-    except importlib.metadata.PackageNotFoundError:
-        version = "(not installed)"
+    import theforge
 
+    version = theforge.__version__
     print(f"TheForge version: {version}")
 
     # Check for editable install

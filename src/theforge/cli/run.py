@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import importlib.metadata
 import subprocess
 import sys
 from pathlib import Path
@@ -113,7 +112,9 @@ def cmd_run(args: "argparse.Namespace") -> int:
     else:
         run_id = _generate_run_id()
 
-    print(f"TheForge v{importlib.metadata.version('theforge')}", file=sys.stderr)
+    import theforge
+
+    print(f"TheForge v{theforge.__version__}", file=sys.stderr)
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)

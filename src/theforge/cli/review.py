@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import sys
 from pathlib import Path
 
@@ -49,9 +48,9 @@ def cmd_review(args: object) -> int:
     else:
         workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
 
-    print(
-        f"TheForge v{importlib.metadata.version('theforge')} — review-only mode", file=sys.stderr
-    )
+    import theforge
+
+    print(f"TheForge v{theforge.__version__} — review-only mode", file=sys.stderr)
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)
