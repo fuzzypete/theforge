@@ -32,16 +32,12 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
-    StructuredLogger,
-    _fmt_duration,
-    generate_audit_log,
-    run_task,
-)
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.logging import StructuredLogger
 from theforge.coordinator.review_context import _get_commit_log
-from theforge.coordinator.state import CoordinatorState
-from theforge.coordinator.util import _generate_run_id
+from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.coordinator.util import _fmt_duration, _generate_run_id
 from theforge.runners import AgentResult
 from theforge.story_validator import StoryValidationResult
 
@@ -781,7 +777,7 @@ class TestCampaignAuditWrites:
 
     def _make_fake_result(self, tmp_path: Path) -> object:
         """Build a fake CoordinatorResult with one APPROVE review cycle."""
-        from theforge.coordinator.engine import (
+        from theforge.coordinator.state import (
             CoordinatorResult,
             CoordinatorState,
             ReviewCycleMetadata,
@@ -885,7 +881,7 @@ class TestCampaignAuditWrites:
     @patch("theforge.sprint.runner.run_task")
     def test_campaign_already_done_no_worktree_audit(self, mock_run_task, tmp_path):
         """ALREADY_DONE specs do not write a worktree audit (no worktree was created)."""
-        from theforge.coordinator.engine import CoordinatorResult, CoordinatorState
+        from theforge.coordinator.state import CoordinatorResult, CoordinatorState
         from theforge.sprint import run_sprint
 
         config = _make_config(tmp_path)

@@ -33,13 +33,9 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
-    generate_audit_log,
-    run_from_review,
-    run_review_only,
-    run_task,
-)
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.engine import run_from_review, run_review_only, run_task
+from theforge.coordinator.state import Phase
 
 # Invalid verdict "MAYBE" → schema error (repair layer can't fix this).
 # Note: coord_test_helpers.SCHEMA_ERROR_OUTPUT uses a different schema error

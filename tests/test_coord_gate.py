@@ -34,9 +34,9 @@ from theforge.config import (
     ValidationConfig,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import Phase, run_from_review, run_task
+from theforge.coordinator.engine import run_from_review, run_task
 from theforge.coordinator.gate import _read_gate_decision
-from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.task import TaskStory
 
 # ── Local helpers ─────────────────────────────────────────────────────

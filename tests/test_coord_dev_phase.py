@@ -29,7 +29,8 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import Phase, run_task
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.state import Phase
 from theforge.runners import AgentResult
 
 

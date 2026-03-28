@@ -30,13 +30,9 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
-    generate_audit_log,
-    run_from_review,
-    run_task,
-)
-from theforge.coordinator.state import parse_phase_name
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.engine import run_from_review, run_task
+from theforge.coordinator.state import Phase, parse_phase_name
 from theforge.runners import AgentResult, LogLevel
 from theforge.task import TaskStory
 
@@ -987,8 +983,8 @@ class TestPlanReview:
         assert mock_human_review.called
 
     def test_plan_review_eof_abandons(self, tmp_path, capsys):
-        from theforge.coordinator.engine import CoordinatorState
         from theforge.coordinator.notify import _plan_review_interactive
+        from theforge.coordinator.state import CoordinatorState
 
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -2010,7 +2006,7 @@ class TestProgressShowsPhaseTransitions:
     def test_phase_transitions_always_shown(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path, capsys
     ):
-        import theforge.coordinator.engine as coord_mod
+        import theforge.coordinator.util as coord_mod
         import theforge.runners.cli as runner_mod
 
         # Ensure we are at PROGRESS level
@@ -4058,8 +4054,8 @@ class TestSigtermHandler:
         import signal as _signal
         import time
 
-        from theforge.coordinator.engine import _make_sigterm_handler
         from theforge.coordinator.logging import StructuredLogger
+        from theforge.coordinator.signals import _make_sigterm_handler
         from theforge.coordinator.state import CoordinatorState
 
         log_file = tmp_path / "forge.log"
@@ -4132,8 +4128,8 @@ class TestSigtermHandler:
         """Handler calls _ntfy_crash_notify when ntfy is configured."""
         import signal as _signal
 
-        from theforge.coordinator.engine import _make_sigterm_handler
         from theforge.coordinator.logging import StructuredLogger
+        from theforge.coordinator.signals import _make_sigterm_handler
         from theforge.coordinator.state import CoordinatorState
 
         log_file = tmp_path / "forge.log"
@@ -4179,8 +4175,8 @@ class TestSigtermHandler:
         """_ntfy_publish is never called end-to-end when ntfy is not configured."""
         import signal as _signal
 
-        from theforge.coordinator.engine import _make_sigterm_handler
         from theforge.coordinator.logging import StructuredLogger
+        from theforge.coordinator.signals import _make_sigterm_handler
         from theforge.coordinator.state import CoordinatorState
 
         log_file = tmp_path / "forge.log"
@@ -4433,7 +4429,7 @@ class TestAuditStartStopPhase:
         state.stop_phase = Phase.VALIDATE
 
         from theforge.coordinator.audit import generate_audit_log
-        from theforge.coordinator.engine import CoordinatorResult
+        from theforge.coordinator.state import CoordinatorResult
 
         result = CoordinatorResult(
             success=True,
@@ -4453,7 +4449,7 @@ class TestAuditStartStopPhase:
         state = CoordinatorState()
 
         from theforge.coordinator.audit import generate_audit_log
-        from theforge.coordinator.engine import CoordinatorResult
+        from theforge.coordinator.state import CoordinatorResult
 
         result = CoordinatorResult(
             success=True,

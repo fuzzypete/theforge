@@ -21,12 +21,11 @@ from theforge.cli.shared import (
 )
 from theforge.config import load_config
 from theforge.coordinator.engine import (
-    Phase,
     run_from_review,
     run_task,
 )
-from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
-from theforge.coordinator.state import parse_phase_name
+from theforge.coordinator.state import Phase, parse_phase_name
+from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint.dag import _triage_spec

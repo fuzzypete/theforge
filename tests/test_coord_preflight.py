@@ -33,17 +33,17 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.preflight import (
     _apply_complexity_adaptation,
     _escalate_dev_model,
     _has_persistent_p1,
     _parse_preflight_complexity,
     _parse_preflight_warnings,
     _persistent_p1_descriptions,
-    generate_audit_log,
-    run_task,
 )
+from theforge.coordinator.state import Phase
 from theforge.review import ReviewFinding
 
 # ── Preflight phase tests ─────────────────────────────────────────────
@@ -1538,7 +1538,7 @@ class TestCycleHistoryAccumulation:
     def test_append_cycle_history_adds_entry(self):
         """_append_cycle_history appends a CycleHistory entry to state."""
         from theforge.coordinator.completion import _append_cycle_history
-        from theforge.coordinator.engine import CoordinatorState
+        from theforge.coordinator.state import CoordinatorState
         from theforge.review import ReviewFinding, ReviewResult
 
         state = CoordinatorState()
@@ -1573,7 +1573,7 @@ class TestCycleHistoryAccumulation:
     def test_cycle_history_capped_at_3(self):
         """History is capped at 3 entries; oldest is dropped."""
         from theforge.coordinator.completion import _append_cycle_history
-        from theforge.coordinator.engine import CoordinatorState, CycleHistory
+        from theforge.coordinator.state import CoordinatorState, CycleHistory
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -1605,7 +1605,7 @@ class TestCycleHistoryAccumulation:
     def test_cycle_numbers_monotonic_after_cap(self):
         """Cycle numbers remain monotonically increasing even after trimming."""
         from theforge.coordinator.completion import _append_cycle_history
-        from theforge.coordinator.engine import CoordinatorState
+        from theforge.coordinator.state import CoordinatorState
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -1631,7 +1631,7 @@ class TestCycleHistoryAccumulation:
     def test_cycle_numbers_monotonically_increase(self):
         """Cycle numbers use a counter independent of list length."""
         from theforge.coordinator.completion import _append_cycle_history
-        from theforge.coordinator.engine import CoordinatorState
+        from theforge.coordinator.state import CoordinatorState
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
@@ -1654,7 +1654,7 @@ class TestCycleHistoryAccumulation:
     def test_p1_descriptions_truncated(self):
         """P1 finding descriptions in history are truncated to 200 chars."""
         from theforge.coordinator.completion import _append_cycle_history
-        from theforge.coordinator.engine import CoordinatorState
+        from theforge.coordinator.state import CoordinatorState
         from theforge.review import ReviewFinding, ReviewResult
 
         state = CoordinatorState()
