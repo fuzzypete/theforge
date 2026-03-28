@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from coord_test_helpers import (
+    _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     PREFLIGHT_ALREADY_DONE,
     PREFLIGHT_PROCEED,
@@ -24,7 +25,6 @@ from coord_test_helpers import (
     _make_ntfy_config,
     _make_pool_result,
     _make_task,
-    _preflight_then,
     _shell_with_gate,
     _write_handoff,
 )
@@ -88,13 +88,17 @@ class TestCoordinatorHumanReview:
     # ── test_interactive_approve ──────────────────────────────────────
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_interactive_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_interactive_approve(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Human enters 'a' → DONE."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -110,13 +114,17 @@ class TestCoordinatorHumanReview:
     # ── test_interactive_reject_loops_back ────────────────────────────
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_interactive_reject_loops_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_interactive_reject_loops_back(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Human enters 'r' + findings → dev called again with human_feedback, then approves."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
 
         # First review cycle: APPROVE → human rejects; second cycle: APPROVE → human approves
         approve_result = [
@@ -139,13 +147,17 @@ class TestCoordinatorHumanReview:
     # ── test_interactive_escalate ─────────────────────────────────────
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_interactive_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_interactive_escalate(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Human enters 'e' → ESCALATE."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -160,13 +172,17 @@ class TestCoordinatorHumanReview:
     # ── test_auto_mode_skips_human_review ─────────────────────────────
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_mode_skips_human_review(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_mode_skips_human_review(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """interactive=False never enters HUMAN_REVIEW."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -183,13 +199,17 @@ class TestCoordinatorHumanReview:
     # ── test_interactive_on_exhausted_cycles ─────────────────────────
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_interactive_on_exhausted_cycles(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_interactive_on_exhausted_cycles(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """When review cycles exhaust with REQUEST_CHANGES, human can still choose."""
         config, task, workspace = self._make_interactive_base(tmp_path)
         mock_shell.side_effect = self._shell_side_effect(workspace)
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         # Always REQUEST_CHANGES → cycles exhaust → HUMAN_REVIEW
         mock_pool.return_value = [
             _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
@@ -290,9 +310,10 @@ class TestNtfyPublish:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -320,9 +341,10 @@ class TestNtfyPublish:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -354,9 +376,10 @@ class TestNtfyPublish:
             ntfy_calls.append((url, title, body))
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -389,9 +412,6 @@ class TestNtfyPublish:
 
         def dev_side_effect(**kwargs):
             dev_prompts.append(kwargs.get("prompt", ""))
-            # call 1: preflight; call 2: dev (first run); call 3: dev after reject
-            if len(dev_prompts) == 1:
-                return _make_agent_result(output=PREFLIGHT_PROCEED, cost_usd=0.05)
             return _make_agent_result(output="Done.")
 
         approve_result = _make_pool_result([APPROVE_REVIEW], ["review"])
@@ -405,7 +425,8 @@ class TestNtfyPublish:
             return ("approve", None)  # second human review approves
 
         with (
-            patch("theforge.coordinator.engine.run_agent", side_effect=dev_side_effect),
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
+            patch("theforge.coordinator.phases.run_agent", side_effect=dev_side_effect),
             patch("theforge.coordinator.review_pool.run_agent_pool", return_value=approve_result),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coordinator.remote_gates._ntfy_publish"),
@@ -420,10 +441,10 @@ class TestNtfyPublish:
         assert result.success is True
         assert result.phase == Phase.DONE
         assert result.state.human_review_decision == "approve"
-        # dev ran at least 3 times: preflight + dev1 + dev-after-reject
-        assert len(dev_prompts) >= 3
+        # dev ran at least 2 times: dev1 + dev-after-reject (preflight mocked separately)
+        assert len(dev_prompts) >= 2
         # Rejection text "fix the error handling" must appear in the post-reject dev prompt
-        post_reject_prompts = " ".join(dev_prompts[2:])
+        post_reject_prompts = " ".join(dev_prompts[1:])
         assert "fix the error handling" in post_reject_prompts
 
     def test_remote_extend_grants_cycle(self, tmp_path):
@@ -450,7 +471,8 @@ class TestNtfyPublish:
             return _make_agent_result(output="Done.")
 
         with (
-            patch("theforge.coordinator.engine.run_agent", side_effect=dev_side_effect),
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
+            patch("theforge.coordinator.phases.run_agent", side_effect=dev_side_effect),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
                 return_value=_make_pool_result([APPROVE_REVIEW], ["review"]),
@@ -983,9 +1005,10 @@ class TestNtfyTerminalNotifications:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1035,9 +1058,10 @@ test_coverage:
 ```
 """
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1064,12 +1088,13 @@ test_coverage:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(
+                "theforge.coordinator.phases.run_agent",
+                side_effect=[
                     _make_agent_result(output="Done."),
                     _make_agent_result(output="Fixed."),
-                ),
+                ],
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1130,12 +1155,13 @@ test_coverage:
 ```
 """
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(
+                "theforge.coordinator.phases.run_agent",
+                side_effect=[
                     _make_agent_result(output="Done."),
                     _make_agent_result(output="Fixed."),
-                ),
+                ],
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1186,9 +1212,10 @@ test_coverage:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1210,9 +1237,10 @@ test_coverage:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1234,9 +1262,10 @@ test_coverage:
         workspace.mkdir()
 
         with (
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
             patch(
-                "theforge.coordinator.engine.run_agent",
-                side_effect=_preflight_then(_make_agent_result(output="Done.")),
+                "theforge.coordinator.phases.run_agent",
+                return_value=_make_agent_result(output="Done."),
             ),
             patch(
                 "theforge.coordinator.review_pool.run_agent_pool",
@@ -1265,10 +1294,13 @@ test_coverage:
         )
 
         with (
-            patch("theforge.coordinator.engine.run_agent", return_value=preflight_already_done),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                return_value=preflight_already_done,
+            ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch("theforge.coordinator.notify._ntfy_publish") as mock_ntfy,
-            patch("theforge.coordinator.engine.has_review_approve", return_value=True),
+            patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True),
         ):
             result = run_task(config, task, notify=True)
 

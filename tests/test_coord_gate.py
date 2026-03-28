@@ -11,13 +11,13 @@ from unittest.mock import patch
 
 import yaml
 from coord_test_helpers import (
+    _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
     _make_ntfy_config,
-    _preflight_then,
     _shell_with_gate,
     _write_handoff,
 )
@@ -121,9 +121,12 @@ class TestCoordinatorStaleHandoff:
     """Test that stale handoff.yaml is deleted before running the gate."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_stale_handoff_not_reused(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_stale_handoff_not_reused(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """A PASS from a prior gate run must not leak through on gate failure."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -145,7 +148,8 @@ class TestCoordinatorStaleHandoff:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -208,10 +212,11 @@ class TestCoordinatorDirtyWorktree:
     """Test that the coordinator catches uncommitted changes after gate PASS."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_auto_commits_no_retry(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Dirty worktree after gate PASS → coordinator auto-commits, no agent retry."""
         config = _make_config(tmp_path)
@@ -233,7 +238,8 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -243,7 +249,7 @@ class TestCoordinatorDirtyWorktree:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert mock_agent.call_count == 2
+        assert mock_agent.call_count == 1
         assert any("git add" in c for c in shell_cmds)
         assert any(
             c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
@@ -251,10 +257,11 @@ class TestCoordinatorDirtyWorktree:
         assert mock_subprocess.call_args[0][0] == ["git", "commit", "-m", mock.ANY]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_auto_commits_even_at_max_iterations(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Dirty worktree at max iterations → auto-commit succeeds, no escalation."""
         config = ForgeConfig(
@@ -287,7 +294,8 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -302,9 +310,12 @@ class TestCoordinatorDirtyWorktree:
         )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_handoff_file_not_flagged_as_dirty(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_handoff_file_not_flagged_as_dirty(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """handoff.yaml in git status output is excluded from dirty check."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -321,7 +332,8 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -333,9 +345,12 @@ class TestCoordinatorDirtyWorktree:
         assert result.phase == Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_handoff_dirty_worktree_unchanged(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_handoff_dirty_worktree_unchanged(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Regression guard: handoff mode still filters handoff.yaml from dirty check."""
         config = _make_config(tmp_path)  # handoff_file="handoff.yaml"
         task = _make_task(tmp_path)
@@ -355,7 +370,8 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -367,9 +383,12 @@ class TestCoordinatorDirtyWorktree:
         assert result.phase == Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dirty_files_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_dirty_files_auto_committed(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Dirty files after gate PASS → coordinator auto-commits, no retry."""
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
@@ -396,7 +415,8 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -406,16 +426,19 @@ class TestCoordinatorDirtyWorktree:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert mock_agent.call_count == 2
+        assert mock_agent.call_count == 1
         assert any("git add" in c for c in shell_cmds)
         assert any(
             c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
         )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_untracked_file_auto_committed(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_untracked_file_auto_committed(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Tracked + untracked files → coordinator auto-commits both."""
         config = _make_config(tmp_path)
         spec = tmp_path / "spec.md"
@@ -442,7 +465,8 @@ class TestCoordinatorDirtyWorktree:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -452,7 +476,7 @@ class TestCoordinatorDirtyWorktree:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert mock_agent.call_count == 2
+        assert mock_agent.call_count == 1
 
 
 # ── Zero-change guard tests ──────────────────────────────────────────
@@ -462,16 +486,17 @@ class TestDevZeroChangeGuard:
     """Dev retry that produces no changes should escalate, not re-review identical code."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dev_retry_no_changes_escalates(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_dev_retry_no_changes_escalates(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Dev iteration 2 produces no diff and no dirty files → ESCALATE."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
-
-        call_idx = {"n": 0}
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
@@ -492,11 +517,8 @@ class TestDevZeroChangeGuard:
             success=True, output=APPROVE_REVIEW, profile_name="review"
         )
 
-        def agent_side_effect(**kwargs):
-            call_idx["n"] += 1
-            return dev_result
-
-        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = dev_result
         # First review: REQUEST_CHANGES, second would be APPROVE but should never be reached
         pool_calls = {"n": 0}
 
@@ -544,10 +566,11 @@ class TestDevZeroChangeGuard:
         assert "no changes" in result.message.lower()
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_retry_with_dirty_files_proceeds(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Dev iteration 2 has dirty files (uncommitted work) → does NOT escalate."""
         config = _make_config(tmp_path)
@@ -568,7 +591,8 @@ class TestDevZeroChangeGuard:
         mock_shell.side_effect = shell_side_effect
 
         dev_result = _make_agent_result(success=True, output="Done.")
-        mock_agent.side_effect = _preflight_then(dev_result)
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = dev_result
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -608,10 +632,11 @@ class TestDevZeroChangeGuard:
         assert result.phase == Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_gate_retry_no_changes_does_not_escalate(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Gate failure retry with no code changes should NOT escalate (not a review retry)."""
         config = _make_config(tmp_path)
@@ -636,7 +661,8 @@ class TestDevZeroChangeGuard:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -673,10 +699,11 @@ class TestDevZeroChangeGuard:
         assert result.phase == Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_post_review_gate_retry_no_changes_does_not_escalate(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """REQUEST_CHANGES → dev retry (has diff) → gate fail → dev retry (no new diff) → OK.
 
@@ -715,7 +742,8 @@ class TestDevZeroChangeGuard:
             success=True, output=APPROVE_REVIEW, profile_name="review"
         )
 
-        mock_agent.side_effect = _preflight_then(dev_result, dev_result, dev_result)
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [dev_result, dev_result, dev_result]
 
         pool_calls = {"n": 0}
 
@@ -769,9 +797,10 @@ class TestExitCodeGateMode:
     """Test gate validation using exit code instead of handoff file."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_exit_code_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_exit_code_pass(self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path):
         """Exit code 0 → PASS in exit-code mode."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
@@ -779,7 +808,8 @@ class TestExitCodeGateMode:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_exit_code()
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -790,9 +820,12 @@ class TestExitCodeGateMode:
         assert result.phase == Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_exit_code_fail_then_pass(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_exit_code_fail_then_pass(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Exit code non-zero → FAIL, then 0 → PASS on retry."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
@@ -800,7 +833,8 @@ class TestExitCodeGateMode:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_exit_code(pass_on_call=2)
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -812,9 +846,12 @@ class TestExitCodeGateMode:
         assert result.state.gate_decisions == ["FAIL", "PASS"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_exit_code_exhaustion(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_exit_code_exhaustion(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Gate always fails → ESCALATE after max iterations."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
@@ -822,7 +859,8 @@ class TestExitCodeGateMode:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_exit_code(pass_on_call=999)
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
 
@@ -830,10 +868,11 @@ class TestExitCodeGateMode:
         assert result.phase == Phase.ESCALATE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_infrastructure_failure_escalates_immediately(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """TIMEOUT/ERROR in exit-code mode escalates immediately (not retried as FAIL)."""
         config = _make_exit_code_config(tmp_path)
@@ -849,7 +888,8 @@ class TestExitCodeGateMode:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
 
@@ -858,10 +898,11 @@ class TestExitCodeGateMode:
         assert "infrastructure" in result.message.lower() or "timeout" in result.message.lower()
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dirty_worktree_blocked_in_exit_code_mode(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Dirty worktree is still caught in exit-code mode (empty handoff_file)."""
         config = _make_exit_code_config(tmp_path)
@@ -877,7 +918,8 @@ class TestExitCodeGateMode:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
 
@@ -885,9 +927,12 @@ class TestExitCodeGateMode:
         assert result.phase != Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_exit_code_dirty_worktree_detected(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_exit_code_dirty_worktree_detected(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Exit-code mode: dirty files detected (empty handoff_file must not cause false-clean)."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
@@ -905,7 +950,8 @@ class TestExitCodeGateMode:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
 
@@ -913,9 +959,12 @@ class TestExitCodeGateMode:
         assert result.phase != Phase.DONE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_exit_code_gate_timeout_is_error(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_exit_code_gate_timeout_is_error(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Timeout in exit-code mode returns error message (not FAIL), escalates immediately."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
@@ -933,7 +982,8 @@ class TestExitCodeGateMode:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
 
@@ -944,10 +994,11 @@ class TestExitCodeGateMode:
         assert "timed out" in msg or "gate_timeout" in msg
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_exit_code_infrastructure_error_is_error(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """ERROR: prefix in exit-code mode returns error (not FAIL), escalates immediately."""
         config = _make_exit_code_config(tmp_path)
@@ -966,7 +1017,8 @@ class TestExitCodeGateMode:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
 
         result = run_task(config, task)
 
@@ -976,9 +1028,12 @@ class TestExitCodeGateMode:
         assert result.state.dev_iteration == 1  # no retries consumed
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_exit_code_test_failure_is_fail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_exit_code_test_failure_is_fail(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Normal non-zero exit (tests failing) returns FAIL and is retried."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
@@ -987,7 +1042,8 @@ class TestExitCodeGateMode:
 
         # First gate call fails with normal test output; second passes
         mock_shell.side_effect = _shell_exit_code(pass_on_call=2)
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1006,9 +1062,12 @@ class TestPytestTargetSubstitution:
     """Test that {pytest_target} in gate_command is replaced from TaskStory."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_pytest_target_substituted(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_pytest_target_substituted(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Gate command should contain the task's pytest_target, not the placeholder."""
         config = _make_exit_code_config(tmp_path)
         spec = tmp_path / "spec.md"
@@ -1036,7 +1095,8 @@ class TestPytestTargetSubstitution:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1050,9 +1110,12 @@ class TestPytestTargetSubstitution:
         assert "{pytest_target}" not in gate_cmds[0]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_pytest_target_defaults_to_tests(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_pytest_target_defaults_to_tests(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """When pytest_target is None, defaults to 'tests/'."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)  # pytest_target=None by default
@@ -1073,7 +1136,8 @@ class TestPytestTargetSubstitution:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(_make_agent_result())
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1092,10 +1156,11 @@ class TestGateOverride:
     """Tests for spec-level gate override feature."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_none_skips_validation(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """gate_override='none' skips validation; no gate subprocess is run."""
         config = _make_config(tmp_path)
@@ -1119,9 +1184,8 @@ class TestGateOverride:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1136,9 +1200,12 @@ class TestGateOverride:
         assert "PASS" in result.state.gate_decisions
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_gate_override_custom_command(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_gate_override_custom_command(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """gate_override='make lint' runs that command instead of global gate."""
         config = _make_config(tmp_path)
         task = _make_task_with_gate_override(tmp_path, "make lint")
@@ -1158,9 +1225,8 @@ class TestGateOverride:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1179,9 +1245,12 @@ class TestGateOverride:
         )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_gate_override_custom_command_fail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_gate_override_custom_command_fail(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Custom gate command returning non-zero exit code produces FAIL and triggers retry."""
         config = _make_config(tmp_path)
         task = _make_task_with_gate_override(tmp_path, "make lint")
@@ -1200,10 +1269,11 @@ class TestGateOverride:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented."),
             _make_agent_result(success=True, output="Fixed lint."),
-        )
+        ]
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1216,9 +1286,12 @@ class TestGateOverride:
         assert any(d == "FAIL" for d in result.state.gate_decisions)
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_gate_override_absent_uses_global(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_gate_override_absent_uses_global(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """No gate_override → uses config.validation.gate_command (backward compat)."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)  # no gate_override (None by default)
@@ -1228,9 +1301,8 @@ class TestGateOverride:
         assert task.gate_override is None
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1278,10 +1350,11 @@ class TestGateOverride:
         assert "gate" not in fm
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_gate_override_none_case_insensitive(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """gate_override='None' and 'NONE' both trigger skip mode."""
         for override_value in ("None", "NONE"):
@@ -1305,9 +1378,8 @@ class TestGateOverride:
                 return (True, "OK")
 
             mock_shell.side_effect = shell_side_effect
-            mock_agent.side_effect = _preflight_then(
-                _make_agent_result(success=True, output="Implemented.")
-            )
+            mock_preflight.return_value = _PREFLIGHT_RESULT
+            mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
             mock_pool.return_value = [
                 _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
             ]
@@ -1329,10 +1401,18 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.phases.build_fix_prompt")
     @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_iteration_1_uses_dev_prompt(
-        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
     ):
         """First iteration always uses build_dev_prompt."""
         config = _make_config(tmp_path)
@@ -1343,7 +1423,8 @@ class TestFixPromptRouting:
         mock_dev_prompt.return_value = "dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
         mock_shell.side_effect = _shell_with_gate(workspace)
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1356,10 +1437,18 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.phases.build_fix_prompt")
     @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_iteration_2_with_review_findings_uses_fix_prompt(
-        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
     ):
         """Iteration 2+ with last_review_findings set uses build_fix_prompt."""
         config = _make_config(tmp_path)
@@ -1370,10 +1459,13 @@ class TestFixPromptRouting:
         mock_dev_prompt.return_value = "dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
         mock_shell.side_effect = _shell_with_gate(workspace)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Done."),  # iter 1
-            _make_agent_result(success=True, output="Fixed."),  # iter 2
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Done."),
+            # iter 1
+            _make_agent_result(success=True, output="Fixed."),
+            # iter 2,
+        ]
         mock_pool.side_effect = [
             # First review: REQUEST_CHANGES → triggers iter 2
             [
@@ -1393,10 +1485,18 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.phases.build_fix_prompt")
     @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_gate_failure_retry_uses_dev_prompt_not_fix_prompt(
-        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
     ):
         """Gate failure retries use build_dev_prompt (not review findings)."""
         config = _make_config(tmp_path)
@@ -1409,10 +1509,13 @@ class TestFixPromptRouting:
 
         # First gate call FAILs, second PASSes
         mock_shell.side_effect = _shell_with_gate(workspace, decisions=["FAIL", "PASS"])
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Done."),  # iter 1
-            _make_agent_result(success=True, output="Fixed."),  # iter 2 (gate retry)
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Done."),
+            # iter 1
+            _make_agent_result(success=True, output="Fixed."),
+            # iter 2 (gate retry),
+        ]
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1426,10 +1529,18 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.phases.build_fix_prompt")
     @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_fix_prompt_receives_review_findings(
-        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
     ):
         """build_fix_prompt is called with the review findings content."""
         config = _make_config(tmp_path)
@@ -1440,10 +1551,11 @@ class TestFixPromptRouting:
         mock_dev_prompt.return_value = "dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
         mock_shell.side_effect = _shell_with_gate(workspace)
-        mock_agent.side_effect = _preflight_then(
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
             _make_agent_result(success=True, output="Done."),
             _make_agent_result(success=True, output="Fixed."),
-        )
+        ]
         mock_pool.side_effect = [
             [
                 _make_agent_result(
@@ -1464,10 +1576,18 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.phases.build_fix_prompt")
     @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_gate_failure_after_review_uses_dev_prompt(
-        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
     ):
         """After REQUEST_CHANGES, if the fix attempt's gate fails, the retry uses
         build_dev_prompt (not build_fix_prompt) because human_feedback is set."""
@@ -1481,11 +1601,15 @@ class TestFixPromptRouting:
 
         # iter 1: PASS; iter 2 (post-review fix): FAIL; iter 3 (gate retry): PASS
         mock_shell.side_effect = _shell_with_gate(workspace, decisions=["PASS", "FAIL", "PASS"])
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Done."),  # iter 1
-            _make_agent_result(success=True, output="Fixed."),  # iter 2 (fix attempt)
-            _make_agent_result(success=True, output="Fixed."),  # iter 3 (gate retry)
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Done."),
+            # iter 1
+            _make_agent_result(success=True, output="Fixed."),
+            # iter 2 (fix attempt)
+            _make_agent_result(success=True, output="Fixed."),
+            # iter 3 (gate retry),
+        ]
         mock_pool.side_effect = [
             # Review after iter 1: REQUEST_CHANGES
             [
@@ -1506,10 +1630,18 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.phases.build_fix_prompt")
     @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_run_from_review_first_dev_uses_dev_prompt(
-        self, mock_shell, mock_agent, mock_pool, mock_dev_prompt, mock_fix_prompt, tmp_path
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
     ):
         """run_from_review() starts at REVIEW with last_review_findings pre-set.
         The first DEV pass (dev_iteration=1) must use build_dev_prompt, not
@@ -1550,12 +1682,14 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.remote_gates._ntfy_publish")
     @patch("theforge.coordinator.remote_gates._ntfy_poll_reply")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_extend_on_approve_with_no_findings_uses_dev_prompt(
         self,
         mock_shell,
         mock_agent,
+        mock_preflight,
         mock_pool,
         mock_poll,
         mock_publish,
@@ -1576,10 +1710,13 @@ class TestFixPromptRouting:
         mock_dev_prompt.return_value = "dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
         mock_shell.side_effect = _shell_with_gate(workspace)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Done."),  # iter 1
-            _make_agent_result(success=True, output="Done."),  # iter after extend
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Done."),
+            # iter 1
+            _make_agent_result(success=True, output="Done."),
+            # iter after extend,
+        ]
         # APPROVE review — no P1 findings → last_review_findings will be None
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
@@ -1608,12 +1745,14 @@ class TestFixPromptRouting:
     @patch("theforge.coordinator.remote_gates._ntfy_publish")
     @patch("theforge.coordinator.remote_gates._ntfy_poll_reply")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_extend_after_request_changes_uses_fix_prompt(
         self,
         mock_shell,
         mock_agent,
+        mock_preflight,
         mock_pool,
         mock_poll,
         mock_publish,
@@ -1651,10 +1790,13 @@ class TestFixPromptRouting:
         mock_dev_prompt.return_value = "dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
         mock_shell.side_effect = _shell_with_gate(workspace)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Done."),  # iter 1
-            _make_agent_result(success=True, output="Fixed."),  # iter 2 (post-extend fix)
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Done."),
+            # iter 1
+            _make_agent_result(success=True, output="Fixed."),
+            # iter 2 (post-extend fix),
+        ]
 
         pool_calls = {"n": 0}
 

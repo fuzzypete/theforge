@@ -216,10 +216,11 @@ def _get_call_profile(mock_agent, call_idx: int) -> ModelProfile:
 class TestDevPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_uses_large_timeout_for_large_complexity(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
         """run_agent receives a profile with timeout_large_seconds when complexity=large."""
         dev_profile = dataclasses.replace(
@@ -235,8 +236,10 @@ class TestDevPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]
         mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW, profile_name="review")]
@@ -244,15 +247,16 @@ class TestDevPhaseTimeout:
         result = run_task(config, task)
 
         assert result.success is True
-        dev_profile_used = _get_call_profile(mock_agent, 1)
+        dev_profile_used = _get_call_profile(mock_agent, 0)
         assert dev_profile_used.timeout_seconds == 1800
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_uses_medium_timeout_for_medium_complexity(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
         """run_agent receives a profile with timeout_medium_seconds when complexity=medium."""
         dev_profile = dataclasses.replace(
@@ -268,8 +272,10 @@ class TestDevPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]
         mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW, profile_name="review")]
@@ -277,15 +283,16 @@ class TestDevPhaseTimeout:
         result = run_task(config, task)
 
         assert result.success is True
-        dev_profile_used = _get_call_profile(mock_agent, 1)
+        dev_profile_used = _get_call_profile(mock_agent, 0)
         assert dev_profile_used.timeout_seconds == 900
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_falls_back_to_base_when_no_override(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
         """run_agent uses base timeout when no complexity overrides are set."""
         config = _make_config(tmp_path)  # DEFAULT_DEV_PROFILE has no medium/large overrides
@@ -295,8 +302,10 @@ class TestDevPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]
         mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW, profile_name="review")]
@@ -304,15 +313,16 @@ class TestDevPhaseTimeout:
         result = run_task(config, task)
 
         assert result.success is True
-        dev_profile_used = _get_call_profile(mock_agent, 1)
+        dev_profile_used = _get_call_profile(mock_agent, 0)
         assert dev_profile_used.timeout_seconds == DEFAULT_DEV_PROFILE.timeout_seconds
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_logs_complexity_suffix_when_override_equals_base(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path, capsys
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path, capsys
     ):
         """Complexity suffix appears in log even when override value equals base timeout."""
         base = 600
@@ -329,8 +339,10 @@ class TestDevPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]
         mock_pool.return_value = [_make_agent_result(output=APPROVE_REVIEW, profile_name="review")]
@@ -348,10 +360,11 @@ class TestDevPhaseTimeout:
 class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_uses_large_timeout_for_large_complexity(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
         """PLAN phase profile uses timeout_large when complexity=large."""
         plan = PlanConfig(enabled=True, timeout=600, timeout_medium=900, timeout_large=1800)
@@ -362,8 +375,10 @@ class TestPlanPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
             _make_agent_result(output="# Plan\n\nDo it.", cost_usd=0.10),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]
@@ -372,16 +387,17 @@ class TestPlanPhaseTimeout:
         result = run_task(config, task)
 
         assert result.success is True
-        # call[0]=preflight, call[1]=plan, call[2]=dev
-        plan_profile_used = _get_call_profile(mock_agent, 1)
+        # call[0]=plan, call[1]=dev (preflight now handled by mock_preflight)
+        plan_profile_used = _get_call_profile(mock_agent, 0)
         assert plan_profile_used.timeout_seconds == 1800
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_falls_back_to_base_when_no_override(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
         """PLAN phase uses base timeout when no medium/large overrides are configured."""
         plan = PlanConfig(enabled=True, timeout=600)
@@ -392,8 +408,10 @@ class TestPlanPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
             _make_agent_result(output="# Plan\n\nDo it.", cost_usd=0.10),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]
@@ -402,15 +420,17 @@ class TestPlanPhaseTimeout:
         result = run_task(config, task)
 
         assert result.success is True
-        plan_profile_used = _get_call_profile(mock_agent, 1)
+        # call[0]=plan (preflight now handled by mock_preflight)
+        plan_profile_used = _get_call_profile(mock_agent, 0)
         assert plan_profile_used.timeout_seconds == 600
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_logs_complexity_suffix_when_override_equals_base(
-        self, mock_shell, mock_agent, mock_plan_agent, mock_pool, tmp_path, capsys
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path, capsys
     ):
         """Complexity suffix appears in plan log even when override value equals base timeout."""
         base = 600
@@ -422,8 +442,10 @@ class TestPlanPhaseTimeout:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
+        )
         mock_agent.side_effect = [
-            _make_agent_result(output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05),
             _make_agent_result(output="# Plan\n\nDo it.", cost_usd=0.10),
             _make_agent_result(output="Implemented.", cost_usd=0.20),
         ]

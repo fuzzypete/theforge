@@ -3,12 +3,12 @@
 from unittest.mock import patch
 
 from coord_test_helpers import (
+    _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     REQUEST_CHANGES_REVIEW,
     _make_agent_result,
     _make_config,
     _make_task,
-    _preflight_then,
     _shell_with_gate,
 )
 
@@ -59,9 +59,12 @@ def test_write_trace_empty_content(tmp_path):
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")
-@patch("theforge.coordinator.engine.run_agent")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.phases.run_agent")
 @patch("theforge.coordinator.util._run_shell")
-def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, tmp_path):
+def test_dev_traces_written_for_iteration_2(
+    mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+):
     """After REQUEST_CHANGES, fix-cycle trace must be 2-dev-*.txt, not overwrite 1-dev-*.txt."""
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
@@ -69,10 +72,11 @@ def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, t
     workspace.mkdir()
 
     mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-    mock_agent.side_effect = _preflight_then(
+    mock_preflight.return_value = _PREFLIGHT_RESULT
+    mock_agent.side_effect = [
         _make_agent_result(output="first dev output"),
         _make_agent_result(output="second dev output"),
-    )
+    ]
 
     pool_calls = {"n": 0}
 
@@ -105,9 +109,12 @@ def test_dev_traces_written_for_iteration_2(mock_shell, mock_agent, mock_pool, t
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")
-@patch("theforge.coordinator.engine.run_agent")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.phases.run_agent")
 @patch("theforge.coordinator.util._run_shell")
-def test_dev_traces_written_for_iteration_3(mock_shell, mock_agent, mock_pool, tmp_path):
+def test_dev_traces_written_for_iteration_3(
+    mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+):
     """After two REQUEST_CHANGES cycles, trace files 1-3 must all exist with distinct content."""
     from dataclasses import replace
 
@@ -126,11 +133,12 @@ def test_dev_traces_written_for_iteration_3(mock_shell, mock_agent, mock_pool, t
     workspace.mkdir()
 
     mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-    mock_agent.side_effect = _preflight_then(
+    mock_preflight.return_value = _PREFLIGHT_RESULT
+    mock_agent.side_effect = [
         _make_agent_result(output="first dev output"),
         _make_agent_result(output="second dev output"),
         _make_agent_result(output="third dev output"),
-    )
+    ]
 
     pool_calls = {"n": 0}
 

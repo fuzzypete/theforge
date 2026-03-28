@@ -10,13 +10,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 from coord_test_helpers import (
+    _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
     _make_pool_config,
     _make_task,
-    _preflight_then,
     _shell_with_gate,
     _write_handoff,
 )
@@ -254,31 +254,24 @@ class TestStructuredLoggingIntegration:
         )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_run_task_emits_lifecycle_events(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_run_task_emits_lifecycle_events(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
         task = _make_task(tmp_path)
         workspace = tmp_path / task.slug
         workspace.mkdir(parents=True, exist_ok=True)
 
-        preflight_result = _make_agent_result(
+        mock_preflight.return_value = _make_agent_result(
             success=True,
             output="verdict: PROCEED\ncomplexity: small",
             cost_usd=0.10,
         )
-        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
-
-        agent_calls = {"n": 0}
-        agent_results = [preflight_result, dev_result]
-
-        def agent_side_effect(**kwargs):
-            idx = min(agent_calls["n"], len(agent_results) - 1)
-            agent_calls["n"] += 1
-            return agent_results[idx]
-
-        mock_agent.side_effect = agent_side_effect
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
@@ -313,9 +306,12 @@ class TestStructuredLoggingIntegration:
             assert "event" in entry
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_gate_result_includes_output_tail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_gate_result_includes_output_tail(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
         task = _make_task(tmp_path)
@@ -336,14 +332,12 @@ class TestStructuredLoggingIntegration:
             return (True, "OK")
 
         mock_shell.side_effect = shell_with_long_output
-        mock_agent.side_effect = [
-            _make_agent_result(
-                success=True,
-                output="verdict: PROCEED\ncomplexity: small",
-                cost_usd=0.10,
-            ),
-            _make_agent_result(success=True, output="Done.", cost_usd=0.50),
-        ]
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="verdict: PROCEED\ncomplexity: small",
+            cost_usd=0.10,
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -359,9 +353,12 @@ class TestStructuredLoggingIntegration:
         assert len(output_tail) <= 500
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_review_result_event_fields(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_review_result_event_fields(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
         task = _make_task(tmp_path)
@@ -369,14 +366,12 @@ class TestStructuredLoggingIntegration:
         workspace.mkdir(parents=True, exist_ok=True)
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = [
-            _make_agent_result(
-                success=True,
-                output="verdict: PROCEED\ncomplexity: small",
-                cost_usd=0.10,
-            ),
-            _make_agent_result(success=True, output="Done.", cost_usd=0.50),
-        ]
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="verdict: PROCEED\ncomplexity: small",
+            cost_usd=0.10,
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -395,10 +390,11 @@ class TestStructuredLoggingIntegration:
         assert "cost_usd" in ev
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_escalate_event_emitted_on_gate_failure(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         log_file = tmp_path / "forge.log"
         config = self._make_logging_config(tmp_path, log_file)
@@ -408,12 +404,12 @@ class TestStructuredLoggingIntegration:
 
         # Always return FAIL → exhaust retries → ESCALATE
         mock_shell.side_effect = _shell_with_gate(workspace, "FAIL")
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="verdict: PROCEED\ncomplexity: small",
+            cost_usd=0.10,
+        )
         mock_agent.side_effect = [
-            _make_agent_result(
-                success=True,
-                output="verdict: PROCEED\ncomplexity: small",
-                cost_usd=0.10,
-            ),
             _make_agent_result(success=True, output="Done.", cost_usd=0.10),
             _make_agent_result(success=True, output="Done.", cost_usd=0.10),
             _make_agent_result(success=True, output="Done.", cost_usd=0.10),
@@ -443,7 +439,8 @@ class TestStructuredLoggingIntegration:
 
         with (
             patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
-            patch("theforge.coordinator.engine.run_agent") as mock_agent,
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.phases.run_agent") as mock_agent,
             patch("theforge.coordinator.util._run_shell") as mock_shell,
             patch(
                 "theforge.coordinator.engine.StructuredLogger.emit",
@@ -451,14 +448,14 @@ class TestStructuredLoggingIntegration:
             ),
         ):
             mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-            mock_agent.side_effect = [
-                _make_agent_result(
-                    success=True,
-                    output="verdict: PROCEED\ncomplexity: small",
-                    cost_usd=0.10,
-                ),
-                _make_agent_result(success=True, output="Done.", cost_usd=0.50),
-            ]
+            mock_preflight.return_value = _make_agent_result(
+                success=True,
+                output="verdict: PROCEED\ncomplexity: small",
+                cost_usd=0.10,
+            )
+            mock_agent.return_value = _make_agent_result(
+                success=True, output="Done.", cost_usd=0.50
+            )
             mock_pool.return_value = [
                 _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
             ]
@@ -545,9 +542,12 @@ class TestAuditReviewPoolFields:
     """Tests for generate_audit_log() review pool field serialization."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_audit_review_pool_fields_populated(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_audit_review_pool_fields_populated(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """When pool has 2 reviewers and one fails, audit has correct pool/successful/failed."""
         config = _make_pool_config(
             tmp_path,
@@ -583,7 +583,8 @@ class TestAuditReviewPoolFields:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         # opus succeeds, codex fails
         mock_pool.return_value = [
             AgentResult(
@@ -617,9 +618,12 @@ class TestAuditReviewPoolFields:
         assert cycle["failed"] == ["codex"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_audit_failed_reviewer_detail(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_audit_failed_reviewer_detail(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Failed reviewer includes exit code in failed_detail."""
         config = _make_pool_config(
             tmp_path,
@@ -655,7 +659,8 @@ class TestAuditReviewPoolFields:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         mock_pool.return_value = [
             AgentResult(
                 success=True,
@@ -686,10 +691,11 @@ class TestAuditReviewPoolFields:
         assert "exit=1" in cycle["failed_detail"]["codex"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_audit_synthesized_flag_false_degraded(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """synthesized=False when degraded to single reviewer (one failed)."""
         config = _make_pool_config(
@@ -726,7 +732,8 @@ class TestAuditReviewPoolFields:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(_make_agent_result(success=True, output="Done."))
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
         # One fails → degraded, no synthesis
         mock_pool.return_value = [
             AgentResult(

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import (
+    _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
     PREFLIGHT_PROCEED,
     REQUEST_CHANGES_REVIEW,
@@ -16,7 +17,6 @@ from coord_test_helpers import (
     _make_agent_result,
     _make_config,
     _make_task,
-    _preflight_then,
     _shell_with_gate,
     _write_handoff,
 )
@@ -97,9 +97,12 @@ class TestCoordinatorAutoMerge:
         return side_effect
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_success_on_approve(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_success_on_approve(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """auto_merge=True: merge occurs after APPROVE, result.merge.merged is True."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -107,9 +110,8 @@ class TestCoordinatorAutoMerge:
         workspace.mkdir()
 
         mock_shell.side_effect = self._shell_with_gate_and_merge(workspace, merge_succeeds=True)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -126,9 +128,12 @@ class TestCoordinatorAutoMerge:
         assert "Merged." in result.message
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_false_no_merge(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_false_no_merge(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """auto_merge=False (default): no merge, result.merge is None."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -136,9 +141,8 @@ class TestCoordinatorAutoMerge:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -151,9 +155,12 @@ class TestCoordinatorAutoMerge:
         assert result.merge["action"] == "none"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_no_merge_on_escalate(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_no_merge_on_escalate(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """auto_merge=True: no merge when result is ESCALATE (not APPROVE)."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -161,10 +168,11 @@ class TestCoordinatorAutoMerge:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented."),
             _make_agent_result(success=True, output="Fixed."),
-        )
+        ]
         mock_pool.return_value = [
             _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
         ]
@@ -176,9 +184,12 @@ class TestCoordinatorAutoMerge:
         assert result.merge is None  # no merge attempted on ESCALATE
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_ff_fails_falls_back(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_ff_fails_falls_back(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """auto_merge=True: non-ff fallback used when ff-only fails."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -186,9 +197,8 @@ class TestCoordinatorAutoMerge:
         workspace.mkdir()
 
         mock_shell.side_effect = self._shell_with_gate_and_merge(workspace, merge_succeeds=False)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -200,9 +210,12 @@ class TestCoordinatorAutoMerge:
         assert result.merge["merged"] is True  # fell back to --no-edit and succeeded
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_safety_no_base_branch(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_safety_no_base_branch(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """auto_merge=True: skips merge if base branch doesn't exist."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -220,9 +233,8 @@ class TestCoordinatorAutoMerge:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -236,10 +248,11 @@ class TestCoordinatorAutoMerge:
         assert "not found" in result.merge["error"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_safety_dirty_project_root(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """auto_merge=True: skips merge if project root has uncommitted changes."""
         config = _make_config(tmp_path)
@@ -264,9 +277,8 @@ class TestCoordinatorAutoMerge:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -280,9 +292,12 @@ class TestCoordinatorAutoMerge:
         assert "Uncommitted" in result.merge["error"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_safety_no_commits_ahead(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_safety_no_commits_ahead(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """auto_merge=True: skips merge if branch has no commits ahead of base."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -302,9 +317,8 @@ class TestCoordinatorAutoMerge:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -317,9 +331,12 @@ class TestCoordinatorAutoMerge:
         assert "no commits" in result.merge["error"]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_auto_merge_merge_info_in_audit(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_auto_merge_merge_info_in_audit(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Merge info appears in audit log under 'merge' key."""
         from theforge.coordinator.engine import generate_audit_log
 
@@ -329,9 +346,8 @@ class TestCoordinatorAutoMerge:
         workspace.mkdir()
 
         mock_shell.side_effect = self._shell_with_gate_and_merge(workspace, merge_succeeds=True)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -347,10 +363,11 @@ class TestCoordinatorAutoMerge:
         assert merge["error"] is None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_merge_false_no_merge_key_in_audit(
-        self, mock_shell, mock_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Without auto_merge, audit 'merge' key is None."""
         from theforge.coordinator.engine import generate_audit_log
@@ -361,9 +378,8 @@ class TestCoordinatorAutoMerge:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -425,10 +441,11 @@ class TestCoordinatorAutoPush:
 
     @patch("theforge.coordinator.workspace.subprocess.run")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_push_after_merge(
-        self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):
         """auto_push=True + merge success -> git push called with base_branch."""
         config = self._make_auto_push_config(tmp_path, auto_push=True)
@@ -437,9 +454,8 @@ class TestCoordinatorAutoPush:
         workspace.mkdir()
 
         mock_shell.side_effect = self._shell_with_gate_and_merge(workspace)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -461,10 +477,11 @@ class TestCoordinatorAutoPush:
 
     @patch("theforge.coordinator.workspace.subprocess.run")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_push_disabled_by_default(
-        self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):
         """auto_push=False (default) -> git push not called."""
         config = self._make_auto_push_config(tmp_path, auto_push=False)
@@ -473,9 +490,8 @@ class TestCoordinatorAutoPush:
         workspace.mkdir()
 
         mock_shell.side_effect = self._shell_with_gate_and_merge(workspace)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -495,10 +511,11 @@ class TestCoordinatorAutoPush:
 
     @patch("theforge.coordinator.workspace.subprocess.run")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_auto_push_failure_non_fatal(
-        self, mock_shell, mock_agent, mock_pool, mock_subprocess, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, mock_subprocess, tmp_path
     ):
         """auto_push=True + push fails -> warning logged, run still DONE."""
         import subprocess as _subprocess
@@ -509,9 +526,8 @@ class TestCoordinatorAutoPush:
         workspace.mkdir()
 
         mock_shell.side_effect = self._shell_with_gate_and_merge(workspace)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -861,10 +877,11 @@ class TestConflictResolution:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.workspace.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_conflict_resolution_succeeds(
-        self, mock_shell, mock_agent, mock_ws_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_ws_agent, mock_pool, tmp_path
     ):
         """Merge conflict -> agent resolves -> gate passes -> merged=True."""
         config = _make_config(tmp_path)
@@ -875,9 +892,11 @@ class TestConflictResolution:
         mock_shell.side_effect = self._shell_with_conflict(
             workspace, conflicted_files=["src/foo.py"], gate_pass=True
         )
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented."),  # dev
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="Implemented."),
+            # dev,
+        ]
         # coord_workspace.run_agent is called for conflict resolution
         mock_ws_agent.return_value = _make_agent_result(success=True, output="Resolved conflicts.")
         mock_pool.return_value = [
@@ -894,10 +913,11 @@ class TestConflictResolution:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.workspace.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_conflict_resolution_gate_fails(
-        self, mock_shell, mock_agent, mock_ws_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_ws_agent, mock_pool, tmp_path
     ):
         """Merge conflict -> agent resolves -> gate fails -> merge aborted, merged=False."""
         config = _make_config(tmp_path)
@@ -942,9 +962,8 @@ class TestConflictResolution:
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented."),
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         # coord_workspace.run_agent is called for conflict resolution
         mock_ws_agent.return_value = _make_agent_result(success=True, output="Resolved conflicts.")
         mock_pool.return_value = [
@@ -960,9 +979,12 @@ class TestConflictResolution:
         assert result.merge["error"] is not None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_conflict_too_many_files_skipped(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_conflict_too_many_files_skipped(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """More than 5 conflicted files -> auto-resolution skipped, merge fails."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -972,9 +994,8 @@ class TestConflictResolution:
         # 6 conflicted files -- over the limit of 5
         many_files = [f"src/file{i}.py" for i in range(6)]
         mock_shell.side_effect = self._shell_with_conflict(workspace, conflicted_files=many_files)
-        mock_agent.side_effect = _preflight_then(
-            _make_agent_result(success=True, output="Implemented.")
-        )
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -989,9 +1010,12 @@ class TestConflictResolution:
         assert result.merge["error"] is not None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_no_conflict_no_resolution(self, mock_shell, mock_agent, mock_pool, tmp_path):
+    def test_no_conflict_no_resolution(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
         """Clean merge (no conflict) -> conflict resolution never invoked."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -1020,16 +1044,9 @@ class TestConflictResolution:
                 return (True, "")
             return (True, "OK")
 
-        agent_calls = {"n": 0}
-
-        def agent_side_effect(**kwargs):
-            agent_calls["n"] += 1
-            if agent_calls["n"] == 1:
-                return _make_agent_result(output=PREFLIGHT_PROCEED)  # preflight
-            return _make_agent_result(output="Implemented.")  # dev
-
         mock_shell.side_effect = shell_side_effect
-        mock_agent.side_effect = agent_side_effect
+        mock_preflight.return_value = _make_agent_result(output=PREFLIGHT_PROCEED)
+        mock_agent.return_value = _make_agent_result(output="Implemented.")  # dev
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -1039,15 +1056,16 @@ class TestConflictResolution:
         assert result.success is True
         assert result.merge is not None
         assert result.merge["merged"] is True
-        # Only preflight + dev agent calls -- no conflict resolver call
-        assert agent_calls["n"] == 2
+        # Only dev agent call -- no conflict resolver call (preflight mocked separately)
+        assert mock_agent.call_count == 1
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.workspace.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_conflict_resolution_timeout(
-        self, mock_shell, mock_agent, mock_ws_agent, mock_pool, tmp_path
+        self, mock_shell, mock_agent, mock_preflight, mock_ws_agent, mock_pool, tmp_path
     ):
         """Conflict resolution agent fails (simulating timeout) -> merge aborted."""
         config = _make_config(tmp_path)
@@ -1058,13 +1076,11 @@ class TestConflictResolution:
         mock_shell.side_effect = self._shell_with_conflict(
             workspace, conflicted_files=["src/foo.py"]
         )
-        # Preflight, then dev, then conflict resolution agent (fails with timeout)
-        mock_agent.side_effect = _preflight_then(
+        # dev, then conflict resolution agent (fails with timeout); preflight mocked separately
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented."),  # dev
-            _make_agent_result(
-                success=False, output="TIMEOUT after 120s"
-            ),  # conflict resolver times out
-        )
+        ]
         # coord_workspace.run_agent is called for conflict resolution
         mock_ws_agent.return_value = _make_agent_result(success=False, output="TIMEOUT after 120s")
         mock_pool.return_value = [
