@@ -3498,7 +3498,7 @@ class TestReviewPoolResilience:
             _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="reviewer-a"),
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="reviewer-b"),
         ]
-        # engine.run_agent: preflight + dev; review_pool.run_agent: reviewer-a retry
+        # preflight_flow: preflight; phases: dev; review_pool.run_agent: reviewer-a retry
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_engine_agent.return_value = _make_agent_result()
         mock_review_agent.return_value = _make_agent_result(output=APPROVE_REVIEW)
