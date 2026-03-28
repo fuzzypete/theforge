@@ -21,19 +21,10 @@ from .defaults import (
 )
 from .load import load_config
 from .models import (
-    _PROVIDER_CLI_MAP,
     MODEL_REGISTRY,
     AgentDef,
     ModelInfo,
-    _planner_candidate_models,
 )
-from .profiles import (
-    _apply_profile_overrides,
-    _auto_assign_models,
-    _parse_profile,
-    _resolve_model_info,
-)
-from .secrets import _resolve_secret
 from .types import (
     SUPPORTED_PROVIDERS,
     AssignmentConfig,
@@ -77,10 +68,8 @@ __all__ = [
     "SUPPORTED_PROVIDERS",
     "ValidationConfig",
     "WorkspaceConfig",
-    # models
+    # models / registry
     "MODEL_REGISTRY",
-    "_PROVIDER_CLI_MAP",
-    "_planner_candidate_models",
     # defaults
     "API_PROVIDER_DEFAULT_TOOLS",
     "DEFAULT_DEV_PROFILE",
@@ -92,13 +81,6 @@ __all__ = [
     "PROVIDER_SDK_MAP",
     "SUPPORTED_CLIS",
     "generate_default_config",
-    # secrets
-    "_resolve_secret",
-    # profiles
-    "_apply_profile_overrides",
-    "_auto_assign_models",
-    "_parse_profile",
-    "_resolve_model_info",
     # load
     "load_config",
 ]

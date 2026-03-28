@@ -6,3 +6,5 @@ try:
     __version__ = _version("theforge")
 except Exception:
     __version__ = "0.0.0-dev"
+
+__all__ = ["__version__"]

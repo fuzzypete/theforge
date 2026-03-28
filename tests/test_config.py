@@ -14,12 +14,14 @@ from theforge.config import (
     MODEL_REGISTRY,
     SUPPORTED_CLIS,
     ModelProfile,
+    generate_default_config,
+    load_config,
+)
+from theforge.config.profiles import (
     _apply_profile_overrides,
     _auto_assign_models,
     _parse_profile,
     _resolve_model_info,
-    generate_default_config,
-    load_config,
 )
 
 
