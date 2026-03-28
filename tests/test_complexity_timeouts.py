@@ -217,7 +217,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_uses_large_timeout_for_large_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
@@ -253,7 +253,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_uses_medium_timeout_for_medium_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
@@ -289,7 +289,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_falls_back_to_base_when_no_override(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
@@ -319,7 +319,7 @@ class TestDevPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_dev_logs_complexity_suffix_when_override_equals_base(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path, capsys
@@ -361,7 +361,7 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_uses_large_timeout_for_large_complexity(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
@@ -394,7 +394,7 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_falls_back_to_base_when_no_override(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
@@ -427,7 +427,7 @@ class TestPlanPhaseTimeout:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_plan_logs_complexity_suffix_when_override_equals_base(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path, capsys
