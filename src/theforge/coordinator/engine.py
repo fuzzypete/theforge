@@ -34,7 +34,8 @@ import datetime
 import signal
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 from theforge.artifacts import (
@@ -142,6 +143,44 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
         return False, f"ERROR: {e}"
+
+
+# ── Log-tee / SIGTERM context manager ────────────────────────────────
+
+
+@contextmanager
+def _run_log_context(
+    config: ForgeConfig,
+    logger: StructuredLogger,
+    task: TaskSpec,
+    state: CoordinatorState,
+    task_start: float,
+) -> Generator[None, None, None]:
+    """Set up per-run log tee and SIGTERM handler; tear down on exit."""
+    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
+    _prev_sigterm = None
+    if _tee is not None:
+        _prev_sigterm = _safe_signal(
+            signal.SIGTERM,
+            _make_sigterm_handler(
+                logger,
+                _tee,
+                signal.getsignal(signal.SIGTERM),
+                state=state,
+                task_start=task_start,
+                task=task,
+                config=config,
+            ),
+        )
+    try:
+        yield
+    finally:
+        _end_run_log_tee(_tee)
+        if _prev_sigterm is not None:
+            try:
+                _safe_signal(signal.SIGTERM, _prev_sigterm)
+            except Exception:
+                pass
 
 
 # ── Phase handlers ────────────────────────────────────────────────────
@@ -417,24 +456,8 @@ def run_task(
     # Create early (before WORKSPACE) so the tee can write run-<id>.log from start.
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=_sprint_name)
 
-    # ── Per-run log tee ───────────────────────────────────────────
-    _tee: tuple[object, object] | None = None
-    _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
-    if _tee is not None:
-        _prev_sigterm = _safe_signal(
-            signal.SIGTERM,
-            _make_sigterm_handler(
-                logger,
-                _tee,
-                signal.getsignal(signal.SIGTERM),
-                state=state,
-                task_start=_task_start,
-                task=task,
-                config=config,
-            ),
-        )
-    try:
+    # ── Per-run log tee + SIGTERM handler ────────────────────────────
+    with _run_log_context(config, logger, task, state, _task_start):
         # ── Smart config display ───────────────────────────────────────
         if config.smart_config_models is not None:
             models_str = ", ".join(config.smart_config_models)
@@ -680,13 +703,6 @@ def run_task(
             )
 
         return result
-    finally:
-        _end_run_log_tee(_tee)
-        if _prev_sigterm is not None:
-            try:
-                _safe_signal(signal.SIGTERM, _prev_sigterm)
-            except Exception:
-                pass
 
 
 # ── Shared resume coordinator (run_from_review / run_from_dev) ────────
@@ -725,23 +741,7 @@ def _run_resume_coordinator(
     state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
 
-    _tee: tuple[object, object] | None = None
-    _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
-    if _tee is not None:
-        _prev_sigterm = _safe_signal(
-            signal.SIGTERM,
-            _make_sigterm_handler(
-                logger,
-                _tee,
-                signal.getsignal(signal.SIGTERM),
-                state=state,
-                task_start=_task_start,
-                task=task,
-                config=config,
-            ),
-        )
-    try:
+    with _run_log_context(config, logger, task, state, _task_start):
         result = _coordinator_loop(
             state,
             config,
@@ -764,13 +764,6 @@ def _run_resume_coordinator(
             total_duration_s=round(_total_elapsed, 2),
         )
         return result
-    finally:
-        _end_run_log_tee(_tee)
-        if _prev_sigterm is not None:
-            try:
-                _safe_signal(signal.SIGTERM, _prev_sigterm)
-            except Exception:
-                pass
 
 
 # ── Resume entry points ───────────────────────────────────────────────
@@ -928,4 +921,3 @@ def run_review_only(
 
 
 # ── Audit ────────────────────────────────────────────────────────────
-
