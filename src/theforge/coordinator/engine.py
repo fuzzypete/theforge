@@ -155,8 +155,10 @@ from .workspace import (  # noqa: F401
 )
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
-# Populated by _ensure_runners() at entry points; names exist here so
-# mock.patch("theforge.coordinator.engine.run_agent") keeps working.
+# Populated by _ensure_runners() at entry points.
+# engine.run_agent owns the handoff-fix retry path only.
+# Preflight: patch theforge.coordinator.preflight_flow.run_agent
+# DEV:       patch theforge.coordinator.phases.run_agent
 run_agent = None
 run_agent_pool = None
 log_agent_result = None
