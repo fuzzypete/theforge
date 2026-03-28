@@ -20,14 +20,9 @@ from theforge.config import (
     SprintConfig,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    CoordinatorResult,
-    CoordinatorState,
-    Phase,
-    _notify,
-    _osa_quote,
-    run_task,
-)
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.notify import _notify, _osa_quote
+from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, StoryTriage, _triage_spec, build_dag
 from theforge.sprint.manifest import _build_task_from_story

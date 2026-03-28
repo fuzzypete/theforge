@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import sys
 from pathlib import Path
 
 from theforge.cli.shared import _build_task, _find_config, _write_audit
 from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
-from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
+from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 
@@ -49,9 +48,9 @@ def cmd_review(args: object) -> int:
     else:
         workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
 
-    print(
-        f"TheForge v{importlib.metadata.version('theforge')} — review-only mode", file=sys.stderr
-    )
+    import theforge
+
+    print(f"TheForge v{theforge.__version__} — review-only mode", file=sys.stderr)
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)

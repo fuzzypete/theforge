@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import importlib.metadata
 import subprocess
 import sys
 from pathlib import Path
@@ -21,12 +20,11 @@ from theforge.cli.shared import (
 )
 from theforge.config import load_config
 from theforge.coordinator.engine import (
-    Phase,
     run_from_review,
     run_task,
 )
-from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
-from theforge.coordinator.state import parse_phase_name
+from theforge.coordinator.state import Phase, parse_phase_name
+from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint.dag import _triage_spec
@@ -114,7 +112,9 @@ def cmd_run(args: "argparse.Namespace") -> int:
     else:
         run_id = _generate_run_id()
 
-    print(f"TheForge v{importlib.metadata.version('theforge')}", file=sys.stderr)
+    import theforge
+
+    print(f"TheForge v{theforge.__version__}", file=sys.stderr)
     print(f"  Project:    {config.project}", file=sys.stderr)
     print(f"  Task:       {task.name}", file=sys.stderr)
     print(f"  Slug:       {task.slug}", file=sys.stderr)

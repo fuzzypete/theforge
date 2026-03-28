@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..config import ForgeConfig
 from ..coordinator.audit import has_review_approve
-from ..coordinator.engine import _run_gate
+from ..coordinator.gate import _run_gate
 from ..task import TaskStory as TaskSpec  # noqa: F401
 from .manifest import _build_task_from_story
 

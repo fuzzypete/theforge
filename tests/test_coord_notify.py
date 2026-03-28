@@ -43,7 +43,8 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import Phase, _is_remote_mode, run_task
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.notify import _is_remote_mode
 from theforge.coordinator.ntfy_client import (
     _ntfy_poll_plan_reply,
     _ntfy_poll_reply,
@@ -51,7 +52,7 @@ from theforge.coordinator.ntfy_client import (
     _ntfy_reply_url,
 )
 from theforge.coordinator.remote_gates import _plan_review_remote
-from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.state import CoordinatorState, Phase
 
 
 class TestCoordinatorHumanReview:
@@ -1273,7 +1274,7 @@ test_coverage:
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
             patch(
-                "theforge.coordinator.engine._ntfy_publish",
+                "theforge.coordinator.ntfy_client._ntfy_publish",
                 side_effect=OSError("network unreachable"),
             ),
         ):

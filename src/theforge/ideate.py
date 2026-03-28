@@ -429,54 +429,102 @@ def _failed_result(
     )
 
 
-def run_ideation(
+def _run_single_model_ideation(
+    pool: list,
+    working_dir: Path,
     config: ForgeConfig,
     brief: str,
-    output_path: Path | None,
-    *,
-    stories_dir: Path | None = None,
-    max_rounds: int = 2,
-) -> IdeationResult:
-    """Execute the full deliberation protocol.
+) -> "IdeationResult | tuple[str, list[str], list[IdeationRound], float]":
+    """Single-model fast path: one combined Phase 1 + synthesis call.
 
-    Phases:
-      1. Fan out phase1 prompt to all models in review_pool independently.
-      2. Fan out phase2 prompt (includes all phase1 outputs) to all models.
-         (Skipped for single-model pool — no cross-review for a single model.)
-      3. Run synthesis model to consolidate Phase 1 (and Phase 2) into a draft spec.
-         Single-model pool: lone model acts as synthesizer (Phase 1 + synthesis,
-         no cross-review).
-      4. If divergent items remain and rounds remain, loop with narrowed brief.
+    Intentional design deviation from the spec's "Phase 1 only" wording:
+    The spec says single-model runs use "Phase 1 only", but Phase 1's
+    prompt (ideas/constraints/risks) deliberately avoids frontmatter and
+    cannot produce a valid spec file. Instead we use a combined prompt
+    (_build_single_model_prompt) that merges ideation and spec-writing
+    into one call. This achieves the spec's intent (AC7: "single-model
+    pool produces a spec") via a better mechanism. Cross-review and
+    synthesis are still skipped — only one LLM call is made.
 
-    Args:
-        config: ForgeConfig with review pool and synthesis profile.
-        brief: The ideation brief (text).
-        output_path: Where to write the generated spec. Pass None to skip writing
-            (caller handles output, or use specs_dir for auto-naming).
-        stories_dir: When output_path is None and stories_dir is provided, the story
-            is written to stories_dir/<slug>.md after synthesis (slug derived from
-            the synthesized frontmatter). Ignored when output_path is given.
-        max_rounds: Maximum deliberation rounds before surfacing residual divergence.
-            Must be >= 1; values < 1 are clamped to 1.
-
-    Pool > 1 without synthesis_profile: raises ValueError.
+    Returns a failed IdeationResult on error, or
+    (final_synthesis, residual_divergence, all_rounds, total_cost) on success.
     """
-    if max_rounds < 1:
-        max_rounds = 1
+    all_rounds: list[IdeationRound] = []
+    total_cost = 0.0
 
-    pool = config.review_pool
-    synthesis_profile = config.synthesis_profile
-
-    if len(pool) > 1 and synthesis_profile is None:
-        raise ValueError(
-            "synthesis profile is required when review_pool has more than 1 entry. "
-            "Configure profiles.synthesis in forge.yaml."
+    _log(f"▸ IDEATE   {pool[0].name}  round=1")
+    _log("  ▸ Phase 1   generating spec (single-model)...")
+    single_prompt = _build_single_model_prompt(brief, config=config)
+    agent_start = time.monotonic()
+    result = run_agent(
+        prompt=single_prompt,
+        profile=pool[0],
+        working_dir=working_dir,
+        secrets=config.secrets,
+        plain_text=True,
+    )
+    agent_elapsed = time.monotonic() - agent_start
+    total_cost += result.cost_usd or 0.0
+    _log(f"  ↳ {pool[0].name} done ({agent_elapsed:.0f}s)")
+    if not result.success:
+        _log(f"  ✗ {pool[0].name} failed: {result.output[:120]}")
+        return _failed_result(
+            f"Single-model agent failed: {result.output}",
+            all_rounds,
+            total_cost,
         )
+    spec_text = result.output
+    # Extract the SPEC: block if the model wrapped it.
+    if "SPEC:" in spec_text:
+        spec_text = spec_text.split("SPEC:", 1)[1].strip()
+    if not _validate_frontmatter(spec_text):
+        _log("  ✗ single-model output missing valid frontmatter")
+        return _failed_result(
+            "Single-model output does not contain valid YAML frontmatter.",
+            all_rounds,
+            total_cost,
+        )
+    all_rounds.append(
+        IdeationRound(
+            round_number=1,
+            phase1_outputs={pool[0].name: result.output},
+            phase2_outputs={},
+            converged_items=[],
+            divergent_items=[],
+            synthesis_output=spec_text,
+        )
+    )
+    final_synthesis = spec_text
+    # Parse any Human Decisions Required section the model emitted.
+    # Forcing [] would silently drop legitimate unresolved items.
+    _hdr = "## Human Decisions Required"
+    if _hdr in spec_text:
+        _section_start = spec_text.index(_hdr) + len(_hdr)
+        _section_text = spec_text[_section_start:].strip()
+        residual_divergence = [
+            line.strip().removeprefix("- ")
+            for line in _section_text.splitlines()
+            if line.strip().startswith("-")
+        ]
+    else:
+        residual_divergence = []
+    return final_synthesis, residual_divergence, all_rounds, total_cost
 
+
+def _run_multi_model_ideation(
+    pool: list,
+    working_dir: Path,
+    config: ForgeConfig,
+    brief: str,
+    synthesis_profile: object,
+    max_rounds: int,
+) -> "IdeationResult | tuple[str, list[str], list[IdeationRound], float]":
+    """Multi-model deliberation: Phase 1 → Phase 2 → Phase 3 → loop.
+
+    Returns a failed IdeationResult on error, or
+    (final_synthesis, residual_divergence, all_rounds, total_cost) on success.
+    """
     pool_names = "+".join(p.name for p in pool)
-    working_dir = config.project_root
-    ideation_start = time.monotonic()
-
     all_rounds: list[IdeationRound] = []
     total_cost = 0.0
     current_brief = brief
@@ -491,74 +539,7 @@ def run_ideation(
         )
         _log(f"▸ IDEATE   {pool_names}  round={round_num}{divergence_suffix}")
 
-        # ── Single-model fast path ────────────────────────────────────
-        # Intentional design deviation from the spec's "Phase 1 only" wording:
-        # The spec says single-model runs use "Phase 1 only", but Phase 1's
-        # prompt (ideas/constraints/risks) deliberately avoids frontmatter and
-        # cannot produce a valid spec file. Instead we use a combined prompt
-        # (_build_single_model_prompt) that merges ideation and spec-writing
-        # into one call. This achieves the spec's intent (AC7: "single-model
-        # pool produces a spec") via a better mechanism. Cross-review and
-        # synthesis are still skipped — only one LLM call is made.
-        if len(pool) == 1:
-            _log("  ▸ Phase 1   generating spec (single-model)...")
-            single_prompt = _build_single_model_prompt(current_brief, config=config)
-            agent_start = time.monotonic()
-            result = run_agent(
-                prompt=single_prompt,
-                profile=pool[0],
-                working_dir=working_dir,
-                secrets=config.secrets,
-                plain_text=True,
-            )
-            agent_elapsed = time.monotonic() - agent_start
-            total_cost += result.cost_usd or 0.0
-            _log(f"  ↳ {pool[0].name} done ({agent_elapsed:.0f}s)")
-            if not result.success:
-                _log(f"  ✗ {pool[0].name} failed: {result.output[:120]}")
-                return _failed_result(
-                    f"Single-model agent failed: {result.output}",
-                    all_rounds,
-                    total_cost,
-                )
-            spec_text = result.output
-            # Extract the SPEC: block if the model wrapped it.
-            if "SPEC:" in spec_text:
-                spec_text = spec_text.split("SPEC:", 1)[1].strip()
-            if not _validate_frontmatter(spec_text):
-                _log("  ✗ single-model output missing valid frontmatter")
-                return _failed_result(
-                    "Single-model output does not contain valid YAML frontmatter.",
-                    all_rounds,
-                    total_cost,
-                )
-            all_rounds.append(
-                IdeationRound(
-                    round_number=round_num,
-                    phase1_outputs={pool[0].name: result.output},
-                    phase2_outputs={},
-                    converged_items=[],
-                    divergent_items=[],
-                    synthesis_output=spec_text,
-                )
-            )
-            final_synthesis = spec_text
-            # Parse any Human Decisions Required section the model emitted.
-            # Forcing [] would silently drop legitimate unresolved items.
-            _hdr = "## Human Decisions Required"
-            if _hdr in spec_text:
-                _section_start = spec_text.index(_hdr) + len(_hdr)
-                _section_text = spec_text[_section_start:].strip()
-                residual_divergence = [
-                    line.strip().removeprefix("- ")
-                    for line in _section_text.splitlines()
-                    if line.strip().startswith("-")
-                ]
-            else:
-                residual_divergence = []
-            break  # single round always produces the final spec
-
-        # ── Phase 1: Independent generation (multi-model) ────────────
+        # ── Phase 1: Independent generation ──────────────────────────
         _log("  ▸ Phase 1   generating independently...")
         phase1_prompt = _build_phase1_prompt(current_brief)
         phase1_outputs: dict[str, str] = {}
@@ -629,15 +610,12 @@ def run_ideation(
         _log("  ▸ Synthesis   consolidating...")
         synth_start = time.monotonic()
 
-        assert synthesis_profile is not None  # guaranteed by ValueError check above
-        synth_profile = synthesis_profile
         synth_prompt = _build_synthesis_prompt(
             current_brief, phase1_outputs, phase2_outputs, config=config
         )
-
         synth_result = run_agent(
             prompt=synth_prompt,
-            profile=synth_profile,
+            profile=synthesis_profile,  # type: ignore[arg-type]
             working_dir=working_dir,
             secrets=config.secrets,
             plain_text=True,
@@ -667,18 +645,18 @@ def run_ideation(
             )
 
         final_synthesis = spec_text
-
         _log(f"  Converged: {len(converged_items)} items  Divergent: {len(divergent_items)} items")
 
-        round_result = IdeationRound(
-            round_number=round_num,
-            phase1_outputs=phase1_outputs,
-            phase2_outputs=phase2_outputs,
-            converged_items=converged_items,
-            divergent_items=divergent_items,
-            synthesis_output=synth_result.output,
+        all_rounds.append(
+            IdeationRound(
+                round_number=round_num,
+                phase1_outputs=phase1_outputs,
+                phase2_outputs=phase2_outputs,
+                converged_items=converged_items,
+                divergent_items=divergent_items,
+                synthesis_output=synth_result.output,
+            )
         )
-        all_rounds.append(round_result)
 
         residual_divergence = divergent_items
 
@@ -694,6 +672,68 @@ def run_ideation(
             )
         else:
             break
+
+    return final_synthesis, residual_divergence, all_rounds, total_cost
+
+
+def run_ideation(
+    config: ForgeConfig,
+    brief: str,
+    output_path: Path | None,
+    *,
+    stories_dir: Path | None = None,
+    max_rounds: int = 2,
+) -> IdeationResult:
+    """Execute the full deliberation protocol.
+
+    Phases:
+      1. Fan out phase1 prompt to all models in review_pool independently.
+      2. Fan out phase2 prompt (includes all phase1 outputs) to all models.
+         (Skipped for single-model pool — no cross-review for a single model.)
+      3. Run synthesis model to consolidate Phase 1 (and Phase 2) into a draft spec.
+         Single-model pool: lone model acts as synthesizer (Phase 1 + synthesis,
+         no cross-review).
+      4. If divergent items remain and rounds remain, loop with narrowed brief.
+
+    Args:
+        config: ForgeConfig with review pool and synthesis profile.
+        brief: The ideation brief (text).
+        output_path: Where to write the generated spec. Pass None to skip writing
+            (caller handles output, or use specs_dir for auto-naming).
+        stories_dir: When output_path is None and stories_dir is provided, the story
+            is written to stories_dir/<slug>.md after synthesis (slug derived from
+            the synthesized frontmatter). Ignored when output_path is given.
+        max_rounds: Maximum deliberation rounds before surfacing residual divergence.
+            Must be >= 1; values < 1 are clamped to 1.
+
+    Pool > 1 without synthesis_profile: raises ValueError.
+    """
+    if max_rounds < 1:
+        max_rounds = 1
+
+    pool = config.review_pool
+    synthesis_profile = config.synthesis_profile
+
+    if len(pool) > 1 and synthesis_profile is None:
+        raise ValueError(
+            "synthesis profile is required when review_pool has more than 1 entry. "
+            "Configure profiles.synthesis in forge.yaml."
+        )
+
+    working_dir = config.project_root
+    ideation_start = time.monotonic()
+
+    if len(pool) == 1:
+        outcome = _run_single_model_ideation(pool, working_dir, config, brief)
+    else:
+        outcome = _run_multi_model_ideation(
+            pool, working_dir, config, brief, synthesis_profile, max_rounds
+        )
+
+    if isinstance(outcome, IdeationResult):
+        return outcome
+
+    final_synthesis, residual_divergence, all_rounds, total_cost = outcome
 
     # ── Output ───────────────────────────────────────────────────────
     # Unconditionally normalize the ## Human Decisions Required section.

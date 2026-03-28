@@ -14,7 +14,7 @@ from .manifest import SprintManifest, SprintResult
 
 if TYPE_CHECKING:
     from ..config import ForgeConfig
-    from ..coordinator.engine import CoordinatorResult
+    from ..coordinator.state import CoordinatorResult
     from ..task import TaskStory as TaskSpec
 
 

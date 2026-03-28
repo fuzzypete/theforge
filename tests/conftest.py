@@ -16,12 +16,11 @@ def _block_real_notifications():
     so no osascript / notify-send calls escape into the OS during tests.
     """
     with (
-        patch("theforge.coordinator.engine._notify"),
-        patch("theforge.coordinator.engine._ntfy_publish"),
         patch("theforge.coordinator.notify._notify"),
         patch("theforge.coordinator.notify._ntfy_publish"),
         patch("theforge.coordinator.remote_gates._ntfy_publish"),
         patch("theforge.sprint.runner._notify"),
+        patch("theforge.sprint.runner._ntfy_publish"),
         # notify_backends.send_notifications dispatches to _send_terminal
         # directly (not via coord_notify._notify), so patch it here too.
         patch("theforge.notify_backends._send_terminal"),

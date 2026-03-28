@@ -30,13 +30,9 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import (
-    Phase,
-    _is_stale_worktree,
-    _remove_worktree,
-    run_task,
-)
-from theforge.coordinator.workspace import _create_workspace
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.state import Phase
+from theforge.coordinator.workspace import _create_workspace, _is_stale_worktree, _remove_worktree
 
 # ── Workspace failure ─────────────────────────────────────────────
 
@@ -338,7 +334,7 @@ class TestCoordinatorAutoMerge:
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Merge info appears in audit log under 'merge' key."""
-        from theforge.coordinator.engine import generate_audit_log
+        from theforge.coordinator.audit import generate_audit_log
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -370,7 +366,7 @@ class TestCoordinatorAutoMerge:
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
         """Without auto_merge, audit 'merge' key is None."""
-        from theforge.coordinator.engine import generate_audit_log
+        from theforge.coordinator.audit import generate_audit_log
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
@@ -708,7 +704,7 @@ class TestStaleWorktree:
 
         mock_shell.side_effect = shell_side_effect
 
-        from theforge.coordinator.engine import _create_workspace
+        from theforge.coordinator.workspace import _create_workspace
 
         path, branch, err = _create_workspace(config, task)
 
@@ -748,7 +744,7 @@ class TestStaleWorktree:
 
         mock_shell.side_effect = shell_side_effect
 
-        from theforge.coordinator.engine import _create_workspace
+        from theforge.coordinator.workspace import _create_workspace
 
         path, branch, err = _create_workspace(config, task)
 
@@ -784,7 +780,7 @@ class TestStaleWorktree:
 
         mock_shell.side_effect = shell_side_effect
 
-        from theforge.coordinator.engine import _create_workspace
+        from theforge.coordinator.workspace import _create_workspace
 
         path, branch, err = _create_workspace(config, task)
 

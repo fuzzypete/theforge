@@ -7,7 +7,7 @@ from pathlib import Path
 
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
-from theforge.coordinator.engine import set_log_level as coordinator_set_log_level
+from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import run_sprint

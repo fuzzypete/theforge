@@ -34,7 +34,8 @@ import datetime
 import signal
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 from theforge.artifacts import (
@@ -42,117 +43,42 @@ from theforge.artifacts import (
     ensure_parent_dir,
     resolve_handoff_path,
 )
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile  # noqa: F401
-from theforge.review import (  # noqa: F401
-    PlanReviewResult,
-    ReviewResult,
-    _try_parse_review,
-    merge_plan_review_results,
-    merge_review_results,
-    parse_plan_review_output,
-    parse_review_json,
-    parse_review_output,
-    plan_review_findings_to_text,
-    review_to_dev_handoff,
-)
+from theforge.config import ForgeConfig
 from theforge.sessions import save_sessions
-from theforge.task import (  # noqa: F401
+from theforge.task import (
     TaskSpec,
-    TaskStory,
     build_handoff_fix_prompt,
-    build_plan_prompt,
-    build_plan_review_prompt,
-    build_preflight_prompt,
-    build_review_prompt,
     parse_plan_output,
 )
 from theforge.task import load_story as load_spec
 
-from .gate import (  # noqa: F401
-    _auto_commit_side_effects,
-    _is_gate_skip,
-    _parse_dirty_files,
-    _read_gate_decision,
-    _run_gate,
-    _run_gate_full,
-)
-from .log_tee import (  # noqa: E402, F401
+from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
     _end_run_log_tee,
     _make_story_log_dir,
     _safe_signal,
-    _TeeStderr,
-    _write_log_artifact,
 )
 
 # ── Structured logging ────────────────────────────────────────────────
-from .logging import StructuredLogger  # noqa: F401
-from .notify import (  # noqa: F401
-    _escalate_notify,
-    _is_pending_file_mode,
-    _is_remote_mode,
-    _notify,
-    _ntfy_crash_notify,
-    _ntfy_done_notify,
-    _osa_quote,
-    _plan_review_interactive,
-)
-from .ntfy_client import (  # noqa: F401
-    _ntfy_poll_reply,
-    _ntfy_publish,
-    _ntfy_reply_url,
-)
-from .pending_hitl import (  # noqa: F401
-    _pending_plan_review,
-)
-from .preflight import (  # noqa: F401
-    _apply_complexity_adaptation,
-    _escalate_dev_model,
-    _find_registry_info_for_profile,
-    _find_registry_key_for_profile,
-    _has_persistent_p1,
-    _parse_preflight_complexity,
-    _parse_preflight_verdict,
-    _parse_preflight_warnings,
-    _persistent_p1_descriptions,
-)
-from .remote_gates import (  # noqa: F401
-    _plan_review_remote,
-    _remote_human_review,
-)
-from .signals import (  # noqa: E402, F401
+from .logging import StructuredLogger
+from .notify import _escalate_notify
+from .signals import (  # noqa: E402
     _fire_post_run_hook,
     _make_sigterm_handler,
     _set_timeout_resume,
 )
-
-# ── Re-exports for backward compatibility ────────────────────────────
-from .state import (  # noqa: F401
+from .state import (
     CoordinatorResult,
     CoordinatorState,
-    CycleHistory,
     Phase,
-    ReviewCycleMetadata,
 )
-from .util import (  # noqa: F401
-    _LOG_LEVEL,
-    _fmt_cost,
-    _fmt_duration,
+from .util import (
     _generate_run_id,
     _log,
     _log_phase,
     _log_verbose,
-    resolve_timeout,
-    set_log_level,
 )
-from .workspace import (  # noqa: F401
-    _create_workspace,
-    _fmt_age,
-    _is_stale_worktree,
-    _merge_branch,
-    _remove_worktree,
-    _resolve_merge_conflicts,
-)
+from .workspace import _create_workspace
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
@@ -217,6 +143,44 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
         return False, f"ERROR: {e}"
+
+
+# ── Log-tee / SIGTERM context manager ────────────────────────────────
+
+
+@contextmanager
+def _run_log_context(
+    config: ForgeConfig,
+    logger: StructuredLogger,
+    task: TaskSpec,
+    state: CoordinatorState,
+    task_start: float,
+) -> Generator[None, None, None]:
+    """Set up per-run log tee and SIGTERM handler; tear down on exit."""
+    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
+    _prev_sigterm = None
+    if _tee is not None:
+        _prev_sigterm = _safe_signal(
+            signal.SIGTERM,
+            _make_sigterm_handler(
+                logger,
+                _tee,
+                signal.getsignal(signal.SIGTERM),
+                state=state,
+                task_start=task_start,
+                task=task,
+                config=config,
+            ),
+        )
+    try:
+        yield
+    finally:
+        _end_run_log_tee(_tee)
+        if _prev_sigterm is not None:
+            try:
+                _safe_signal(signal.SIGTERM, _prev_sigterm)
+            except Exception:
+                pass
 
 
 # ── Phase handlers ────────────────────────────────────────────────────
@@ -492,24 +456,8 @@ def run_task(
     # Create early (before WORKSPACE) so the tee can write run-<id>.log from start.
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=_sprint_name)
 
-    # ── Per-run log tee ───────────────────────────────────────────
-    _tee: tuple[object, object] | None = None
-    _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
-    if _tee is not None:
-        _prev_sigterm = _safe_signal(
-            signal.SIGTERM,
-            _make_sigterm_handler(
-                logger,
-                _tee,
-                signal.getsignal(signal.SIGTERM),
-                state=state,
-                task_start=_task_start,
-                task=task,
-                config=config,
-            ),
-        )
-    try:
+    # ── Per-run log tee + SIGTERM handler ────────────────────────────
+    with _run_log_context(config, logger, task, state, _task_start):
         # ── Smart config display ───────────────────────────────────────
         if config.smart_config_models is not None:
             models_str = ", ".join(config.smart_config_models)
@@ -755,13 +703,6 @@ def run_task(
             )
 
         return result
-    finally:
-        _end_run_log_tee(_tee)
-        if _prev_sigterm is not None:
-            try:
-                _safe_signal(signal.SIGTERM, _prev_sigterm)
-            except Exception:
-                pass
 
 
 # ── Shared resume coordinator (run_from_review / run_from_dev) ────────
@@ -800,23 +741,7 @@ def _run_resume_coordinator(
     state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
 
-    _tee: tuple[object, object] | None = None
-    _prev_sigterm: object = None
-    _tee = _begin_run_log_tee(config, logger, task.slug, log_dir=state.log_dir)
-    if _tee is not None:
-        _prev_sigterm = _safe_signal(
-            signal.SIGTERM,
-            _make_sigterm_handler(
-                logger,
-                _tee,
-                signal.getsignal(signal.SIGTERM),
-                state=state,
-                task_start=_task_start,
-                task=task,
-                config=config,
-            ),
-        )
-    try:
+    with _run_log_context(config, logger, task, state, _task_start):
         result = _coordinator_loop(
             state,
             config,
@@ -839,13 +764,6 @@ def _run_resume_coordinator(
             total_duration_s=round(_total_elapsed, 2),
         )
         return result
-    finally:
-        _end_run_log_tee(_tee)
-        if _prev_sigterm is not None:
-            try:
-                _safe_signal(signal.SIGTERM, _prev_sigterm)
-            except Exception:
-                pass
 
 
 # ── Resume entry points ───────────────────────────────────────────────
@@ -1003,5 +921,3 @@ def run_review_only(
 
 
 # ── Audit ────────────────────────────────────────────────────────────
-
-from .audit import generate_audit_log  # noqa: E402, F401

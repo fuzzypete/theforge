@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from ..coordinator.engine import CoordinatorResult
+from ..coordinator.state import CoordinatorResult
 from ..task import TaskStory as TaskSpec  # noqa: F401
 
 
