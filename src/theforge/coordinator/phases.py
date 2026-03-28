@@ -437,9 +437,15 @@ def _handle_interactive_review_decision(
         state.dev_iteration = 0
         state.review_cycle = 0
         state.human_review_extra_cycles += 1
-        state.last_review_findings = (
-            review_to_dev_handoff(parsed_review) if parsed_review.findings else None
-        )
+        # exhausted-cycles: always populate so the next DEV iteration uses fix-prompt
+        # even when findings list is empty (REQUEST_CHANGES with no explicit findings).
+        # approve-path: only populate when there are findings to hand off.
+        if exhausted_cycles:
+            state.last_review_findings = review_to_dev_handoff(parsed_review)
+        else:
+            state.last_review_findings = (
+                review_to_dev_handoff(parsed_review) if parsed_review.findings else None
+            )
         state.human_feedback = None
         state.retry_reason = "extend"
         _log(

@@ -1919,6 +1919,102 @@ test_coverage:
 
         assert mock_fix_prompt.called, "build_fix_prompt should be called after extend"
 
+    @patch("theforge.coordinator.phases.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.phases.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.phases._human_review")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.phases.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_exhausted_cycles_extend_zero_findings_uses_fix_prompt(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_human_review,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        """Exhausted-cycles extend with empty findings still routes to build_fix_prompt.
+
+        REQUEST_CHANGES with no explicit findings can happen (e.g., reviewer says
+        'rewrite the approach' without listing individual findings). When cycles are
+        exhausted and the human extends, last_review_findings must be populated
+        unconditionally so the next DEV iteration uses fix-prompt, not dev-prompt.
+        """
+        # max_review_cycles=1 so the first REQUEST_CHANGES exhausts the budget
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=3, max_review_cycles=1),
+            log=LogConfig(enabled=False),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+
+        # REQUEST_CHANGES with empty findings list
+        empty_findings_rc = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Please rethink the approach entirely."
+findings: []
+story_compliance:
+  matches_spec: false
+test_coverage:
+  adequate: false
+```
+"""
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=empty_findings_rc, profile_name="review"
+                    )
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        # First call: human extends (cycles exhausted); second call: human approves
+        human_call = {"n": 0}
+
+        def human_review_side_effect(*args, **kwargs):
+            human_call["n"] += 1
+            if human_call["n"] == 1:
+                return ("extend", "")
+            return ("approve", "")
+
+        mock_human_review.side_effect = human_review_side_effect
+
+        run_task(config, task, interactive=True)
+
+        assert mock_fix_prompt.called, (
+            "build_fix_prompt must be called after exhausted-cycles extend "
+            "even when findings list is empty"
+        )
+
 
 class TestCoordinatorSessionResume:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
