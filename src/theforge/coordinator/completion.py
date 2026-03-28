@@ -9,7 +9,7 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig
 from theforge.review import ReviewResult
-from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.task import TaskStory
 
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
@@ -73,7 +73,7 @@ def _archive_story_to_done(
 
 def _create_pr(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     branch_name: str,
     parsed_review: ReviewResult,
     state: CoordinatorState,
@@ -205,7 +205,7 @@ def _append_cycle_history(state: CoordinatorState, parsed_review: ReviewResult) 
 def _finalize_approve(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     parsed_review: ReviewResult,
     workspace_path: Path,
     branch_name: str,

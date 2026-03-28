@@ -10,7 +10,7 @@ from pathlib import Path
 from ..config import ForgeConfig
 from ..coordinator.audit import has_review_approve
 from ..coordinator.gate import _run_gate
-from ..task import TaskStory as TaskSpec  # noqa: F401
+from ..task import TaskStory
 from .manifest import _build_task_from_story
 
 
@@ -42,13 +42,13 @@ class StoryDAG:
     mark_skipped() adds only to _finished (story is done but deps not satisfied).
     """
 
-    def __init__(self, tasks: list[TaskSpec]) -> None:
-        self._tasks: dict[str, TaskSpec] = {t.slug: t for t in tasks}
+    def __init__(self, tasks: list[TaskStory]) -> None:
+        self._tasks: dict[str, TaskStory] = {t.slug: t for t in tasks}
         self._deps: dict[str, set[str]] = {t.slug: set(t.depends_on) for t in tasks}
         self._completed: set[str] = set()  # satisfied: merged or ALREADY_DONE
         self._finished: set[str] = set()  # all done: any outcome
 
-    def ready(self) -> list[TaskSpec]:
+    def ready(self) -> list[TaskStory]:
         """Return tasks that are not finished and whose deps are all completed."""
         return [
             task
@@ -74,13 +74,13 @@ class StoryDAG:
         """Dependency slugs that are not yet completed (for skip messages)."""
         return [dep for dep in self._deps[slug] if dep not in self._completed]
 
-    def remaining(self) -> list[TaskSpec]:
+    def remaining(self) -> list[TaskStory]:
         """Tasks not yet finished (not in _finished)."""
         return [task for slug, task in self._tasks.items() if slug not in self._finished]
 
 
-def build_dag(tasks: list[TaskSpec]) -> StoryDAG:
-    """Build a StoryDAG from a list of TaskSpec objects.
+def build_dag(tasks: list[TaskStory]) -> StoryDAG:
+    """Build a StoryDAG from a list of TaskStory objects.
 
     Raises ValueError if:
     - any depends_on slug references a story not present in the manifest

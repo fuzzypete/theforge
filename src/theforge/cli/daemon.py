@@ -50,6 +50,7 @@ def cmd_daemon(args: object) -> int:
     import warnings
 
     from theforge import daemon as _daemon
+    from theforge import daemon_launchd as _daemon_launchd
 
     warnings.warn(
         "forge daemon is deprecated; forge run/sprint now auto-detach. "
@@ -129,7 +130,7 @@ def cmd_daemon(args: object) -> int:
         try:
             from pathlib import Path
 
-            plist_path = _daemon.install_launchd(config.project_root, Path(forge_bin))
+            plist_path = _daemon_launchd.install_launchd(config.project_root, Path(forge_bin))
             print(f"Installed launchd plist: {plist_path}")
             print("Daemon will start automatically on login.")
         except RuntimeError as exc:
@@ -139,7 +140,7 @@ def cmd_daemon(args: object) -> int:
 
     elif subcommand == "uninstall":
         try:
-            _daemon.uninstall_launchd()
+            _daemon_launchd.uninstall_launchd()
             print("Launchd plist removed.")
         except Exception as exc:
             print(f"[daemon] Error: {exc}", file=sys.stderr)

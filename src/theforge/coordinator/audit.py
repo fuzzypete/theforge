@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.task import TaskStory
 
 from .state import CoordinatorResult, CoordinatorState
 
@@ -212,7 +212,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     }
 
 
-def generate_audit_log(config: ForgeConfig, task: TaskSpec, result: CoordinatorResult) -> dict:
+def generate_audit_log(config: ForgeConfig, task: TaskStory, result: CoordinatorResult) -> dict:
     """Generate a structured audit log for the entire coordination run.
 
     This is the orchestrator's own handoff — a complete record of what happened.

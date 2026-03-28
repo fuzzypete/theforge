@@ -25,13 +25,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from theforge.daemon_launchd import (  # noqa: F401
-    _LAUNCHD_LABEL,
-    _LAUNCHD_PLIST_PATH,
-    install_launchd,
-    uninstall_launchd,
-)
-from theforge.daemon_state import (  # noqa: F401
+from theforge.daemon_state import (
     _MAX_COMPLETED,
     _PID_FILE,
     _SOCK_FILE,
@@ -41,7 +35,6 @@ from theforge.daemon_state import (  # noqa: F401
     _read_pid,
     _write_daemon_json,
     is_daemon_running,
-    make_state_update_fn,
 )
 
 if TYPE_CHECKING:
@@ -561,6 +554,3 @@ def _daemon_socket_command(forge_root: Path, msg: dict) -> dict:
             return json.loads(line.decode("utf-8"))
     except (OSError, json.JSONDecodeError, socket.timeout) as exc:
         return {"ok": False, "error": str(exc)}
-
-
-# macOS launchd integration lives in daemon_launchd.py; re-exported above.

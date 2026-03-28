@@ -19,7 +19,7 @@ from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
 from ..coordinator.workspace import _merge_branch
-from ..task import TaskStory as TaskSpec  # noqa: F401
+from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .dag import StoryDAG, StoryTriage, _triage_spec, build_dag
 from .display import _print_worker_status, _story_header
@@ -50,7 +50,7 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
 
 def _run_single_story(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     triage: "StoryTriage | None",
     sprint_run_id: str,
     sprint_name: str,
@@ -59,7 +59,7 @@ def _run_single_story(
     resume: bool,
     effective_auto_merge: bool,
     state_update_fn: "Callable[[dict], None] | None",
-) -> "tuple[TaskSpec, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
+) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
     Designed to run in a worker thread. Dispatches to run_task / run_from_review /
@@ -147,7 +147,7 @@ def _make_worker_phase_fn(
 
 
 def _classify_and_record(
-    task: TaskSpec,
+    task: TaskStory,
     result: CoordinatorResult,
     dag: StoryDAG,
     merged_slugs: set[str],
@@ -266,8 +266,10 @@ def run_sprint(
     stopped_reason: str | None = None
     merged_slugs: set[str] = set()
 
-    # Pre-scan: parse all TaskSpecs once and build maps.
-    _parsed_tasks: dict[Path, TaskSpec] = {_sp: _build_task_from_story(_sp) for _sp in story_paths}
+    # Pre-scan: parse all TaskStorys once and build maps.
+    _parsed_tasks: dict[Path, TaskStory] = {
+        _sp: _build_task_from_story(_sp) for _sp in story_paths
+    }
     slug_to_spec: dict[str, str] = {}
     for spec_str, story_path in zip(manifest.stories, story_paths):
         task = _parsed_tasks[story_path]
@@ -318,7 +320,7 @@ def run_sprint(
     batch_number = 0
     worker_phases: dict[str, str] = {}
     phase_lock = threading.Lock()
-    pending_merges: dict[str, tuple[TaskSpec, CoordinatorResult]] = {}
+    pending_merges: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
     _submission_counter = [0]  # mutable for closure capture; counts submitted stories
 
     with ThreadPoolExecutor(max_workers=manifest.max_parallel) as pool:

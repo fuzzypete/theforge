@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from theforge.agent_types import AgentResult, ModelUsage  # noqa: F401
-from theforge.log_level import _LOG_LEVEL, LogLevel, set_log_level  # noqa: F401
+from theforge.agent_types import AgentResult
+from theforge.log_level import LogLevel
 
 from ..config import ModelProfile
 
