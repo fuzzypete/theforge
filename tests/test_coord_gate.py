@@ -1326,8 +1326,8 @@ class TestGateOverride:
 class TestFixPromptRouting:
     """Tests that the coordinator routes to build_fix_prompt on iteration 2+."""
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1353,8 +1353,8 @@ class TestFixPromptRouting:
         mock_dev_prompt.assert_called_once()
         mock_fix_prompt.assert_not_called()
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1390,8 +1390,8 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 1  # only iter 1
         assert mock_fix_prompt.call_count == 1  # iter 2 uses fix prompt
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1423,8 +1423,8 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 2
         mock_fix_prompt.assert_not_called()
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1461,8 +1461,8 @@ class TestFixPromptRouting:
         assert len(call_kwargs["review_findings"]) > 0
         assert call_kwargs["iteration"] >= 1
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1503,8 +1503,8 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 2
         assert mock_fix_prompt.call_count == 1
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.util._run_shell")
@@ -1545,8 +1545,8 @@ class TestFixPromptRouting:
         mock_dev_prompt.assert_not_called()
         assert mock_fix_prompt.call_count == 1
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.remote_gates._ntfy_publish")
     @patch("theforge.coordinator.remote_gates._ntfy_poll_reply")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -1603,8 +1603,8 @@ class TestFixPromptRouting:
         assert mock_dev_prompt.call_count == 2
         mock_fix_prompt.assert_not_called()
 
-    @patch("theforge.coordinator.engine.build_fix_prompt")
-    @patch("theforge.coordinator.engine.build_dev_prompt")
+    @patch("theforge.coordinator.phases.build_fix_prompt")
+    @patch("theforge.coordinator.phases.build_dev_prompt")
     @patch("theforge.coordinator.remote_gates._ntfy_publish")
     @patch("theforge.coordinator.remote_gates._ntfy_poll_reply")
     @patch("theforge.coordinator.review_pool.run_agent_pool")

@@ -224,14 +224,14 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
 
 # ── Commit log / handoff context (moved to review_context.py) ─────────
 # ── Phase handlers (extracted to coord_phases.py) ────────────────────
-from .phases import (  # noqa: E402, F401
+from .phases import (  # noqa: E402, F401  # noqa: E402
     _finalize_approve,
     _ReviewOutcome,
+    _run_dev_phase,
+    _run_review_phase,
+    _run_validate_phase,
     _ValidateOutcome,
 )
-from .phases import _run_dev_phase as _run_dev_phase_impl  # noqa: E402
-from .phases import _run_review_phase as _run_review_phase_impl  # noqa: E402
-from .phases import _run_validate_phase as _run_validate_phase_impl  # noqa: E402
 from .review_context import (  # noqa: E402, F401
     _get_commit_log,
     _get_dev_notes,
@@ -240,90 +240,6 @@ from .review_context import (  # noqa: E402, F401
     _has_uncommitted_changes,
     _parse_dev_handoff,
 )
-
-
-def _run_dev_phase(
-    state: CoordinatorState,
-    config: ForgeConfig,
-    task: TaskSpec,
-    story_content: str,
-    workspace_path: Path,
-    branch_name: str,
-    *,
-    notify: bool,
-    logger: StructuredLogger | None,
-) -> CoordinatorResult | None:
-    return _run_dev_phase_impl(
-        state,
-        config,
-        task,
-        story_content,
-        workspace_path,
-        branch_name,
-        notify=notify,
-        logger=logger,
-        mod=_sys.modules[__name__],
-    )
-
-
-def _run_review_phase(
-    state: CoordinatorState,
-    config: ForgeConfig,
-    task: TaskSpec,
-    story_content: str,
-    workspace_path: Path,
-    branch_name: str,
-    task_start: float,
-    *,
-    interactive: bool,
-    auto_merge: bool,
-    notify: bool,
-    logger: StructuredLogger | None,
-    run_id: str = "",
-) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
-    return _run_review_phase_impl(
-        state,
-        config,
-        task,
-        story_content,
-        workspace_path,
-        branch_name,
-        task_start,
-        interactive=interactive,
-        auto_merge=auto_merge,
-        notify=notify,
-        logger=logger,
-        mod=_sys.modules[__name__],
-        run_id=run_id,
-    )
-
-
-def _run_validate_phase(
-    state: CoordinatorState,
-    config: ForgeConfig,
-    task: TaskSpec,
-    workspace_path: Path,
-    dev_calls_this_cycle: int,
-    *,
-    notify: bool,
-    logger: StructuredLogger | None,
-) -> tuple[_ValidateOutcome, CoordinatorResult | None]:
-    return _run_validate_phase_impl(
-        state,
-        config,
-        task,
-        workspace_path,
-        dev_calls_this_cycle,
-        notify=notify,
-        logger=logger,
-        mod=_sys.modules[__name__],
-    )
-
-
-# ── Review pool (moved to review_pool.py) ─────────────────────────
-# Re-exported here so that phases.py (which calls mod._run_review_pool)
-# continues to resolve it via the engine module's namespace.
-from .review_pool import _run_review_pool  # noqa: E402, F401
 
 # ── Resume entry setup (moved to run_setup.py) ─────────────────────
 from .run_setup import _setup_resume_entry  # noqa: E402, F401
@@ -390,6 +306,7 @@ def _coordinator_loop(
                 branch_name,
                 notify=notify,
                 logger=logger,
+                mod=_sys.modules[__name__],
             )
             if escalation is not None:
                 return escalation
@@ -1104,7 +1021,6 @@ def run_review_only(
         notify=notify,
         logger=logger,
         task_start=_ro_task_start,
-        mod=_sys.modules[__name__],
     )
 
 

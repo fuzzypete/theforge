@@ -1,9 +1,7 @@
 """Phase handler functions extracted from coordinator.py.
 
 These implement the DEV, VALIDATE, and REVIEW phases of the coordinator
-state machine.  Functions that call symbols patched in tests accept a
-``mod`` parameter (the coordinator module) so lookups resolve in the
-coordinator's namespace where patches land.
+state machine.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ from theforge.review import (
 )
 from theforge.sessions import save_sessions
 from theforge.task import TaskStory as TaskSpec  # noqa: F401
-from theforge.task import build_review_prompt
+from theforge.task import build_dev_prompt, build_fix_prompt, build_review_prompt
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -46,6 +44,7 @@ from .logging import StructuredLogger
 from .notify import (
     _escalate_gate_interactive,
     _escalate_notify,
+    _human_review,
     _is_pending_file_mode,
     _is_remote_mode,
     _ntfy_done_notify,
@@ -64,7 +63,13 @@ from .remote_gates import (
     _escalate_gate_remote,
     _remote_human_review,
 )
-from .review_context import _get_commit_log, _get_dev_notes, _get_handoff_content
+from .review_context import (
+    _get_commit_log,
+    _get_dev_notes,
+    _get_handoff_content,
+    _get_raw_dev_notes,
+)
+from .review_pool import _run_review_pool
 from .state import (
     CoordinatorResult,
     CoordinatorState,
@@ -250,7 +255,6 @@ def _run_review_phase(
     auto_merge: bool,
     notify: bool,
     logger: StructuredLogger | None,
-    mod: ModuleType,
     run_id: str = "",
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     """Run the full REVIEW phase: pool+synthesis, parse retries, verdict handling.
@@ -278,19 +282,17 @@ def _run_review_phase(
     state.review_cycle_metadata.append(meta)
     _review_cost_before_cycle = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
 
-    successful, failed_results, _candidate, _individual_results, _named_parsed = (
-        mod._run_review_pool(
-            state,
-            config,
-            task,
-            story_content,
-            workspace_path,
-            branch_name,
-            meta,
-            notify=notify,
-            pool_attempt=0,
-            max_review_parse_retries=max_parse_retries,
-        )
+    successful, failed_results, _candidate, _individual_results, _named_parsed = _run_review_pool(
+        state,
+        config,
+        task,
+        story_content,
+        workspace_path,
+        branch_name,
+        meta,
+        notify=notify,
+        pool_attempt=0,
+        max_review_parse_retries=max_parse_retries,
     )
     state.last_cycle_reviewer_results = _named_parsed
 
@@ -447,7 +449,7 @@ def _run_review_phase(
                     state, parsed_review, workspace_path, branch_name, task, config, task_start
                 )
             else:
-                decision, feedback = mod._human_review(
+                decision, feedback = _human_review(
                     state, parsed_review, workspace_path, branch_name
                 )
             state.human_review_decision = decision
@@ -615,7 +617,7 @@ def _run_review_phase(
                     state, parsed_review, workspace_path, branch_name, task, config, task_start
                 )
             else:
-                decision, feedback = mod._human_review(
+                decision, feedback = _human_review(
                     state, parsed_review, workspace_path, branch_name
                 )
             state.human_review_decision = decision
@@ -751,7 +753,6 @@ def _run_validate_phase(
     *,
     notify: bool,
     logger: StructuredLogger | None,
-    mod: ModuleType,
 ) -> tuple[_ValidateOutcome, CoordinatorResult | None]:
     """Run one VALIDATE iteration. Returns (outcome, result).
 
@@ -853,7 +854,7 @@ def _run_validate_phase(
                 # Auto-commit: synthesize message from handoff, don't
                 # re-invoke the agent (full-prompt retry burns tokens and
                 # times out — the agent already wrote the code).
-                dev_notes = mod._get_raw_dev_notes(config, workspace_path)
+                dev_notes = _get_raw_dev_notes(config, workspace_path)
                 if dev_notes:
                     first_line = dev_notes.strip().splitlines()[0][:72]
                     commit_msg = first_line
@@ -902,7 +903,7 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        handoff_text = mod._get_handoff_content(config, workspace_path)
+        handoff_text = _get_handoff_content(config, workspace_path)
         state.human_feedback = (
             f"Gate output (last {config.validation.gate_output_tail_chars} chars):\n"
             f"{gate_output_tail}\n\n"
@@ -945,6 +946,8 @@ def _run_dev_phase(
 
     Caller must increment state.dev_iteration and _dev_calls_this_cycle before calling.
     Mutates state in-place (appends dev_results, updates dev_session_id, etc.).
+    ``mod`` is the engine module — resolves ``run_agent`` so that
+    ``patch('theforge.coordinator.engine.run_agent')`` intercepts the call in tests.
     """
     _log_phase(
         state.phase,
@@ -981,7 +984,7 @@ def _run_dev_phase(
         state.retry_reason = None
         state.human_feedback = None
     elif state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
-        prompt = mod.build_fix_prompt(
+        prompt = build_fix_prompt(
             task,
             workspace_path=workspace_path,
             branch_name=branch_name,
@@ -999,7 +1002,7 @@ def _run_dev_phase(
         )
         state.escalation_note = None  # consumed
     else:
-        prompt = mod.build_dev_prompt(
+        prompt = build_dev_prompt(
             task,
             workspace_path=workspace_path,
             branch_name=branch_name,
@@ -1180,14 +1183,10 @@ def _run_review_only_phase(
     notify: bool,
     logger: StructuredLogger | None,
     task_start: float,
-    mod: ModuleType,
 ) -> CoordinatorResult:
     """Run the REVIEW phase for the review-only entry point.
 
     No DEV retry: REQUEST_CHANGES → ESCALATE immediately.
-    Accesses ``mod._run_review_pool`` so that
-    ``patch('theforge.coordinator.engine._run_review_pool')`` keeps working
-    in tests.
     """
     state.phase = Phase.REVIEW
     if logger:
@@ -1221,7 +1220,7 @@ def _run_review_only_phase(
     state.review_cycle_metadata.append(meta)
 
     _pool_start = time.monotonic()
-    successful, failed_results, parsed_review, _individual, _named_parsed = mod._run_review_pool(
+    successful, failed_results, parsed_review, _individual, _named_parsed = _run_review_pool(
         state,
         config,
         task,
