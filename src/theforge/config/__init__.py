@@ -1,8 +1,8 @@
 """TheForge configuration package.
 
-Re-exports the full public API from sub-modules so that all existing
-``from theforge.config import X`` and ``from .config import X`` statements
-continue to work unchanged.
+Re-exports the public API from sub-modules. Internal helpers
+(underscore-prefixed symbols) are not re-exported here; import them
+directly from their owning sub-modules (e.g. ``theforge.config.profiles``).
 """
 
 from __future__ import annotations
