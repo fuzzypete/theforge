@@ -75,7 +75,7 @@ class ToolDef:
         Google's API does not support additionalProperties, anyOf, or other
         advanced JSON Schema features. These are stripped recursively.
         """
-        from theforge.runners.api import _sanitize_schema_for_google
+        from theforge.runners.schema_utils import _sanitize_schema_for_google
 
         return {
             "name": self.name,

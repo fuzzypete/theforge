@@ -1966,10 +1966,10 @@ class TestVerboseFlagEnablesToolLines:
     """Tool activity is printed in VERBOSE mode and suppressed in PROGRESS mode."""
 
     def test_verbose_prints_tool_lines(self, capsys):
-        import theforge.runners.cli as runner_mod
         import theforge.runners.runner_claude as runner_claude_mod
+        from theforge.log_level import set_log_level
 
-        runner_mod.set_log_level(LogLevel.VERBOSE)
+        set_log_level(LogLevel.VERBOSE)
         try:
             # Simulate a tool_use assistant event
             tool_event = (
@@ -1980,13 +1980,13 @@ class TestVerboseFlagEnablesToolLines:
             captured = capsys.readouterr()
             assert "↳ Read" in captured.err
         finally:
-            runner_mod.set_log_level(LogLevel.PROGRESS)
+            set_log_level(LogLevel.PROGRESS)
 
     def test_progress_suppresses_tool_lines(self, capsys):
-        import theforge.runners.cli as runner_mod
         import theforge.runners.runner_claude as runner_claude_mod
+        from theforge.log_level import set_log_level
 
-        runner_mod.set_log_level(LogLevel.PROGRESS)
+        set_log_level(LogLevel.PROGRESS)
         tool_event = (
             '{"type": "assistant", "message": {"content": '
             '[{"type": "tool_use", "name": "Read", "input": {"file_path": "/foo.py"}}]}}'
@@ -2007,11 +2007,11 @@ class TestProgressShowsPhaseTransitions:
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path, capsys
     ):
         import theforge.coordinator.util as coord_mod
-        import theforge.runners.cli as runner_mod
+        from theforge.log_level import set_log_level
 
         # Ensure we are at PROGRESS level
         coord_mod.set_log_level(LogLevel.PROGRESS)
-        runner_mod.set_log_level(LogLevel.PROGRESS)
+        set_log_level(LogLevel.PROGRESS)
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)

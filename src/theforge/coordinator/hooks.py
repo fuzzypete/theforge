@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
-    from theforge.task import TaskStory as TaskSpec  # noqa: F401
+    from theforge.task import TaskStory
 
     from .logging import StructuredLogger
     from .state import CoordinatorResult, CoordinatorState
@@ -170,7 +170,7 @@ def run_hook(
 
 
 def build_pre_run_payload(
-    task: TaskSpec,
+    task: TaskStory,
     run_id: str,
     config: ForgeConfig,
 ) -> dict:
@@ -188,7 +188,7 @@ def build_pre_run_payload(
 def build_post_run_payload(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     result: CoordinatorResult,
     run_id: str,
     duration_seconds: float,

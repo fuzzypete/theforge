@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.task import TaskStory
 
 from . import util as _cu
 from .gate import _run_gate
@@ -316,7 +316,7 @@ def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
 
 
 def _create_workspace(
-    config: ForgeConfig, task: TaskSpec
+    config: ForgeConfig, task: TaskStory
 ) -> tuple[Path | None, str | None, str | None]:
     """Create an isolated workspace. Returns (path, branch, error)."""
     slug = task.slug

@@ -46,7 +46,7 @@ from theforge.artifacts import (
 from theforge.config import ForgeConfig
 from theforge.sessions import save_sessions
 from theforge.task import (
-    TaskSpec,
+    TaskStory,
     build_handoff_fix_prompt,
     parse_plan_output,
 )
@@ -152,7 +152,7 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
 def _run_log_context(
     config: ForgeConfig,
     logger: StructuredLogger,
-    task: TaskSpec,
+    task: TaskStory,
     state: CoordinatorState,
     task_start: float,
 ) -> Generator[None, None, None]:
@@ -194,7 +194,7 @@ from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
 def _coordinator_loop(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     task_start: float,
     *,
@@ -400,7 +400,7 @@ def _coordinator_loop(
 
 def run_task(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     *,
     interactive: bool = False,
     auto_merge: bool = False,
@@ -710,7 +710,7 @@ def run_task(
 
 def _run_resume_coordinator(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     *,
     initial_phase: Phase,
@@ -771,7 +771,7 @@ def _run_resume_coordinator(
 
 def run_from_review(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     *,
     interactive: bool = False,
@@ -813,7 +813,7 @@ def run_from_review(
 
 def run_from_dev(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     *,
     interactive: bool = False,
@@ -855,7 +855,7 @@ def run_from_dev(
 
 def run_review_only(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     *,
     notify: bool = False,

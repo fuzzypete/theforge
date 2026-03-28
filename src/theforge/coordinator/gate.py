@@ -9,7 +9,7 @@ import yaml
 
 from theforge.artifacts import ensure_parent_dir, resolve_handoff_path
 from theforge.config import ForgeConfig
-from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.task import TaskStory
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -118,7 +118,7 @@ def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: st
 def _run_gate_full(
     config: ForgeConfig,
     workspace_path: Path,
-    task: TaskSpec | None = None,
+    task: TaskStory | None = None,
     iter_num: int | None = None,
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command and read the decision. Returns (decision, error, output_tail)."""
@@ -172,7 +172,7 @@ def _run_gate_full(
 
 
 def _run_gate(
-    config: ForgeConfig, workspace_path: Path, task: TaskSpec | None = None
+    config: ForgeConfig, workspace_path: Path, task: TaskStory | None = None
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command. Returns (decision, error, output_tail)."""
     return _run_gate_full(config, workspace_path, task)

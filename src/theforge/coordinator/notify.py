@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from theforge.artifacts import PLAN_PATH
 from theforge.config import ForgeConfig
 from theforge.review import ReviewResult
-from theforge.task import TaskStory as TaskSpec  # noqa: F401
+from theforge.task import TaskStory
 
 from . import util as _cu
 from .ntfy_client import _ntfy_publish
@@ -48,7 +48,7 @@ def _notify(title: str, body: str) -> None:
 
 
 def _escalate_notify(
-    task: "TaskSpec",
+    task: "TaskStory",
     state: "_cs.CoordinatorState",
     notify: bool,
     config: "ForgeConfig | None" = None,
@@ -104,7 +104,7 @@ def _escalate_notify(
 
 
 def _ntfy_crash_notify(
-    task: "TaskSpec",
+    task: "TaskStory",
     state: "_cs.CoordinatorState",
     config: "ForgeConfig",
     uptime_seconds: float,
@@ -132,7 +132,7 @@ def _ntfy_crash_notify(
 
 
 def _ntfy_done_notify(
-    task: "TaskSpec",
+    task: "TaskStory",
     state: "_cs.CoordinatorState",
     config: "ForgeConfig",
     notify: bool,
@@ -237,7 +237,7 @@ def _plan_review_interactive(
     state: "_cs.CoordinatorState",
     plan_text: str,
     workspace_path: "Path",
-    task: "TaskSpec",
+    task: "TaskStory",
 ) -> str:
     """Interactive plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
 

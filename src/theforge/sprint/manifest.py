@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 
 from ..coordinator.state import CoordinatorResult
-from ..task import TaskStory as TaskSpec  # noqa: F401
+from ..task import TaskStory
 
 
 @dataclass
@@ -111,7 +111,7 @@ def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[
     return resolved
 
 
-def _build_task_from_story(story_path: Path) -> TaskSpec:
+def _build_task_from_story(story_path: Path) -> TaskStory:
     """Build a TaskStory from a story file using frontmatter if available."""
     # Import here to avoid circular imports; cli._build_task is essentially the same logic
     text = story_path.read_text(encoding="utf-8")
@@ -135,7 +135,7 @@ def _build_task_from_story(story_path: Path) -> TaskSpec:
         depends_on = [str(d) for d in raw_deps]
     else:
         depends_on = []
-    return TaskSpec(
+    return TaskStory(
         name=name,
         story_path=story_path,
         slug=slug,

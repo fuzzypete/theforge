@@ -13,12 +13,11 @@ import pytest
 
 from theforge.daemon import (
     DaemonServer,
-    _append_crash_log,
-    _write_daemon_json,
-    install_launchd,
     is_daemon_running,
     stop_daemon,
 )
+from theforge.daemon_launchd import install_launchd
+from theforge.daemon_state import _append_crash_log, _write_daemon_json
 
 # ── Fixtures ───────────────────────────────────────────────────────────
 

@@ -11,20 +11,20 @@ import pytest
 
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.config import ModelProfile
+from theforge.runners.adapters.deepseek import _deepseek_client, _run_deepseek
+from theforge.runners.adapters.google import _make_google_adapter
+from theforge.runners.adapters.openai import _is_local_endpoint, _openai_result
 from theforge.runners.api import (
-    SUBMIT_PLAN_REVIEW,
-    SUBMIT_REVIEW,
     AgentLoopManager,
-    LoopTurn,
-    ToolCallRequest,
-    _deepseek_client,
-    _is_local_endpoint,
-    _is_reasoning_model,
-    _make_google_adapter,
-    _openai_result,
-    _run_deepseek,
     _run_loop_openai,
     run_api_agent,
+)
+from theforge.runners.schema_utils import (
+    SUBMIT_PLAN_REVIEW,
+    SUBMIT_REVIEW,
+    LoopTurn,
+    ToolCallRequest,
+    _is_reasoning_model,
 )
 from theforge.runners.tool_runtime import TOOL_REGISTRY
 
