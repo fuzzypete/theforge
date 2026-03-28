@@ -36,10 +36,10 @@ from theforge.coordinator.engine import (
     Phase,
     StructuredLogger,
     _fmt_duration,
-    _get_commit_log,
     generate_audit_log,
     run_task,
 )
+from theforge.coordinator.review_context import _get_commit_log
 from theforge.coordinator.state import CoordinatorState
 from theforge.coordinator.util import _generate_run_id
 from theforge.runners import AgentResult
