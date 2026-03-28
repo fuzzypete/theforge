@@ -31,6 +31,7 @@ from ..coordinator.workspace import _merge_branch
 from ..task import TaskStory as TaskSpec  # noqa: F401
 from .audit import _write_sprint_audit, _write_sprint_summary
 from .dag import StoryDAG, StoryTriage, _triage_spec, build_dag
+from .display import _print_worker_status, _story_header
 from .manifest import (
     SprintResult,
     _build_task_from_story,
@@ -41,13 +42,6 @@ from .manifest import (
 
 def _log(msg: str) -> None:
     print(f"[sprint] {msg}", file=sys.stderr, flush=True)
-
-
-def _story_header(idx: int, total: int, slug: str) -> str:
-    """Format a story header line: [N/total] slug ─────... (fills to 60 chars)."""
-    prefix = f"[{idx}/{total}] {slug} "
-    dashes = "─" * max(0, 60 - len(prefix))
-    return prefix + dashes
 
 
 def _read_prior_sprint_cost(project_root: Path) -> float:
@@ -159,29 +153,6 @@ def _make_worker_phase_fn(
                 outer_fn(updates)
 
     return _update
-
-
-def _print_worker_status(
-    active: "dict[str, Future[object]]",
-    worker_phases: dict[str, str],
-    dag: StoryDAG,
-    total: int,
-) -> None:
-    """Print one status line per active worker, plus a summary of waiting stories."""
-    if not active:
-        return
-    lines = []
-    for slug in sorted(active):
-        phase = worker_phases.get(slug, "RUNNING")
-        lines.append(f"  [{slug}] {phase}")
-    waiting = dag.remaining()
-    waiting_active = [t for t in waiting if t.slug not in active]
-    if waiting_active:
-        names = ", ".join(t.slug for t in waiting_active[:5])
-        suffix = f" (+{len(waiting_active) - 5} more)" if len(waiting_active) > 5 else ""
-        lines.append(f"  waiting: {names}{suffix}")
-    if lines:
-        print("\n".join(lines), file=sys.stderr, flush=True)
 
 
 def _classify_and_record(
