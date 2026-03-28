@@ -12,7 +12,6 @@ import time
 from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
-from types import ModuleType
 
 import yaml
 
@@ -79,6 +78,21 @@ from .state import (
 from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 
 _pr_log = logging.getLogger(__name__)
+
+# ── Lazy runner slot ──────────────────────────────────────────────────
+# None until first call; tests may replace before calling run_task.
+# Patch target: theforge.coordinator.phases.run_agent — dev agent call
+run_agent = None
+
+
+def _ensure_runners() -> None:
+    global run_agent
+    if run_agent is not None:
+        return
+    import theforge.runners as _r  # noqa: PLC0415
+
+    if run_agent is None:
+        run_agent = _r.run_agent
 
 
 def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
@@ -940,15 +954,13 @@ def _run_dev_phase(
     *,
     notify: bool,
     logger: StructuredLogger | None,
-    mod: ModuleType,
 ) -> CoordinatorResult | None:
     """Run one DEV iteration. Returns CoordinatorResult on budget escalation, else None.
 
     Caller must increment state.dev_iteration and _dev_calls_this_cycle before calling.
     Mutates state in-place (appends dev_results, updates dev_session_id, etc.).
-    ``mod`` is the engine module — resolves ``run_agent`` so that
-    ``patch('theforge.coordinator.engine.run_agent')`` intercepts the call in tests.
     """
+    _ensure_runners()
     _log_phase(
         state.phase,
         f"{config.dev_profile.model}  iter={state.dev_iteration}",
@@ -1049,7 +1061,7 @@ def _run_dev_phase(
     _dev_profile = _dc_replace(config.dev_profile, timeout_seconds=_dev_timeout)
 
     _dev_start = time.monotonic()
-    dev_result = mod.run_agent(
+    dev_result = run_agent(
         prompt=prompt,
         profile=_dev_profile,
         working_dir=workspace_path,
