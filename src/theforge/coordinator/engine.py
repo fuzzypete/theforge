@@ -60,8 +60,6 @@ from theforge.sessions import save_sessions
 from theforge.task import (  # noqa: F401
     TaskSpec,
     TaskStory,
-    build_dev_prompt,
-    build_fix_prompt,
     build_handoff_fix_prompt,
     build_plan_prompt,
     build_plan_review_prompt,
@@ -93,7 +91,6 @@ from .log_tee import (  # noqa: E402, F401
 from .logging import StructuredLogger  # noqa: F401
 from .notify import (  # noqa: F401
     _escalate_notify,
-    _human_review,
     _is_pending_file_mode,
     _is_remote_mode,
     _notify,
@@ -235,8 +232,6 @@ from .phases import (  # noqa: E402, F401  # noqa: E402
 from .review_context import (  # noqa: E402, F401
     _get_commit_log,
     _get_dev_notes,
-    _get_handoff_content,
-    _get_raw_dev_notes,
     _has_uncommitted_changes,
     _parse_dev_handoff,
 )
