@@ -81,18 +81,23 @@ _pr_log = logging.getLogger(__name__)
 
 # ── Lazy runner slot ──────────────────────────────────────────────────
 # None until first call; tests may replace before calling run_task.
-# Patch target: theforge.coordinator.phases.run_agent — dev agent call
+# Patch targets:
+#   theforge.coordinator.phases.run_agent        — dev agent call
+#   theforge.coordinator.phases.log_agent_result — dev result logging
 run_agent = None
+log_agent_result = None
 
 
 def _ensure_runners() -> None:
-    global run_agent
-    if run_agent is not None:
+    global run_agent, log_agent_result
+    if run_agent is not None and log_agent_result is not None:
         return
     import theforge.runners as _r  # noqa: PLC0415
 
     if run_agent is None:
         run_agent = _r.run_agent
+    if log_agent_result is None:
+        log_agent_result = _r.log_agent_result
 
 
 def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
@@ -1092,8 +1097,6 @@ def _run_dev_phase(
     state.dev_handoff_snapshots.append(_handoff_snap)
     state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
-    from theforge.runners import log_agent_result  # noqa: PLC0415
-
     log_agent_result(dev_result, "DEV")
     _dev_cost_str = (
         "${:.2f}".format(dev_result.cost_usd) if dev_result.cost_usd is not None else "unknown"
