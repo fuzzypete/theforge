@@ -158,7 +158,7 @@ from .workspace import (  # noqa: F401
 # Populated by _ensure_runners() at entry points.
 # engine.run_agent owns the handoff-fix retry path only.
 # Preflight: patch theforge.coordinator.preflight_flow.run_agent
-# DEV:       patch theforge.coordinator.phases.run_agent
+# DEV:       patch theforge.coordinator.dev_phase.run_agent
 run_agent = None
 run_agent_pool = None
 log_agent_result = None
@@ -219,25 +219,12 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
         return False, f"ERROR: {e}"
 
 
-# ── Commit log / handoff context (moved to review_context.py) ─────────
-# ── Phase handlers (extracted to coord_phases.py) ────────────────────
-from .phases import (  # noqa: E402, F401  # noqa: E402
-    _finalize_approve,
-    _ReviewOutcome,
-    _run_dev_phase,
-    _run_review_phase,
-    _run_validate_phase,
-    _ValidateOutcome,
-)
-from .review_context import (  # noqa: E402, F401
-    _get_commit_log,
-    _get_dev_notes,
-    _has_uncommitted_changes,
-    _parse_dev_handoff,
-)
-
-# ── Resume entry setup (moved to run_setup.py) ─────────────────────
-from .run_setup import _setup_resume_entry  # noqa: E402, F401
+# ── Phase handlers ────────────────────────────────────────────────────
+from .dev_phase import _run_dev_phase  # noqa: E402
+from .review_context import _parse_dev_handoff  # noqa: E402
+from .review_phase import _ReviewOutcome, _run_review_only_phase, _run_review_phase  # noqa: E402
+from .run_setup import _setup_resume_entry  # noqa: E402
+from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
 
 
 def _coordinator_loop(
@@ -1001,8 +988,6 @@ def run_review_only(
     state.branch_name = branch_name
 
     story_content = load_spec(task.story_path)
-
-    from .phases import _run_review_only_phase  # noqa: PLC0415
 
     return _run_review_only_phase(
         state,
