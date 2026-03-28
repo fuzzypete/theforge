@@ -261,6 +261,213 @@ class _ReviewOutcome(Enum):
     RETRY_DEV = auto()
 
 
+# ── Review-phase helpers ──────────────────────────────────────────────
+
+
+def _apply_review_parse_fallback(
+    candidate: ReviewResult,
+    individual_results: list[ReviewResult],
+) -> ReviewResult:
+    """Fall back from a merged candidate with parse errors to best individual or synthetic P1."""
+    if not candidate.parse_errors:
+        return candidate
+    _log(
+        f"  ⚠ review merge produced parse errors — falling back to best individual result "
+        f"({len(individual_results)} reviewer(s) with valid output)"
+    )
+    _fallback = _best_individual_result(individual_results)
+    if _fallback is not None:
+        _log(f"  ↩ using best individual result: {_fallback.verdict}")
+        return _fallback
+    _log(
+        "  ⚠ all reviewers failed to produce usable output — "
+        "injecting synthetic P1, returning REQUEST_CHANGES"
+    )
+    return ReviewResult(
+        verdict="REQUEST_CHANGES",
+        summary="Review pool failed to produce a usable verdict",
+        findings=[
+            ReviewFinding(
+                severity="P1",
+                file="",
+                line=None,
+                description=(
+                    "All reviewers failed to produce parseable output. Manual review required."
+                ),
+                suggestion="Check reviewer logs for details.",
+            )
+        ],
+        story_matches=False,
+        story_mismatches=[],
+        test_adequate=False,
+        test_gaps=[],
+        parse_errors=[],
+        raw_yaml={},
+    )
+
+
+def _log_review_findings(
+    parsed_review: ReviewResult,
+    p1_count: int,
+    p2_count: int,
+    review_cost: float,
+    logger: StructuredLogger | None,
+) -> None:
+    """Log review summary and findings grouped by severity; emit structured review_result event."""
+    _log(f"  Summary: {parsed_review.summary}")
+    _findings_by_sev: dict[str, list] = {}
+    for _f in parsed_review.findings:
+        _findings_by_sev.setdefault(_f.severity, []).append(_f)
+    for _sev in sorted(_findings_by_sev):
+        for _f in _findings_by_sev[_sev]:
+            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
+            _log(f"  [{_sev}]{_loc} {_f.description}")
+    if logger:
+        logger._safe_emit(
+            "review_result",
+            verdict=parsed_review.verdict,
+            p1_count=p1_count,
+            p2_count=p2_count,
+            cost_usd=round(review_cost, 6),
+        )
+
+
+def _handle_interactive_review_decision(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskSpec,
+    parsed_review: ReviewResult,
+    workspace_path: Path,
+    branch_name: str,
+    task_start: float,
+    *,
+    auto_merge: bool,
+    notify: bool,
+    review_cost: float,
+    review_elapsed: float,
+    run_id: str,
+    exhausted_cycles: bool,
+) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
+    """Handle the HUMAN_REVIEW decision flow for an interactive session.
+
+    Called from the APPROVE path (exhausted_cycles=False) and the exhausted-cycles
+    REQUEST_CHANGES path (exhausted_cycles=True).  Dispatches to the right backend
+    (pending-file / remote / terminal) and maps the human decision to a coordinator
+    outcome.
+    """
+    state.phase = Phase.HUMAN_REVIEW
+    _log_phase(state.phase, "cycles exhausted" if exhausted_cycles else "")
+    if _is_pending_file_mode(notify, config):
+        decision, feedback = _pending_human_review(
+            state,
+            parsed_review,
+            workspace_path,
+            branch_name,
+            task,
+            config,
+            task_start,
+            run_id=run_id,
+        )
+    elif _is_remote_mode(notify, config):
+        decision, feedback = _remote_human_review(
+            state, parsed_review, workspace_path, branch_name, task, config, task_start
+        )
+    else:
+        decision, feedback = _human_review(state, parsed_review, workspace_path, branch_name)
+    state.human_review_decision = decision
+    state.human_review_feedback = feedback
+
+    if decision == "approve":
+        _append_cycle_history(state, parsed_review)
+        if exhausted_cycles:
+            _approve_msg = (
+                f"Task '{task.name}' completed. "
+                f"Human approved after {state.review_cycle} cycle(s). "
+            )
+        else:
+            _approve_msg = (
+                f"Task '{task.name}' completed. "
+                f"Human approved after {state.review_cycle} cycle(s), "
+                f"{state.dev_iteration} dev iteration(s). "
+            )
+        return (
+            _ReviewOutcome.DONE,
+            _finalize_approve(
+                state,
+                config,
+                task,
+                parsed_review,
+                workspace_path,
+                branch_name,
+                task_start,
+                auto_merge=auto_merge,
+                notify=notify,
+                logger=None,
+                review_cost=review_cost,
+                review_elapsed=review_elapsed,
+                message=_approve_msg,
+                run_id=run_id,
+            ),
+            config,
+        )
+
+    if decision in ("escalate", "timeout"):
+        state.phase = Phase.ESCALATE
+        if decision == "timeout":
+            state.error = "Remote review timed out — auto-escalated."
+        elif exhausted_cycles:
+            state.error = "Human chose to escalate after exhausted cycles."
+        else:
+            state.error = "Human chose to escalate after APPROVE."
+        _log(f"✗ ESCALATE   {state.error}")
+        _escalate_notify(task, state, notify, config)
+        return (
+            _ReviewOutcome.ESCALATE,
+            CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            ),
+            config,
+        )
+
+    if decision == "extend":
+        _append_cycle_history(state, parsed_review)
+        state.dev_iteration = 0
+        state.review_cycle = 0
+        state.human_review_extra_cycles += 1
+        state.last_review_findings = (
+            review_to_dev_handoff(parsed_review) if parsed_review.findings else None
+        )
+        state.human_feedback = None
+        state.retry_reason = "extend"
+        _log(
+            f"Human extended — granting fresh budget "
+            f"(extra_cycles={state.human_review_extra_cycles})"
+        )
+        return _ReviewOutcome.RETRY_DEV, None, config
+
+    # decision == "reject"
+    _append_cycle_history(state, parsed_review)
+    state.dev_iteration = 0
+    state.last_review_findings = None
+    state.retry_reason = "reject"
+    if exhausted_cycles:
+        # Treat as extend + reject: grant fresh budget
+        state.review_cycle = 0
+        state.human_review_extra_cycles += 1
+        state.human_feedback = feedback
+        _log(
+            "Human rejected (cycles exhausted) — granting fresh budget "
+            f"(extra_cycles={state.human_review_extra_cycles})"
+        )
+    else:
+        state.human_feedback = feedback
+        _log("Human rejected — looping back to dev with feedback")
+    return _ReviewOutcome.RETRY_DEV, None, config
+
+
 def _run_review_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -335,45 +542,8 @@ def _run_review_phase(
         # Gate said "continue" — re-enter REVIEW (review_cycle not incremented here)
         return _ReviewOutcome.RETRY_DEV, None, config
 
-    parsed_review = _candidate
-
     # ── Graceful empty-merge fallback ─────────────────────────────────
-    if parsed_review.parse_errors:
-        _log(
-            f"  ⚠ review merge produced parse errors — falling back to best individual result "
-            f"({len(_individual_results)} reviewer(s) with valid output)"
-        )
-        _fallback = _best_individual_result(_individual_results)
-        if _fallback is not None:
-            _log(f"  ↩ using best individual result: {_fallback.verdict}")
-            parsed_review = _fallback
-        else:
-            _log(
-                "  ⚠ all reviewers failed to produce usable output — "
-                "injecting synthetic P1, returning REQUEST_CHANGES"
-            )
-            parsed_review = ReviewResult(
-                verdict="REQUEST_CHANGES",
-                summary="Review pool failed to produce a usable verdict",
-                findings=[
-                    ReviewFinding(
-                        severity="P1",
-                        file="",
-                        line=None,
-                        description=(
-                            "All reviewers failed to produce parseable output. "
-                            "Manual review required."
-                        ),
-                        suggestion="Check reviewer logs for details.",
-                    )
-                ],
-                story_matches=False,
-                story_mismatches=[],
-                test_adequate=False,
-                test_gaps=[],
-                parse_errors=[],
-                raw_yaml={},
-            )
+    parsed_review = _apply_review_parse_fallback(_candidate, _individual_results)
 
     # Valid verdict — increment review cycle counter
     state.review_cycle += 1
@@ -411,23 +581,7 @@ def _run_review_phase(
         _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
 
-    _log(f"  Summary: {parsed_review.summary}")
-    # Log findings grouped by severity
-    _findings_by_sev: dict[str, list] = {}
-    for _f in parsed_review.findings:
-        _findings_by_sev.setdefault(_f.severity, []).append(_f)
-    for _sev in sorted(_findings_by_sev):
-        for _f in _findings_by_sev[_sev]:
-            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
-            _log(f"  [{_sev}]{_loc} {_f.description}")
-    if logger:
-        logger._safe_emit(
-            "review_result",
-            verdict=parsed_review.verdict,
-            p1_count=_p1_count,
-            p2_count=_p2_count,
-            cost_usd=round(_review_cost, 6),
-        )
+    _log_review_findings(parsed_review, _p1_count, _p2_count, _review_cost, logger)
 
     # ── APPROVE (or disposition-gated pass) ─────────────────────────
     # The coordinator makes the blocking decision independently of the synthesized verdict.
@@ -450,97 +604,21 @@ def _run_review_phase(
             f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
         )
         if interactive:
-            state.phase = Phase.HUMAN_REVIEW
-            _log_phase(state.phase)
-            if _is_pending_file_mode(notify, config):
-                decision, feedback = _pending_human_review(
-                    state,
-                    parsed_review,
-                    workspace_path,
-                    branch_name,
-                    task,
-                    config,
-                    task_start,
-                    run_id=run_id,
-                )
-            elif _is_remote_mode(notify, config):
-                decision, feedback = _remote_human_review(
-                    state, parsed_review, workspace_path, branch_name, task, config, task_start
-                )
-            else:
-                decision, feedback = _human_review(
-                    state, parsed_review, workspace_path, branch_name
-                )
-            state.human_review_decision = decision
-            state.human_review_feedback = feedback
-            if decision == "approve":
-                _append_cycle_history(state, parsed_review)
-                return (
-                    _ReviewOutcome.DONE,
-                    _finalize_approve(
-                        state,
-                        config,
-                        task,
-                        parsed_review,
-                        workspace_path,
-                        branch_name,
-                        task_start,
-                        auto_merge=auto_merge,
-                        notify=notify,
-                        logger=None,
-                        review_cost=_review_cost,
-                        review_elapsed=_review_elapsed,
-                        message=(
-                            f"Task '{task.name}' completed. "
-                            f"Human approved after {state.review_cycle} cycle(s), "
-                            f"{state.dev_iteration} dev iteration(s). "
-                        ),
-                        run_id=run_id,
-                    ),
-                    config,
-                )
-            if decision in ("escalate", "timeout"):
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    "Remote review timed out — auto-escalated."
-                    if decision == "timeout"
-                    else "Human chose to escalate after APPROVE."
-                )
-                _log(f"✗ ESCALATE   {state.error}")
-                _escalate_notify(task, state, notify, config)
-                return (
-                    _ReviewOutcome.ESCALATE,
-                    CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    ),
-                    config,
-                )
-            if decision == "extend":
-                _append_cycle_history(state, parsed_review)
-                state.dev_iteration = 0
-                state.review_cycle = 0
-                state.human_review_extra_cycles += 1
-                state.last_review_findings = (
-                    review_to_dev_handoff(parsed_review) if parsed_review.findings else None
-                )
-                state.human_feedback = None
-                state.retry_reason = "extend"
-                _log(
-                    f"Human extended — granting fresh budget "
-                    f"(extra_cycles={state.human_review_extra_cycles})"
-                )
-                return _ReviewOutcome.RETRY_DEV, None, config
-            # decision == "reject"
-            _append_cycle_history(state, parsed_review)
-            state.human_feedback = feedback
-            state.last_review_findings = None
-            state.retry_reason = "reject"
-            state.dev_iteration = 0
-            _log("Human rejected — looping back to dev with feedback")
-            return _ReviewOutcome.RETRY_DEV, None, config
+            return _handle_interactive_review_decision(
+                state,
+                config,
+                task,
+                parsed_review,
+                workspace_path,
+                branch_name,
+                task_start,
+                auto_merge=auto_merge,
+                notify=notify,
+                review_cost=_review_cost,
+                review_elapsed=_review_elapsed,
+                run_id=run_id,
+                exhausted_cycles=False,
+            )
         else:
             _append_cycle_history(state, parsed_review)
             return (
@@ -618,99 +696,21 @@ def _run_review_phase(
 
     if state.review_cycle >= config.retry.max_review_cycles:
         if interactive:
-            state.phase = Phase.HUMAN_REVIEW
-            _log_phase(state.phase, "cycles exhausted")
-            if _is_pending_file_mode(notify, config):
-                decision, feedback = _pending_human_review(
-                    state,
-                    parsed_review,
-                    workspace_path,
-                    branch_name,
-                    task,
-                    config,
-                    task_start,
-                    run_id=run_id,
-                )
-            elif _is_remote_mode(notify, config):
-                decision, feedback = _remote_human_review(
-                    state, parsed_review, workspace_path, branch_name, task, config, task_start
-                )
-            else:
-                decision, feedback = _human_review(
-                    state, parsed_review, workspace_path, branch_name
-                )
-            state.human_review_decision = decision
-            state.human_review_feedback = feedback
-            if decision == "approve":
-                _append_cycle_history(state, parsed_review)
-                return (
-                    _ReviewOutcome.DONE,
-                    _finalize_approve(
-                        state,
-                        config,
-                        task,
-                        parsed_review,
-                        workspace_path,
-                        branch_name,
-                        task_start,
-                        auto_merge=auto_merge,
-                        notify=notify,
-                        logger=None,
-                        review_cost=_review_cost,
-                        review_elapsed=_review_elapsed,
-                        message=(
-                            f"Task '{task.name}' completed. "
-                            f"Human approved after {state.review_cycle} cycle(s). "
-                        ),
-                        run_id=run_id,
-                    ),
-                    config,
-                )
-            if decision in ("escalate", "timeout"):
-                state.phase = Phase.ESCALATE
-                state.error = (
-                    "Remote review timed out — auto-escalated."
-                    if decision == "timeout"
-                    else "Human chose to escalate after exhausted cycles."
-                )
-                _log(f"✗ ESCALATE   {state.error}")
-                _escalate_notify(task, state, notify, config)
-                return (
-                    _ReviewOutcome.ESCALATE,
-                    CoordinatorResult(
-                        success=False,
-                        phase=state.phase,
-                        state=state,
-                        message=state.error,
-                    ),
-                    config,
-                )
-            if decision == "extend":
-                _append_cycle_history(state, parsed_review)
-                state.dev_iteration = 0
-                state.review_cycle = 0
-                state.human_review_extra_cycles += 1
-                state.last_review_findings = review_to_dev_handoff(parsed_review)
-                state.human_feedback = None
-                state.retry_reason = "extend"
-                _log(
-                    f"Human extended — granting fresh budget "
-                    f"(extra_cycles={state.human_review_extra_cycles})"
-                )
-                return _ReviewOutcome.RETRY_DEV, None, config
-            # decision == "reject" — cycles exhausted: treat as extend + reject
-            _append_cycle_history(state, parsed_review)
-            state.dev_iteration = 0
-            state.review_cycle = 0
-            state.human_review_extra_cycles += 1
-            state.human_feedback = feedback
-            state.last_review_findings = None
-            state.retry_reason = "reject"
-            _log(
-                "Human rejected (cycles exhausted) — granting fresh budget "
-                f"(extra_cycles={state.human_review_extra_cycles})"
+            return _handle_interactive_review_decision(
+                state,
+                config,
+                task,
+                parsed_review,
+                workspace_path,
+                branch_name,
+                task_start,
+                auto_merge=auto_merge,
+                notify=notify,
+                review_cost=_review_cost,
+                review_elapsed=_review_elapsed,
+                run_id=run_id,
+                exhausted_cycles=True,
             )
-            return _ReviewOutcome.RETRY_DEV, None, config
         else:
             state.phase = Phase.ESCALATE
             state.error = (
@@ -1280,26 +1280,10 @@ def _run_review_only_phase(
 
     _ro_p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     _ro_p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
-
-    _log(f"  Summary: {parsed_review.summary}")
-    _ro_findings_by_sev: dict[str, list] = {}
-    for _f in parsed_review.findings:
-        _ro_findings_by_sev.setdefault(_f.severity, []).append(_f)
-    for _sev in sorted(_ro_findings_by_sev):
-        for _f in _ro_findings_by_sev[_sev]:
-            _loc = f" [{_f.file}:{_f.line}]" if _f.file else ""
-            _log(f"  [{_sev}]{_loc} {_f.description}")
     _ro_cost = sum(r.cost_usd or 0.0 for r in state.review_agent_results)
     _ro_elapsed = _pool_elapsed
 
-    if logger:
-        logger._safe_emit(
-            "review_result",
-            verdict=parsed_review.verdict,
-            p1_count=_ro_p1,
-            p2_count=_ro_p2,
-            cost_usd=round(_ro_cost, 6),
-        )
+    _log_review_findings(parsed_review, _ro_p1, _ro_p2, _ro_cost, logger)
 
     if parsed_review.verdict == "APPROVE":
         state.phase = Phase.DONE
