@@ -11,9 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from ..artifacts import AUDIT_PATH, ensure_parent_dir
 from ..config import ForgeConfig
-from ..coordinator.audit import generate_audit_log
 from ..coordinator.engine import (
     CoordinatorResult,
     CoordinatorState,
@@ -29,7 +27,7 @@ from ..coordinator.engine import (
 )
 from ..coordinator.workspace import _merge_branch
 from ..task import TaskStory as TaskSpec  # noqa: F401
-from .audit import _write_sprint_audit, _write_sprint_summary
+from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .dag import StoryDAG, StoryTriage, _triage_spec, build_dag
 from .display import _print_worker_status, _story_header
 from .manifest import (
@@ -466,27 +464,7 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                # Write per-spec audit to worktree for diagnostics
-                workspace_path = config.project_root / config.workspace.path_pattern.format(
-                    slug=slug
-                )
-                if workspace_path.exists():
-                    audit_data = generate_audit_log(config, task, result)
-                    audit_path = workspace_path / AUDIT_PATH
-                    ensure_parent_dir(audit_path)
-                    with open(audit_path, "w", encoding="utf-8") as f:
-                        yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
-                    _log(f"Per-story audit written: {audit_path}")
-                # Copy audit to durable per-story log dir
-                if result.state.log_dir is not None:
-                    try:
-                        audit_data = generate_audit_log(config, task, result)
-                        _story_audit_path = result.state.log_dir / "audit.yaml"
-                        _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
-                        with open(_story_audit_path, "w", encoding="utf-8") as f:
-                            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
-                    except Exception:
-                        pass  # best-effort
+                _write_story_audit(config, task, result)
 
                 spec_cost = result.state.total_cost
                 icon = "✓" if result.success else "✗"
