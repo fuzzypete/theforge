@@ -1,30 +1,43 @@
 dev_notes: |
-  summary: "Split all 14 test files that exceeded 1000 lines into 2-4 focused sub-files grouped by test class. Promoted the four shared runner fixtures (dev_profile, review_profile, codex_profile, gemini_profile) from test_runner.py to conftest.py. Small helper functions (~10-20 lines) were duplicated into each sub-file that needed them rather than adding a shared module. test_coord_preflight_plan.py was initially 1005 lines after the split; the last three test classes were moved to a fourth file test_coord_preflight_cycle.py to bring all files under the 1000-line limit. E402 lint errors from docstrings placed after from __future__ import annotations were fixed by reordering. Baseline test count 1423 is preserved exactly."
+  summary: "The bug was a missing stop_phase guard in run_task() (engine.py). After
+  _run_plan_phase() returns None, the code went directly into _coordinator_loop()
+  without checking stop_phase. The fix adds a single guard: if stop_phase is not
+  None and stop_phase.value <= Phase.PLAN_REVIEW.value, return a successful
+  CoordinatorResult before _coordinator_loop is entered. Two unit tests were added
+  to TestUntilPhaseStop. In the review cycle, codex-reviewer flagged that
+  test_until_plan_stops_before_dev was not hermetic: PREFLIGHT_PROCEED_MEDIUM
+  triggers story validation in _run_plan_phase before the plan agent, but the test
+  did not patch theforge.story_validator.validate_story, so it could reach the real
+  runner and hang. Fixed by adding @patch('theforge.story_validator.validate_story')
+  returning StoryValidationResult(verdict='PASS'). Test now completes in 0.06s."
   commits:
-    - sha: "c4649f8"
-      message: "refactor(tests): split 14 oversized test files — max 1000 lines per file"
+    - sha: "62e589c"
+      message: "fix(coordinator): stop pipeline before DEV when --until plan/plan-review is passed"
+    - sha: "2b3ca0b"
+      message: "fix(tests): patch story_validator in test_until_plan_stops_before_dev"
   acceptance_criteria:
-    - criterion: "No test file in tests/ exceeds 1000 lines"
+    - criterion: "forge run <story> --until plan exits after PLAN_REVIEW completes and before DEV starts. Exit code is 0."
       status: MET
-      notes: "Largest file is test_coord_plan_flow_agent.py at 960 lines. wc -l confirmed no file exceeds 1000."
-    - criterion: "make test passes with the same total test count"
+      notes: "Guard added in engine.py after _run_plan_phase returns None. DEV is never entered. Returns success=True."
+    - criterion: "forge run <story> --until plan-review behaves identically to --until plan."
       status: MET
-      notes: "1423 passed before and after splits. Gate: 1423 passed in 157s."
-    - criterion: "make lint passes"
+      notes: "Both Phase.PLAN (value 4) and Phase.PLAN_REVIEW (value 5) satisfy stop_phase.value <= Phase.PLAN_REVIEW.value. Same code path."
+    - criterion: "forge run <story> --until dev still enters DEV and stops before VALIDATE, as before."
       status: MET
-      notes: "Fixed E402 errors (docstrings after from __future__) in 20 files and E501 errors (lines >99 chars) in 4 docstrings. make lint: All checks passed."
-    - criterion: "Every new test file passes when run in isolation with pytest tests/<filename> -v"
+      notes: "The existing stop_phase gate in _coordinator_loop fires for Phase.DEV (6 <= 7). DEV runs, REVIEW does not. Regression test confirms."
+    - criterion: "forge run <story> --until validate still enters VALIDATE and stops before REVIEW, as before."
       status: MET
-      notes: "All 36 new split files were run in 3 batches via pytest isolation checks. All passed: 121 + 175 + 591 = 887 tests across new files."
-    - criterion: "No test logic is duplicated — each test exists in exactly one file"
+      notes: "No change to _coordinator_loop. Existing test test_until_validate_stops_after_validate still passes."
+    - criterion: "Unit test covers --until plan case: coordinator returns before DEV is invoked, with phase == Phase.PLAN_REVIEW (or Phase.PLAN when plan review is disabled) and success == True."
       status: MET
-      notes: "Each test class was placed in exactly one new file. Small factory helper functions (~10-20 lines) were duplicated where needed; these are not test logic (no assertions)."
-    - criterion: "Shared fixtures remain in conftest.py or a single canonical location"
+      notes: "test_until_plan_stops_before_dev now patches theforge.story_validator.validate_story to return PASS, making the test fully hermetic. Asserts phase==Phase.PLAN, success==True, dev_iteration==0, mock_dev_agent not called. Runs in 0.06s."
+    - criterion: "Unit test covers --until dev to guard against regression."
       status: MET
-      notes: "dev_profile, review_profile, codex_profile, gemini_profile moved to conftest.py. review_task fixture kept in test_task_review.py as its single canonical location."
-  story_deviations:
-    - description: "Added a 4th preflight sub-file (test_coord_preflight_cycle.py) beyond the 3 suggested in the spec"
-      justification: "test_coord_preflight_plan.py landed at 1005 lines after the initial 3-way split. The three classes moved (TestApprovePathCycleHistory, TestEscalationNoteOnRejectPath, TestAlreadyDoneOverride) are thematically coherent cycle/override tests."
+      notes: "test_until_dev_stops_before_review asserts dev_trace_count==1 and mock_pool not called."
+    - criterion: "All existing tests pass."
+      status: MET
+      notes: "1425 passed in 86.85s (iter 1 gate will re-verify)."
+  story_deviations: none
   deferred_items: none
   gate_result: PASS
 gate_decision: PASS

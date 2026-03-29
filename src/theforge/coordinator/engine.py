@@ -652,6 +652,15 @@ def run_task(
         if _plan_result is not None:
             return _plan_result
 
+        # ── stop_phase gate: stop before entering DEV ─────────────────
+        if stop_phase is not None and stop_phase.value <= Phase.PLAN_REVIEW.value:
+            return CoordinatorResult(
+                success=True,
+                phase=state.phase,
+                state=state,
+                message=f"Stopped at --until {stop_phase.name.lower()}",
+            )
+
         # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
         result = _coordinator_loop(
             state,
