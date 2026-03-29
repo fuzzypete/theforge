@@ -8,7 +8,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.task import TaskStory as TaskSpec
+from theforge.task import TaskStory
 
 from . import util as _cu
 from .gate import _is_gate_skip, _run_gate_full
@@ -28,7 +28,7 @@ class _ValidateOutcome(Enum):
 def _run_validate_phase(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     dev_calls_this_cycle: int,
     *,

@@ -11,7 +11,7 @@ from . import util as _cu
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
     from theforge.review import ReviewResult
-    from theforge.task import TaskStory as TaskSpec
+    from theforge.task import TaskStory
 
     from . import state as _cs
 
@@ -21,7 +21,7 @@ def _pending_human_review(
     parsed_review: "ReviewResult",
     workspace_path: "Path",
     branch_name: str,
-    task: "TaskSpec",
+    task: "TaskStory",
     config: "ForgeConfig",
     task_start: float,
     run_id: str = "",
@@ -92,7 +92,7 @@ def _pending_human_review(
 
 def _pending_escalate_gate(
     state: "_cs.CoordinatorState",
-    task: "TaskSpec",
+    task: "TaskStory",
     config: "ForgeConfig",
     escalate_reason: str,
     reviewer_verdicts: dict[str, str],
@@ -160,7 +160,7 @@ def _pending_plan_review(
     state: "_cs.CoordinatorState",
     plan_text: str,
     workspace_path: "Path",
-    task: "TaskSpec",
+    task: "TaskStory",
     config: "ForgeConfig",
     run_id: str = "",
 ) -> str:

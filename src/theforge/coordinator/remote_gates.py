@@ -19,14 +19,14 @@ from .ntfy_client import (
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
     from theforge.review import ReviewResult
-    from theforge.task import TaskStory as TaskSpec
+    from theforge.task import TaskStory
 
     from . import state as _cs
 
 
 def _escalate_gate_remote(
     state: "_cs.CoordinatorState",
-    task: "TaskSpec",
+    task: "TaskStory",
     config: "ForgeConfig",
     escalate_reason: str,
     reviewer_verdicts: dict[str, str],
@@ -90,7 +90,7 @@ def _plan_review_remote(
     state: "_cs.CoordinatorState",
     plan_text: str,
     workspace_path: "Path",
-    task: "TaskSpec",
+    task: "TaskStory",
     config: "ForgeConfig",
 ) -> str:
     """Ntfy-backed remote plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
@@ -171,7 +171,7 @@ def _remote_human_review(
     parsed_review: "ReviewResult",
     workspace_path: "Path",
     branch_name: str,
-    task: "TaskSpec",
+    task: "TaskStory",
     config: "ForgeConfig",
     task_start: float,
 ) -> tuple[str, str | None]:

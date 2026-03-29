@@ -11,8 +11,7 @@ import yaml
 
 from theforge.config import ForgeConfig
 from theforge.sessions import save_sessions
-from theforge.task import TaskStory as TaskSpec
-from theforge.task import build_dev_prompt, build_fix_prompt
+from theforge.task import TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
 
 from .gate import _is_gate_skip
@@ -45,7 +44,7 @@ def _ensure_runners() -> None:
 def _run_dev_phase(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     branch_name: str,
