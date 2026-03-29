@@ -8,7 +8,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from coord_test_helpers import _shell_with_gate
+from coord_test_helpers import (
+    PREFLIGHT_PROCEED_MEDIUM,
+    _make_plan_config,
+    _shell_with_gate,
+)
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -709,6 +713,62 @@ class TestUntilPhaseStop:
         assert result.phase == Phase.REVIEW
         # Only one DEV call — did not loop back (dev_iteration resets after review)
         assert result.state.dev_trace_count == 1
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_until_plan_stops_before_dev(
+        self, mock_shell, mock_dev_agent, mock_plan_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """--until plan: run PREFLIGHT+PLAN, then stop before DEV."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_plan_agent.return_value = _make_agent_result(
+            success=True, output="# Plan\n\n- step 1", cost_usd=0.10
+        )
+
+        result = run_task(config, task, stop_phase=Phase.PLAN)
+
+        assert result.success is True
+        assert result.phase == Phase.PLAN
+        assert "Stopped at --until plan" in result.message
+        # DEV must NOT have been invoked
+        assert result.state.dev_iteration == 0
+        mock_dev_agent.assert_not_called()
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_until_dev_stops_before_review(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """--until dev: run DEV+VALIDATE, then stop before REVIEW."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        result = run_task(config, task, stop_phase=Phase.DEV)
+
+        assert result.success is True
+        assert result.state.dev_trace_count == 1
+        # REVIEW must NOT have been invoked
+        mock_pool.assert_not_called()
 
 
 class TestFromPhaseSkip:
