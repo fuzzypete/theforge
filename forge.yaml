@@ -65,8 +65,8 @@ profiles:
 # Plan uses opus — deliberate choice
 plan:
   enabled: true
-  model: claude
-  model_name: opus
+  cli: claude
+  model: opus
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
