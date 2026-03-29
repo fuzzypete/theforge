@@ -8,6 +8,24 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_log_level():
+    """Prevent log-level mutations from leaking across tests.
+
+    Resets both the top-level theforge.log_level._LOG_LEVEL global and the
+    separate copy in theforge.coordinator.util (which has its own module-level
+    _LOG_LEVEL that coordinator code reads directly).
+    """
+    import theforge.coordinator.util as _cu_mod
+    import theforge.log_level as _ll_mod
+
+    original_ll = _ll_mod._LOG_LEVEL
+    original_cu = _cu_mod._LOG_LEVEL
+    yield
+    _ll_mod.set_log_level(original_ll)
+    _cu_mod.set_log_level(original_cu)
+
+
+@pytest.fixture(autouse=True)
 def _block_real_notifications():
     """Prevent any test from firing real OS or ntfy notifications.
 
