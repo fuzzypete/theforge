@@ -1,18 +1,41 @@
 dev_notes: |
-  summary: "Added an exclude_model parameter to _select_reviewers() in assignment.py.
-  When called for plan reviewers, the planner's model is passed as exclude_model so
-  any agent using the same model is removed from the candidate pool before selection.
-  If exclusion would leave no candidates (single-model pool), the full pool is used
-  as a fallback. The call site at lines 446-451 extracts planner_profile.model and
-  passes it. Three unit tests were added covering: normal exclusion, cross-provider
-  exclusion, and the single-model fallback case."
+  summary: >
+    Introduced per-story flock-based concurrency guard to prevent double-spending
+    when two sprint launches target the same stories. A new `sprint/lock.py` module
+    creates `.forge/locks/<slug>.lock` files and acquires `fcntl.flock(LOCK_EX|LOCK_NB)`
+    on each. `cli/sprint.py` calls `acquire_story_locks` before daemonize so the parent
+    gets immediate conflict feedback; the grandchild inherits held fds through the
+    double-fork. The `--detach` path releases locks before daemon submission (the daemon
+    re-acquires). `daemon.py`'s `_execute_sprint` acquires locks with try/finally for
+    cleanup; `_run_loop` catches `SprintConflictError` and records `conflict_refused`
+    outcome rather than `crashed`. A `parse_manifest_slugs` helper was added to
+    `runner.py` for lightweight slug extraction without raising on empty/invalid manifests,
+    keeping pre-existing tests with empty story lists unaffected. 11 new tests cover unit
+    locking, cross-process conflict detection, rollback-on-partial-conflict, and
+    cmd_sprint integration.
   commits:
-    - sha: "9181bf5"
-      message: "feat(assignment): exclude planner model from plan reviewer pool"
+    - sha: "732fd1b"
+      message: "feat(sprint): add per-story flock-based concurrency guard"
   acceptance_criteria:
-    - criterion: "The plan review pool excludes or deprioritizes the same model that produced the plan."
+    - criterion: "Sprint launch detects if any of its stories already have active worktrees"
       status: MET
-      notes: "Candidates with model == planner_profile.model are filtered out before selection. Falls back to full pool only when no other candidates exist."
+      notes: >
+        parse_manifest_slugs extracts slugs then acquire_story_locks checks for
+        LOCK_EX|LOCK_NB conflicts. A story is "active" if its lock file is held by a
+        live process — flock is released automatically by the OS on process death, so
+        stale locks from killed processes are never a problem.
+    - criterion: "Sprint refuses to start when conflict is detected"
+      status: MET
+      notes: >
+        cmd_sprint returns exit 1 before daemonize is called. The daemon path raises
+        SprintConflictError in _execute_sprint, preventing run_sprint from being called.
+        Whole-sprint abort was chosen per the spec's "refuses to start" language.
+    - criterion: "User is told which stories are already running when a conflict is detected"
+      status: MET
+      notes: >
+        cli/sprint.py prints "[forge] Stories already running: <slug1>, <slug2>. Aborting."
+        to stderr. daemon.py prints "[daemon] Sprint '<slug>' refused: stories already
+        running: <slugs>" to stdout and records conflicting_slugs in the completed entry.
   story_deviations: none
   deferred_items: none
   gate_result: PASS

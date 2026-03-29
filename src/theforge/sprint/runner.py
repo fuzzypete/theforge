@@ -48,6 +48,36 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
         return 0.0
 
 
+def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
+    """Extract story slugs from a sprint manifest without full validation.
+
+    Returns an empty list if the manifest cannot be parsed or has no stories.
+    Used for pre-launch conflict detection — does not raise on invalid manifests.
+    """
+    try:
+        with open(manifest_path, encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        if not isinstance(raw, dict):
+            return []
+        stories = raw.get("stories") or raw.get("specs") or []
+        if not isinstance(stories, list):
+            return []
+        slugs: list[str] = []
+        for spec_str in stories:
+            if not isinstance(spec_str, str):
+                continue
+            story_path = (config.project_root / spec_str).resolve()
+            if story_path.exists():
+                task = _build_task_from_story(story_path)
+                slugs.append(task.slug)
+            else:
+                # Fallback: use file stem as slug
+                slugs.append(Path(spec_str).stem)
+        return slugs
+    except Exception:
+        return []
+
+
 def _run_single_story(
     config: ForgeConfig,
     task: TaskStory,

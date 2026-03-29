@@ -36,6 +36,7 @@ from theforge.daemon_state import (
     _write_daemon_json,
     is_daemon_running,
 )
+from theforge.sprint.lock import SprintConflictError
 
 if TYPE_CHECKING:
     from .config import ForgeConfig
@@ -214,6 +215,21 @@ class DaemonServer:
                         "duration_s": round(elapsed, 1),
                         "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                     }
+                except SprintConflictError as exc:
+                    elapsed = time.monotonic() - _run_start
+                    print(
+                        f"[daemon] Sprint '{slug}' refused: stories already running:"
+                        f" {', '.join(exc.conflicting_slugs)}",
+                        flush=True,
+                    )
+                    completed_entry = {
+                        "spec": slug,
+                        "manifest": manifest,
+                        "outcome": "conflict_refused",
+                        "conflicting_slugs": exc.conflicting_slugs,
+                        "duration_s": round(elapsed, 1),
+                        "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    }
                 except Exception as exc:
                     elapsed = time.monotonic() - _run_start
                     crash = {
@@ -264,6 +280,8 @@ class DaemonServer:
         """Execute a sprint in a thread executor. Called via run_in_executor."""
         from .config import load_config
         from .sprint import run_sprint
+        from .sprint.lock import SprintConflictError, acquire_story_locks, release_story_locks
+        from .sprint.runner import parse_manifest_slugs
 
         # Find config — use forge_root/forge.yaml or config passed in args
         config_path_str = args.get("config")
@@ -277,15 +295,24 @@ class DaemonServer:
         if not manifest_path.is_absolute():
             manifest_path = (self.forge_root / manifest).resolve()
 
-        run_sprint(
-            config,
-            manifest_path,
-            auto_merge=args.get("auto_merge", False),
-            interactive=False,  # daemon mode is non-interactive
-            notify=args.get("notify", True),
-            resume=args.get("resume", False),
-            state_update_fn=state_update_fn,
-        )
+        # Acquire per-story locks before execution to guard against concurrent runs
+        slugs = parse_manifest_slugs(config, manifest_path)
+        locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
+        if conflicted:
+            raise SprintConflictError(conflicted)
+
+        try:
+            run_sprint(
+                config,
+                manifest_path,
+                auto_merge=args.get("auto_merge", False),
+                interactive=False,  # daemon mode is non-interactive
+                notify=args.get("notify", True),
+                resume=args.get("resume", False),
+                state_update_fn=state_update_fn,
+            )
+        finally:
+            release_story_locks(locked_fds)
 
     async def serve(self) -> None:
         """Start the unix socket server and run the sprint loop."""

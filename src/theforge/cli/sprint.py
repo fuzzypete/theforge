@@ -11,6 +11,8 @@ from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import run_sprint
+from theforge.sprint.lock import acquire_story_locks, release_story_locks
+from theforge.sprint.runner import parse_manifest_slugs
 
 
 def cmd_sprint(args: object) -> int:
@@ -49,12 +51,23 @@ def cmd_sprint(args: object) -> int:
     interactive = getattr(args, "interactive", False)
     resume = getattr(args, "resume", False)
 
+    # ── Concurrency guard: refuse if any story is already running ───────
+    slugs = parse_manifest_slugs(config, manifest_path)
+    locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
+    if conflicted:
+        print(
+            f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
+            file=sys.stderr,
+        )
+        return 1
+
     # ── Daemonization (default, before daemon-queue check) ─────────────
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
         run_id = _generate_run_id()
         slug = manifest_path.stem
         _detach.daemonize_run(run_id, slug, config.project_root)
-        # Grandchild continues here; parent has already exited above
+        # Grandchild continues here; parent has already exited above.
+        # locked_fds are inherited through the double-fork and remain held.
         # suppress_app_nap uses PyObjC which can SIGABRT in forked processes
         # due to ObjC runtime state. Skip it — the process is already detached
         # and setsid'd, which is sufficient protection.
@@ -64,8 +77,10 @@ def cmd_sprint(args: object) -> int:
         run_id = _generate_run_id()
         slug = manifest_path.stem
 
-    # If daemon is running (and --fg or --detach was given), submit to it instead
+    # If daemon is running (and --detach was given), submit to it instead.
+    # Release our pre-check locks immediately — the daemon acquires its own.
     if getattr(args, "detach", False) and _daemon.is_daemon_running(config.project_root):
+        release_story_locks(locked_fds)
         sprint_args: dict = {
             "auto_merge": auto_merge,
             "notify": not args.no_notify,
@@ -101,6 +116,8 @@ def cmd_sprint(args: object) -> int:
         traceback.print_exc(file=sys.stderr)
         sys.stderr.flush()
         return 1
+    finally:
+        release_story_locks(locked_fds)
 
     # Remove PID file on completion
     _detach.remove_pid(run_id, config.project_root)
