@@ -1082,6 +1082,7 @@ class TestStoryValidation:
 
 
 class TestPlanAgentReview:
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -1094,8 +1095,9 @@ class TestPlanAgentReview:
         mock_agent,
         mock_preflight,
         mock_plan_agent,
-        mock_pool,
+        mock_plan_pool,
         mock_human_review,
+        mock_code_pool,
         tmp_path,
     ):
         """Agent returns APPROVE, pipeline continues to DEV."""
@@ -1113,17 +1115,16 @@ class TestPlanAgentReview:
             _make_agent_result(success=True, output="# Plan\n\nGood plan.", cost_usd=0.10),
             _make_agent_result(success=True, output="Implemented."),
         ]
-        # mock_pool: first call = plan review pool, second = code review pool
-        mock_pool.side_effect = [
-            [
-                _make_agent_result(
-                    success=True,
-                    output=PLAN_AGENT_APPROVE,
-                    cost_usd=0.08,
-                    profile_name="plan-review",
-                )
-            ],
-            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        mock_plan_pool.return_value = [
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.08,
+                profile_name="plan-review",
+            )
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task, interactive=True)
@@ -1327,6 +1328,7 @@ class TestPlanAgentReview:
         # plan review pool called twice; code review never reached
         assert mock_pool.call_count == 2
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -1339,8 +1341,9 @@ class TestPlanAgentReview:
         mock_agent,
         mock_preflight,
         mock_plan_agent,
-        mock_pool,
+        mock_plan_pool,
         mock_human_review,
+        mock_code_pool,
         tmp_path,
     ):
         """After 2 plan rejections, planner model escalates sonnet→opus; 3rd review approves."""
@@ -1373,7 +1376,7 @@ class TestPlanAgentReview:
             # dev
             _make_agent_result(success=True, output="Implemented."),
         ]
-        mock_pool.side_effect = [
+        mock_plan_pool.side_effect = [
             # 1st plan review → REJECT (rejection 1)
             [
                 _make_agent_result(
@@ -1401,8 +1404,9 @@ class TestPlanAgentReview:
                     profile_name="plan-review",
                 )
             ],
-            # code review
-            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task, interactive=True)
@@ -1426,6 +1430,7 @@ class TestPlanAgentReview:
         regen_prompt = regen_call.kwargs.get("prompt") or regen_call[1].get("prompt")
         assert "MODEL ESCALATION" in regen_prompt
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -1438,8 +1443,9 @@ class TestPlanAgentReview:
         mock_agent,
         mock_preflight,
         mock_plan_agent,
-        mock_pool,
+        mock_plan_pool,
         mock_human_review,
+        mock_code_pool,
         tmp_path,
     ):
         """Config without plan_agent_review section — PLAN_REVIEW is skipped."""
@@ -1452,7 +1458,7 @@ class TestPlanAgentReview:
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_pool.return_value = [
+        mock_code_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
@@ -1461,6 +1467,7 @@ class TestPlanAgentReview:
         assert result.success is True
         assert result.state.plan_review_decision is None
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -1473,8 +1480,9 @@ class TestPlanAgentReview:
         mock_agent,
         mock_preflight,
         mock_plan_agent,
-        mock_pool,
+        mock_plan_pool,
         mock_human_review,
+        mock_code_pool,
         tmp_path,
     ):
         """`--plan` flag skips agent review."""
@@ -1491,7 +1499,7 @@ class TestPlanAgentReview:
             success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
         )
         mock_agent.side_effect = [_make_agent_result(success=True, output="Implemented.")]
-        mock_pool.return_value = [
+        mock_code_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
