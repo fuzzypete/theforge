@@ -719,8 +719,16 @@ class TestUntilPhaseStop:
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.story_validator.validate_story")
     def test_until_plan_stops_before_dev(
-        self, mock_shell, mock_dev_agent, mock_plan_agent, mock_preflight, mock_pool, tmp_path
+        self,
+        mock_validate_story,
+        mock_shell,
+        mock_dev_agent,
+        mock_plan_agent,
+        mock_preflight,
+        mock_pool,
+        tmp_path,
     ):
         """--until plan: run PREFLIGHT+PLAN, then stop before DEV."""
         config = _make_plan_config(tmp_path)
@@ -728,6 +736,9 @@ class TestUntilPhaseStop:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
+        from theforge.story_validator import StoryValidationResult
+
+        mock_validate_story.return_value = StoryValidationResult(verdict="PASS")
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
