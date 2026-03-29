@@ -1,4 +1,4 @@
-.PHONY: fmt lint test gate clean
+.PHONY: fmt lint test test-serial gate clean
 
 # Format
 fmt:
@@ -13,6 +13,10 @@ lint:
 # Tests
 test:
 	PYTHONPATH=src python -m pytest tests/ -v
+
+# Serial test run for debugging (bypasses xdist)
+test-serial:
+	PYTHONPATH=src python -m pytest tests/ -v -p no:xdist --override-ini="addopts="
 
 # Gate: run tests and write .forge/handoff.yaml
 gate:
