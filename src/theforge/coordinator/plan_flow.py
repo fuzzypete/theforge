@@ -572,14 +572,12 @@ def _run_plan_agent_review(
             )
 
         _plan_start = time.monotonic()
-        _resuming = state.plan_session_id is not None
-        _resume_tag = f"resuming {state.plan_session_id[:8]}" if _resuming else "new session"
-        _log(f"  Starting plan regen (model={plan_profile.model}, {_resume_tag})...")
+        _log(f"  Starting plan regen (model={plan_profile.model}, new session)...")
         plan_result = run_agent(
             prompt=regen_prompt,
             profile=plan_profile,
             working_dir=workspace_path,
-            session_id=state.plan_session_id,
+            session_id=None,  # fresh session — prior session anchors on its own wrong output
             secrets=config.secrets,
         )
         _plan_elapsed = time.monotonic() - _plan_start
