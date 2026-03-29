@@ -7,8 +7,8 @@ slug: plan-reviewer-failure-audit
 
 ## Observed
 
-During the `coordinator-relocate-modules` sprint, Codex hit its usage limit and returned empty output. The coordinator excluded Codex from the verdict and continued to APPROVE based on DeepSeek alone. No warning appeared in the audit log — the Codex failure is completely invisible unless you read the raw reviewer log file directly. (GH issue #183)
+A plan reviewer returned empty output due to a usage limit. The coordinator excluded it from the verdict and approved on remaining reviewers alone. No warning appeared in the audit log.
 
 ## Expected
 
-When a plan reviewer returns empty or unparseable output, the failure is recorded in the audit log. If the number of successful plan reviewers drops below a minimum threshold, the run escalates rather than silently approving on reduced coverage.
+Plan reviewer failures are recorded in the audit log. If successful reviewers drop below a minimum, the run escalates rather than silently approving.
