@@ -687,12 +687,14 @@ class TestApplyPlanModelOverride:
 
     def test_provider_slash_model_missing_api_key_raises(self, tmp_path, monkeypatch):
         # Validation only runs when plan is enabled; key must be absent.
+        # Patch the SDK import so the test is not sensitive to whether openai is installed.
         from dataclasses import replace as _replace
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg = _replace(self._base_config(tmp_path), plan=PlanConfig(enabled=True))
-        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-            _apply_plan_model_override(cfg, "openai/gpt-4o")
+        with patch("theforge.config.load.importlib.import_module"):
+            with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+                _apply_plan_model_override(cfg, "openai/gpt-4o")
 
     def test_provider_slash_model_disabled_plan_skips_validation(self, tmp_path, monkeypatch):
         # When plan.enabled is false the planner won't run, so missing credentials
