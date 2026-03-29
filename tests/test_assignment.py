@@ -166,16 +166,16 @@ def test_tier_selection_medium():
 
 
 def test_tier_selection_high():
-    """HIGH complexity: plan=strong, dev=strong, code_review=strong (max_reviewers)."""
+    """HIGH complexity: plan=strong, dev=strong; code_review excludes dev model."""
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(min_reviewers=1, max_reviewers=3, budget_per_story_usd=1000.0)
     decision = assign_models(agents, cfg, "large")
 
     assert decision.dev.model == "opus"  # strong
     assert decision.planner.model == "opus"  # strong
-    # HIGH uses max_reviewers=3 but only 1 strong agent in pool
+    # code_reviewers exclude opus (dev model) and fall back to lower-tier agents
     assert len(decision.code_reviewers) >= 1
-    assert decision.code_reviewers[0].model == "opus"
+    assert all(r.model != "opus" for r in decision.code_reviewers)
 
 
 # ── test_cross_provider_preference ────────────────────────────────────
@@ -458,3 +458,128 @@ def test_no_promotion_with_empty_history():
 
     # No promotion — should use mid (sonnet)
     assert decision.dev.model == "sonnet"
+
+
+# ── Plan reviewer diversity tests ─────────────────────────────────────
+
+
+def test_plan_reviewer_excludes_planner_model():
+    """Plan reviewers must not share a model with the planner when alternatives exist."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 3.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    planner_model = decision.planner.model
+    reviewer_models = [r.model for r in decision.plan_reviewers]
+    assert planner_model not in reviewer_models, (
+        f"Plan reviewer {reviewer_models} shares model with planner ({planner_model})"
+    )
+
+
+def test_plan_reviewer_excludes_planner_when_only_strong_is_planner():
+    """Regression: large story, only one strong agent (planner). Mid-tier must be used."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 3.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    # Planner should be opus (strong); reviewer must not be opus
+    assert decision.planner.model == "opus"
+    reviewer_models = [r.model for r in decision.plan_reviewers]
+    assert "opus" not in reviewer_models, (
+        f"Plan reviewer {reviewer_models} self-reviews — sonnet should have been selected"
+    )
+    assert reviewer_models == ["sonnet"]
+
+
+def test_plan_reviewer_falls_back_when_only_one_model():
+    """When only one model is available, it must still produce a reviewer (not empty)."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    # Only one model — must still produce a reviewer (fallback to self-review)
+    assert len(decision.plan_reviewers) == 1
+    assert decision.plan_reviewers[0].model == "opus"
+
+
+def test_plan_reviewer_falls_back_cross_provider_single_model():
+    """Single-model pool with cross_provider=True still produces a reviewer."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=True)
+    decision = assign_models(agents, cfg, "large")
+
+    assert len(decision.plan_reviewers) == 1
+    assert decision.plan_reviewers[0].model == "opus"
+
+
+def test_plan_reviewer_excludes_planner_cross_provider():
+    """Cross-provider selection also excludes the planner model."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("deepseek-r1", "deepseek", "deepseek-reasoner", 1.0, 600, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=2, max_reviewers=2, prefer_cross_provider=True)
+    decision = assign_models(agents, cfg, "large")
+
+    planner_model = decision.planner.model
+    reviewer_models = [r.model for r in decision.plan_reviewers]
+    assert planner_model not in reviewer_models, (
+        f"Plan reviewer {reviewer_models} shares model with planner ({planner_model})"
+    )
+
+
+def test_code_reviewer_excludes_dev_model():
+    """Code reviewers must not share a model with the dev agent when alternatives exist."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 3.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    dev_model = decision.dev.model
+    reviewer_models = [r.model for r in decision.code_reviewers]
+    assert dev_model not in reviewer_models, (
+        f"Code reviewer {reviewer_models} shares model with dev ({dev_model})"
+    )
+
+
+def test_code_reviewer_falls_back_when_only_one_model():
+    """Single-model pool: code reviewer falls back to self-review, not empty list."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    assert len(decision.code_reviewers) == 1
+    assert decision.code_reviewers[0].model == "opus"
+
+
+def test_plan_reviewer_non_empty_when_no_auth(monkeypatch):
+    """When no agents have auth, plan_reviewers falls back to unauthed agents (not empty)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    assert len(decision.plan_reviewers) >= 1

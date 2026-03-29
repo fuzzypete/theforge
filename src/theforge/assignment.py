@@ -140,12 +140,15 @@ def _select_reviewers(
     tier: str,
     n: int,
     prefer_cross_provider: bool,
+    exclude_model: str | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
     Prefer strong-tier agents; fall back to tier if needed.
     Break ties by lowest budget_usd.
     If prefer_cross_provider, greedily pick from different providers.
+    If exclude_model is set, agents with that model are excluded; they are
+    only included as a last resort when no other candidates are available.
     """
     # Build candidate list: prefer strong, fall back to requested tier
     # Filter by auth availability — skip agents whose API key is missing
@@ -161,8 +164,33 @@ def _select_reviewers(
             candidates.append(a)
             seen_names.add(a.name)
 
+    # If no authed candidates exist, fall back to unauthed agents so the pool
+    # is never empty (mirrors the fallback logic in assign_models for dev/planner).
+    if not candidates:
+        strong_any = _agents_by_tier(agents, "strong")
+        tier_any = _agents_by_tier(agents, tier) if tier != "strong" else []
+        seen_names = set()
+        for a in strong_any + tier_any:
+            if a.name not in seen_names:
+                candidates.append(a)
+                seen_names.add(a.name)
+
     if not candidates:
         return []
+
+    # Exclude the model that produced the plan/code being reviewed so agents
+    # don't self-review.  If the tier/strong pool is exhausted, expand to all
+    # authed agents before falling back to self-review (last resort).
+    if exclude_model is not None:
+        preferred = [a for a in candidates if a.model != exclude_model]
+        if not preferred:
+            # Widen search: any authed agent with a different model
+            preferred = [a for a in agents if _has_auth(a) and a.model != exclude_model]
+        if not preferred:
+            # Widen further: any agent regardless of auth with a different model
+            preferred = [a for a in agents if a.model != exclude_model]
+        if preferred:
+            candidates = preferred
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -443,7 +471,10 @@ def assign_models(
             assignment_config.min_reviewers,
             assignment_config.max_reviewers,
         )
-        selected = _select_reviewers(agents, tier, n, assignment_config.prefer_cross_provider)
+        planner_model = planner_profile.model
+        selected = _select_reviewers(
+            agents, tier, n, assignment_config.prefer_cross_provider, exclude_model=planner_model
+        )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         rationale["plan_review"] = (
@@ -461,7 +492,10 @@ def assign_models(
             assignment_config.min_reviewers,
             assignment_config.max_reviewers,
         )
-        selected = _select_reviewers(agents, tier, n, assignment_config.prefer_cross_provider)
+        dev_model = dev_profile.model
+        selected = _select_reviewers(
+            agents, tier, n, assignment_config.prefer_cross_provider, exclude_model=dev_model
+        )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         rationale["code_review"] = (
