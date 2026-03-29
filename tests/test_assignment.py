@@ -458,3 +458,53 @@ def test_no_promotion_with_empty_history():
 
     # No promotion — should use mid (sonnet)
     assert decision.dev.model == "sonnet"
+
+
+# ── Plan reviewer diversity tests ─────────────────────────────────────
+
+
+def test_plan_reviewer_excludes_planner_model():
+    """Plan reviewers must not share a model with the planner when alternatives exist."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 3.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    planner_model = decision.planner.model
+    reviewer_models = [r.model for r in decision.plan_reviewers]
+    assert planner_model not in reviewer_models, (
+        f"Plan reviewer {reviewer_models} shares model with planner ({planner_model})"
+    )
+
+
+def test_plan_reviewer_falls_back_when_only_one_model():
+    """When only one model is available, it may self-review (no alternative)."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    # Only one model — must still produce a reviewer
+    assert len(decision.plan_reviewers) == 1
+    assert decision.plan_reviewers[0].model == "opus"
+
+
+def test_plan_reviewer_excludes_planner_cross_provider():
+    """Cross-provider selection also excludes the planner model."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("deepseek-r1", "deepseek", "deepseek-reasoner", 1.0, 600, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=2, max_reviewers=2, prefer_cross_provider=True)
+    decision = assign_models(agents, cfg, "large")
+
+    planner_model = decision.planner.model
+    reviewer_models = [r.model for r in decision.plan_reviewers]
+    assert planner_model not in reviewer_models, (
+        f"Plan reviewer {reviewer_models} shares model with planner ({planner_model})"
+    )

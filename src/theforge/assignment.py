@@ -140,12 +140,15 @@ def _select_reviewers(
     tier: str,
     n: int,
     prefer_cross_provider: bool,
+    exclude_model: str | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
     Prefer strong-tier agents; fall back to tier if needed.
     Break ties by lowest budget_usd.
     If prefer_cross_provider, greedily pick from different providers.
+    If exclude_model is set, agents with that model are excluded; they are
+    only included as a last resort when no other candidates are available.
     """
     # Build candidate list: prefer strong, fall back to requested tier
     # Filter by auth availability — skip agents whose API key is missing
@@ -163,6 +166,13 @@ def _select_reviewers(
 
     if not candidates:
         return []
+
+    # Exclude the model that produced the plan/code being reviewed so agents
+    # don't self-review.  Fall back to the full pool only if exclusion would
+    # leave no candidates at all.
+    if exclude_model is not None:
+        preferred = [a for a in candidates if a.model != exclude_model]
+        candidates = preferred if preferred else candidates
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -443,7 +453,10 @@ def assign_models(
             assignment_config.min_reviewers,
             assignment_config.max_reviewers,
         )
-        selected = _select_reviewers(agents, tier, n, assignment_config.prefer_cross_provider)
+        planner_model = planner_profile.model
+        selected = _select_reviewers(
+            agents, tier, n, assignment_config.prefer_cross_provider, exclude_model=planner_model
+        )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         rationale["plan_review"] = (
