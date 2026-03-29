@@ -4,12 +4,11 @@ Uses mocked runner to test all state transitions without real agent calls.
 """
 
 import json
-import time as _time
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+from coord_test_helpers import _shell_with_gate
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -104,108 +103,6 @@ def _make_agent_result(
     )
 
 
-def _make_pool_result(
-    outputs: list[str],
-    profile_names: list[str],
-    success: bool = True,
-    cost_usd: float = 0.20,
-) -> list[AgentResult]:
-    """Build a list of AgentResults as if returned by run_agent_pool."""
-    return [
-        AgentResult(
-            success=success,
-            output=out,
-            session_id=None,
-            cost_usd=cost_usd,
-            exit_code=0 if success else 1,
-            raw={},
-            profile_name=name,
-        )
-        for out, name in zip(outputs, profile_names)
-    ]
-
-
-_VALID_DEV_NOTES = (
-    'summary: "Implemented the feature."\n'
-    "commits:\n"
-    '  - sha: "abc1234"\n'
-    '    message: "feat: implement"\n'
-    "acceptance_criteria:\n"
-    '  - criterion: "It works"\n'
-    "    status: MET\n"
-    '    notes: "tested"\n'
-    "spec_deviations: none\n"
-    "deferred_items: none\n"
-    "gate_result: PASS\n"
-)
-
-
-def _write_handoff(
-    workspace: Path, decision: str = "PASS", handoff_file: str = "handoff.yaml"
-) -> None:
-    """Write a minimal handoff file in the workspace with valid dev_notes."""
-    handoff = {
-        "gate_decision": decision,
-        "validation": {"make_fmt": {"status": "PASS"}},
-        "scope_completed": ["test item"],
-        "dev_notes": _VALID_DEV_NOTES,
-    }
-    handoff_path = workspace / handoff_file
-    handoff_path.parent.mkdir(parents=True, exist_ok=True)
-    handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
-
-
-# Stale-worktree detection commands need specific responses so that pre-created
-# workspaces in existing tests are treated as "fresh" (reused rather than removed).
-_RECENT_COMMIT_TS = str(int(_time.time()) - 60)  # 1 minute ago
-
-
-def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
-    """Return a mock response for stale-worktree detection git commands, or None if not matched."""
-    if "rev-parse --abbrev-ref HEAD" in cmd:
-        return (True, "forge/test-task")
-    if "--oneline" in cmd and "git log" in cmd:
-        return (True, "abc123 a recent commit")
-    if "--format=%ct" in cmd:
-        return (True, _RECENT_COMMIT_TS)
-    return None
-
-
-def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
-    """Create a _run_shell side_effect that simulates gate execution via exit code.
-
-    Gate pass/fail is determined by exit code. On PASS, also writes a valid
-    handoff.yaml so downstream handoff validation succeeds. On FAIL, returns a
-    non-zero exit so the coordinator treats it as a gate failure.
-
-    Also handles stale-worktree detection commands by returning a "fresh" worktree
-    (recent commit, commits ahead of base) so pre-created workspaces are reused.
-    """
-    if isinstance(decisions, str):
-        decisions_list = [decisions] * 20
-    else:
-        decisions_list = list(decisions)
-    gate_idx = {"n": 0}
-
-    def side_effect(cmd, cwd, **kwargs):
-        if "gate" in cmd:
-            d = decisions_list[min(gate_idx["n"], len(decisions_list) - 1)]
-            gate_idx["n"] += 1
-            if d == "PASS":
-                _write_handoff(Path(cwd), d)
-                return (True, "OK")
-            else:
-                return (False, "FAIL: tests failed")
-        if "git status --porcelain" in cmd:
-            return (True, "")  # clean worktree
-        stale_resp = _handle_stale_check_cmd(cmd)
-        if stale_resp is not None:
-            return stale_resp
-        return (True, "OK")
-
-    return side_effect
-
-
 APPROVE_REVIEW = """\
 ```yaml
 verdict: APPROVE
@@ -259,55 +156,9 @@ criteria_checked:
 ```
 """
 
-PREFLIGHT_PROCEED_MEDIUM = """\
-```yaml
-verdict: PROCEED
-complexity: medium
-reason: "Spec requirements are not yet implemented."
-criteria_checked: []
-```
-"""
-
-PREFLIGHT_ALREADY_DONE = """\
-```yaml
-verdict: ALREADY_DONE
-reason: "All acceptance criteria are already satisfied."
-criteria_checked:
-  - criterion: "Feature X"
-    satisfied: true
-    evidence: "Implemented in coordinator.py:42"
-```
-"""
-
-PREFLIGHT_BLOCKED = """\
-```yaml
-verdict: BLOCKED
-reason: "Spec references removed_function() which no longer exists."
-criteria_checked:
-  - criterion: "Feature X"
-    satisfied: false
-    evidence: "removed_function() was deleted in a prior commit"
-```
-"""
-
-
 _PREFLIGHT_RESULT = _make_agent_result(
     success=True, output=PREFLIGHT_PROCEED, cost_usd=0.05, profile_name="review"
 )
-
-
-def _preflight_then(*dev_results: AgentResult):
-    """Preflight PROCEED on first call, then dev_results."""
-    preflight_result = _PREFLIGHT_RESULT
-    results = [preflight_result, *dev_results]
-    call_idx = {"n": 0}
-
-    def side_effect(**kwargs):
-        idx = min(call_idx["n"], len(results) - 1)
-        call_idx["n"] += 1
-        return results[idx]
-
-    return side_effect
 
 
 # ── Tests ────────────────────────────────────────────────────────────
