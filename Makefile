@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-serial gate clean
+.PHONY: fmt lint test test-parallel gate clean
 
 # Format
 fmt:
@@ -10,13 +10,17 @@ lint:
 	ruff check src/ tests/
 	ruff format --check src/ tests/
 
-# Tests
+# Tests (serial — safe under sprint concurrency where forge may run this
+# across multiple parallel stories at once via max_parallel)
 test:
 	PYTHONPATH=src python -m pytest tests/ -v
 
-# Serial test run for debugging (bypasses xdist)
-test-serial:
-	PYTHONPATH=src python -m pytest tests/ -v -p no:xdist --override-ini="addopts="
+# Opt-in parallel run: useful for local iteration when not running a sprint.
+# Uses loadfile grouping to keep module-level state contained per worker.
+# Avoid running this inside a forge sprint with max_parallel > 1 — between
+# the two layers you can easily saturate all cores.
+test-parallel:
+	PYTHONPATH=src python -m pytest tests/ -v -n auto --dist loadfile
 
 # Gate: run tests and write .forge/handoff.yaml
 gate:
