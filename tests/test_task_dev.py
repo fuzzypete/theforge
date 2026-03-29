@@ -10,6 +10,7 @@ from theforge.task import (
     build_dev_prompt,
     build_fix_prompt,
     build_plan_prompt,
+    build_preflight_prompt,
 )
 
 
@@ -485,3 +486,40 @@ class TestBuildDevPromptPlanOutput:
         plan_pos = prompt.index("Implementation Plan (from planning agent)")
         spec_pos = prompt.index("## Spec")
         assert plan_pos < spec_pos
+
+
+# ── Notes section convention tests ──────────────────────────────────────
+
+
+class TestNotesConventionInPrompts:
+    """Verify that all spec-consuming prompts include Notes guidance."""
+
+    def test_dev_prompt_contains_notes_guidance(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            story_content="# Spec\n\nDo the thing.\n\n## Notes\n\nSee src/old.py",
+            gate_command="make gate",
+        )
+        assert "Notes" in prompt
+        assert "stale or wrong" in prompt
+
+    def test_plan_prompt_contains_notes_guidance(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            story_content="# Spec\n\nDo the thing.\n\n## Notes\n\nSee src/old.py",
+        )
+        assert "Notes" in prompt
+        assert "stale or wrong" in prompt
+
+    def test_preflight_prompt_contains_notes_guidance(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_preflight_prompt(
+            task,
+            story_content="# Spec\n\nDo the thing.\n\n## Notes\n\nSee src/old.py",
+        )
+        assert "Notes" in prompt
+        assert "NOT requirements" in prompt

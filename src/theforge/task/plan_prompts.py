@@ -114,6 +114,10 @@ def build_preflight_prompt(
         - "Related code exists" is NOT the same as "criterion is satisfied."
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
         - If the spec has internal contradictions or untestable criteria, verdict is BLOCKED.
+        - If the spec contains a **Notes** section, treat it as informal hints that
+          may be stale or wrong. Notes are NOT requirements — do not BLOCK a spec
+          because a Note references a nonexistent file or outdated pattern. Only
+          acceptance criteria and explicit requirements can trigger BLOCKED.
         - BLOCKED is not a failure — it's a save. Fixing a spec costs minutes; a
           doomed plan+dev+review loop costs hours and dollars.
     """)

@@ -300,6 +300,10 @@ def build_review_prompt(
           previous review cycle.
         - This review may be merged with other reviewers' outputs. One speculative
           P1 from you blocks the entire pipeline. Be precise.
+        - If the spec contains a **Notes** section, treat it as informal hints
+          that may be stale or wrong. Notes are NOT acceptance criteria — do not
+          flag a spec mismatch because reality diverges from a Note. Only evaluate
+          compliance against explicit acceptance criteria and requirements.
         - **Spec-to-runtime traceability**: For each AC in the spec, verify
           BOTH layers: (a) the logic exists in the codebase, AND (b) it is
           actually invoked at runtime by the coordinator/runner/CLI. Code that

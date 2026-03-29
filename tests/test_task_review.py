@@ -549,3 +549,24 @@ class TestBuildHandoffFixPrompt:
         )
         assert ".forge/handoff.yaml" in prompt
         assert "git add .forge/handoff.yaml" in prompt
+
+
+# ── Notes section convention tests ──────────────────────────────────────
+
+
+class TestNotesConventionInReviewPrompt:
+    """Verify review prompt includes Notes guidance."""
+
+    def test_review_prompt_contains_notes_guidance(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_review_prompt(
+            task,
+            story_content="# Spec\n\n## Notes\n\nSee src/old.py",
+            commit_log="abc1234 feat: thing",
+            workspace_path="/tmp/ws",
+            branch="feat/test",
+            handoff_content="gate_decision: PASS",
+        )
+        assert "Notes" in prompt
+        assert "stale or wrong" in prompt
+        assert "NOT acceptance criteria" in prompt
