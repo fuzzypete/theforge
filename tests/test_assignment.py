@@ -481,14 +481,26 @@ def test_plan_reviewer_excludes_planner_model():
 
 
 def test_plan_reviewer_falls_back_when_only_one_model():
-    """When only one model is available, it may self-review (no alternative)."""
+    """When only one model is available, it must still produce a reviewer (not empty)."""
     agents = [
         AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
     ]
     cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
     decision = assign_models(agents, cfg, "large")
 
-    # Only one model — must still produce a reviewer
+    # Only one model — must still produce a reviewer (fallback to self-review)
+    assert len(decision.plan_reviewers) == 1
+    assert decision.plan_reviewers[0].model == "opus"
+
+
+def test_plan_reviewer_falls_back_cross_provider_single_model():
+    """Single-model pool with cross_provider=True still produces a reviewer."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=True)
+    decision = assign_models(agents, cfg, "large")
+
     assert len(decision.plan_reviewers) == 1
     assert decision.plan_reviewers[0].model == "opus"
 
@@ -508,3 +520,32 @@ def test_plan_reviewer_excludes_planner_cross_provider():
     assert planner_model not in reviewer_models, (
         f"Plan reviewer {reviewer_models} shares model with planner ({planner_model})"
     )
+
+
+def test_code_reviewer_excludes_dev_model():
+    """Code reviewers must not share a model with the dev agent when alternatives exist."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 3.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    dev_model = decision.dev.model
+    reviewer_models = [r.model for r in decision.code_reviewers]
+    assert dev_model not in reviewer_models, (
+        f"Code reviewer {reviewer_models} shares model with dev ({dev_model})"
+    )
+
+
+def test_code_reviewer_falls_back_when_only_one_model():
+    """Single-model pool: code reviewer falls back to self-review, not empty list."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    assert len(decision.code_reviewers) == 1
+    assert decision.code_reviewers[0].model == "opus"

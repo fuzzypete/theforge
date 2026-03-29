@@ -168,11 +168,12 @@ def _select_reviewers(
         return []
 
     # Exclude the model that produced the plan/code being reviewed so agents
-    # don't self-review.  Fall back to the full pool only if exclusion would
-    # leave no candidates at all.
+    # don't self-review.  Fall back to the full pool when no other candidates
+    # exist (single-model pool), guaranteeing at least one reviewer is returned.
     if exclude_model is not None:
         preferred = [a for a in candidates if a.model != exclude_model]
-        candidates = preferred if preferred else candidates
+        if preferred:
+            candidates = preferred
 
     if not prefer_cross_provider:
         return candidates[:n]
@@ -474,7 +475,10 @@ def assign_models(
             assignment_config.min_reviewers,
             assignment_config.max_reviewers,
         )
-        selected = _select_reviewers(agents, tier, n, assignment_config.prefer_cross_provider)
+        dev_model = dev_profile.model
+        selected = _select_reviewers(
+            agents, tier, n, assignment_config.prefer_cross_provider, exclude_model=dev_model
+        )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
         rationale["code_review"] = (
