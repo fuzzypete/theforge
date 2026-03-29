@@ -13,8 +13,7 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig
 from theforge.sessions import load_sessions
-from theforge.task import TaskStory
-from theforge.task import load_story as load_spec
+from theforge.task import TaskStory, load_story
 
 from . import util as _cu
 from .logging import StructuredLogger
@@ -93,6 +92,6 @@ def _setup_resume_entry(
         branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
 
-    story_content = load_spec(task.story_path)
+    story_content = load_story(task.story_path)
 
     return state, logger, branch_name, story_content, _task_start

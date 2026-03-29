@@ -27,6 +27,7 @@ from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, StoryTriage, _triage_spec, build_dag
 from theforge.sprint.manifest import _build_task_from_story
 from theforge.sprint.runner import _classify_and_record
+from theforge.task import TaskStory
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -1404,8 +1405,7 @@ class TestMaxParallelPrecedence:
 
 def _make_task(
     slug: str, depends_on: list[str] | None = None, tmp_path: Path | None = None
-) -> "TaskStory":  # noqa: F821
-    from theforge.task import TaskStory
+) -> TaskStory:
 
     path = (tmp_path or Path("/tmp")) / f"{slug}.md"
     return TaskStory(

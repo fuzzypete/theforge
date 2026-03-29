@@ -48,9 +48,9 @@ from theforge.sessions import save_sessions
 from theforge.task import (
     TaskStory,
     build_handoff_fix_prompt,
+    load_story,
     parse_plan_output,
 )
-from theforge.task import load_story as load_spec
 
 from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
@@ -432,7 +432,7 @@ def run_task(
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
-    story_content = load_spec(task.story_path)
+    story_content = load_story(task.story_path)
     _sprint_name = sprint_name  # passed to _make_story_log_dir for sprint nesting
 
     # ── Structured logger ──────────────────────────────────────────
@@ -905,7 +905,7 @@ def run_review_only(
     branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
 
-    story_content = load_spec(task.story_path)
+    story_content = load_story(task.story_path)
 
     return _run_review_only_phase(
         state,
