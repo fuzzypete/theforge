@@ -1,0 +1,30 @@
+dev_notes: |
+  summary: "Split all 14 test files that exceeded 1000 lines into 2-4 focused sub-files grouped by test class. Promoted the four shared runner fixtures (dev_profile, review_profile, codex_profile, gemini_profile) from test_runner.py to conftest.py. Small helper functions (~10-20 lines) were duplicated into each sub-file that needed them rather than adding a shared module. test_coord_preflight_plan.py was initially 1005 lines after the split; the last three test classes were moved to a fourth file test_coord_preflight_cycle.py to bring all files under the 1000-line limit. E402 lint errors from docstrings placed after from __future__ import annotations were fixed by reordering. Baseline test count 1423 is preserved exactly."
+  commits:
+    - sha: "c4649f8"
+      message: "refactor(tests): split 14 oversized test files — max 1000 lines per file"
+  acceptance_criteria:
+    - criterion: "No test file in tests/ exceeds 1000 lines"
+      status: MET
+      notes: "Largest file is test_coord_plan_flow_agent.py at 960 lines. wc -l confirmed no file exceeds 1000."
+    - criterion: "make test passes with the same total test count"
+      status: MET
+      notes: "1423 passed before and after splits. Gate: 1423 passed in 157s."
+    - criterion: "make lint passes"
+      status: MET
+      notes: "Fixed E402 errors (docstrings after from __future__) in 20 files and E501 errors (lines >99 chars) in 4 docstrings. make lint: All checks passed."
+    - criterion: "Every new test file passes when run in isolation with pytest tests/<filename> -v"
+      status: MET
+      notes: "All 36 new split files were run in 3 batches via pytest isolation checks. All passed: 121 + 175 + 591 = 887 tests across new files."
+    - criterion: "No test logic is duplicated — each test exists in exactly one file"
+      status: MET
+      notes: "Each test class was placed in exactly one new file. Small factory helper functions (~10-20 lines) were duplicated where needed; these are not test logic (no assertions)."
+    - criterion: "Shared fixtures remain in conftest.py or a single canonical location"
+      status: MET
+      notes: "dev_profile, review_profile, codex_profile, gemini_profile moved to conftest.py. review_task fixture kept in test_task_review.py as its single canonical location."
+  story_deviations:
+    - description: "Added a 4th preflight sub-file (test_coord_preflight_cycle.py) beyond the 3 suggested in the spec"
+      justification: "test_coord_preflight_plan.py landed at 1005 lines after the initial 3-way split. The three classes moved (TestApprovePathCycleHistory, TestEscalationNoteOnRejectPath, TestAlreadyDoneOverride) are thematically coherent cycle/override tests."
+  deferred_items: none
+  gate_result: PASS
+gate_decision: PASS

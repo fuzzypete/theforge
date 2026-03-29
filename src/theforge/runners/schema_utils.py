@@ -63,9 +63,13 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("openai", "gpt-5.1-codex-max"): (6.00, 24.00),
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
-    ("google", "gemini-2.5-pro"): (3.50, 10.50),
-    ("google", "gemini-2.5-flash"): (0.15, 0.60),
+    ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
+    ("google", "gemini-3.1-pro-preview-customtools"): (2.00, 12.00),
+    ("google", "gemini-2.5-pro"): (1.25, 10.00),  # ≤200k tokens
+    ("google", "gemini-2.5-flash"): (0.30, 2.50),
+    ("google", "gemini-2.5-flash-lite"): (0.10, 0.40),
     ("google", "gemini-2.0-flash"): (0.10, 0.40),
+    ("google", "gemini-2.0-flash-lite"): (0.075, 0.30),
     ("deepseek", "deepseek-chat"): (0.27, 1.10),  # V3 alias
     ("deepseek", "deepseek-r1"): (0.55, 2.19),
     ("deepseek", "deepseek-v3"): (0.27, 1.10),
