@@ -8,6 +8,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _isolate_log_level():
+    """Prevent log-level mutations from leaking across tests."""
+    import theforge.log_level as _ll_mod
+
+    original = _ll_mod._LOG_LEVEL
+    yield
+    _ll_mod.set_log_level(original)
+
+
+@pytest.fixture(autouse=True)
 def _block_real_notifications():
     """Prevent any test from firing real OS or ntfy notifications.
 
