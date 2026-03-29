@@ -32,9 +32,8 @@ forge_ideation_audit.yaml
 sprint-audit.yaml
 campaign-audit.yaml
 
-# Claude Code
-.claude/settings.local.json
-.claude/worktrees/
+# Claude Code — theforge builds itself, local IDE config is not project config
+.claude/
 
 # Local preview artifacts
 .preview/
