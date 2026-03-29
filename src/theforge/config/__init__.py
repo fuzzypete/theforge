@@ -19,7 +19,7 @@ from .defaults import (
     SUPPORTED_CLIS,
     generate_default_config,
 )
-from .load import load_config
+from .load import _validate_plan_provider, load_config
 from .models import (
     MODEL_REGISTRY,
     AgentDef,
@@ -82,5 +82,6 @@ __all__ = [
     "SUPPORTED_CLIS",
     "generate_default_config",
     # load
+    "_validate_plan_provider",
     "load_config",
 ]

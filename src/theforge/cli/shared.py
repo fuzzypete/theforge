@@ -13,6 +13,7 @@ from theforge.artifacts import (
 )
 from theforge.config import (
     ForgeConfig,
+    _validate_plan_provider,
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.state import CoordinatorResult
@@ -232,6 +233,7 @@ def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig
     if "/" in spec:
         provider, model = spec.split("/", 1)
         new_plan = replace(config.plan, provider=provider, model=model, cli=None)
+        _validate_plan_provider(new_plan, config.secrets)
     else:
         new_plan = replace(config.plan, model=spec)
 

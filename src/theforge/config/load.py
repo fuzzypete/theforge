@@ -38,6 +38,35 @@ from .types import (
 log = logging.getLogger("theforge.config")
 
 
+def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> None:
+    """Raise ValueError if plan_cfg has an invalid or unconfigured provider.
+
+    Called both from load_config (YAML path) and after --plan-model CLI override.
+    """
+    if plan_cfg.provider is None:
+        return
+    if plan_cfg.provider not in SUPPORTED_PROVIDERS:
+        raise ValueError(
+            f"Unsupported provider {plan_cfg.provider!r} in plan section. "
+            f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+        )
+    sdk = PROVIDER_SDK_MAP.get(plan_cfg.provider)
+    if sdk:
+        try:
+            importlib.import_module(sdk)
+        except ImportError:
+            raise ValueError(
+                f"plan section uses provider '{plan_cfg.provider}' but the required "
+                f"SDK '{sdk}' is not installed. Please install it."
+            )
+    api_key_var = PROVIDER_API_KEY_MAP.get(plan_cfg.provider)
+    if api_key_var and not _resolve_secret(api_key_var, secrets):
+        raise ValueError(
+            f"plan section uses provider '{plan_cfg.provider}' but the required "
+            f"environment variable ${api_key_var} is not set."
+        )
+
+
 def load_config(config_path: Path) -> ForgeConfig:
     """Load forge.yaml and return a typed ForgeConfig.
 
@@ -233,27 +262,7 @@ def load_config(config_path: Path) -> ForgeConfig:
                 f"Unsupported CLI {plan_cfg.cli!r} in plan section. "
                 f"Supported: {sorted(SUPPORTED_CLIS)}"
             )
-        if plan_cfg.provider is not None:
-            if plan_cfg.provider not in SUPPORTED_PROVIDERS:
-                raise ValueError(
-                    f"Unsupported provider {plan_cfg.provider!r} in plan section. "
-                    f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
-                )
-            sdk = PROVIDER_SDK_MAP.get(plan_cfg.provider)
-            if sdk:
-                try:
-                    importlib.import_module(sdk)
-                except ImportError:
-                    raise ValueError(
-                        f"plan section uses provider '{plan_cfg.provider}' but the required "
-                        f"SDK '{sdk}' is not installed. Please install it."
-                    )
-            api_key_var = PROVIDER_API_KEY_MAP.get(plan_cfg.provider)
-            if api_key_var and not _resolve_secret(api_key_var, secrets):
-                raise ValueError(
-                    f"plan section uses provider '{plan_cfg.provider}' but the required "
-                    f"environment variable ${api_key_var} is not set."
-                )
+        _validate_plan_provider(plan_cfg, secrets)
 
     # Plan review
     plan_review_data = raw.get("plan_review", {})

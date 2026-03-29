@@ -7,6 +7,8 @@ import stat
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from theforge.cli import (
     _apply_dev_model_override,
     _apply_plan_model_override,
@@ -635,7 +637,8 @@ class TestApplyPlanModelOverride:
 
     def test_provider_slash_model(self, tmp_path):
         cfg = self._base_config(tmp_path)
-        result = _apply_plan_model_override(cfg, "anthropic/claude-opus-4-6")
+        with patch("theforge.cli.shared._validate_plan_provider"):
+            result = _apply_plan_model_override(cfg, "anthropic/claude-opus-4-6")
         assert result.plan.model == "claude-opus-4-6"
         assert result.plan.provider == "anthropic"
         assert result.plan.cli is None
@@ -655,7 +658,8 @@ class TestApplyPlanModelOverride:
 
     def test_provider_override_clears_cli(self, tmp_path):
         cfg = self._base_config(tmp_path)
-        result = _apply_plan_model_override(cfg, "openai/gpt-4o")
+        with patch("theforge.cli.shared._validate_plan_provider"):
+            result = _apply_plan_model_override(cfg, "openai/gpt-4o")
         assert result.plan.cli is None
         assert result.plan.provider == "openai"
         assert result.plan.model == "gpt-4o"
@@ -671,3 +675,21 @@ class TestApplyPlanModelOverride:
         cfg = self._base_config(tmp_path)
         result = _apply_plan_model_override(cfg, "opus")
         assert result.plan_model_is_default is False
+
+    def test_provider_slash_model_unknown_provider_raises(self, tmp_path):
+        cfg = self._base_config(tmp_path)
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            _apply_plan_model_override(cfg, "bogus/some-model")
+
+    def test_provider_slash_model_missing_api_key_raises(self, tmp_path, monkeypatch):
+        # Remove the env var so the key is absent; secrets dict is empty (default).
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg = self._base_config(tmp_path)
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            _apply_plan_model_override(cfg, "openai/gpt-4o")
+
+    def test_bare_model_skips_provider_validation(self, tmp_path):
+        # Bare model names don't set a provider, so no validation is run.
+        cfg = self._base_config(tmp_path)
+        result = _apply_plan_model_override(cfg, "bogus-model-name")
+        assert result.plan.model == "bogus-model-name"
