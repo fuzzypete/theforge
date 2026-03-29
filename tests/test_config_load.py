@@ -381,57 +381,12 @@ class TestLoadConfig:
         assert config.plan_review.mode == "blocking"
         assert config.plan_review.timeout_seconds == 14400
 
-    # ── Plan section field normalization ─────────────────────────────────
-
-    def test_plan_model_name_deprecated_maps_to_model(self, tmp_path):
-        config_path = _write_config(
-            {"plan": {"enabled": False, "model_name": "opus"}},
-            tmp_path,
-        )
-        import warnings as _w
-
-        with _w.catch_warnings(record=True) as w:
-            _w.simplefilter("always")
-            config = load_config(config_path)
-        assert config.plan.model == "opus"
-        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert any("model_name" in str(x.message) for x in dep_warnings)
-
     def test_plan_cli_field_accepted(self, tmp_path):
         config_path = _write_config(
             {"plan": {"enabled": False, "cli": "claude", "model": "opus"}},
             tmp_path,
         )
         config = load_config(config_path)
-        assert config.plan.cli == "claude"
-        assert config.plan.model == "opus"
-
-    def test_plan_model_as_cli_binary_deprecated(self, tmp_path):
-        # Old-style: plan.model = "claude" (CLI binary) — should map to plan.cli
-        config_path = _write_config(
-            {"plan": {"enabled": False, "model": "claude"}},
-            tmp_path,
-        )
-        import warnings as _w
-
-        with _w.catch_warnings(record=True) as w:
-            _w.simplefilter("always")
-            config = load_config(config_path)
-        assert config.plan.cli == "claude"
-        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert any("plan.model" in str(x.message) for x in dep_warnings)
-
-    def test_plan_both_legacy_fields_preserved(self, tmp_path):
-        # Regression: model: claude + model_name: opus must yield cli=claude, model=opus
-        import warnings as _w
-
-        config_path = _write_config(
-            {"plan": {"enabled": False, "model": "claude", "model_name": "opus"}},
-            tmp_path,
-        )
-        with _w.catch_warnings(record=True):
-            _w.simplefilter("always")
-            config = load_config(config_path)
         assert config.plan.cli == "claude"
         assert config.plan.model == "opus"
 
