@@ -1,0 +1,33 @@
+dev_notes: |
+  summary: "Added `_get_dev_suffix()` helper to `src/theforge/cli/init_commands.py`
+    that runs `git describe --tags --long`, parses the distance field, and returns
+    `-dev+g<hash>` when distance > 0 and an empty string otherwise. The helper
+    returns empty when no `direct_url.json` is present (non-editable install) or
+    when git is unavailable. `cmd_version` concatenates the suffix onto the version
+    string before printing. Five new tests in `tests/test_cli.py` cover: ahead-of-tag,
+    at-exact-tag, no direct_url.json, git FileNotFoundError, and PackageNotFoundError."
+  commits:
+    - sha: "095a848"
+      message: "feat(version): append -dev+g<hash> suffix when editable install is ahead of tag"
+  acceptance_criteria:
+    - criterion: "Editable install with commits ahead of tag shows <version>-dev+g<hash>"
+      status: MET
+      notes: "_get_dev_suffix() returns '-dev+g<hash>' when git describe distance > 0; cmd_version appends it."
+    - criterion: "Editable install at exact tag shows clean version with no suffix"
+      status: MET
+      notes: "When distance == 0, _get_dev_suffix() returns '' leaving the version unchanged."
+    - criterion: "Non-editable (PyPI) install shows clean version only"
+      status: MET
+      notes: "_get_dev_suffix() returns '' when direct_url.json is absent (None from read_text)."
+    - criterion: "forge version output includes the dev suffix when applicable"
+      status: MET
+      notes: "cmd_version prints theforge.__version__ + _get_dev_suffix()."
+    - criterion: "Existing tests pass"
+      status: MET
+      notes: "1419 tests pass."
+    - criterion: "New tests cover: dev suffix appended when ahead, clean when at tag, clean when git unavailable"
+      status: MET
+      notes: "TestGetDevSuffix covers all three cases plus PackageNotFoundError."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
