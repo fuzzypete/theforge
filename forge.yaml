@@ -47,8 +47,8 @@ profiles:
       reasoning_effort: high
       max_iterations: 20
     - name: gemini-reviewer
-      cli: gemini
-      model: gemini-3.1-pro-preview
+      provider: google
+      model: gemini-3.1-pro-preview-customtools
       review_role: edge-cases
       budget_usd: 2.00
       timeout_seconds: 300
