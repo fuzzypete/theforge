@@ -14,7 +14,9 @@ from theforge.config import load_config
 from theforge.runners.api import run_api_agent
 
 _CHECK_PROVIDERS_PROMPT = (
-    "Review this change: -    x = 1\n+    x = 2\nVerdict: APPROVE. No findings."
+    "Review this diff: -    x = 1\n+    x = 2\n\n"
+    "Respond with JSON containing a 'verdict' field set to APPROVE or REQUEST_CHANGES, "
+    "and a 'summary' field with a one-line explanation."
 )
 
 

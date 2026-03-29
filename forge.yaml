@@ -3,14 +3,14 @@ project: theforge
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug}"
-  setup_command: "test -d .venv || (python -m venv .venv && .venv/bin/pip install -e '.[all]' pytest -q)"
+  setup_command: "test -d .venv || (python -m venv .venv && .venv/bin/pip install -e '.[all]' pytest pytest-xdist -q)"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
   on_approve: pr
   auto_push: true
 
 validation:
-  gate_command: ".venv/bin/python -m pytest tests/ -q"
+  gate_command: ".venv/bin/python -m pytest tests/ -q -n auto --dist loadfile"
   handoff_file: ".forge/handoff.yaml"
   gate_decision_key: "gate_decision"
 
@@ -48,7 +48,7 @@ profiles:
       max_iterations: 20
     - name: gemini-reviewer
       provider: google
-      model: gemini-3.1-pro-preview
+      model: gemini-2.5-pro-preview-03-25
       # API mode — uses GOOGLE_API_KEY, not the gemini CLI
       review_role: edge-cases
       budget_usd: 2.00
