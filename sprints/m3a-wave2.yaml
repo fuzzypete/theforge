@@ -1,0 +1,9 @@
+name: "M3a Wave 2"
+budget_usd: 60
+max_parallel: 3
+stories:
+  - stories/backlog/worktree-resume-hygiene.md
+  - stories/backlog/plan-reviewer-failure-audit.md
+  - stories/backlog/forge-check-config.md
+  - stories/backlog/stale-approve-triage.md
+  - stories/backlog/hardening-bug-bundle.md
