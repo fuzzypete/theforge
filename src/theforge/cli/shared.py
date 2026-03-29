@@ -221,7 +221,8 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
 def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig":
     """Override the plan profile with a --plan-model spec.
 
-    Format: provider/model  (no @base_url — plan agents are CLI-based)
+    Format: provider/model  (sets API transport, clears CLI)
+            bare-model-name (updates model identifier only, preserves transport)
     Examples:
         opus
         anthropic/claude-opus-4-6
@@ -229,9 +230,9 @@ def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig
     from dataclasses import replace
 
     if "/" in spec:
-        _provider, model = spec.split("/", 1)
+        provider, model = spec.split("/", 1)
+        new_plan = replace(config.plan, provider=provider, model=model, cli=None)
     else:
-        model = spec
+        new_plan = replace(config.plan, model=spec)
 
-    new_plan = replace(config.plan, model_name=model)
-    return replace(config, plan=new_plan)
+    return replace(config, plan=new_plan, plan_model_is_default=False)

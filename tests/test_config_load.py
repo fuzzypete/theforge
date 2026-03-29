@@ -381,6 +381,70 @@ class TestLoadConfig:
         assert config.plan_review.mode == "blocking"
         assert config.plan_review.timeout_seconds == 14400
 
+    # ── Plan section field normalization ─────────────────────────────────
+
+    def test_plan_model_name_deprecated_maps_to_model(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": False, "model_name": "opus"}},
+            tmp_path,
+        )
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as w:
+            _w.simplefilter("always")
+            config = load_config(config_path)
+        assert config.plan.model == "opus"
+        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert any("model_name" in str(x.message) for x in dep_warnings)
+
+    def test_plan_cli_field_accepted(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": False, "cli": "claude", "model": "opus"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        assert config.plan.model == "opus"
+
+    def test_plan_model_as_cli_binary_deprecated(self, tmp_path):
+        # Old-style: plan.model = "claude" (CLI binary) — should map to plan.cli
+        config_path = _write_config(
+            {"plan": {"enabled": False, "model": "claude"}},
+            tmp_path,
+        )
+        import warnings as _w
+
+        with _w.catch_warnings(record=True) as w:
+            _w.simplefilter("always")
+            config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+        assert any("plan.model" in str(x.message) for x in dep_warnings)
+
+    def test_plan_unknown_cli_raises(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": True, "cli": "unknown-cli"}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="Unsupported CLI"):
+            load_config(config_path)
+
+    def test_plan_disabled_unknown_cli_ok(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": False, "cli": "unknown-cli"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.enabled is False
+
+    def test_plan_cli_and_provider_mutual_exclusion(self, tmp_path):
+        config_path = _write_config(
+            {"plan": {"enabled": True, "cli": "claude", "provider": "openai"}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="cannot have both"):
+            load_config(config_path)
+
     def test_plan_agent_review_defaults_disabled(self, tmp_path):
         config_path = _write_config({"project": "test"}, tmp_path)
         config = load_config(config_path)
@@ -561,7 +625,7 @@ class TestLoadConfig:
     def test_plan_agent_review_pool_rejects_same_model_as_planner(self, tmp_path):
         config_path = _write_config(
             {
-                "plan": {"model_name": "sonnet"},
+                "plan": {"model": "sonnet"},
                 "plan_agent_review": {
                     "enabled": True,
                     "pool": [
@@ -578,7 +642,7 @@ class TestLoadConfig:
     def test_plan_agent_review_legacy_rejects_same_model_as_planner(self, tmp_path):
         config_path = _write_config(
             {
-                "plan": {"model_name": "sonnet"},
+                "plan": {"model": "sonnet"},
                 "plan_agent_review": {
                     "enabled": True,
                     "cli": "claude",
@@ -594,7 +658,7 @@ class TestLoadConfig:
     def test_plan_agent_review_allows_different_model_than_planner(self, tmp_path):
         config_path = _write_config(
             {
-                "plan": {"model_name": "sonnet"},
+                "plan": {"model": "sonnet"},
                 "plan_agent_review": {
                     "enabled": True,
                     "pool": [
@@ -746,7 +810,7 @@ class TestLoadConfig:
         config_path = _write_config(
             {
                 "assignment": {"enabled": True},
-                # No explicit plan.model → _plan_model_is_default = True, default = sonnet
+                # No explicit plan.cli/model → _plan_model_is_default = True, default = sonnet
                 "agents": [
                     {
                         "name": "cheap-agent",
@@ -766,7 +830,7 @@ class TestLoadConfig:
                 "plan_agent_review": {
                     "enabled": True,
                     "pool": [
-                        # sonnet is the default plan.model_name but the adaptive planner
+                        # sonnet is the default plan.model but the adaptive planner
                         # will never select it (only haiku/opus are in the pool)
                         {"name": "reviewer-a", "cli": "claude", "model": "sonnet"},
                     ],

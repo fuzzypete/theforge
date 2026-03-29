@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -15,11 +17,15 @@ from .defaults import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    PROVIDER_API_KEY_MAP,
+    PROVIDER_SDK_MAP,
+    SUPPORTED_CLIS,
 )
 from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_agents, _parse_assignment
 from .profiles import _apply_profile_overrides, _auto_assign_models, _parse_profile
-from .secrets import _parse_notifications
+from .secrets import _parse_notifications, _resolve_secret
 from .types import (
+    SUPPORTED_PROVIDERS,
     ForgeConfig,
     HooksConfig,
     LogConfig,
@@ -194,14 +200,49 @@ def load_config(config_path: Path) -> ForgeConfig:
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)
 
     # Plan
-    plan_data = raw.get("plan", {})
-    _plan_model_is_default = "model" not in plan_data and "model_name" not in plan_data
+    plan_data = dict(raw.get("plan", {}))  # mutable copy for deprecation normalization
+
+    # ── Deprecation: model_name → model ──────────────────────────────────
+    if "model_name" in plan_data:
+        warnings.warn(
+            "forge.yaml plan.model_name is deprecated; use plan.model instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if "model" not in plan_data:
+            plan_data["model"] = plan_data.pop("model_name")
+        else:
+            plan_data.pop("model_name")
+
+    # ── Deprecation: old-style model (CLI binary) → cli ──────────────────
+    # In the old schema, plan.model held the CLI binary (e.g. "claude").
+    # Detect this by checking if the value is a known CLI name.
+    if "model" in plan_data and plan_data["model"] in SUPPORTED_CLIS:
+        if "cli" not in plan_data:
+            warnings.warn(
+                "forge.yaml plan.model used as CLI binary is deprecated; use plan.cli instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            plan_data["cli"] = plan_data.pop("model")
+        else:
+            plan_data.pop("model")
+
+    _plan_model_is_default = "cli" not in plan_data and "model" not in plan_data
+
+    # Mutual exclusivity check before construction
+    if "cli" in plan_data and "provider" in plan_data and bool(plan_data.get("enabled", False)):
+        raise ValueError(
+            "forge.yaml plan section cannot have both 'cli' and 'provider' set. Use one."
+        )
+
     plan_timeout_medium_raw = plan_data.get("timeout_medium")
     plan_timeout_large_raw = plan_data.get("timeout_large")
     plan_cfg = PlanConfig(
         enabled=bool(plan_data.get("enabled", False)),
-        model=str(plan_data.get("model", "claude")),
-        model_name=str(plan_data.get("model_name", "sonnet")),
+        cli=plan_data.get("cli", "claude") if plan_data.get("provider") is None else None,
+        model=str(plan_data.get("model", "sonnet")),
+        provider=plan_data.get("provider"),
         budget_usd=float(plan_data.get("budget_usd", 0.50)),
         timeout=int(plan_data.get("timeout", 600)),
         timeout_medium=int(plan_timeout_medium_raw)
@@ -209,6 +250,35 @@ def load_config(config_path: Path) -> ForgeConfig:
         else None,
         timeout_large=int(plan_timeout_large_raw) if plan_timeout_large_raw is not None else None,
     )
+
+    # ── Load-time validation for plan section ────────────────────────────
+    if plan_cfg.enabled:
+        if plan_cfg.cli is not None and plan_cfg.cli not in SUPPORTED_CLIS:
+            raise ValueError(
+                f"Unsupported CLI {plan_cfg.cli!r} in plan section. "
+                f"Supported: {sorted(SUPPORTED_CLIS)}"
+            )
+        if plan_cfg.provider is not None:
+            if plan_cfg.provider not in SUPPORTED_PROVIDERS:
+                raise ValueError(
+                    f"Unsupported provider {plan_cfg.provider!r} in plan section. "
+                    f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+                )
+            sdk = PROVIDER_SDK_MAP.get(plan_cfg.provider)
+            if sdk:
+                try:
+                    importlib.import_module(sdk)
+                except ImportError:
+                    raise ValueError(
+                        f"plan section uses provider '{plan_cfg.provider}' but the required "
+                        f"SDK '{sdk}' is not installed. Please install it."
+                    )
+            api_key_var = PROVIDER_API_KEY_MAP.get(plan_cfg.provider)
+            if api_key_var and not _resolve_secret(api_key_var, secrets):
+                raise ValueError(
+                    f"plan section uses provider '{plan_cfg.provider}' but the required "
+                    f"environment variable ${api_key_var} is not set."
+                )
 
     # Plan review
     plan_review_data = raw.get("plan_review", {})
