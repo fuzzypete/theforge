@@ -115,7 +115,7 @@ def _parse_plan_agent_review(
         if assignment_cfg_enabled and agents_list and plan_model_is_default:
             planner_models = _planner_candidate_models(agents_list)
         else:
-            planner_models = {plan_cfg.model_name}
+            planner_models = {plan_cfg.model}
 
         for profile in plan_agent_review_cfg.profiles:
             if profile.model in planner_models:

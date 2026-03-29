@@ -179,8 +179,9 @@ def _run_plan_phase(
     else:
         plan_profile = ModelProfile(
             name="plan",
-            cli=config.plan.model,
-            model=config.plan.model_name,
+            cli=config.plan.cli,
+            model=config.plan.model,
+            provider=config.plan.provider,
             budget_usd=config.plan.budget_usd,
             timeout_seconds=_plan_timeout,
             allowed_tools=config.preflight_profile.allowed_tools,

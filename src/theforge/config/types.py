@@ -157,11 +157,17 @@ class PlanConfig:
 
     Disabled by default; forge.yaml sets enabled: true to opt in.
     This keeps existing test configurations unaffected.
+
+    Transport — exactly one of cli/provider should be set (cli is the default).
+    Field semantics match ModelProfile: cli=binary name, model=identifier, provider=API transport.
     """
 
     enabled: bool = False
-    model: str = "claude"  # CLI name (the CLI binary, e.g. "claude")
-    model_name: str = "sonnet"  # model identifier passed to the CLI
+    cli: str | None = "claude"  # CLI binary name (e.g. "claude", "codex", "gemini")
+    model: str = "sonnet"  # model identifier passed to the CLI or API
+    provider: str | None = (
+        None  # API transport (e.g. "anthropic", "openai"); mutually exclusive with cli
+    )
     budget_usd: float = 0.50
     timeout: int = 600
     timeout_medium: int | None = None  # override for medium complexity
@@ -276,7 +282,7 @@ class ForgeConfig:
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
-    plan_model_is_default: bool = False  # True when plan.model was not explicitly configured
+    plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
 
     @property
     def review_profile(self) -> ModelProfile:
