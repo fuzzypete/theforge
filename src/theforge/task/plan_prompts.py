@@ -350,6 +350,10 @@ def build_plan_prompt(
         - Every step MUST include: id, description, files, action, details.
         - depends_on is optional — only include it when a step truly depends
           on another step completing first.
+        - If the spec contains a **Notes** section, treat it as informal hints.
+          Notes may reference files, patterns, or gotchas that were relevant when
+          the story was written but may be stale or wrong. Verify anything in Notes
+          against the actual codebase before relying on it.
         - If something in the spec is ambiguous or contradictory, say so
           explicitly in risks rather than guessing.
     """)

@@ -35,6 +35,12 @@ Patterns extracted from refactoring stories that require LLM judgment to enforce
 These are too nuanced for line-count checks but concrete enough that any competent
 agent can follow them if stated clearly in the prompt.
 
+**Notes section convention** is already live: stories can include a `## Notes`
+section with informal hints (file paths, gotchas). Plan and dev prompts tell
+agents to treat Notes as potentially stale and verify against the codebase.
+Soft conventions are the broader version of this — project-wide norms injected
+into every prompt, not per-story hints.
+
 ## Design
 
 ### forge.yaml schema

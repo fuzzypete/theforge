@@ -86,6 +86,11 @@ Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.
 - **If preflight can't understand a story without reading the codebase, the
   story is too implementation-coupled.** Preflight should be able to classify
   it from the story text alone.
+- **`## Notes` is for soft hints, not requirements.** Use a Notes section to
+  capture file paths, patterns, or gotchas discovered during investigation.
+  Notes are informational — they may be stale or wrong by the time the story
+  runs. Agents are instructed to verify Notes against the codebase. Never put
+  acceptance criteria or requirements in Notes.
 - The primary term is "story" throughout the codebase. `TaskSpec` is a
   backward-compat alias for `TaskStory`; prefer `TaskStory` in new code.
 
