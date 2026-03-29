@@ -51,6 +51,16 @@ def _make_deepseek_adapter(
     profile: "ModelProfile",
     secrets: dict[str, str] | None,
 ) -> Any:
-    """Build DeepSeek adapter (reuses OpenAI Chat Completions adapter)."""
+    """Build DeepSeek adapter (reuses OpenAI Chat Completions adapter).
+
+    Forces response_format=json_object so DeepSeek's tool call submissions
+    are always valid JSON — prevents the APPROVE+P1 YAML contradiction bug
+    that causes schema validation failures in both plan review and code review.
+    """
     client = _deepseek_client(profile, secrets)
-    return _make_openai_chat_adapter(profile, secrets, client=client)
+    return _make_openai_chat_adapter(
+        profile,
+        secrets,
+        client=client,
+        response_format={"type": "json_object"},
+    )

@@ -232,6 +232,7 @@ def _make_openai_chat_adapter(
     profile: "ModelProfile",
     secrets: dict[str, str] | None,
     client: Any = None,
+    response_format: dict[str, Any] | None = None,
 ) -> ProviderAdapter:
     """Build OpenAI Chat Completions adapter for AgentLoopManager."""
     if client is None:
@@ -247,6 +248,8 @@ def _make_openai_chat_adapter(
             kwargs["temperature"] = 0
         if tools:
             kwargs["tools"] = tools
+        if response_format is not None:
+            kwargs["response_format"] = response_format
 
         response = client.chat.completions.create(**kwargs)
         msg = response.choices[0].message

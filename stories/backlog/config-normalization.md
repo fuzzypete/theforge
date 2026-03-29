@@ -55,6 +55,22 @@ Emit warnings (not errors) for:
 - `model_name:` used (deprecated)
 - `max_iterations` exceeds a reasonable ceiling (> 50)
 
+### Sprint defaults in forge.yaml
+
+Sprint manifests currently duplicate settings that should have project-level
+defaults (`auto_merge`, `max_parallel`, `budget_usd`). Add a `sprint_defaults:`
+section to forge.yaml that sprint manifests can override:
+
+```yaml
+sprint_defaults:
+  auto_merge: true
+  max_parallel: 4
+  budget_usd: 80.00
+```
+
+Sprint manifest keys take precedence over `sprint_defaults`. This eliminates
+the need to set `auto_merge: true` in every sprint file.
+
 ### Backward compat
 
 All existing valid configs continue to load. Normalization happens at parse
