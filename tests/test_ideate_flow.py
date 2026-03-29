@@ -1,4 +1,4 @@
-"""Tests for the ideate module — multi-LLM deliberation for spec generation."""
+"""Tests for ideate integration flows, round-trip, audit, and CLI (cmd_ideate)."""
 
 from __future__ import annotations
 
@@ -18,23 +18,15 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.ideate import (
-    _SPEC_LINE_LIMIT,
     IdeationResult,
     IdeationRound,
-    _build_phase1_prompt,
-    _build_phase2_prompt,
-    _build_single_model_prompt,
-    _build_synthesis_prompt,
-    _has_prohibited_content,
     _parse_synthesis_output,
-    _validate_frontmatter,
     generate_ideation_audit,
     run_ideation,
 )
 from theforge.runners import AgentResult
 
-# ── Fixtures ─────────────────────────────────────────────────────────
-
+# ── Shared model profiles ─────────────────────────────────────────────
 
 _SYNTH_PROFILE = ModelProfile(
     name="synthesis",
@@ -71,6 +63,49 @@ _SINGLE_REVIEWER = ModelProfile(
     timeout_seconds=300,
     allowed_tools=("Read",),
 )
+
+_SOLO_PROFILE = ModelProfile(
+    name="solo",
+    cli="claude",
+    model="sonnet",
+    budget_usd=1.0,
+    timeout_seconds=300,
+    allowed_tools=("Read",),
+)
+
+# ── Shared spec fixtures ──────────────────────────────────────────────
+
+_VALID_SPEC = """\
+---
+name: "Test Feature"
+slug: test-feature
+pytest_target: tests/
+---
+
+# Test Feature
+
+## Problem
+A test problem.
+
+## Requirements
+- Do the thing.
+
+## Acceptance Criteria
+- [ ] Thing is done.
+"""
+
+_SYNTHESIS_OUTPUT = f"""CONVERGED_ITEMS:
+- Use async IO
+- Add unit tests
+
+DIVERGENT_ITEMS:
+- Whether to use Redis or in-memory cache
+
+SPEC:
+{_VALID_SPEC}"""
+
+
+# ── Small fixtures ────────────────────────────────────────────────────
 
 
 def _make_config(
@@ -119,37 +154,7 @@ def _fail_result(output: str, profile_name: str = "test") -> AgentResult:
     )
 
 
-_VALID_SPEC = """\
----
-name: "Test Feature"
-slug: test-feature
-pytest_target: tests/
----
-
-# Test Feature
-
-## Problem
-A test problem.
-
-## Requirements
-- Do the thing.
-
-## Acceptance Criteria
-- [ ] Thing is done.
-"""
-
-_SYNTHESIS_OUTPUT = f"""CONVERGED_ITEMS:
-- Use async IO
-- Add unit tests
-
-DIVERGENT_ITEMS:
-- Whether to use Redis or in-memory cache
-
-SPEC:
-{_VALID_SPEC}"""
-
-
-# ── Mock helpers ─────────────────────────────────────────────────────
+# ── Mock helpers ──────────────────────────────────────────────────────
 
 # With run_agent_pool for Phase 1 and Phase 2, and run_agent for synthesis,
 # tests patch both "theforge.ideate.run_agent_pool" and "theforge.ideate.run_agent".
@@ -189,115 +194,6 @@ def _make_synth_side_effect(synth_output: str = _SYNTHESIS_OUTPUT, cost: float =
     return _synth
 
 
-# ── Prompt builder tests ─────────────────────────────────────────────
-
-
-def test_phase1_prompt_contains_brief() -> None:
-    brief = "Build a caching layer for the API."
-    prompt = _build_phase1_prompt(brief)
-    assert brief in prompt
-    assert "## Core Ideas" in prompt
-    assert "## Key Constraints" in prompt
-    assert "## Risks and Blind Spots" in prompt
-    assert "## Recommended Approach" in prompt
-
-
-def test_phase2_prompt_includes_all_phase1_outputs() -> None:
-    brief = "Build a caching layer."
-    phase1 = {
-        "reviewer-a": "Idea A content here",
-        "reviewer-b": "Idea B content here",
-    }
-    prompt = _build_phase2_prompt(brief, phase1)
-    assert brief in prompt
-    assert "reviewer-a" in prompt
-    assert "reviewer-b" in prompt
-    assert "Idea A content here" in prompt
-    assert "Idea B content here" in prompt
-    assert "## Agreements" in prompt
-    assert "## Disagreements" in prompt
-
-
-def test_phase2_prompt_no_cross_contamination_in_phase1() -> None:
-    """Phase 1 prompt must NOT include other models' outputs."""
-    brief = "Build something."
-    phase1_prompt = _build_phase1_prompt(brief)
-    assert "reviewer-a" not in phase1_prompt
-    assert "reviewer-b" not in phase1_prompt
-    # No other model's content should appear
-    assert "Idea A" not in phase1_prompt
-    assert "Idea B" not in phase1_prompt
-
-
-def test_synthesis_prompt_includes_all_outputs() -> None:
-    brief = "Build a feature."
-    phase1 = {"model-a": "phase1 output a", "model-b": "phase1 output b"}
-    phase2 = {"model-a": "phase2 review a", "model-b": "phase2 review b"}
-    prompt = _build_synthesis_prompt(brief, phase1, phase2)
-    assert "phase1 output a" in prompt
-    assert "phase1 output b" in prompt
-    assert "phase2 review a" in prompt
-    assert "phase2 review b" in prompt
-    assert "CONVERGED_ITEMS" in prompt
-    assert "DIVERGENT_ITEMS" in prompt
-    assert "SPEC:" in prompt
-    # Lean output instructions
-    assert "observable behavior" in prompt
-    assert "Function signatures" in prompt
-    assert "Code snippets" in prompt
-    assert "150 lines" in prompt
-
-
-def test_single_model_prompt_includes_lean_constraints() -> None:
-    brief = "Build a caching layer."
-    prompt = _build_single_model_prompt(brief)
-    assert "observable behavior" in prompt
-    assert "Function signatures" in prompt
-    assert "Code snippets" in prompt
-    assert "150 lines" in prompt
-
-
-# ── Round-trip test ──────────────────────────────────────────────────
-
-
-def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
-    """Spec produced by run_ideation parses into a non-empty dev prompt."""
-    from theforge.task import TaskStory, build_dev_prompt, parse_spec_frontmatter
-
-    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
-    output_path = tmp_path / "specs" / "test-feature.md"
-
-    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
-        return _ok_result(_SYNTHESIS_OUTPUT, "solo")
-
-    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
-        result = run_ideation(config, "Build a feature", output_path, max_rounds=1)
-
-    assert result.success
-    assert output_path.exists()
-
-    fm = parse_spec_frontmatter(output_path)
-    task = TaskStory(
-        name=fm.get("name", "test"),
-        story_path=output_path,
-        slug=fm.get("slug", "test"),
-        pytest_target=fm.get("pytest_target", "tests/"),
-    )
-    spec_content = output_path.read_text(encoding="utf-8")
-    dev_prompt = build_dev_prompt(
-        task,
-        workspace_path=tmp_path / "workspace",
-        branch_name="feat/test-feature",
-        story_content=spec_content,
-        gate_command="make gate",
-    )
-    assert len(dev_prompt) > 0
-    assert "Test Feature" in dev_prompt
-
-
-# ── Line-limit enforcement tests ─────────────────────────────────────
-
-
 def _make_long_spec(line_count: int = 160) -> str:
     """Build a spec with valid frontmatter but more than 150 lines total."""
     padding = "\n".join(f"- AC item {i}" for i in range(line_count))
@@ -318,154 +214,56 @@ A test problem.
 """
 
 
-def test_single_model_overlong_spec_returns_failed(tmp_path: Path) -> None:
-    """Single-model output exceeding _SPEC_LINE_LIMIT → failed IdeationResult."""
-    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
-    long_output = f"SPEC:\n{_make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)}"
-
-    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
-        return _ok_result(long_output, "solo")
-
-    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
-        result = run_ideation(config, "A brief", None, max_rounds=1)
-
-    assert result.success is False
-    assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
-
-
-def test_synthesis_overlong_spec_returns_failed(tmp_path: Path) -> None:
-    """Multi-model synthesis output exceeding _SPEC_LINE_LIMIT → failed IdeationResult."""
-    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
-    long_spec = _make_long_spec(line_count=_SPEC_LINE_LIMIT + 10)
-    long_synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{long_spec}"
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
-        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(long_synthesis)),
-    ):
-        result = run_ideation(config, "A brief", None, max_rounds=1)
-
-    assert result.success is False
-    assert str(_SPEC_LINE_LIMIT) in result.final_synthesis
-
-
-# ── Prohibited-content detection unit tests ──────────────────────────
-
-
-def test_has_prohibited_content_clean_spec() -> None:
-    """Clean spec with no code blocks or signatures returns (False, '')."""
-    found, reason = _has_prohibited_content(_VALID_SPEC)
-    assert found is False
-    assert reason == ""
-
-
-def test_has_prohibited_content_code_block() -> None:
-    spec = _VALID_SPEC + "\n```python\nprint('hi')\n```\n"
-    found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "code block" in reason
-
-
-def test_has_prohibited_content_function_def() -> None:
-    spec = _VALID_SPEC + "\ndef my_func(arg1, arg2):\n    pass\n"
-    found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "function" in reason
-
-
-def test_has_prohibited_content_class_def() -> None:
-    spec = _VALID_SPEC + "\nclass MyClass:\n    pass\n"
-    found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "class" in reason
-
-
-def test_has_prohibited_content_dataclass() -> None:
-    spec = _VALID_SPEC + "\n@dataclass\nclass MyModel:\n    field: str\n"
-    found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "dataclass" in reason
-
-
-def test_has_prohibited_content_bare_signature() -> None:
-    """Bare typed function signature (no 'def') is detected as prohibited."""
-    spec = _VALID_SPEC + "\nmy_func(a: int) -> bool\n"
-    found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "signature" in reason
-
-
-def test_has_prohibited_content_prose_with_parenthetical() -> None:
-    """Prose lines with parenthetical text (e.g. in Context/Background) are not flagged."""
-    extra = "\n## Context\nBackground (current state): slow.\nContext (as-is): no cache.\n"
-    spec = _VALID_SPEC + extra
-    found, reason = _has_prohibited_content(spec)
-    assert found is False
-    assert reason == ""
-
-
-# ── Prohibited-content enforcement integration tests ──────────────────
-
-
 def _make_spec_with_code_block() -> str:
     return (
         _VALID_SPEC + "\n## Implementation\n```python\ndef cache_get(key):\n    return None\n```\n"
     )
 
 
-def test_single_model_spec_with_code_block_returns_failed(tmp_path: Path) -> None:
-    """Single-model output with a fenced code block → failed IdeationResult."""
-    config = _make_config(tmp_path, [_SINGLE_REVIEWER], None)
-    spec_with_code = _make_spec_with_code_block()
-    output = f"SPEC:\n{spec_with_code}"
-
-    def mock_agent(*, prompt: str, profile, working_dir: Path, **kwargs) -> AgentResult:
-        return _ok_result(output, "solo")
-
-    with patch("theforge.ideate.run_agent", side_effect=mock_agent):
-        result = run_ideation(config, "A brief", None, max_rounds=1)
-
-    assert result.success is False
-    assert "prohibited" in result.final_synthesis.lower()
-
-
-def test_synthesis_spec_with_function_def_returns_failed(tmp_path: Path) -> None:
-    """Multi-model synthesis output with a function definition → failed IdeationResult."""
-    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
-    spec_with_func = _VALID_SPEC + "\ndef build_cache(ttl: int) -> Cache:\n    pass\n"
-    synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{spec_with_func}"
-
-    with (
-        patch("theforge.ideate.run_agent_pool", side_effect=_make_pool_side_effect()),
-        patch("theforge.ideate.run_agent", side_effect=_make_synth_side_effect(synthesis)),
-    ):
-        result = run_ideation(config, "A brief", None, max_rounds=1)
-
-    assert result.success is False
-    assert "prohibited" in result.final_synthesis.lower()
+def _make_forge_config_ideate(tmp_path: Path) -> ForgeConfig:
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}", path_pattern="{slug}", branch_pattern="forge/{slug}"
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=_SOLO_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[_SOLO_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+    )
 
 
-# ── Synthesis parsing tests ──────────────────────────────────────────
+def _make_ideation_result_cli(tmp_path: Path, *, write_spec: bool = True) -> IdeationResult:
+    spec_path = (tmp_path / "specs" / "test-feature.md") if write_spec else None
+    round_ = IdeationRound(
+        round_number=1,
+        phase1_outputs={"solo": "ideas"},
+        phase2_outputs={},
+        converged_items=["item1"],
+        divergent_items=[],
+        synthesis_output=_VALID_SPEC,
+    )
+    return IdeationResult(
+        success=True,
+        story_path=spec_path,
+        rounds=[round_],
+        final_synthesis=_VALID_SPEC,
+        residual_divergence=[],
+        total_cost_usd=0.42,
+        human_decision_required=False,
+    )
 
 
-def test_parse_synthesis_output_extracts_sections() -> None:
-    converged, divergent, spec_text = _parse_synthesis_output(_SYNTHESIS_OUTPUT)
-    assert "Use async IO" in converged
-    assert "Add unit tests" in converged
-    assert "Whether to use Redis or in-memory cache" in divergent
-    assert "---" in spec_text
-    assert "Test Feature" in spec_text
+def _make_ideate_args(brief="build a thing", *, output=None, rounds=2, dry_run=False, config=None):
+    return argparse.Namespace(
+        brief=brief, output=output, rounds=rounds, dry_run=dry_run, config=config
+    )
 
 
-def test_validate_frontmatter_valid() -> None:
-    assert _validate_frontmatter(_VALID_SPEC) is True
-
-
-def test_validate_frontmatter_invalid() -> None:
-    assert _validate_frontmatter("# Just markdown\nNo frontmatter here.") is False
-
-
-# ── run_ideation tests ────────────────────────────────────────────────
+# ── run_ideation integration tests ───────────────────────────────────
 
 
 def test_phase1_fanout(tmp_path: Path) -> None:
@@ -1006,67 +804,6 @@ pytest_target: tests/
     assert any("--debug" in item for item in divergent)
 
 
-# ── cmd_ideate CLI integration tests (moved from test_cli.py) ─────────
-
-_SOLO_PROFILE = ModelProfile(
-    name="solo",
-    cli="claude",
-    model="sonnet",
-    budget_usd=1.0,
-    timeout_seconds=300,
-    allowed_tools=("Read",),
-)
-_VALID_SPEC = """\
----
-name: "Test Feature"
-slug: test-feature
-pytest_target: tests/
----
-
-# Test Feature
-
-## Problem
-A test problem.
-"""
-
-
-def _make_forge_config_ideate(tmp_path: Path) -> ForgeConfig:
-    return ForgeConfig(
-        project="test",
-        project_root=tmp_path,
-        workspace=WorkspaceConfig(
-            create_command="mkdir -p {slug}", path_pattern="{slug}", branch_pattern="forge/{slug}"
-        ),
-        validation=DEFAULT_VALIDATION,
-        dev_profile=_SOLO_PROFILE,
-        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
-        review_pool=[_SOLO_PROFILE],
-        synthesis_profile=None,
-        retry=RetryPolicy(),
-    )
-
-
-def _make_ideation_result_cli(tmp_path: Path, *, write_spec: bool = True) -> IdeationResult:
-    spec_path = (tmp_path / "specs" / "test-feature.md") if write_spec else None
-    round_ = IdeationRound(
-        round_number=1,
-        phase1_outputs={"solo": "ideas"},
-        phase2_outputs={},
-        converged_items=["item1"],
-        divergent_items=[],
-        synthesis_output=_VALID_SPEC,
-    )
-    return IdeationResult(
-        success=True,
-        story_path=spec_path,
-        rounds=[round_],
-        final_synthesis=_VALID_SPEC,
-        residual_divergence=[],
-        total_cost_usd=0.42,
-        human_decision_required=False,
-    )
-
-
 def test_none_cost_usd_does_not_crash_accumulation(tmp_path: Path) -> None:
     """cost_usd=None from a pool agent must not crash total_cost accumulation."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
@@ -1115,9 +852,9 @@ def test_plain_text_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
 
 def test_secrets_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
     """config.secrets are forwarded to run_agent_pool during ideation."""
-    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
     from dataclasses import replace
 
+    config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
     config = replace(config, secrets={"GOOGLE_API_KEY": "test-key"})
     captured_secrets: list[dict] = []
 
@@ -1134,10 +871,7 @@ def test_secrets_forwarded_to_run_agent_pool(tmp_path: Path) -> None:
     assert all("GOOGLE_API_KEY" in s for s in captured_secrets)
 
 
-def _make_ideate_args(brief="build a thing", *, output=None, rounds=2, dry_run=False, config=None):
-    return argparse.Namespace(
-        brief=brief, output=output, rounds=rounds, dry_run=dry_run, config=config
-    )
+# ── cmd_ideate CLI integration tests ─────────────────────────────────
 
 
 class TestCmdIdeate:

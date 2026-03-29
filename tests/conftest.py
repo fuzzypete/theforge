@@ -6,6 +6,56 @@ from unittest.mock import patch
 
 import pytest
 
+from theforge.config import ModelProfile
+
+
+@pytest.fixture
+def dev_profile() -> ModelProfile:
+    return ModelProfile(
+        name="dev",
+        cli="claude",
+        model="sonnet",
+        budget_usd=2.0,
+        timeout_seconds=900,
+        allowed_tools=("Read", "Edit", "Write", "Bash"),
+    )
+
+
+@pytest.fixture
+def review_profile() -> ModelProfile:
+    return ModelProfile(
+        name="review",
+        cli="claude",
+        model="opus",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Bash"),
+    )
+
+
+@pytest.fixture
+def codex_profile() -> ModelProfile:
+    return ModelProfile(
+        name="codex-reviewer",
+        cli="codex",
+        model="o4-mini",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+
+
+@pytest.fixture
+def gemini_profile() -> ModelProfile:
+    return ModelProfile(
+        name="gemini-reviewer",
+        cli="gemini",
+        model="gemini-2.5-pro",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=(),
+    )
+
 
 @pytest.fixture(autouse=True)
 def _isolate_log_level():
