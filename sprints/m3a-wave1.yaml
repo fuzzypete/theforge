@@ -1,0 +1,7 @@
+name: "M3a Wave 1"
+budget_usd: 60
+max_parallel: 3
+stories:
+  - stories/backlog/sprint-concurrency-guard.md
+  - stories/backlog/plan-reviewer-diversity.md
+  - stories/backlog/config-normalization.md
