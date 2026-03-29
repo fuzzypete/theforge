@@ -164,6 +164,17 @@ def _select_reviewers(
             candidates.append(a)
             seen_names.add(a.name)
 
+    # If no authed candidates exist, fall back to unauthed agents so the pool
+    # is never empty (mirrors the fallback logic in assign_models for dev/planner).
+    if not candidates:
+        strong_any = _agents_by_tier(agents, "strong")
+        tier_any = _agents_by_tier(agents, tier) if tier != "strong" else []
+        seen_names = set()
+        for a in strong_any + tier_any:
+            if a.name not in seen_names:
+                candidates.append(a)
+                seen_names.add(a.name)
+
     if not candidates:
         return []
 

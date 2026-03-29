@@ -549,3 +549,19 @@ def test_code_reviewer_falls_back_when_only_one_model():
 
     assert len(decision.code_reviewers) == 1
     assert decision.code_reviewers[0].model == "opus"
+
+
+def test_plan_reviewer_non_empty_when_no_auth(monkeypatch):
+    """When no agents have auth, plan_reviewers falls back to unauthed agents (not empty)."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("gemini-pro", "google", "gemini-pro", 5.0, 900, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    assert len(decision.plan_reviewers) >= 1
