@@ -202,22 +202,34 @@ def load_config(config_path: Path) -> ForgeConfig:
     # Plan
     plan_data = dict(raw.get("plan", {}))  # mutable copy for deprecation normalization
 
-    # ── Deprecation: model_name → model ──────────────────────────────────
+    # ── Deprecation: normalize legacy field names ─────────────────────────
+    # Legacy shape: model=<cli-binary> model_name=<model-id>
+    #               (e.g. model: claude, model_name: opus)
+    # New shape:    cli=<cli-binary>   model=<model-id>
+    #
+    # Process model_name first (it always wins as the model identifier),
+    # then handle old-style model-as-CLI-binary.
     if "model_name" in plan_data:
         warnings.warn(
             "forge.yaml plan.model_name is deprecated; use plan.model instead",
             DeprecationWarning,
             stacklevel=2,
         )
-        if "model" not in plan_data:
-            plan_data["model"] = plan_data.pop("model_name")
-        else:
-            plan_data.pop("model_name")
+        # model_name always becomes the canonical model identifier.
+        # If model is also present and looks like a CLI binary, promote it to cli first.
+        _old_model = plan_data.get("model")
+        if _old_model is not None and _old_model in SUPPORTED_CLIS and "cli" not in plan_data:
+            warnings.warn(
+                "forge.yaml plan.model used as CLI binary is deprecated; use plan.cli instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            plan_data["cli"] = _old_model
+        plan_data["model"] = plan_data.pop("model_name")
 
-    # ── Deprecation: old-style model (CLI binary) → cli ──────────────────
-    # In the old schema, plan.model held the CLI binary (e.g. "claude").
-    # Detect this by checking if the value is a known CLI name.
-    if "model" in plan_data and plan_data["model"] in SUPPORTED_CLIS:
+    elif "model" in plan_data and plan_data["model"] in SUPPORTED_CLIS:
+        # ── Deprecation: old-style model (CLI binary) → cli ──────────────────
+        # In the old schema, plan.model held the CLI binary (e.g. "claude").
         if "cli" not in plan_data:
             warnings.warn(
                 "forge.yaml plan.model used as CLI binary is deprecated; use plan.cli instead",

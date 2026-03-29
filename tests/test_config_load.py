@@ -421,6 +421,20 @@ class TestLoadConfig:
         dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
         assert any("plan.model" in str(x.message) for x in dep_warnings)
 
+    def test_plan_both_legacy_fields_preserved(self, tmp_path):
+        # Regression: model: claude + model_name: opus must yield cli=claude, model=opus
+        import warnings as _w
+
+        config_path = _write_config(
+            {"plan": {"enabled": False, "model": "claude", "model_name": "opus"}},
+            tmp_path,
+        )
+        with _w.catch_warnings(record=True):
+            _w.simplefilter("always")
+            config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        assert config.plan.model == "opus"
+
     def test_plan_unknown_cli_raises(self, tmp_path):
         config_path = _write_config(
             {"plan": {"enabled": True, "cli": "unknown-cli"}},
