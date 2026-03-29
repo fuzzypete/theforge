@@ -30,7 +30,7 @@ from theforge.review import (
     plan_review_findings_to_text,
 )
 from theforge.sessions import save_sessions
-from theforge.task import TaskSpec, build_plan_prompt, build_plan_review_prompt, parse_plan_output
+from theforge.task import TaskStory, build_plan_prompt, build_plan_review_prompt, parse_plan_output
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -78,7 +78,7 @@ def _ensure_runners() -> None:
 def _run_plan_phase(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     plan_path: Path | None,
@@ -304,7 +304,7 @@ def _run_plan_agent_review(
     *,
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     plan_profile: ModelProfile,
@@ -619,7 +619,7 @@ def _run_human_plan_review(
     *,
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     plan_profile: ModelProfile,
     plan_text: str,

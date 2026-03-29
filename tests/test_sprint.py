@@ -1404,7 +1404,7 @@ class TestMaxParallelPrecedence:
 
 def _make_task(
     slug: str, depends_on: list[str] | None = None, tmp_path: Path | None = None
-) -> "TaskSpec":  # noqa: F821
+) -> "TaskStory":  # noqa: F821
     from theforge.task import TaskStory
 
     path = (tmp_path or Path("/tmp")) / f"{slug}.md"

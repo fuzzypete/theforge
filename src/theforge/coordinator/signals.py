@@ -11,7 +11,7 @@ from .log_tee import _end_run_log_tee, _safe_signal
 
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
-    from theforge.task import TaskStory as TaskSpec
+    from theforge.task import TaskStory
 
     from .logging import StructuredLogger
     from .state import CoordinatorResult, CoordinatorState
@@ -23,7 +23,7 @@ def _make_sigterm_handler(
     prev_handler: object,
     state: "CoordinatorState | None" = None,
     task_start: float = 0.0,
-    task: "TaskSpec | None" = None,
+    task: "TaskStory | None" = None,
     config: "ForgeConfig | None" = None,
 ) -> object:
     """Return a SIGTERM handler that emits run_end:crashed, closes the tee, and re-raises.
@@ -81,7 +81,7 @@ def _set_timeout_resume(state: "CoordinatorState", gate_result: str) -> None:
 def _fire_post_run_hook(
     config: "ForgeConfig",
     state: "CoordinatorState",
-    task: "TaskSpec",
+    task: "TaskStory",
     result: "CoordinatorResult",
     run_id: str,
     elapsed: float,

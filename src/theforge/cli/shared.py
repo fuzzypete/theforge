@@ -16,7 +16,7 @@ from theforge.config import (
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.state import CoordinatorResult
-from theforge.task import TaskSpec, TaskStory, build_dev_prompt, build_review_prompt, load_story
+from theforge.task import TaskStory, build_dev_prompt, build_review_prompt, load_story
 
 _SECRETS_FILE = ".forge/.env"
 
@@ -92,7 +92,7 @@ def _append_history(audits_dir: Path, record: dict) -> None:
         pass  # best-effort — never block a run on history write failure
 
 
-def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskSpec) -> Path:
+def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory) -> Path:
     """Write the audit log to .forge/audits/forge_audit.yaml and .forge/audit.yaml."""
     audit = generate_audit_log(config, task, result)
     audits_dir = config.project_root / ".forge" / "audits"

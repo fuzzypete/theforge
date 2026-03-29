@@ -13,7 +13,7 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig
 from theforge.sessions import load_sessions
-from theforge.task import TaskSpec
+from theforge.task import TaskStory
 from theforge.task import load_story as load_spec
 
 from . import util as _cu
@@ -24,7 +24,7 @@ from .state import CoordinatorResult, CoordinatorState, Phase
 
 def _setup_resume_entry(
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     *,
     initial_phase: Phase,

@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.config import ForgeConfig
-from theforge.task import TaskSpec, build_preflight_prompt
+from theforge.task import TaskStory, build_preflight_prompt
 
 from . import util as _cu
 from .audit import has_review_approve
@@ -71,7 +71,7 @@ def _ensure_runners() -> None:
 def _run_preflight_phase(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     branch_name: str,

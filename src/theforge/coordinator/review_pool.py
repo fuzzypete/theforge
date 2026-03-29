@@ -25,7 +25,7 @@ from theforge.review import (
     parse_review_output,
 )
 from theforge.sessions import save_sessions
-from theforge.task import TaskSpec, build_review_prompt
+from theforge.task import TaskStory, build_review_prompt
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -64,7 +64,7 @@ def _ensure_runners() -> None:
 def _run_review_pool(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     branch_name: str,

@@ -15,7 +15,7 @@ from .manifest import SprintManifest, SprintResult
 if TYPE_CHECKING:
     from ..config import ForgeConfig
     from ..coordinator.state import CoordinatorResult
-    from ..task import TaskStory as TaskSpec
+    from ..task import TaskStory
 
 
 def _log(msg: str) -> None:
@@ -220,7 +220,7 @@ def _write_sprint_summary(
 
 def _write_story_audit(
     config: "ForgeConfig",
-    task: "TaskSpec",
+    task: "TaskStory",
     result: "CoordinatorResult",
 ) -> None:
     """Write per-story audit.yaml to the worktree and the durable log directory.

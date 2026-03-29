@@ -16,8 +16,7 @@ from theforge.review import (
     _best_individual_result,
     review_to_dev_handoff,
 )
-from theforge.task import TaskStory as TaskSpec
-from theforge.task import build_review_prompt
+from theforge.task import TaskStory, build_review_prompt
 
 from .completion import _append_cycle_history, _finalize_approve
 from .logging import StructuredLogger
@@ -75,7 +74,7 @@ def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
 def _run_escalate_gate(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     workspace_path: Path,
     branch_name: str,
     task_start: float,
@@ -291,7 +290,7 @@ def _log_review_findings(
 def _handle_interactive_review_decision(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     parsed_review: ReviewResult,
     workspace_path: Path,
     branch_name: str,
@@ -433,7 +432,7 @@ def _handle_interactive_review_decision(
 def _run_review_phase(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     branch_name: str,
@@ -726,7 +725,7 @@ def _run_review_phase(
 def _run_review_only_phase(
     state: CoordinatorState,
     config: ForgeConfig,
-    task: TaskSpec,
+    task: TaskStory,
     story_content: str,
     workspace_path: Path,
     branch_name: str,
