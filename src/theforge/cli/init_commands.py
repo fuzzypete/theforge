@@ -128,12 +128,51 @@ def cmd_init(args: "argparse.Namespace") -> int:
     return 0
 
 
+def _get_dev_suffix() -> str:
+    """Return '-dev+g<hash>' when editable install is ahead of the latest tag.
+
+    Returns an empty string when:
+    - not an editable install (no direct_url.json)
+    - at exact tag (distance == 0)
+    - git is unavailable
+    """
+    try:
+        dist = importlib.metadata.distribution("theforge")
+        if not dist.read_text("direct_url.json"):
+            return ""
+    except (FileNotFoundError, importlib.metadata.PackageNotFoundError):
+        return ""
+
+    try:
+        # Output format: <tag>-<distance>-g<hash>  e.g. v0.2.1-5-g8704ff0
+        describe = subprocess.check_output(
+            ["git", "describe", "--tags", "--long"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return ""
+
+    parts = describe.rsplit("-", 2)
+    if len(parts) != 3:
+        return ""
+    _, distance_str, short_hash = parts
+    try:
+        distance = int(distance_str)
+    except ValueError:
+        return ""
+
+    if distance == 0:
+        return ""
+    return f"-dev+{short_hash}"
+
+
 def cmd_version(args: "argparse.Namespace") -> int:
     """Print the installed version of TheForge."""
 
     import theforge
 
-    version = theforge.__version__
+    version = theforge.__version__ + _get_dev_suffix()
     print(f"TheForge version: {version}")
 
     # Check for editable install

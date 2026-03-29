@@ -1232,3 +1232,137 @@ class TestDaemonDeprecation:
         dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(dep_warnings) >= 1
         assert "deprecated" in str(dep_warnings[0].message).lower()
+
+
+# ── Version dev-suffix tests ───────────────────────────────────────────────
+
+
+class TestGetDevSuffix:
+    """Unit tests for _get_dev_suffix() in init_commands."""
+
+    from theforge.cli.init_commands import _get_dev_suffix  # noqa: E402
+
+    def _patch(self, direct_url_content, describe_output=None, describe_raises=False):
+        """Build a context-manager stack for common _get_dev_suffix patches."""
+        from unittest.mock import MagicMock, patch
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = direct_url_content
+
+        patches = [
+            patch(
+                "theforge.cli.init_commands.importlib.metadata.distribution",
+                return_value=mock_dist,
+            ),
+        ]
+        if describe_raises is not False:
+            patches.append(
+                patch(
+                    "theforge.cli.init_commands.subprocess.check_output",
+                    side_effect=describe_raises,
+                )
+            )
+        elif describe_output is not None:
+            patches.append(
+                patch(
+                    "theforge.cli.init_commands.subprocess.check_output",
+                    return_value=describe_output,
+                )
+            )
+        return patches
+
+    def test_ahead_of_tag_returns_dev_suffix(self):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = '{"url": "file:///src/theforge"}'
+
+        with (
+            patch(
+                "theforge.cli.init_commands.importlib.metadata.distribution",
+                return_value=mock_dist,
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                return_value="v0.2.1-5-g8704ff0",
+            ),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == "-dev+g8704ff0"
+
+    def test_at_exact_tag_returns_empty(self):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = '{"url": "file:///src/theforge"}'
+
+        with (
+            patch(
+                "theforge.cli.init_commands.importlib.metadata.distribution",
+                return_value=mock_dist,
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                return_value="v0.2.1-0-gabcdef1",
+            ),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_no_editable_install_returns_empty(self):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = None  # no direct_url.json
+
+        with patch(
+            "theforge.cli.init_commands.importlib.metadata.distribution",
+            return_value=mock_dist,
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_git_unavailable_returns_empty(self):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = '{"url": "file:///src/theforge"}'
+
+        with (
+            patch(
+                "theforge.cli.init_commands.importlib.metadata.distribution",
+                return_value=mock_dist,
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                side_effect=FileNotFoundError("git not found"),
+            ),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_package_not_found_returns_empty(self):
+        import importlib.metadata
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        with patch(
+            "theforge.cli.init_commands.importlib.metadata.distribution",
+            side_effect=importlib.metadata.PackageNotFoundError("theforge"),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
