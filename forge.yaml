@@ -49,6 +49,7 @@ profiles:
     - name: gemini-reviewer
       provider: google
       model: gemini-3.1-pro-preview-customtools
+      # API mode — uses GOOGLE_API_KEY, not the gemini CLI
       review_role: edge-cases
       budget_usd: 2.00
       timeout_seconds: 300
