@@ -304,14 +304,20 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
             )
         )
 
-    # Cross-validation: same principle as code review schema
+    # Cross-validation
     if verdict == "REJECT" and not findings:
         errors.append("REJECT verdict without findings — cannot justify rejection")
     if verdict == "APPROVE" and blocking_count > 0:
-        errors.append(
-            f"verdict is APPROVE but {blocking_count} P0/P1 finding(s) exist — "
-            "cannot approve with blocking findings"
-        )
+        # Reviewer intended to approve but flagged concerns as P1.
+        # Trust the verdict — downgrade P1s to advisory P2s so the findings
+        # reach the dev agent instead of discarding the entire response.
+        for i, f in enumerate(findings):
+            if f.severity in ("P0", "P1"):
+                findings[i] = PlanReviewFinding(
+                    severity="P2",
+                    description=f.description,
+                    suggestion=f.suggestion,
+                )
 
     # Any parse error on APPROVE → demote to REJECT
     if verdict == "APPROVE" and errors:
