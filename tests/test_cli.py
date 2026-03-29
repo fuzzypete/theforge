@@ -1232,3 +1232,166 @@ class TestDaemonDeprecation:
         dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(dep_warnings) >= 1
         assert "deprecated" in str(dep_warnings[0].message).lower()
+
+
+# ── Version dev-suffix tests ───────────────────────────────────────────────
+
+
+class TestGetDevSuffix:
+    """Unit tests for _get_dev_suffix() and _editable_source_path()."""
+
+    def test_ahead_of_tag_returns_dev_suffix(self):
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        with (
+            patch(
+                "theforge.cli.init_commands._editable_source_path",
+                return_value="/src/theforge",
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                return_value="v0.2.1-5-g8704ff0",
+            ),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == "-dev+g8704ff0"
+
+    def test_at_exact_tag_returns_empty(self):
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        with (
+            patch(
+                "theforge.cli.init_commands._editable_source_path",
+                return_value="/src/theforge",
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                return_value="v0.2.1-0-gabcdef1",
+            ),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_no_editable_install_returns_empty(self):
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        with patch(
+            "theforge.cli.init_commands._editable_source_path",
+            return_value=None,
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_git_unavailable_returns_empty(self):
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        with (
+            patch(
+                "theforge.cli.init_commands._editable_source_path",
+                return_value="/src/theforge",
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                side_effect=FileNotFoundError("git not found"),
+            ),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_package_not_found_returns_empty(self):
+        import importlib.metadata
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        with patch(
+            "theforge.cli.init_commands.importlib.metadata.distribution",
+            side_effect=importlib.metadata.PackageNotFoundError("theforge"),
+        ):
+            result = _get_dev_suffix()
+
+        assert result == ""
+
+    def test_git_runs_in_editable_source_dir_not_cwd(self, tmp_path):
+        """git describe must use cwd=source_path, not the caller's directory."""
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _get_dev_suffix
+
+        source = "/opt/myproject/theforge"
+        with (
+            patch(
+                "theforge.cli.init_commands._editable_source_path",
+                return_value=source,
+            ),
+            patch(
+                "theforge.cli.init_commands.subprocess.check_output",
+                return_value="v0.2.1-3-gabc1234",
+            ) as mock_co,
+        ):
+            result = _get_dev_suffix()
+
+        assert result == "-dev+gabc1234"
+        mock_co.assert_called_once()
+        _, kwargs = mock_co.call_args
+        assert kwargs.get("cwd") == source
+
+
+class TestEditableSourcePath:
+    """Unit tests for _editable_source_path()."""
+
+    def test_file_url_returns_path(self):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.cli.init_commands import _editable_source_path
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = '{"url": "file:///home/user/src/theforge"}'
+        with patch(
+            "theforge.cli.init_commands.importlib.metadata.distribution",
+            return_value=mock_dist,
+        ):
+            result = _editable_source_path()
+
+        assert result == "/home/user/src/theforge"
+
+    def test_no_direct_url_returns_none(self):
+        from unittest.mock import MagicMock, patch
+
+        from theforge.cli.init_commands import _editable_source_path
+
+        mock_dist = MagicMock()
+        mock_dist.read_text.return_value = None
+        with patch(
+            "theforge.cli.init_commands.importlib.metadata.distribution",
+            return_value=mock_dist,
+        ):
+            result = _editable_source_path()
+
+        assert result is None
+
+    def test_package_not_found_returns_none(self):
+        import importlib.metadata
+        from unittest.mock import patch
+
+        from theforge.cli.init_commands import _editable_source_path
+
+        with patch(
+            "theforge.cli.init_commands.importlib.metadata.distribution",
+            side_effect=importlib.metadata.PackageNotFoundError("theforge"),
+        ):
+            result = _editable_source_path()
+
+        assert result is None

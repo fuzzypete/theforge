@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -128,45 +129,107 @@ def cmd_init(args: "argparse.Namespace") -> int:
     return 0
 
 
+def _editable_source_path() -> str | None:
+    """Return the filesystem path of the editable theforge checkout, or None.
+
+    Reads direct_url.json (present only for editable/VCS installs) and
+    converts the ``file://`` URL to an absolute path.  Returns None for
+    PyPI installs or when the metadata is unavailable.
+    """
+    try:
+        dist = importlib.metadata.distribution("theforge")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+    text = dist.read_text("direct_url.json")
+    if not text:
+        return None
+
+    try:
+        data = json.loads(text)
+        url: str = data.get("url", "")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+    if not url.startswith("file://"):
+        return None
+    # file:///abs/path  →  /abs/path
+    return url[len("file://") :]
+
+
+def _get_dev_suffix(source_path: str | None = None) -> str:
+    """Return '-dev+g<hash>' when editable install is ahead of the latest tag.
+
+    Pass *source_path* (the editable checkout directory) to avoid a second
+    call to ``_editable_source_path``.  Returns an empty string when:
+    - not an editable install (no direct_url.json)
+    - at exact tag (distance == 0)
+    - git is unavailable
+    """
+    if source_path is None:
+        source_path = _editable_source_path()
+    if source_path is None:
+        return ""
+
+    try:
+        # Output format: <tag>-<distance>-g<hash>  e.g. v0.2.1-5-g8704ff0
+        describe = subprocess.check_output(
+            ["git", "describe", "--tags", "--long"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            cwd=source_path,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return ""
+
+    parts = describe.rsplit("-", 2)
+    if len(parts) != 3:
+        return ""
+    _, distance_str, short_hash = parts
+    try:
+        distance = int(distance_str)
+    except ValueError:
+        return ""
+
+    if distance == 0:
+        return ""
+    return f"-dev+{short_hash}"
+
+
 def cmd_version(args: "argparse.Namespace") -> int:
     """Print the installed version of TheForge."""
 
     import theforge
 
-    version = theforge.__version__
+    source_path = _editable_source_path()
+    version = theforge.__version__ + _get_dev_suffix(source_path)
     print(f"TheForge version: {version}")
 
-    # Check for editable install
-    try:
-        dist = importlib.metadata.distribution("theforge")
-        # Check for 'direct_url.json' which indicates an editable install
-        if dist.read_text("direct_url.json"):
-            # Try to get git info
-            try:
-                # Get branch name
-                branch = subprocess.check_output(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-                # Get commit hash
-                commit = subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-                # Get tag distance
-                tag_distance = subprocess.check_output(
-                    ["git", "describe", "--tags", "--long"],
-                    text=True,
-                    stderr=subprocess.DEVNULL,
-                ).strip()
-                print(f"  Branch: {branch}")
-                print(f"  Commit: {commit}")
-                print(f"  Tag distance: {tag_distance}")
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                print("  (Git information not available)")
-    except (FileNotFoundError, importlib.metadata.PackageNotFoundError):
-        pass  # Not an editable install or direct_url.json not found
+    if source_path is not None:
+        # Try to get git info from the editable checkout
+        try:
+            branch = subprocess.check_output(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                cwd=source_path,
+            ).strip()
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                cwd=source_path,
+            ).strip()
+            tag_distance = subprocess.check_output(
+                ["git", "describe", "--tags", "--long"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                cwd=source_path,
+            ).strip()
+            print(f"  Branch: {branch}")
+            print(f"  Commit: {commit}")
+            print(f"  Tag distance: {tag_distance}")
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            print("  (Git information not available)")
 
     return 0
