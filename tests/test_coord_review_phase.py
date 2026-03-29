@@ -1446,3 +1446,109 @@ class TestEscalateGate:
         assert gate_call_count["n"] >= 1
         assert result.phase == Phase.ESCALATE
         assert result.state.escalate_decision == "reject"
+
+
+class TestCoordinatorReviewCycleMetadata:
+    """Test that review cycle metadata is populated correctly."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_metadata_present_on_approve(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Audit metadata is populated after successful pool merge."""
+        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
+        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(
+            success=True, output="Implemented.", profile_name="dev"
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+
+        result = run_task(config, task)
+
+        assert len(result.state.review_cycle_metadata) == 1
+        meta = result.state.review_cycle_metadata[0]
+        assert meta.pool_models == ["r1", "r2"]
+        assert meta.successful == ["r1", "r2"]
+        assert meta.failed == []
+        assert meta.synthesized is False
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_metadata_present_on_all_reviewers_fail(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Metadata is populated even when all reviewers fail (P2 fix)."""
+        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
+        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="FAIL", profile_name="r1"),
+            _make_agent_result(success=False, output="FAIL", profile_name="r2"),
+        ]
+
+        result = run_task(config, task)
+
+        assert result.phase == Phase.ESCALATE
+        # Metadata must be present even though we escalated early
+        assert len(result.state.review_cycle_metadata) == 1
+        meta = result.state.review_cycle_metadata[0]
+        assert meta.failed == ["r1", "r2"]
+        assert meta.successful == []
+        assert meta.synthesized is False
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_audit_log_contains_pool_metadata(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """generate_audit_log includes pool_models, synthesized, successful, failed."""
+
+        profiles = [_make_review_profile("r1"), _make_review_profile("r2")]
+        config = _make_pool_config(tmp_path, profiles, SYNTHESIS_PROFILE)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(
+            success=True, output="Implemented.", profile_name="dev"
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+
+        result = run_task(config, task)
+        audit = generate_audit_log(config, task, result)
+
+        assert len(audit["reviews"]) == 1
+        rev = audit["reviews"][0]
+        assert rev["cycle"] == 1
+        assert rev["pool_models"] == ["r1", "r2"]
+        assert rev["successful"] == ["r1", "r2"]
+        assert rev["failed"] == []
+        assert rev["synthesized"] is False
+        assert rev["verdict"] == "APPROVE"
