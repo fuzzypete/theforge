@@ -233,7 +233,8 @@ def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig
     if "/" in spec:
         provider, model = spec.split("/", 1)
         new_plan = replace(config.plan, provider=provider, model=model, cli=None)
-        _validate_plan_provider(new_plan, config.secrets)
+        if new_plan.enabled:
+            _validate_plan_provider(new_plan, config.secrets)
     else:
         new_plan = replace(config.plan, model=spec)
 

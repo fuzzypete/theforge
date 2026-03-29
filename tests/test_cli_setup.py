@@ -26,6 +26,7 @@ from theforge.config import (
     LogConfig,
     ModelProfile,
     PlanAgentReviewConfig,
+    PlanConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -677,16 +678,29 @@ class TestApplyPlanModelOverride:
         assert result.plan_model_is_default is False
 
     def test_provider_slash_model_unknown_provider_raises(self, tmp_path):
-        cfg = self._base_config(tmp_path)
+        # Validation only runs when plan is enabled.
+        from dataclasses import replace as _replace
+
+        cfg = _replace(self._base_config(tmp_path), plan=PlanConfig(enabled=True))
         with pytest.raises(ValueError, match="Unsupported provider"):
             _apply_plan_model_override(cfg, "bogus/some-model")
 
     def test_provider_slash_model_missing_api_key_raises(self, tmp_path, monkeypatch):
-        # Remove the env var so the key is absent; secrets dict is empty (default).
+        # Validation only runs when plan is enabled; key must be absent.
+        from dataclasses import replace as _replace
+
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        cfg = self._base_config(tmp_path)
+        cfg = _replace(self._base_config(tmp_path), plan=PlanConfig(enabled=True))
         with pytest.raises(ValueError, match="OPENAI_API_KEY"):
             _apply_plan_model_override(cfg, "openai/gpt-4o")
+
+    def test_provider_slash_model_disabled_plan_skips_validation(self, tmp_path, monkeypatch):
+        # When plan.enabled is false the planner won't run, so missing credentials
+        # must not block the command — matches load_config() semantics.
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg = self._base_config(tmp_path)  # plan.enabled=False by default
+        result = _apply_plan_model_override(cfg, "openai/gpt-4o")
+        assert result.plan.provider == "openai"
 
     def test_bare_model_skips_provider_validation(self, tmp_path):
         # Bare model names don't set a provider, so no validation is run.
