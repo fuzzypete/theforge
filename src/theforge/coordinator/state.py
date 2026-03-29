@@ -176,6 +176,9 @@ class CoordinatorState:
     plan_review_results: list[AgentResult] = field(
         default_factory=list
     )  # separate from plan_results to avoid corrupting plan generation cost tracking
+    plan_review_failures: list[dict] = field(
+        default_factory=list
+    )  # per-reviewer parse failures: {"attempt": int, "reviewer": str, "errors": list[str]}
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
     dev_escalated: bool = False  # True once model escalation has occurred this run
