@@ -179,10 +179,16 @@ def _select_reviewers(
         return []
 
     # Exclude the model that produced the plan/code being reviewed so agents
-    # don't self-review.  Fall back to the full pool when no other candidates
-    # exist (single-model pool), guaranteeing at least one reviewer is returned.
+    # don't self-review.  If the tier/strong pool is exhausted, expand to all
+    # authed agents before falling back to self-review (last resort).
     if exclude_model is not None:
         preferred = [a for a in candidates if a.model != exclude_model]
+        if not preferred:
+            # Widen search: any authed agent with a different model
+            preferred = [a for a in agents if _has_auth(a) and a.model != exclude_model]
+        if not preferred:
+            # Widen further: any agent regardless of auth with a different model
+            preferred = [a for a in agents if a.model != exclude_model]
         if preferred:
             candidates = preferred
 

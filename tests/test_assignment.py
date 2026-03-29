@@ -166,16 +166,16 @@ def test_tier_selection_medium():
 
 
 def test_tier_selection_high():
-    """HIGH complexity: plan=strong, dev=strong, code_review=strong (max_reviewers)."""
+    """HIGH complexity: plan=strong, dev=strong; code_review excludes dev model."""
     agents = _make_agents_one_per_tier()
     cfg = _make_cfg(min_reviewers=1, max_reviewers=3, budget_per_story_usd=1000.0)
     decision = assign_models(agents, cfg, "large")
 
     assert decision.dev.model == "opus"  # strong
     assert decision.planner.model == "opus"  # strong
-    # HIGH uses max_reviewers=3 but only 1 strong agent in pool
+    # code_reviewers exclude opus (dev model) and fall back to lower-tier agents
     assert len(decision.code_reviewers) >= 1
-    assert decision.code_reviewers[0].model == "opus"
+    assert all(r.model != "opus" for r in decision.code_reviewers)
 
 
 # ── test_cross_provider_preference ────────────────────────────────────
@@ -478,6 +478,24 @@ def test_plan_reviewer_excludes_planner_model():
     assert planner_model not in reviewer_models, (
         f"Plan reviewer {reviewer_models} shares model with planner ({planner_model})"
     )
+
+
+def test_plan_reviewer_excludes_planner_when_only_strong_is_planner():
+    """Regression: large story, only one strong agent (planner). Mid-tier must be used."""
+    agents = [
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+        AgentDef("sonnet", "anthropic", "sonnet", 3.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1, prefer_cross_provider=False)
+    decision = assign_models(agents, cfg, "large")
+
+    # Planner should be opus (strong); reviewer must not be opus
+    assert decision.planner.model == "opus"
+    reviewer_models = [r.model for r in decision.plan_reviewers]
+    assert "opus" not in reviewer_models, (
+        f"Plan reviewer {reviewer_models} self-reviews — sonnet should have been selected"
+    )
+    assert reviewer_models == ["sonnet"]
 
 
 def test_plan_reviewer_falls_back_when_only_one_model():
