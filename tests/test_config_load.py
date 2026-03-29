@@ -435,6 +435,25 @@ class TestLoadConfig:
         assert config.plan.cli == "claude"
         assert config.plan.model == "opus"
 
+    def test_plan_provider_marks_non_default(self, tmp_path):
+        # Regression: plan.provider set without plan.cli/model must not be treated as default.
+        # If it were default, adaptive assignment could silently override the configured transport.
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {"name": "cheap", "cli": "claude", "model": "haiku", "tier": "cheap"},
+                    {"name": "strong", "cli": "claude", "model": "opus", "tier": "strong"},
+                ],
+                "plan": {"enabled": False, "provider": "openai", "model": "gpt-4o"},
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan_model_is_default is False
+        assert config.plan.provider == "openai"
+        assert config.plan.model == "gpt-4o"
+
     def test_plan_unknown_cli_raises(self, tmp_path):
         config_path = _write_config(
             {"plan": {"enabled": True, "cli": "unknown-cli"}},

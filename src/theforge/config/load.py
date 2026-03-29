@@ -240,7 +240,9 @@ def load_config(config_path: Path) -> ForgeConfig:
         else:
             plan_data.pop("model")
 
-    _plan_model_is_default = "cli" not in plan_data and "model" not in plan_data
+    _plan_model_is_default = (
+        "cli" not in plan_data and "model" not in plan_data and "provider" not in plan_data
+    )
 
     # Mutual exclusivity check before construction
     if "cli" in plan_data and "provider" in plan_data and bool(plan_data.get("enabled", False)):
