@@ -34,7 +34,7 @@ def _pending_human_review(
     """
     from theforge.notify_backends import send_notifications
 
-    from . import pending as _pending
+    from theforge import pending as _pending
 
     p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
@@ -102,7 +102,7 @@ def _pending_escalate_gate(
     """Pending-file-based escalate gate. Returns 'approve' | 'reject' | 'continue'."""
     from theforge.notify_backends import send_notifications
 
-    from . import pending as _pending
+    from theforge import pending as _pending
 
     timeout_seconds = config.notifications.human_review_timeout_seconds
     approve_count = sum(1 for v in reviewer_verdicts.values() if v == "APPROVE")
@@ -167,7 +167,7 @@ def _pending_plan_review(
     """Pending-file-based plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
     from theforge.notify_backends import send_notifications
 
-    from . import pending as _pending
+    from theforge import pending as _pending
 
     timeout_seconds = config.plan_review.timeout_seconds
     first_3_lines = "\n".join(plan_text.splitlines()[:3])
