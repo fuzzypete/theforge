@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from theforge.coordinator.plan_trajectory import (
     _has_sufficient_overlap,
     _is_file_path_anchor,
@@ -339,3 +341,129 @@ def test_build_disposition_context_escalate_guidance():
     state.plan_regen_disposition = "escalate"
     ctx = build_disposition_context(state)
     assert "fundamentally different approach" in ctx
+
+
+# ── Regression tests ──────────────────────────────────────────────────
+
+
+def test_shrinking_files_touched_returns_patch_not_backtrack():
+    """Themes survive but complexity shrank → patch, not backtrack."""
+    history = [
+        _meta(files_touched=5, p1_count=2, p2_count=0, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=2, p2_count=0, finding_themes=["load_config"]),
+    ]
+    assert classify_disposition(history) == "patch"
+
+
+def test_shrinking_files_touched_prevents_escalate():
+    """Even after a backtrack, if complexity shrinks on the third attempt → patch."""
+    history = [
+        _meta(files_touched=3, p1_count=2, p2_count=0, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=2, p2_count=0, finding_themes=["load_config"]),
+        _meta(files_touched=2, p1_count=2, p2_count=0, finding_themes=["load_config"]),
+    ]
+    # Third entry: themes survive but files_touched shrank → patch (not escalate)
+    assert classify_disposition(history) == "patch"
+
+
+# ── Human plan review approve path emits phase_end ────────────────────
+
+
+def test_human_plan_review_approve_emits_phase_end(tmp_path):
+    """Human plan review approve path must emit phase_end with plan_regen_disposition."""
+    from theforge.config import (
+        DEFAULT_DEV_PROFILE,
+        DEFAULT_PREFLIGHT_PROFILE,
+        ForgeConfig,
+        LogConfig,
+        ModelProfile,
+        PlanConfig,
+        PlanReviewConfig,
+        RetryPolicy,
+        WorkspaceConfig,
+    )
+    from theforge.coordinator.plan_flow import _run_human_plan_review
+    from theforge.coordinator.state import CoordinatorState, Phase
+    from theforge.task import TaskStory
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    plan_path = workspace / ".forge" / "plan.md"
+    plan_path.parent.mkdir(parents=True)
+    plan_path.write_text("# Plan", encoding="utf-8")
+
+    state = CoordinatorState()
+    state.phase = Phase.PLAN_REVIEW
+
+    config = ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=None,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        plan=PlanConfig(enabled=True, budget_usd=0.5, timeout=60),
+        plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=60),
+        log=LogConfig(enabled=False),
+    )
+
+    story_file = tmp_path / "story.md"
+    story_file.write_text("Do something.", encoding="utf-8")
+    task = TaskStory(
+        name="test",
+        slug="test",
+        story_path=story_file,
+    )
+
+    plan_profile = ModelProfile(
+        name="plan",
+        cli="claude",
+        model="claude-opus-4",
+        provider="anthropic",
+        budget_usd=0.5,
+        timeout_seconds=60,
+        allowed_tools=[],
+    )
+
+    mock_logger = MagicMock()
+    emitted: list[dict] = []
+
+    def capture_emit(event: str, **fields: object) -> None:
+        emitted.append({"event": event, **fields})
+
+    mock_logger._safe_emit.side_effect = capture_emit
+
+    with (
+        patch("theforge.coordinator.plan_flow._plan_review_interactive", return_value="approve"),
+        patch("theforge.coordinator.plan_flow._is_pending_file_mode", return_value=False),
+        patch("theforge.coordinator.plan_flow._is_remote_mode", return_value=False),
+        patch("theforge.coordinator.util._run_shell"),
+    ):
+        result = _run_human_plan_review(
+            state=state,
+            config=config,
+            task=task,
+            workspace_path=workspace,
+            plan_profile=plan_profile,
+            plan_text="# Plan",
+            plan_prompt="Make a plan.",
+            notify=False,
+            logger=mock_logger,
+            run_id=None,
+        )
+
+    assert result is None  # approved, continues to DEV
+    phase_end_events = [
+        e for e in emitted if e["event"] == "phase_end" and e.get("phase") == "PLAN_REVIEW"
+    ]
+    assert len(phase_end_events) >= 1
+    approve_event = next((e for e in phase_end_events if e.get("outcome") == "approve"), None)
+    assert approve_event is not None, f"No approve phase_end event found in {phase_end_events}"
+    assert "plan_regen_disposition" in approve_event

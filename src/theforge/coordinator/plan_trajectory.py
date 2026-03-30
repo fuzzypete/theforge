@@ -114,9 +114,10 @@ def classify_disposition(metadata_history: list[dict]) -> str:
     curr_count = curr.get("p1_count", 0) + curr.get("p2_count", 0)
 
     has_sufficient = _has_sufficient_overlap(prev_themes, curr_themes)
+    complexity_flat_or_growing = curr.get("files_touched", 0) >= prev.get("files_touched", 0)
 
-    # patch: no meaningful overlap OR finding count is decreasing (progress)
-    if not has_sufficient or curr_count < prev_count:
+    # patch: no meaningful overlap OR finding count is decreasing OR complexity shrank
+    if not has_sufficient or curr_count < prev_count or not complexity_flat_or_growing:
         return "patch"
 
     # sufficient overlap + flat/growing complexity: check escalate before backtrack

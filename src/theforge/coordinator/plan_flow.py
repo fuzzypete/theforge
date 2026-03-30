@@ -748,6 +748,12 @@ def _run_human_plan_review(
                 "  ✓ PLAN_REVIEW   approve  "
                 f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
             )
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN_REVIEW",
+                outcome="approve",
+                plan_regen_disposition=state.plan_regen_disposition,
+            )
             try:
                 _cu._run_shell(["git", "add", str(PLAN_PATH)], cwd=workspace_path)
                 _cu._run_shell(
