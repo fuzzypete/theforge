@@ -404,7 +404,8 @@ class TestLoadConfig:
             },
             tmp_path,
         )
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_model_is_default is False
         assert config.plan.provider == "openai"
         assert config.plan.model == "gpt-4o"
@@ -709,7 +710,8 @@ class TestLoadConfig:
             tmp_path,
         )
 
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "haiku"
 
     def test_plan_agent_review_allows_cheap_model_when_no_mid_tier_agents(self, tmp_path):
@@ -748,7 +750,8 @@ class TestLoadConfig:
         )
 
         # Should not raise — the planner fallback always picks opus (highest budget), not haiku
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "haiku"
 
     def test_plan_agent_review_rejects_strong_model_when_no_mid_tier_agents(self, tmp_path):
@@ -828,7 +831,8 @@ class TestLoadConfig:
         )
 
         # Should not raise — adaptive planner selects opus, not sonnet
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "sonnet"
 
     def test_plan_agent_review_legacy_provider_profile_uses_api_default_tools(self, tmp_path):
@@ -921,3 +925,246 @@ class TestAllowedToolsConfig:
 
         assert overridden.provider is None
         assert overridden.allowed_tools == DEFAULT_REVIEW_PROFILE.allowed_tools
+
+
+class TestPlanModelNameDeprecation:
+    def test_model_name_mapped_to_model(self, tmp_path):
+        """plan.model_name is read and used as plan.model."""
+        config_path = _write_config(
+            {"plan": {"model_name": "my-custom-model"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.model == "my-custom-model"
+
+    def test_model_name_logs_warning(self, tmp_path):
+        """plan.model_name emits a deprecation warning at WARNING level."""
+        import logging
+
+        config_path = _write_config(
+            {"plan": {"model_name": "my-custom-model"}},
+            tmp_path,
+        )
+        with patch.object(logging.getLogger("theforge.config"), "warning") as mock_warn:
+            load_config(config_path)
+        mock_warn.assert_called_once()
+        assert "plan.model_name is deprecated" in mock_warn.call_args[0][0]
+
+    def test_model_name_config_loads_without_error(self, tmp_path):
+        """plan.model_name config loads successfully (no exception)."""
+        config_path = _write_config(
+            {"plan": {"model_name": "some-model"}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.model == "some-model"
+
+    def test_model_takes_precedence_over_model_name(self, tmp_path):
+        """When both model and model_name are present, model wins and no warning is emitted."""
+        import logging
+
+        config_path = _write_config(
+            {"plan": {"model": "explicit-model", "model_name": "deprecated-model"}},
+            tmp_path,
+        )
+        with patch.object(logging.getLogger("theforge.config"), "warning") as mock_warn:
+            config = load_config(config_path)
+        assert config.plan.model == "explicit-model"
+        mock_warn.assert_not_called()
+
+
+class TestAssignmentReviewerAuthCrossCheck:
+    def test_all_reviewer_agents_missing_auth_raises(self, tmp_path):
+        """assignment.enabled with all mid/strong agents missing auth raises ValueError."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "mid-agent",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "tier": "mid",
+                    },
+                    {
+                        "name": "strong-agent",
+                        "provider": "openai",
+                        "model": "gpt-4-turbo",
+                        "tier": "strong",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            with pytest.raises(ValueError, match="no reviewer-eligible agents have auth"):
+                load_config(config_path)
+
+    def test_error_message_names_failed_agents(self, tmp_path):
+        """ValueError message includes the names of agents that failed auth."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "my-reviewer",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "tier": "strong",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            with pytest.raises(ValueError, match="my-reviewer"):
+                load_config(config_path)
+
+    def test_one_authed_reviewer_does_not_raise(self, tmp_path):
+        """If at least one reviewer-eligible agent has auth, no error is raised."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "authed-reviewer",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "tier": "strong",
+                    },
+                    {
+                        "name": "unauthed-reviewer",
+                        "provider": "anthropic",
+                        "model": "claude-3-opus",
+                        "tier": "mid",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        # Only OPENAI_API_KEY is set — anthropic agent will fail auth but openai passes
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.assignment.enabled is True
+
+    def test_assignment_disabled_skips_auth_check(self, tmp_path):
+        """When assignment.enabled is false, missing auth does not raise."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": False},
+                "agents": [
+                    {
+                        "name": "no-auth-reviewer",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "tier": "strong",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.assignment.enabled is False
+
+    def test_cheap_only_agents_skips_check(self, tmp_path):
+        """Cheap-only agents are not reviewer-eligible; missing auth does not raise."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "cheap-agent",
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "tier": "cheap",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.assignment.enabled is True
+
+    def test_assignment_mixed_auth_cheap_only_raises(self, tmp_path):
+        """When cheap agents have auth but all mid/strong agents lack auth, raises ValueError.
+
+        This is the regression test for the codex-plan-reviewer P1 finding:
+        cheap agents are not reviewer-eligible so their auth state is irrelevant.
+        """
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "cheap-authed",
+                        "provider": "openai",
+                        "model": "gpt-4o-mini",
+                        "tier": "cheap",
+                    },
+                    {
+                        "name": "strong-unauthed",
+                        "provider": "anthropic",
+                        "model": "claude-3-opus",
+                        "tier": "strong",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        # OPENAI_API_KEY is set (cheap agent authed), but no ANTHROPIC_API_KEY
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            with pytest.raises(ValueError, match="no reviewer-eligible agents have auth"):
+                load_config(config_path)
+
+    def test_explicit_review_pool_skips_auth_check(self, tmp_path):
+        """When an explicit review_pool is configured, adaptive reviewer selection is
+        bypassed at runtime (preflight_flow preserves explicit overrides).  The auth
+        cross-check must not raise even if all mid/strong agents lack auth."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "strong-unauthed",
+                        "provider": "anthropic",
+                        "model": "claude-3-opus",
+                        "tier": "strong",
+                    },
+                ],
+                # Explicit review_pool — adaptive code-reviewer selection is bypassed
+                "profiles": {
+                    "review": {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                    },
+                },
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.assignment.enabled is True
+        assert config.review_pool_is_default is False

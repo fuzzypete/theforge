@@ -238,6 +238,11 @@ def load_config(config_path: Path) -> ForgeConfig:
     # Plan
     plan_data = raw.get("plan", {})
 
+    # model_name deprecation: map to model and emit a warning
+    if "model_name" in plan_data and "model" not in plan_data:
+        log.warning("plan.model_name is deprecated — use plan.model instead")
+        plan_data = {**plan_data, "model": plan_data["model_name"]}
+
     _plan_model_is_default = (
         "cli" not in plan_data and "model" not in plan_data and "provider" not in plan_data
     )
@@ -310,6 +315,33 @@ def load_config(config_path: Path) -> ForgeConfig:
             pre_run=hooks_data.get("pre_run"),
             timeout_seconds=int(hooks_data.get("timeout_seconds", 30)),
         )
+
+    # ── Assignment reviewer auth cross-check ────────────────────────────
+    # When assignment is enabled, every review cycle will select from mid/strong
+    # agents (PHASE_TIER["code_review"] in assignment.py maps all complexity levels
+    # to "mid" or "strong").  Raise at load time if all reviewer-eligible agents
+    # lack auth so the sprint fails fast rather than at the first review cycle.
+    #
+    # Skip the check when an explicit review_pool is configured: preflight_flow
+    # preserves explicit reviewer overrides and bypasses adaptive code-reviewer
+    # selection entirely (mirrors the `review_pool not in _explicit_roles` guard
+    # in preflight_flow.py).
+    _adaptive_reviewers_active = assignment_cfg.enabled and _review_pool_is_default
+    if _adaptive_reviewers_active and agents_list:
+        _REVIEWER_TIERS = {"mid", "strong"}
+        reviewer_candidates = [a for a in agents_list if a.tier in _REVIEWER_TIERS]
+        if reviewer_candidates:
+            failed_agents: list[tuple[str, str]] = []
+            for _agent in reviewer_candidates:
+                _ready, _reason = check_agent_auth(_agent.to_model_profile(), secrets)
+                if not _ready:
+                    failed_agents.append((_agent.name, _reason))
+            if len(failed_agents) == len(reviewer_candidates):
+                _names = ", ".join(f"{n!r} ({r})" for n, r in failed_agents)
+                raise ValueError(
+                    f"assignment.enabled is true but no reviewer-eligible agents have auth. "
+                    f"Failed: {_names}"
+                )
 
     # Sprint config
     sprint_data = raw.get("sprint", {})
