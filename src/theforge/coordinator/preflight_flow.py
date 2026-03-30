@@ -198,6 +198,7 @@ def _run_preflight_phase(
             _esc_history,
             _explicit if _explicit else None,
             state.sprint_promotions,
+            config.secrets,
         )
 
         import dataclasses as _dc  # noqa: PLC0415
@@ -217,7 +218,7 @@ def _run_preflight_phase(
         state._explicit_roles = _explicit_roles
 
         _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-        _dev_agent = _pick_agt(config.agents, _dev_base_tier)
+        _dev_agent = _pick_agt(config.agents, _dev_base_tier, config.secrets)
         _dev_name = _dev_agent.name if _dev_agent else ""
         if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
             from .assignment import _check_promotion as _chk_prom  # noqa: PLC0415

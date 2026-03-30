@@ -11,23 +11,24 @@ import yaml
 from dotenv import dotenv_values
 
 from ._loaders import _parse_plan_agent_review, _parse_workspace
+from .auth import check_agent_auth
 from .defaults import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
-    PROVIDER_API_KEY_MAP,
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
 from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_agents, _parse_assignment
 from .profiles import _apply_profile_overrides, _auto_assign_models, _parse_profile
-from .secrets import _parse_notifications, _resolve_secret
+from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
     ForgeConfig,
     HooksConfig,
     LogConfig,
+    ModelProfile,
     PlanConfig,
     PlanReviewConfig,
     RetryPolicy,
@@ -59,12 +60,19 @@ def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> 
                 f"plan section uses provider '{plan_cfg.provider}' but the required "
                 f"SDK '{sdk}' is not installed. Please install it."
             )
-    api_key_var = PROVIDER_API_KEY_MAP.get(plan_cfg.provider)
-    if api_key_var and not _resolve_secret(api_key_var, secrets):
-        raise ValueError(
-            f"plan section uses provider '{plan_cfg.provider}' but the required "
-            f"environment variable ${api_key_var} is not set."
-        )
+    # Build a stub profile to reuse check_agent_auth for key validation
+    _stub = ModelProfile(
+        name="plan",
+        cli=None,
+        provider=plan_cfg.provider,
+        model=plan_cfg.model,
+        budget_usd=plan_cfg.budget_usd,
+        timeout_seconds=plan_cfg.timeout,
+        allowed_tools=(),
+    )
+    _ready, _reason = check_agent_auth(_stub, secrets)
+    if not _ready:
+        raise ValueError(f"plan section uses provider '{plan_cfg.provider}': {_reason}")
 
 
 def load_config(config_path: Path) -> ForgeConfig:

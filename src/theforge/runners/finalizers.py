@@ -285,7 +285,7 @@ def _make_google_finalizer(
     from theforge.schemas import review_json_schema
 
     merged = {**os.environ, **(secrets or {})}
-    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
+    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY") or merged.get("GEMINI_API_KEY"))
     finalize_schema = _sanitize_schema_for_google(review_json_schema())
 
     def finalizer(messages: list[dict]) -> LoopTurn:

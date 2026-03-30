@@ -6,17 +6,16 @@ import importlib
 import logging
 from typing import Any
 
+from .auth import check_agent_auth
 from .defaults import (
     API_PROVIDER_DEFAULT_TOOLS,
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
-    PROVIDER_API_KEY_MAP,
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
 from .models import _resolve_model_info
-from .secrets import _resolve_secret
 from .types import SUPPORTED_PROVIDERS, ModelProfile
 
 log = logging.getLogger("theforge.config")
@@ -187,18 +186,24 @@ def _parse_profile(
                     f"Profile {name!r} uses provider '{provider}' but the required "
                     f"SDK '{sdk}' is not installed. Please install it."
                 )
-        base_url_early = data.get("base_url")
-        _is_local = base_url_early and any(
-            base_url_early.startswith(p) for p in ("http://localhost", "http://127.0.0.1")
+        # Build a stub profile to reuse check_agent_auth for key validation
+        _stub = ModelProfile(
+            name=name,
+            cli=None,
+            provider=provider,
+            model=data.get("model", ""),
+            budget_usd=0.0,
+            timeout_seconds=0,
+            allowed_tools=(),
+            base_url=data.get("base_url"),
         )
-        api_key_var = PROVIDER_API_KEY_MAP.get(provider)
-        if api_key_var and not _resolve_secret(api_key_var, secrets or {}) and not _is_local:
+        _ready, _reason = check_agent_auth(_stub, secrets or {})
+        if not _ready:
             log.warning(
-                "Profile %r uses provider %r but $%s is not set — "
-                "this agent will be skipped at runtime.",
+                "Profile %r uses provider %r: %s — this agent will be skipped at runtime.",
                 name,
                 provider,
-                api_key_var,
+                _reason,
             )
 
     tools = data.get("allowed_tools")
