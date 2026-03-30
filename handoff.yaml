@@ -1,39 +1,42 @@
 dev_notes: |
-  summary: "Added `_editable_source_path()` to parse `direct_url.json` and return the
-    editable checkout filesystem path. `_get_dev_suffix()` accepts that path and passes
-    it as `cwd=` to `git describe --tags --long`, so the suffix reflects the installed
-    package state regardless of where `forge version` is invoked. `cmd_version` calls
-    `_editable_source_path()` once and shares the result with both `_get_dev_suffix()`
-    and the informational git lines, eliminating duplicate subprocess calls. Exception
-    handling was clarified: `PackageNotFoundError` is caught only from `distribution()`;
-    `read_text()` returns None on missing files. Tests were refactored: the unused
-    `_patch` helper was removed, mocks now patch `_editable_source_path` directly, a
-    new `test_git_runs_in_editable_source_dir_not_cwd` asserts the `cwd` kwarg, and a
-    `TestEditableSourcePath` class covers the URL-to-path conversion."
+  summary: "Implemented plan-finding identity via structural anchor extraction and
+    anchor-first matching. `extract_anchors()` pulls snake_case identifiers, camelCase
+    identifiers, dotted paths, and file paths from finding descriptions after stripping
+    reviewer prefixes. `match_plan_findings()` uses anchor overlap (non-file anchors
+    required) to match current findings to prior records, with Jaccard tie-breaking.
+    Iter 1 fixed: one-to-one matching enforced — each prior can only be claimed by one
+    current finding. `used_prior_indices` is tracked during the loop so a second current
+    finding sharing the same anchor as an already-matched prior is left unmatched
+    (prior_index=None) and preserved as a new PlanFindingRecord instead of being
+    silently dropped. Regression test added to cover this case."
   commits:
-    - sha: "095a848"
-      message: "feat(version): append -dev+g<hash> suffix when editable install is ahead of tag"
-    - sha: "b22a121"
-      message: "fix(version): run git describe in editable source dir, not CWD"
+    - sha: "f078ae3"
+      message: "feat(plan-review): add structural anchor extraction and plan finding identity"
+    - sha: "5b0b231"
+      message: "fix(plan-finding-identity): address review findings (iter 1)"
+    - sha: "83645a8"
+      message: "fix(plan-finding-identity): address review findings (iter 1)"
+    - sha: "e5a8263"
+      message: "fix(plan-finding-identity): enforce one-to-one prior matching in match_plan_findings"
   acceptance_criteria:
-    - criterion: "Editable install with commits ahead of tag shows <version>-dev+g<hash>"
+    - criterion: "Findings about the same issue across cycles are matched by structural anchor"
       status: MET
-      notes: "_get_dev_suffix() returns '-dev+g<hash>' when git describe distance > 0; uses cwd=source_path."
-    - criterion: "Editable install at exact tag shows clean version with no suffix"
+      notes: "match_plan_findings returns prior_index for findings sharing non-file anchors."
+    - criterion: "File-path-only overlap does not constitute a match"
       status: MET
-      notes: "When distance == 0, _get_dev_suffix() returns '' leaving the version unchanged."
-    - criterion: "Non-editable (PyPI) install shows clean version only"
+      notes: "file-path-only overlap sets prior_index=None with 'file-path-only' abstain reason."
+    - criterion: "Each prior finding is matched to at most one current finding per cycle"
       status: MET
-      notes: "_editable_source_path() returns None when direct_url.json is absent; _get_dev_suffix() returns ''."
-    - criterion: "forge version output includes the dev suffix when applicable"
+      notes: "used_prior_indices set ensures one-to-one matching; second current sharing same anchor is left unmatched."
+    - criterion: "Unmatched current findings are preserved as new PlanFindingRecord entries"
       status: MET
-      notes: "cmd_version prints theforge.__version__ + _get_dev_suffix(source_path)."
+      notes: "plan_flow.py appends new records for findings with prior_index=None."
+    - criterion: "Match decisions include provenance (which anchors matched, prose-similarity used)"
+      status: MET
+      notes: "format_provenance() renders one line per finding with anchor list and prose note."
     - criterion: "Existing tests pass"
       status: MET
-      notes: "1419 tests passed on iter 1; iter 2 fixes pass all new tests."
-    - criterion: "New tests cover: dev suffix appended when ahead, clean when at tag, clean when git unavailable"
-      status: MET
-      notes: "TestGetDevSuffix + TestEditableSourcePath cover all cases including cwd assertion."
+      notes: "59 tests pass in test_plan_finding_classifier.py."
   story_deviations: none
   deferred_items: none
   gate_result: PASS
