@@ -1,5 +1,5 @@
 ---
-name: "forge check-config — show effective config and surface problems before running"
+name: "forge check-config — show effective config and surface problems"
 slug: forge-check-config
 pytest_target: tests/
 ---
@@ -16,8 +16,8 @@ breaks.
 
 ## Solution
 
-A `forge check-config` command that loads `forge.yaml`, runs all validation,
-and prints the effective configuration — what will actually execute.
+A `forge check-config` command that loads `forge.yaml`, calls `check_agent_auth`
+on every profile, formats the effective configuration, and returns exit codes.
 
 ### Output format
 
@@ -72,18 +72,10 @@ For each agent, check whether the required credential is available:
 - `1` — config valid but has warnings (missing auth, deprecated fields)
 - `2` — config invalid (would fail on `forge run`)
 
-### Integration
-
-`forge run` and `forge sprint run` should run the equivalent of
-`check-config` validation at startup and print any warnings before proceeding.
-Errors (exit 2) block the run.
-
 ## Acceptance criteria
 
 - `forge check-config` prints effective config in the format above
 - Auth check for each agent (CLI in PATH, API key in env)
 - Exit code 0/1/2 as described
-- `forge run` prints config warnings at startup
-- `forge sprint run` prints config warnings at startup
 - All existing tests pass
 - New tests for check-config output and exit codes

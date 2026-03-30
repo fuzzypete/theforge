@@ -219,6 +219,7 @@ def _run_plan_phase(
     state.plan_results.append(plan_result)
     state.plan_session_id = plan_result.session_id or state.plan_session_id
     write_trace(workspace_path / ".forge/traces" / "plan-attempt-0.txt", plan_result.output)
+    _write_log_artifact(state.log_dir, "plan-attempt-0.txt", plan_result.output or "")
 
     if plan_result.success:
         plan_text = plan_result.output
@@ -634,6 +635,11 @@ def _run_plan_agent_review(
             workspace_path / ".forge/traces" / f"plan-attempt-{state.plan_regen_count}.txt",
             plan_result.output,
         )
+        _write_log_artifact(
+            state.log_dir,
+            f"plan-attempt-{state.plan_regen_count}.txt",
+            plan_result.output or "",
+        )
 
         if not plan_result.success:
             state.phase = Phase.ESCALATE
@@ -723,6 +729,11 @@ def _run_human_plan_review(
                 / f"plan-attempt-{state.plan_regen_count}-approved.txt",
                 updated,
             )
+            _write_log_artifact(
+                state.log_dir,
+                f"plan-attempt-{state.plan_regen_count}-approved.txt",
+                updated,
+            )
             _log(
                 "  ✓ PLAN_REVIEW   approve  "
                 f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
@@ -777,6 +788,11 @@ def _run_human_plan_review(
             write_trace(
                 workspace_path / ".forge/traces" / f"plan-attempt-{state.plan_regen_count}.txt",
                 plan_result.output,
+            )
+            _write_log_artifact(
+                state.log_dir,
+                f"plan-attempt-{state.plan_regen_count}.txt",
+                plan_result.output or "",
             )
 
             if not plan_result.success:
