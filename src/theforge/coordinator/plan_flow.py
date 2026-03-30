@@ -420,15 +420,16 @@ def _run_plan_agent_review(
                 )
             _parsed_prs.append(_parsed)
 
-        # Minimum-success gate: at least one reviewer must parse successfully
+        # Minimum-success gate: all reviewers must parse successfully
         _failed_this_attempt = sum(1 for _p in _parsed_prs if _p.parse_errors)
         _successful_count = len(par_profiles) - _failed_this_attempt
-        if _successful_count < 1:
+        if _successful_count < len(par_profiles):
             state.plan_review_decision = "reject"
             state.phase = Phase.ESCALATE
             state.error = (
-                f"All {len(par_profiles)} plan reviewer(s) failed to produce parseable output"
-                f" on attempt {_attempt}. Cannot determine a plan review verdict."
+                f"{_failed_this_attempt} of {len(par_profiles)} plan reviewer(s) failed to"
+                f" produce parseable output on attempt {_attempt}."
+                f" All reviewers must succeed to proceed."
             )
             _log(f"  ✗ PLAN_REVIEW   {state.error}")
             _escalate_notify(task, state, notify, config)

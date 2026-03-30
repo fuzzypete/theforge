@@ -1093,7 +1093,7 @@ class TestPlanReviewerFailureAudit:
         mock_code_pool,
         tmp_path,
     ):
-        """One reviewer fails, one succeeds → failure recorded but merge proceeds."""
+        """One reviewer fails, one succeeds → escalate (degraded pool not allowed)."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             plan_agent_review=PlanAgentReviewConfig(
@@ -1154,8 +1154,8 @@ class TestPlanReviewerFailureAudit:
 
         result = run_task(config=pool_config, task=task, interactive=True)
 
-        assert result.success is True
-        assert result.state.plan_review_decision == "approve"
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
         # Failure was recorded for reviewer-a
         assert len(result.state.plan_review_failures) == 1
         assert result.state.plan_review_failures[0]["reviewer"] == "reviewer-a"
@@ -1240,7 +1240,8 @@ class TestPlanReviewerFailureAudit:
         result = run_task(config=pool_config, task=task, interactive=True)
         audit = generate_audit_log(pool_config, task, result)
 
-        assert result.success is True
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
         assert "reviewer_failures" in audit["plan_review"]
         failures = audit["plan_review"]["reviewer_failures"]
         assert len(failures) == 1
