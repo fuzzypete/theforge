@@ -78,7 +78,7 @@ from .util import (
     _log_phase,
     _log_verbose,
 )
-from .workspace import _create_workspace
+from .workspace import _check_behind_origin, _create_workspace
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
@@ -411,6 +411,7 @@ def run_task(
     state_update_fn: "Callable[[dict], None] | None" = None,
     start_phase: Phase | None = None,
     stop_phase: Phase | None = None,
+    no_pull: bool = False,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -528,7 +529,7 @@ def run_task(
         _log_phase(state.phase, task.slug)
         logger._safe_emit("phase_start", phase="WORKSPACE", iteration=0)
 
-        workspace_path, branch_name, err = _create_workspace(config, task)
+        workspace_path, branch_name, err = _create_workspace(config, task, no_pull=no_pull)
         if err:
             state.phase = Phase.ESCALATE
             state.error = err
@@ -730,6 +731,7 @@ def _run_resume_coordinator(
     run_id: str | None,
     sprint_name: str | None,
     state_update_fn: "Callable[[dict], None] | None",
+    no_pull: bool = False,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -737,6 +739,8 @@ def _run_resume_coordinator(
     they start at and whether the first coordinator loop iteration skips DEV.
     """
     _ensure_runners()
+    if not no_pull:
+        _check_behind_origin(config)
     setup = _setup_resume_entry(
         config,
         task,
@@ -789,6 +793,7 @@ def run_from_review(
     run_id: str | None = None,
     sprint_name: str | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
+    no_pull: bool = False,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -817,6 +822,7 @@ def run_from_review(
         run_id=run_id,
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
+        no_pull=no_pull,
     )
 
 
@@ -831,6 +837,7 @@ def run_from_dev(
     run_id: str | None = None,
     sprint_name: str | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
+    no_pull: bool = False,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -856,6 +863,7 @@ def run_from_dev(
         run_id=run_id,
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
+        no_pull=no_pull,
     )
 
 

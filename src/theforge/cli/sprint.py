@@ -50,6 +50,7 @@ def cmd_sprint(args: object) -> int:
     auto_merge = getattr(args, "auto_merge", False)
     interactive = getattr(args, "interactive", False)
     resume = getattr(args, "resume", False)
+    no_pull = getattr(args, "no_pull", False)
 
     # ── Concurrency guard: refuse if any story is already running ───────
     slugs = parse_manifest_slugs(config, manifest_path)
@@ -86,6 +87,7 @@ def cmd_sprint(args: object) -> int:
             "notify": not args.no_notify,
             "resume": resume,
             "config": str(config_path),
+            "no_pull": no_pull,
         }
         response = _daemon.submit_sprint(config.project_root, str(manifest_path), sprint_args)
         if response.get("ok"):
@@ -108,6 +110,7 @@ def cmd_sprint(args: object) -> int:
             interactive=interactive,
             notify=not args.no_notify,
             resume=resume,
+            no_pull=no_pull,
         )
     except Exception as exc:
         import traceback
@@ -174,4 +177,10 @@ def register_parser(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Run in foreground (skip daemonization)",
+    )
+    sprint_parser.add_argument(
+        "--no-pull",
+        action="store_true",
+        default=False,
+        help="Skip git pull --ff-only before creating fresh worktrees (offline/CI use)",
     )

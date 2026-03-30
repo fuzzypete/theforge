@@ -1,37 +1,27 @@
-dev_notes: |
-  summary: >
-    Added per-reviewer failure tracking and a minimum-success escalation gate for the
-    plan agent review phase. When a plan reviewer returns empty or unparseable output,
-    the failure is now persisted in CoordinatorState.plan_review_failures as a list of
-    dicts (attempt, reviewer name, errors). If zero reviewers produce parseable output
-    in a given attempt, the coordinator immediately escalates with plan_review_decision
-    set to "reject" rather than silently continuing. The audit plan_review block now
-    includes a reviewer_failures key (only when failures exist). The existing
-    test_plan_agent_review_parse_failure test was updated to reflect the new behavior
-    (immediate escalation on attempt 0 rather than retry-then-escalate). Five new tests
-    cover: single empty-output escalation, all-reviewers-fail escalation, mixed failure
-    with successful merge, audit serialization of failures, and clean-run omits key.
-  commits:
-    - sha: "128eb8d"
-      message: "fix(plan-review): record reviewer failures in audit and escalate when all fail"
-  acceptance_criteria:
-    - criterion: "Plan reviewer failures are recorded in the audit log"
-      status: MET
-      notes: >
-        state.plan_review_failures accumulates {attempt, reviewer, errors} dicts in the
-        parse loop in plan_flow.py before merge_plan_review_results discards them.
-        audit.py emits reviewer_failures in the plan_review block when the list is non-empty.
-    - criterion: >
-        If successful reviewers drop below a minimum, the run escalates rather than
-        silently approving
-      status: MET
-      notes: >
-        After the per-reviewer parse loop, _failed_this_attempt is counted and
-        successful_count = len(par_profiles) - _failed_this_attempt. If successful_count < 1
-        the coordinator sets plan_review_decision="reject", phase=ESCALATE, and returns
-        a failure CoordinatorResult immediately, before merge_plan_review_results is called.
-        Minimum threshold is hardcoded to 1; a future story can make it configurable.
-  story_deviations: none
-  deferred_items: none
-  gate_result: PASS
+dev_notes: "summary: >\n  Added per-reviewer failure tracking and a minimum-success\
+  \ escalation gate for the\n  plan agent review phase. When a plan reviewer returns\
+  \ empty or unparseable output,\n  the failure is now persisted in CoordinatorState.plan_review_failures\
+  \ as a list of\n  dicts (attempt, reviewer name, errors). If zero reviewers produce\
+  \ parseable output\n  in a given attempt, the coordinator immediately escalates\
+  \ with plan_review_decision\n  set to \"reject\" rather than silently continuing.\
+  \ The audit plan_review block now\n  includes a reviewer_failures key (only when\
+  \ failures exist). The existing\n  test_plan_agent_review_parse_failure test was\
+  \ updated to reflect the new behavior\n  (immediate escalation on attempt 0 rather\
+  \ than retry-then-escalate). Five new tests\n  cover: single empty-output escalation,\
+  \ all-reviewers-fail escalation, mixed failure\n  with successful merge, audit serialization\
+  \ of failures, and clean-run omits key.\ncommits:\n  - sha: \"128eb8d\"\n    message:\
+  \ \"fix(plan-review): record reviewer failures in audit and escalate when all fail\"\
+  \nacceptance_criteria:\n  - criterion: \"Plan reviewer failures are recorded in\
+  \ the audit log\"\n    status: MET\n    notes: >\n      state.plan_review_failures\
+  \ accumulates {attempt, reviewer, errors} dicts in the\n      parse loop in plan_flow.py\
+  \ before merge_plan_review_results discards them.\n      audit.py emits reviewer_failures\
+  \ in the plan_review block when the list is non-empty.\n  - criterion: >\n     \
+  \ If successful reviewers drop below a minimum, the run escalates rather than\n\
+  \      silently approving\n    status: MET\n    notes: >\n      After the per-reviewer\
+  \ parse loop, _failed_this_attempt is counted and\n      successful_count = len(par_profiles)\
+  \ - _failed_this_attempt. If successful_count < 1\n      the coordinator sets plan_review_decision=\"\
+  reject\", phase=ESCALATE, and returns\n      a failure CoordinatorResult immediately,\
+  \ before merge_plan_review_results is called.\n      Minimum threshold is hardcoded\
+  \ to 1; a future story can make it configurable.\nstory_deviations: none\ndeferred_items:\
+  \ none\ngate_result: PASS\n"
 gate_decision: PASS

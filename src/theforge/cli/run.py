@@ -225,6 +225,8 @@ def cmd_run(args: "argparse.Namespace") -> int:
                 )
                 return 1
 
+    no_pull = getattr(args, "no_pull", False)
+
     if resume:
         triage = _triage_spec(str(story_path), config, config.project_root)
         action_label = triage.action.upper().replace("_", " ")
@@ -242,6 +244,7 @@ def cmd_run(args: "argparse.Namespace") -> int:
                 interactive=interactive,
                 auto_merge=auto_merge,
                 notify=not args.no_notify,
+                no_pull=no_pull,
             )
         elif triage.action == "dev" and triage.worktree_path is not None:
             from theforge.coordinator.engine import run_from_dev
@@ -253,6 +256,7 @@ def cmd_run(args: "argparse.Namespace") -> int:
                 interactive=interactive,
                 auto_merge=auto_merge,
                 notify=not args.no_notify,
+                no_pull=no_pull,
             )
         else:
             # "full" or no worktree — run from scratch
@@ -263,6 +267,7 @@ def cmd_run(args: "argparse.Namespace") -> int:
                 auto_merge=auto_merge,
                 notify=not args.no_notify,
                 plan_path=plan_path,
+                no_pull=no_pull,
             )
     else:
         result = run_task(
@@ -274,6 +279,7 @@ def cmd_run(args: "argparse.Namespace") -> int:
             plan_path=plan_path,
             start_phase=start_phase,
             stop_phase=stop_phase,
+            no_pull=no_pull,
         )
 
     # Write audit log
@@ -397,4 +403,10 @@ def register_parser(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Run in foreground (skip daemonization)",
+    )
+    run_parser.add_argument(
+        "--no-pull",
+        action="store_true",
+        default=False,
+        help="Skip git pull --ff-only before creating a fresh worktree (offline/CI use)",
     )
