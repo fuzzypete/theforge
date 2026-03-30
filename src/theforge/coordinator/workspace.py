@@ -361,12 +361,8 @@ def _create_workspace(
 
     if not no_pull:
         base_branch = config.workspace.base_branch
-        # Use `git fetch origin <base>:<base>` instead of `git pull` so that the
-        # local base_branch ref is advanced regardless of what the project root has
-        # checked out.  `git pull` only fast-forwards the *current* branch, which
-        # would leave local main stale whenever the root is on a feature branch.
         ok_pull, pull_out = _cu._run_shell(
-            f"git fetch origin {base_branch}:{base_branch}", config.project_root
+            f"git pull --ff-only origin {base_branch}", config.project_root
         )
         if ok_pull:
             _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")

@@ -34,7 +34,7 @@ class TestFreshWorkspacePull:
         call_order = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
-            if "fetch origin" in cmd:
+            if "pull --ff-only" in cmd:
                 call_order.append("pull")
                 return (True, "")
             if "mkdir" in cmd:
@@ -59,7 +59,7 @@ class TestFreshWorkspacePull:
         task = _make_task(tmp_path)
 
         def shell_side_effect(cmd, cwd, **kwargs):
-            if "fetch origin" in cmd:
+            if "pull --ff-only" in cmd:
                 return (False, "fatal: Not possible to fast-forward, aborting.")
             if "mkdir" in cmd:
                 (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
@@ -79,14 +79,14 @@ class TestFreshWorkspacePull:
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
     def test_no_pull_skips_pull(self, mock_log, mock_shell, tmp_path):
-        """When no_pull=True, no git fetch origin command is issued."""
+        """When no_pull=True, no git pull --ff-only command is issued."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
 
         pull_called = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
-            if "fetch origin" in cmd:
+            if "pull --ff-only" in cmd:
                 pull_called.append(cmd)
             if "mkdir" in cmd:
                 (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
