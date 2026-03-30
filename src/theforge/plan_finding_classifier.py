@@ -305,13 +305,12 @@ def match_plan_findings(
         ca = current_anchors[ci]
 
         # Collect all prior candidates with qualifying anchor overlap.
-        # Skip priors already claimed by an earlier current finding (1-to-1 matching).
+        # Track already-claimed priors separately so we can emit accurate provenance.
         candidates: list[tuple[int, frozenset[Anchor]]] = []
         file_only_priors: list[int] = []
+        claimed_priors_with_overlap: list[int] = []
 
         for pi in range(len(prior)):
-            if pi in used_prior_indices:
-                continue
             pa = prior_anchors[pi]
             shared: frozenset[Anchor] = ca & pa
             if not shared:
@@ -322,7 +321,13 @@ def match_plan_findings(
 
             if not non_file_shared and file_shared:
                 # File-path-only overlap — insufficient for a match.
-                file_only_priors.append(pi)
+                if pi not in used_prior_indices:
+                    file_only_priors.append(pi)
+                continue
+
+            if pi in used_prior_indices:
+                # Qualifying overlap, but prior already claimed by earlier finding.
+                claimed_priors_with_overlap.append(pi)
                 continue
 
             candidates.append((pi, shared))
@@ -330,6 +335,8 @@ def match_plan_findings(
         if not candidates:
             if not ca:
                 abstain_reason = "no extractable structural anchors in current finding"
+            elif claimed_priors_with_overlap:
+                abstain_reason = "prior already claimed by another finding"
             elif file_only_priors:
                 abstain_reason = "file-path-only overlap — no shared non-file anchor"
             else:

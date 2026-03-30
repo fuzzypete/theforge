@@ -350,9 +350,12 @@ class TestMatchPlanFindings:
     def test_one_prior_two_current_same_anchor_second_is_new(self):
         """One prior, two current findings sharing the same anchor → second is unmatched (new).
 
-        Regression: before the one-to-one fix, both current findings would claim
+        Regression cycle 1: before the one-to-one fix, both current findings would claim
         prior_index=0 and the second would be silently dropped instead of being
         preserved as a new independent finding.
+
+        Regression cycle 2: the abstain_reason must reflect that the prior was already
+        claimed, not that there were "no shared structural anchors".
         """
         current = [
             _finding("load_config is missing null check"),
@@ -365,7 +368,20 @@ class TestMatchPlanFindings:
         assert results[0].prior_index == 0
         # Second current finding must be unmatched (prior already used)
         assert results[1].prior_index is None
-        assert results[1].abstain_reason is not None
+        # Provenance must accurately reflect WHY: prior was claimed, not "no shared anchors"
+        assert results[1].abstain_reason == "prior already claimed by another finding"
+
+    def test_one_prior_two_current_provenance_text(self):
+        """format_provenance for the one-prior two-current case includes accurate reason."""
+        current = [
+            _finding("load_config is missing null check"),
+            _finding("load_config also skips schema validation"),
+        ]
+        prior = [_finding("load_config has a bug")]
+        results = match_plan_findings(current, prior)
+        provenance = format_provenance(results)
+        assert "prior already claimed" in provenance
+        assert "no shared structural anchors" not in provenance
 
     def test_dotted_path_match(self):
         """Two-segment dotted path is sufficient for a non-file match."""
