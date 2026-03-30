@@ -199,6 +199,11 @@ class TestPlanReview:
         assert result.state.plan_review_decision == "approve"
         assert result.state.plan_output == edited_plan
         assert mock_human_review.called
+        # planner original and human-edited version are both preserved
+        traces_dir = workspace / ".forge" / "traces"
+        assert (traces_dir / "plan-attempt-0.txt").exists()
+        assert (traces_dir / "plan-attempt-0-approved.txt").exists()
+        assert (traces_dir / "plan-attempt-0-approved.txt").read_text() == edited_plan
 
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")
