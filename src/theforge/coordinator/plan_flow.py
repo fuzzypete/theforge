@@ -464,7 +464,7 @@ def _run_plan_agent_review(
             for r in _prior_registry_snapshot
         ]
         _match_results = match_plan_findings(list(merged_pr.findings), _prior_as_findings)
-        state.plan_match_provenance = format_provenance(_match_results)
+        state.plan_match_provenance.append(format_provenance(_match_results))
 
         _matched_prior_indices: set[int] = set()
         for _mr in _match_results:

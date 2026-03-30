@@ -228,9 +228,10 @@ class CoordinatorState:
     plan_finding_registry: list[PlanFindingRecord] = field(default_factory=list)
     # Stable identity records for plan review findings across regen cycles,
     # populated by plan_finding_classifier.match_plan_findings() in plan_flow.py.
-    plan_match_provenance: str | None = None
-    # Human-readable log of match/abstain decisions from the last plan review
-    # iteration; stored for post-hoc audit inspection without requiring an LLM.
+    plan_match_provenance: list[str] = field(default_factory=list)
+    # Human-readable log of match/abstain decisions, one entry per plan review
+    # attempt (index 0 = first attempt).  Accumulated across regen cycles so
+    # the full decision history is available for post-hoc audit inspection.
     sprint_promotions: dict[str, str] = field(default_factory=dict)
     # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
     # Sticky within a sprint (single forge process lifetime); resets on process exit.

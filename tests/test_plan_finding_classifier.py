@@ -135,6 +135,25 @@ class TestExtractAnchorsDottedPaths:
         assert "dotted_path" not in kinds_for_coordinator
         assert "file_path" in kinds_for_coordinator
 
+    def test_unknown_extension_filename_not_classified_as_dotted(self):
+        """Filenames with unrecognised extensions must not become dotted_path anchors."""
+        # schema.sql has extension 'sql' which is not in _KNOWN_EXTENSIONS
+        anchors = extract_anchors("The schema.sql file is missing an index")
+        values = {a.value for a in anchors}
+        assert "schema.sql" not in values  # not a file_path (unknown ext)
+        # and must NOT become a dotted_path — the span is consumed
+        kinds = {a.kind for a in anchors}
+        assert "dotted_path" not in kinds or not any(
+            "schema" in a.value for a in anchors if a.kind == "dotted_path"
+        )
+
+    def test_requirements_in_not_classified_as_dotted(self):
+        """requirements.in must not become a dotted_path anchor."""
+        anchors = extract_anchors("Pin versions in requirements.in to fix this")
+        values = {a.value for a in anchors}
+        assert "requirements.in" not in values
+        assert not any(a.kind == "dotted_path" and "requirements" in a.value for a in anchors)
+
 
 class TestExtractAnchorsExclusions:
     def test_abbreviation_eg_excluded(self):
@@ -479,3 +498,29 @@ class TestRegistryIntegration:
 
         assert state.plan_finding_registry[0].cycle_last_seen == 1
         assert state.plan_finding_registry[0].disposition == "unresolved"
+
+    def test_provenance_accumulated_across_cycles(self):
+        """plan_match_provenance accumulates one entry per cycle, not overwritten."""
+        from theforge.coordinator.state import CoordinatorState
+
+        state = CoordinatorState()
+
+        # Simulate cycle 0: one unmatched finding
+        results_0 = match_plan_findings([_finding("load_config is broken")], [])
+        state.plan_match_provenance.append(format_provenance(results_0))
+
+        # Simulate cycle 1: same finding, still unmatched
+        results_1 = match_plan_findings([_finding("load_config is still broken")], [])
+        state.plan_match_provenance.append(format_provenance(results_1))
+
+        assert len(state.plan_match_provenance) == 2
+        # Both entries must be non-empty strings
+        assert all(isinstance(p, str) and p for p in state.plan_match_provenance)
+
+    def test_unknown_extension_file_only_unmatched(self):
+        """Two findings sharing only an unknown-extension filename are unmatched."""
+        # schema.sql is not in _KNOWN_EXTENSIONS, so it produces no anchor
+        current = [_finding("The schema.sql migration is missing an index")]
+        prior = [_finding("schema.sql needs a composite index")]
+        results = match_plan_findings(current, prior)
+        assert results[0].prior_index is None

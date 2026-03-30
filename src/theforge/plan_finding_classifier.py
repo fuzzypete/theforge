@@ -38,19 +38,48 @@ _REVIEWER_PREFIX_RE = re.compile(r"^\[[\w-]+\]\s*")
 _KNOWN_EXTENSIONS: frozenset[str] = frozenset(
     {
         # Python
-        "py", "pyi", "pyc",
+        "py",
+        "pyi",
+        "pyc",
         # Config / data
-        "yaml", "yml", "json", "toml", "ini", "cfg", "env",
+        "yaml",
+        "yml",
+        "json",
+        "toml",
+        "ini",
+        "cfg",
+        "env",
         # Docs
-        "md", "txt", "rst",
+        "md",
+        "txt",
+        "rst",
         # Web
-        "js", "ts", "jsx", "tsx", "html", "css", "scss",
+        "js",
+        "ts",
+        "jsx",
+        "tsx",
+        "html",
+        "css",
+        "scss",
         # Other languages
-        "go", "rs", "rb", "java", "kt", "swift", "c", "cpp", "h", "cs", "php",
+        "go",
+        "rs",
+        "rb",
+        "java",
+        "kt",
+        "swift",
+        "c",
+        "cpp",
+        "h",
+        "cs",
+        "php",
         # Shell
-        "sh", "bash", "zsh",
+        "sh",
+        "bash",
+        "zsh",
         # Misc
-        "lock", "log",
+        "lock",
+        "log",
     }
 )
 
@@ -189,6 +218,14 @@ def extract_anchors(text: str) -> frozenset[Anchor]:
             continue
         if _has_single_char_non_first_segment(val):
             continue
+        # Exclude tokens that look like standalone filenames with unrecognised
+        # extensions (e.g. schema.sql, requirements.in, 001_init.sql).
+        # fullmatch confirms this is a single word.ext form rather than a
+        # multi-segment attribute chain like config.profiles.dev.
+        if _FILE_PATH_RE.fullmatch(val):
+            _ext = val.rsplit(".", 1)[-1].lower()
+            if _ext not in _KNOWN_EXTENSIONS:
+                continue
         anchors.add(Anchor(value=val, kind="dotted_path"))
 
     # ── 3. Multi-segment snake_case ────────────────────────────────────────
