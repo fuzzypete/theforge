@@ -361,9 +361,22 @@ def _create_workspace(
 
     if not no_pull:
         base_branch = config.workspace.base_branch
-        ok_pull, pull_out = _cu._run_shell(
-            f"git pull --ff-only origin {base_branch}", config.project_root
-        )
+        # Determine whether the project root currently has base_branch checked out.
+        # - If yes: `git fetch origin base:base` is rejected by git ("branch currently
+        #   checked out"), so fall back to `git pull --ff-only` which advances the
+        #   current (base) branch directly.
+        # - If no:  `git pull --ff-only` would fast-forward the *current* branch, not
+        #   base_branch — leaving local base stale.  Use `git fetch origin base:base`
+        #   to advance the local ref without a checkout.
+        _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
+        if current_branch.strip() == base_branch:
+            ok_pull, pull_out = _cu._run_shell(
+                f"git pull --ff-only origin {base_branch}", config.project_root
+            )
+        else:
+            ok_pull, pull_out = _cu._run_shell(
+                f"git fetch origin {base_branch}:{base_branch}", config.project_root
+            )
         if ok_pull:
             _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
         else:

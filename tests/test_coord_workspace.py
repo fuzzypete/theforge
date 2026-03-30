@@ -22,18 +22,26 @@ from theforge.coordinator.workspace import _check_behind_origin, _create_workspa
 
 
 class TestFreshWorkspacePull:
-    """Pull runs before worktree creation on the fresh path."""
+    """Pull runs before worktree creation on the fresh path.
+
+    The implementation branches on whether the project root has base_branch
+    checked out:
+      - On base_branch: git pull --ff-only  (fetch refspec rejected when checked out)
+      - Not on base_branch: git fetch origin base:base  (pull would advance current branch)
+    """
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_pull_succeeds_before_create(self, mock_log, mock_shell, tmp_path):
-        """When pull succeeds, creation runs and pull precedes it."""
+    def test_pull_succeeds_before_create_on_base(self, mock_log, mock_shell, tmp_path):
+        """When root is on base_branch, pull --ff-only runs before worktree creation."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
 
         call_order = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)  # checked out on base
             if "pull --ff-only" in cmd:
                 call_order.append("pull")
                 return (True, "")
@@ -53,12 +61,43 @@ class TestFreshWorkspacePull:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
+    def test_fetch_refspec_used_when_not_on_base(self, mock_log, mock_shell, tmp_path):
+        """When root is NOT on base_branch, fetch origin base:base runs before creation."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        call_order = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/other-branch")  # NOT on base
+            if "fetch origin" in cmd and ":" in cmd:
+                call_order.append("fetch")
+                return (True, "")
+            if "mkdir" in cmd:
+                call_order.append("create")
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, branch_name, err = _create_workspace(config, task, no_pull=False)
+
+        assert err is None
+        assert workspace_path is not None
+        assert call_order.index("fetch") < call_order.index("create")
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
     def test_pull_fails_workspace_still_created(self, mock_log, mock_shell, tmp_path):
-        """When pull fails, a warning is logged but the workspace is still created."""
+        """When pull/fetch fails, a warning is logged but the workspace is still created."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)
             if "pull --ff-only" in cmd:
                 return (False, "fatal: Not possible to fast-forward, aborting.")
             if "mkdir" in cmd:
@@ -79,15 +118,15 @@ class TestFreshWorkspacePull:
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
     def test_no_pull_skips_pull(self, mock_log, mock_shell, tmp_path):
-        """When no_pull=True, no git pull --ff-only command is issued."""
+        """When no_pull=True, no fetch or pull command is issued."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
 
-        pull_called = []
+        sync_called = []
 
         def shell_side_effect(cmd, cwd, **kwargs):
-            if "pull --ff-only" in cmd:
-                pull_called.append(cmd)
+            if "pull --ff-only" in cmd or ("fetch origin" in cmd and ":" in cmd):
+                sync_called.append(cmd)
             if "mkdir" in cmd:
                 (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
             return (True, "")
@@ -96,7 +135,7 @@ class TestFreshWorkspacePull:
 
         _create_workspace(config, task, no_pull=True)
 
-        assert pull_called == [], "pull should not be called when no_pull=True"
+        assert sync_called == [], "no pull/fetch should be called when no_pull=True"
 
 
 # ── Resume path behind-origin check tests ────────────────────────────
