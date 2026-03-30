@@ -1,0 +1,5 @@
+name: "Dev review: trajectory tracking and surviving-family-aware fix prompt"
+budget_usd: 15
+auto_merge: true
+specs:
+  - stories/backlog/dev-review-trajectory-tracking.md
