@@ -65,6 +65,20 @@ def _parse_plan_agent_review(
                 f"Unsupported CLI {par_cli!r} in plan_agent_review. "
                 f"Supported: {sorted(SUPPORTED_CLIS)}"
             )
+        # Check actual invocation path for CLI plan_agent_review
+        if par_cli:
+            _cli_profile = ModelProfile(
+                name="_plan_agent_review",
+                cli=par_cli,
+                provider=None,
+                model=str(par_data.get("model", "sonnet")),
+                budget_usd=float(par_data.get("budget_usd", 0.50)),
+                timeout_seconds=int(par_data.get("timeout", 300)),
+                allowed_tools=(),
+            )
+            ready, reason = agent_is_ready(_cli_profile, secrets)
+            if not ready:
+                raise ValueError(f"plan_agent_review uses cli {par_cli!r} but {reason}")
         if par_provider:
             if par_provider not in SUPPORTED_PROVIDERS:
                 raise ValueError(

@@ -229,15 +229,13 @@ def _parse_profile(
         else None,
     )
 
-    # Warn if the profile won't have usable auth at runtime
-    if profile.provider is not None:
-        _ready, _reason = agent_is_ready(profile, secrets or {})
-        if not _ready:
-            log.warning(
-                "Profile %r uses provider %r but %s — this agent will be skipped at runtime.",
-                name,
-                provider,
-                _reason,
-            )
+    # Warn if the profile won't have usable auth at runtime (covers both CLI and API profiles)
+    _ready, _reason = agent_is_ready(profile, secrets or {})
+    if not _ready:
+        log.warning(
+            "Profile %r is not ready: %s — this agent will be skipped at runtime.",
+            name,
+            _reason,
+        )
 
     return profile

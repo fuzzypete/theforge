@@ -270,6 +270,20 @@ def load_config(config_path: Path) -> ForgeConfig:
                 f"Unsupported CLI {plan_cfg.cli!r} in plan section. "
                 f"Supported: {sorted(SUPPORTED_CLIS)}"
             )
+        # Check actual invocation path for CLI plans (npx for codex/gemini, binary for claude)
+        if plan_cfg.cli is not None:
+            _cli_profile = ModelProfile(
+                name="_plan",
+                cli=plan_cfg.cli,
+                provider=None,
+                model=plan_cfg.model,
+                budget_usd=plan_cfg.budget_usd,
+                timeout_seconds=plan_cfg.timeout,
+                allowed_tools=(),
+            )
+            ready, reason = agent_is_ready(_cli_profile, secrets)
+            if not ready:
+                raise ValueError(f"plan section uses cli {plan_cfg.cli!r} but {reason}")
         _validate_plan_provider(plan_cfg, secrets)
 
     # Plan review
