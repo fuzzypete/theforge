@@ -163,12 +163,66 @@ def record_plan_attempt(
     state.plan_regen_disposition = classify_disposition(state.plan_attempt_metadata)
 
 
-def build_disposition_context(state: "CoordinatorState") -> str:
-    """Build a markdown trajectory block for injection into regen prompts.
+def collect_all_surviving_themes(metadata: list[dict]) -> list[str]:
+    """Return deduped sorted list of non-file-path themes across ALL attempts."""
+    all_themes: set[str] = set()
+    for entry in metadata:
+        for theme in entry.get("finding_themes", []):
+            if not _is_file_path_anchor(theme):
+                all_themes.add(theme)
+    return sorted(all_themes)
 
-    Returns empty string if fewer than 2 attempts have been recorded (no
-    trajectory to compare). For 2+ entries renders a table and disposition
-    guidance so the planning agent can adjust its approach.
+
+def dominant_surviving_theme(metadata: list[dict]) -> str:
+    """Return the non-file-path theme from the latest attempt pair with the most
+    historical consecutive-pair survivals.
+
+    Only themes that survive in the latest (most recent) consecutive pair are
+    candidates, ensuring the "rejected strategy" refers to what is actively
+    failing in the current attempt rather than a resolved older theme.  Among
+    qualifying candidates, the theme with the highest total pair-survival count
+    is returned. Alphabetically smallest breaks ties for determinism.
+    Returns empty string if no qualifying theme exists.
+    """
+    if len(metadata) < 2:
+        return ""
+
+    # Restrict candidates to themes surviving in the latest pair only.
+    latest_prev = set(metadata[-2].get("finding_themes", []))
+    latest_curr = set(metadata[-1].get("finding_themes", []))
+    candidates = {t for t in latest_prev & latest_curr if not _is_file_path_anchor(t)}
+
+    if not candidates:
+        return ""
+
+    # Score candidates by total historical pair-survival count.
+    pair_counts: dict[str, int] = {}
+    for i in range(1, len(metadata)):
+        prev_set = set(metadata[i - 1].get("finding_themes", []))
+        curr_set = set(metadata[i].get("finding_themes", []))
+        for theme in prev_set & curr_set:
+            if theme in candidates:
+                pair_counts[theme] = pair_counts.get(theme, 0) + 1
+
+    if not pair_counts:
+        return ""
+
+    max_count = max(pair_counts.values())
+    # Alphabetically smallest among tied winners for determinism
+    return min(t for t, c in pair_counts.items() if c == max_count)
+
+
+def build_disposition_context(state: "CoordinatorState") -> str:
+    """Build disposition-specific prompt content for injection into regen prompts.
+
+    Returns:
+    - Empty string if fewer than 2 attempts (no trajectory to compare).
+    - Empty string if disposition is "escalate" (coordinator handles escalation,
+      no prompt is issued).
+    - Trajectory table + patch guidance if disposition is "patch".
+    - Backtrack block with learned constraints + rejected strategy if disposition
+      is "backtrack". This function is the single owner of all backtrack-specific
+      prompt text.
     """
     metadata = state.plan_attempt_metadata
     if len(metadata) < 2:
@@ -176,18 +230,48 @@ def build_disposition_context(state: "CoordinatorState") -> str:
 
     disposition = state.plan_regen_disposition or "patch"
 
-    guidance_map = {
-        "patch": "Prior themes were resolved. Focus on the new findings only.",
-        "backtrack": (
-            "The themes above survived from the prior attempt. Re-examine"
-            " your approach to these areas rather than adding more complexity."
-        ),
-        "escalate": (
-            "These themes have now survived multiple attempts. Consider a"
-            " fundamentally different approach to address them."
-        ),
-    }
-    guidance = guidance_map.get(disposition, guidance_map["patch"])
+    if disposition == "escalate":
+        return ""
+
+    if disposition == "backtrack":
+        n = len(metadata)
+        themes = collect_all_surviving_themes(metadata)
+        constraints_text = "\n".join(f"- {t}" for t in themes) if themes else "- (none identified)"
+
+        dom_theme = dominant_surviving_theme(metadata)
+        if dom_theme:
+            # Count how many consecutive pairs this theme survived
+            pair_counts: dict[str, int] = {}
+            for i in range(1, len(metadata)):
+                prev_set = set(metadata[i - 1].get("finding_themes", []))
+                curr_set = set(metadata[i].get("finding_themes", []))
+                for t in prev_set & curr_set:
+                    if not _is_file_path_anchor(t):
+                        pair_counts[t] = pair_counts.get(t, 0) + 1
+            m = pair_counts.get(dom_theme, 0)
+            rejected_text = (
+                f"- threading `{dom_theme}` — this approach has been flagged"
+                f" in {m} consecutive reviews."
+            )
+        else:
+            rejected_text = "- (none identified)"
+
+        return (
+            f"## Trajectory Analysis\n\n"
+            f"Your plan has been rejected {n} times."
+            f" The current approach is not converging.\n\n"
+            f"### Learned constraints\n\n"
+            f"Validated truths from reviewer findings across all attempts:\n\n"
+            f"{constraints_text}\n\n"
+            f"### Rejected strategy\n\n"
+            f"{rejected_text}\n\n"
+            f"Do not patch the current plan. Do not repeat the rejected strategy."
+            f" Produce a new plan that satisfies the learned constraints using a"
+            f" different approach. Prefer the smallest design that works."
+        )
+
+    # patch: trajectory table + guidance
+    guidance = "Prior themes were resolved. Focus on the new findings only."
 
     # Build table — show surviving themes for each attempt
     header = "| Attempt | Files Touched | P1 | P2 | Surviving Themes |"

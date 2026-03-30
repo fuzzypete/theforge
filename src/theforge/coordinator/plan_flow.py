@@ -613,6 +613,28 @@ def _run_plan_agent_review(
                 message=state.error,
             )
 
+        # Early escalation: disposition tracker determined the backtrack attempt
+        # itself diverged — no further regen will help; escalate immediately.
+        if state.plan_regen_disposition == "escalate":
+            state.plan_review_decision = "reject"
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Plan rejected {state.plan_regen_count} time(s)"
+                f" by agent reviewer — backtrack attempt failed to converge."
+                f" Findings:\n{findings_text}"
+            )
+            _log(
+                f"  ✗ PLAN_REVIEW   escalate disposition"
+                f" after {state.plan_regen_count} attempt(s) — escalating immediately"
+            )
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=state.error,
+            )
+
         # REJECT → regenerate plan with findings
         state.plan_review_decision = "regenerate"
         _log(
@@ -621,39 +643,69 @@ def _run_plan_agent_review(
         )
         _log(f"  Findings:\n{findings_text}")
 
-        regen_prompt = dedent(f"""\
-            You are a planning agent for **{task.name}**.
+        _disposition = state.plan_regen_disposition or "patch"
 
-            ## Your Role
+        if _disposition == "backtrack":
+            # build_disposition_context is the single owner of all backtrack-specific
+            # text (opening, learned constraints, rejected strategy, instructions).
+            # The patch ## Instructions block is intentionally omitted here — patch
+            # guidance ("Do not discard working parts") contradicts backtrack intent.
+            disposition_ctx = build_disposition_context(state)
+            regen_prompt = dedent(f"""\
+                You are a planning agent for **{task.name}**.
 
-            You wrote the plan below. Reviewers found issues. Fix your plan
-            to address every P1 and P2 finding. Do not rewrite from scratch —
-            make targeted edits to the plan you already wrote.
+                ## Your Role
 
-            ## Spec
+                See trajectory analysis below.
 
-            {story_content}
+                ## Spec
 
-            ## Your Plan (current version)
+                {story_content}
 
-            {state.plan_output}
+                ## Your Plan (current version)
 
-            ## Reviewer Findings
+                {state.plan_output}
 
-            {findings_text}
+                ## Reviewer Findings
 
-            ## Instructions
-
-            1. Read each finding against your plan above.
-            2. Fix every P1 (must fix) and P2 (improvement).
-            3. Output the complete updated plan in the same YAML schema.
-            4. Do NOT discard working parts of your plan. Only change what
-               the findings call out.
-        """)
-
-        disposition_ctx = build_disposition_context(state)
-        if disposition_ctx:
+                {findings_text}
+            """)
             regen_prompt += f"\n\n{disposition_ctx}\n"
+        else:
+            # patch (default): targeted edits, preserve working parts
+            regen_prompt = dedent(f"""\
+                You are a planning agent for **{task.name}**.
+
+                ## Your Role
+
+                You wrote the plan below. Reviewers found issues. Fix your plan
+                to address every P1 and P2 finding. Do not rewrite from scratch —
+                make targeted edits to the plan you already wrote.
+
+                ## Spec
+
+                {story_content}
+
+                ## Your Plan (current version)
+
+                {state.plan_output}
+
+                ## Reviewer Findings
+
+                {findings_text}
+
+                ## Instructions
+
+                1. Read each finding against your plan above.
+                2. Fix every P1 (must fix) and P2 (improvement).
+                3. Output the complete updated plan in the same YAML schema.
+                4. Do NOT discard working parts of your plan. Only change what
+                   the findings call out.
+            """)
+
+            disposition_ctx = build_disposition_context(state)
+            if disposition_ctx:
+                regen_prompt += f"\n\n{disposition_ctx}\n"
 
         if state.plan_escalation_note:
             regen_prompt += f"\n\n## Model Escalation\n\n{state.plan_escalation_note}\n"
@@ -836,6 +888,14 @@ def _run_human_plan_review(
                 f"(attempt {state.plan_regen_count}/{_max2})"
             )
 
+            # Human-review regen does NOT use disposition-aware prompts. The human
+            # "regenerate" decision calls record_plan_attempt(state, []) with empty
+            # findings, so there is no structured finding data to derive learned
+            # constraints or a rejected strategy from. build_disposition_context
+            # returns the trajectory table for the patch disposition (or "" if fewer
+            # than 2 attempts), which is appended unchanged. No escalation check is
+            # added here for the same reason — disposition detection requires
+            # structured findings that the human path does not provide.
             _disposition_ctx = build_disposition_context(state)
             if _disposition_ctx:
                 regen_plan_prompt = plan_prompt + f"\n\n{_disposition_ctx}\n"
