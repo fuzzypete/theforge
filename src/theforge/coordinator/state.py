@@ -95,6 +95,23 @@ class FindingRecord:
 
 
 @dataclass
+class PlanFindingRecord:
+    """Persistent record of a plan review finding across plan regen cycles.
+
+    Populated by plan_finding_classifier.match_plan_findings() and updated in
+    plan_flow.py after each plan review iteration.  No ``file`` or ``line``
+    fields — PlanReviewFinding has neither; anchors are extracted from
+    ``description`` text only.
+    """
+
+    description: str  # stripped of reviewer attribution prefix
+    severity: str  # "P1" | "P2"
+    cycle_first_seen: int  # plan regen attempt index when first observed
+    cycle_last_seen: int  # plan regen attempt index when last observed
+    disposition: Literal["unresolved", "fixed", "new"]
+
+
+@dataclass
 class ReviewCycleMetadata:
     """Per-cycle metadata for audit logging."""
 
@@ -208,6 +225,12 @@ class CoordinatorState:
     escalate_reason: str | None = None  # human-readable escalation reason
     story_validation_result: StoryValidationResult | None = None
     plan_validation_findings: list[dict] = field(default_factory=list)
+    plan_finding_registry: list[PlanFindingRecord] = field(default_factory=list)
+    # Stable identity records for plan review findings across regen cycles,
+    # populated by plan_finding_classifier.match_plan_findings() in plan_flow.py.
+    plan_match_provenance: str | None = None
+    # Human-readable log of match/abstain decisions from the last plan review
+    # iteration; stored for post-hoc audit inspection without requiring an LLM.
     sprint_promotions: dict[str, str] = field(default_factory=dict)
     # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
     # Sticky within a sprint (single forge process lifetime); resets on process exit.

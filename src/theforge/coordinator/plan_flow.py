@@ -24,7 +24,13 @@ from typing import TYPE_CHECKING
 from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from theforge.log_level import _LOG_LEVEL, LogLevel
+from theforge.plan_finding_classifier import (
+    format_provenance,
+    match_plan_findings,
+    strip_reviewer_prefix,
+)
 from theforge.review import (
+    PlanReviewFinding,
     PlanReviewResult,
     merge_plan_review_results,
     parse_plan_review_output,
@@ -46,7 +52,7 @@ from .pending_hitl import _pending_plan_review
 from .plan_trajectory import build_disposition_context, record_plan_attempt
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .remote_gates import _plan_review_remote
-from .state import CoordinatorResult, CoordinatorState, Phase
+from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
 from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout
 
 if TYPE_CHECKING:
@@ -449,6 +455,40 @@ def _run_plan_agent_review(
 
         merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
         _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
+
+        # ── Plan finding identity tracking ────────────────────────────────
+        # Snapshot registry before this cycle so new inserts don't interfere.
+        _prior_registry_snapshot = list(state.plan_finding_registry)
+        _prior_as_findings = [
+            PlanReviewFinding(severity=r.severity, description=r.description, suggestion=None)
+            for r in _prior_registry_snapshot
+        ]
+        _match_results = match_plan_findings(list(merged_pr.findings), _prior_as_findings)
+        state.plan_match_provenance = format_provenance(_match_results)
+
+        _matched_prior_indices: set[int] = set()
+        for _mr in _match_results:
+            if _mr.prior_index is not None:
+                _prior_registry_snapshot[_mr.prior_index].cycle_last_seen = _attempt
+                _prior_registry_snapshot[_mr.prior_index].disposition = "unresolved"
+                _matched_prior_indices.add(_mr.prior_index)
+            else:
+                _cf = merged_pr.findings[_mr.current_index]
+                state.plan_finding_registry.append(
+                    PlanFindingRecord(
+                        description=strip_reviewer_prefix(_cf.description),
+                        severity=_cf.severity,
+                        cycle_first_seen=_attempt,
+                        cycle_last_seen=_attempt,
+                        disposition="new",
+                    )
+                )
+
+        # Mark prior findings not seen this cycle as "fixed".
+        for _i, _rec in enumerate(_prior_registry_snapshot):
+            if _i not in _matched_prior_indices and _rec.cycle_last_seen < _attempt:
+                _rec.disposition = "fixed"
+        # ─────────────────────────────────────────────────────────────────
 
         record_plan_attempt(state, merged_pr.findings)
 

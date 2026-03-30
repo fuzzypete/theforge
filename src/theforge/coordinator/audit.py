@@ -389,6 +389,17 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
                 "findings": state.plan_agent_review_findings,
                 "cost_usd": state.total_plan_review_cost,
+                "plan_finding_registry": [
+                    {
+                        "description": r.description,
+                        "severity": r.severity,
+                        "cycle_first_seen": r.cycle_first_seen,
+                        "cycle_last_seen": r.cycle_last_seen,
+                        "disposition": r.disposition,
+                    }
+                    for r in state.plan_finding_registry
+                ],
+                "plan_match_provenance": state.plan_match_provenance,
                 **(
                     {"reviewer_failures": state.plan_review_failures}
                     if state.plan_review_failures
