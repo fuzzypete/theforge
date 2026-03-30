@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from theforge.artifacts import PLAN_PATH, ensure_parent_dir, resolve_plan_path
+from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.review import (
@@ -141,6 +141,15 @@ def _run_plan_phase(
     )
     if not should_plan:
         return None
+
+    # Remove stale plan files from prior runs before the plan agent writes a new one
+    _cleaned = 0
+    for _stale in plan_paths(workspace_path):
+        if _stale.exists():
+            _stale.unlink()
+            _cleaned += 1
+    if _cleaned:
+        _log(f"  ↺ PLAN   removed {_cleaned} stale plan file(s)")
 
     state.phase = Phase.PLAN
     if state_update_fn is not None:
