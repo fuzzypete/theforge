@@ -58,8 +58,9 @@ time and never changes.
 - If a finding matches multiple existing families, it joins the family with
   the longest history (most cycles). Ties broken by alphabetical order of
   seed anchor.
-- If a finding has no anchor overlap with any existing family, it starts a
-  new family (classified as **new**).
+- If a finding has no anchor overlap with any prior-cycle finding, it remains
+  unfamilied (classified as **new**). Families are only created upon a
+  cross-cycle match — a single finding in isolation does not start a family.
 - File-path-only overlap does not create or join a family — consistent with
   the `plan-finding-identity` matching constraint that file paths require a
   second anchor. A finding in `coordinator.py` and another in `coordinator.py`
@@ -121,3 +122,17 @@ findings differently and that is expected.
 - New tests cover: anchor extraction from review findings, family
   classification across synthetic cycle sequences, prompt content for
   surviving vs new-only scenarios
+
+## Notes
+
+- **Serialization:** The family trajectory store must serialize/deserialize
+  correctly for `forge run --resume`. `CoordinatorState` is a dataclass —
+  family data should use a generic dict representation or be added to the
+  serialization map.
+- **ReviewFinding has `file` and `line`** unlike `PlanReviewFinding`. Dev
+  review findings will produce richer file-path anchors. The matching
+  machinery should leverage this — the `file` field provides a direct anchor
+  without needing to extract paths from description text.
+- **Trajectory summary truncation:** If a family survives 5+ cycles, the
+  per-cycle descriptions in the trajectory summary should be truncated to
+  keep the fix prompt from growing unbounded.
