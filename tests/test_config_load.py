@@ -250,7 +250,9 @@ class TestHybridRunnerConfig:
             with patch.object(logging.getLogger("theforge.config"), "warning") as mock_warn:
                 load_config(config_path)
             mock_warn.assert_called_once()
-            assert "OPENAI_API_KEY" in mock_warn.call_args[0][3]
+            # call_args[0] is (format_string, profile_name, reason); reason contains the key name
+            warn_args = mock_warn.call_args[0]
+            assert any("OPENAI_API_KEY" in str(a) for a in warn_args)
 
     def test_plan_agent_review_provider(self, tmp_path):
         config_path = _write_config(
