@@ -299,15 +299,19 @@ def match_plan_findings(
     prior_anchors = [extract_anchors(desc) for desc in prior_clean]
 
     results: list[MatchResult] = []
+    used_prior_indices: set[int] = set()
 
     for ci in range(len(current)):
         ca = current_anchors[ci]
 
         # Collect all prior candidates with qualifying anchor overlap.
+        # Skip priors already claimed by an earlier current finding (1-to-1 matching).
         candidates: list[tuple[int, frozenset[Anchor]]] = []
         file_only_priors: list[int] = []
 
         for pi in range(len(prior)):
+            if pi in used_prior_indices:
+                continue
             pa = prior_anchors[pi]
             shared: frozenset[Anchor] = ca & pa
             if not shared:
@@ -344,6 +348,7 @@ def match_plan_findings(
 
         if len(candidates) == 1:
             pi, shared = candidates[0]
+            used_prior_indices.add(pi)
             results.append(
                 MatchResult(
                     current_index=ci,
@@ -359,6 +364,7 @@ def match_plan_findings(
                 candidates,
                 key=lambda c: _jaccard_str(current_clean[ci], prior_clean[c[0]]),
             )
+            used_prior_indices.add(best_pi)
             results.append(
                 MatchResult(
                     current_index=ci,

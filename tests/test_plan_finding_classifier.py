@@ -347,6 +347,26 @@ class TestMatchPlanFindings:
         assert results[0].prior_index == 0
         assert results[1].prior_index == 1
 
+    def test_one_prior_two_current_same_anchor_second_is_new(self):
+        """One prior, two current findings sharing the same anchor → second is unmatched (new).
+
+        Regression: before the one-to-one fix, both current findings would claim
+        prior_index=0 and the second would be silently dropped instead of being
+        preserved as a new independent finding.
+        """
+        current = [
+            _finding("load_config is missing null check"),
+            _finding("load_config also skips schema validation"),
+        ]
+        prior = [_finding("load_config has a bug")]
+        results = match_plan_findings(current, prior)
+        assert len(results) == 2
+        # First current finding claims the only prior
+        assert results[0].prior_index == 0
+        # Second current finding must be unmatched (prior already used)
+        assert results[1].prior_index is None
+        assert results[1].abstain_reason is not None
+
     def test_dotted_path_match(self):
         """Two-segment dotted path is sufficient for a non-file match."""
         current = [_finding("state.plan_attempt_metadata is not updated")]
