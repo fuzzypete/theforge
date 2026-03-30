@@ -46,9 +46,12 @@ Specifically:
 
 ## Family identity rules
 
-A family is identified by a **seed anchor** — the first non-file anchor that
-caused a match between two findings across cycles. Once a family exists with
-seed anchor `load_config`, any future finding whose anchors include
+A family is identified by a **seed anchor** — a single non-file anchor
+selected from a valid match between two findings across cycles. When the
+match provenance contains multiple shared non-file anchors, the seed is the
+lexicographically first one. Once a family exists with seed anchor
+`load_config`, any future finding that produces a valid match (per the full
+`plan-finding-identity` matching rules) and whose shared anchors include
 `load_config` joins that family. The seed anchor is frozen at family creation
 time and never changes.
 
@@ -96,8 +99,10 @@ findings differently and that is expected.
 - After each review merge, the coordinator extracts structural anchors from
   findings and matches them against prior-cycle findings using the anchor
   model from `plan-finding-identity`
-- Each finding family is classified as new or surviving based on seed anchor
-  overlap — no semantic or prose-based judgment
+- Family creation and joining require a valid match per the full
+  `plan-finding-identity` matching rules (not seed anchor overlap alone) —
+  the seed anchor is the persisted key after a valid match, not a shortcut
+  around matching
 - File-path-only anchor overlap does not create or join a family
 - A per-family trajectory store is persisted on `CoordinatorState`, recording
   seed anchor, cycle numbers, and one-line description per appearance
