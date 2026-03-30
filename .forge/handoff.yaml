@@ -1,27 +1,26 @@
 dev_notes: |
   summary: >
     Introduced agent_is_ready() in src/theforge/config/auth.py as the single
-    auth-resolution function used by all runtime callers. Iteration 1 fixed four
-    P1 review findings: (1) the Google finalizer in finalizers.py now uses
-    GEMINI_API_KEY as a fallback for GOOGLE_API_KEY matching the runtime adapters;
-    (2) profiles.py now calls agent_is_ready() for all profiles including CLI ones,
-    not only provider-backed profiles; (3) load.py now checks the actual CLI
-    invocation path (npx/binary) for enabled plan CLI configs via agent_is_ready();
-    (4) _loaders.py now checks the actual CLI invocation path for plan_agent_review
-    CLI configs via agent_is_ready(). The original implementation threaded secrets
-    through assign_models(), migrated all provider auth checks to agent_is_ready(),
-    added GEMINI_API_KEY fallback in google.py adapters, and included 28 new tests.
+    auth-resolution function used by all runtime callers. Iter 1 fixed four P1
+    review findings: Google finalizer GEMINI_API_KEY fallback, CLI profiles warned
+    via agent_is_ready(), enabled plan CLI invocation-path check, and
+    plan_agent_review CLI invocation-path check. Iter 2 fixed one gate failure:
+    test_missing_api_key_warns checked call_args[0][3] which matched the old
+    3-format-arg warning; updated to check any arg contains the key name, matching
+    the new 2-format-arg warning (profile name + reason string).
   commits:
     - sha: "210a6e6"
       message: "feat(auth): normalize auth resolution into single source of truth"
     - sha: "fc3509c"
       message: "fix(auth): address review findings (iter 1)"
+    - sha: "f46cc70"
+      message: "fix(auth): update test assertion for new warning format"
   acceptance_criteria:
     - criterion: "A single auth-resolution function exists that all runtime callers use"
       status: MET
       notes: >
         agent_is_ready() in config/auth.py is called by _has_auth (assignment.py),
-        _parse_profile (profiles.py, now covers CLI profiles too), _validate_plan_provider
+        _parse_profile (profiles.py, covers CLI and API profiles), _validate_plan_provider
         (load.py), plan CLI check (load.py), _parse_plan_agent_review (_loaders.py,
         both CLI and provider paths).
     - criterion: "Auth checks merge os.environ with config.secrets (matching runtime behavior)"
@@ -33,9 +32,8 @@ dev_notes: |
       status: MET
       notes: >
         agent_is_ready() calls shutil.which("claude") for claude, shutil.which("npx")
-        for codex and gemini. This now covers: _parse_profile for all CLI profiles,
-        enabled plan CLI validation in load.py, and plan_agent_review CLI validation
-        in _loaders.py.
+        for codex and gemini. Covers: all CLI profiles in _parse_profile, enabled
+        plan CLI in load.py, plan_agent_review CLI in _loaders.py.
     - criterion: "Local endpoints (localhost/127.0.0.1) skip API key requirements"
       status: MET
       notes: >
@@ -44,31 +42,28 @@ dev_notes: |
     - criterion: "Google provider checks GOOGLE_API_KEY (and GEMINI_API_KEY as fallback) consistently everywhere"
       status: MET
       notes: >
-        agent_is_ready() checks GOOGLE_API_KEY first then GEMINI_API_KEY. google.py
-        adapters (_run_google, _make_google_adapter) and finalizers.py
-        (_make_google_finalizer) all use the same GOOGLE_API_KEY or GEMINI_API_KEY
-        fallback pattern.
+        agent_is_ready() checks GOOGLE_API_KEY then GEMINI_API_KEY. google.py adapters
+        (_run_google, _make_google_adapter) and finalizers.py (_make_google_finalizer)
+        all use the same GOOGLE_API_KEY or GEMINI_API_KEY fallback.
     - criterion: "synthesis_profile is included in auth validation alongside other profiles"
       status: MET
       notes: >
         synthesis_profile is parsed via _parse_profile which calls agent_is_ready()
-        for all profiles (CLI and API). Also included in cli/providers.py check-providers.
+        for all profiles. Also included in cli/providers.py check-providers candidates.
     - criterion: "Unsupported provider/CLI values produce a clear error, not a KeyError"
       status: MET
       notes: >
-        agent_is_ready() explicitly checks SUPPORTED_CLIS and SUPPORTED_PROVIDERS
-        and returns (False, descriptive_message) for unknown values.
+        agent_is_ready() checks SUPPORTED_CLIS and SUPPORTED_PROVIDERS and returns
+        (False, descriptive_message) for unknown values.
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1493 tests pass (0 failures) as of the initial commit."
+      notes: "1493 tests pass (0 failures)."
     - criterion: "New tests for the unified auth function covering each auth path"
       status: MET
       notes: >
-        tests/test_auth.py contains 28 tests covering: CLI binary checks
-        (claude/codex/gemini), npx path for codex/gemini, missing binary, unsupported
-        CLI, API key from env, API key from secrets, secrets-over-env precedence,
-        missing key, Google primary and GEMINI_API_KEY fallback, local endpoint skip,
-        unsupported provider, and no-cli-no-provider edge case.
+        tests/test_auth.py contains 28 tests covering CLI binary checks, npx path,
+        missing binary, unsupported CLI, API key from env/secrets, secrets precedence,
+        Google GEMINI_API_KEY fallback, local endpoint skip, unsupported provider.
   story_deviations: none
   deferred_items: none
   gate_result: PASS
