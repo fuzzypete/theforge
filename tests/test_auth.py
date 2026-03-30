@@ -59,12 +59,15 @@ def _neither_profile() -> ModelProfile:
 
 def test_cli_claude_binary_present():
     with patch("theforge.config.auth.shutil.which", return_value="/usr/bin/claude"):
-        assert check_agent_auth(_cli_profile("claude")) is True
+        ok, _ = check_agent_auth(_cli_profile("claude"))
+        assert ok
 
 
 def test_cli_claude_binary_missing():
     with patch("theforge.config.auth.shutil.which", return_value=None):
-        assert check_agent_auth(_cli_profile("claude")) is False
+        ok, reason = check_agent_auth(_cli_profile("claude"))
+        assert not ok
+        assert reason
 
 
 def test_cli_codex_checks_npx_not_binary():
@@ -78,7 +81,8 @@ def test_cli_codex_checks_npx_not_binary():
     with patch("theforge.config.auth.shutil.which", side_effect=_which):
         result = check_agent_auth(_cli_profile("codex"))
 
-    assert result is True
+    ok, _ = result
+    assert ok
     assert "npx" in calls
     assert "codex" not in calls
 
@@ -94,15 +98,20 @@ def test_cli_gemini_checks_npx_not_binary():
     with patch("theforge.config.auth.shutil.which", side_effect=_which):
         result = check_agent_auth(_cli_profile("gemini"))
 
-    assert result is True
+    ok, _ = result
+    assert ok
     assert "npx" in calls
     assert "gemini" not in calls
 
 
 def test_cli_npx_missing_returns_false():
     with patch("theforge.config.auth.shutil.which", return_value=None):
-        assert check_agent_auth(_cli_profile("codex")) is False
-        assert check_agent_auth(_cli_profile("gemini")) is False
+        ok1, reason1 = check_agent_auth(_cli_profile("codex"))
+        assert not ok1
+        assert reason1
+        ok2, reason2 = check_agent_auth(_cli_profile("gemini"))
+        assert not ok2
+        assert reason2
 
 
 def test_cli_unsupported_raises_value_error():
@@ -116,18 +125,22 @@ def test_cli_unsupported_raises_value_error():
 def test_api_local_endpoint_skips_key_openai():
     """openai with localhost base_url should not require an API key."""
     profile = _api_profile("openai", base_url="http://localhost:11434")
-    assert check_agent_auth(profile, {}) is True
+    ok, _ = check_agent_auth(profile, {})
+    assert ok
 
 
 def test_api_local_endpoint_skips_key_deepseek():
     profile = _api_profile("deepseek", base_url="http://127.0.0.1:8080")
-    assert check_agent_auth(profile, {}) is True
+    ok, _ = check_agent_auth(profile, {})
+    assert ok
 
 
 def test_api_google_local_endpoint_still_requires_key():
     """google does not support local endpoints — key is always required."""
     profile = _api_profile("google", base_url="http://localhost:11434")
-    assert check_agent_auth(profile, {}) is False
+    ok, reason = check_agent_auth(profile, {})
+    assert not ok
+    assert reason
 
 
 # ── API profiles — Google key resolution ──────────────────────────────
@@ -136,32 +149,38 @@ def test_api_google_local_endpoint_still_requires_key():
 def test_api_google_key_from_env(monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "real-key")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    assert check_agent_auth(_api_profile("google"), {}) is True
+    ok, _ = check_agent_auth(_api_profile("google"), {})
+    assert ok
 
 
 def test_api_gemini_fallback_from_env(monkeypatch):
     """GEMINI_API_KEY should be accepted when GOOGLE_API_KEY is absent."""
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "real-key")
-    assert check_agent_auth(_api_profile("google"), {}) is True
+    ok, _ = check_agent_auth(_api_profile("google"), {})
+    assert ok
 
 
 def test_api_google_key_from_secrets(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    assert check_agent_auth(_api_profile("google"), {"GOOGLE_API_KEY": "secret-key"}) is True
+    ok, _ = check_agent_auth(_api_profile("google"), {"GOOGLE_API_KEY": "secret-key"})
+    assert ok
 
 
 def test_api_gemini_key_from_secrets(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    assert check_agent_auth(_api_profile("google"), {"GEMINI_API_KEY": "secret-key"}) is True
+    ok, _ = check_agent_auth(_api_profile("google"), {"GEMINI_API_KEY": "secret-key"})
+    assert ok
 
 
 def test_api_neither_google_key_returns_false(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    assert check_agent_auth(_api_profile("google"), {}) is False
+    ok, reason = check_agent_auth(_api_profile("google"), {})
+    assert not ok
+    assert reason
 
 
 # ── API profiles — secrets merge ──────────────────────────────────────
@@ -170,18 +189,22 @@ def test_api_neither_google_key_returns_false(monkeypatch):
 def test_api_secrets_merge_key_in_secrets_not_env(monkeypatch):
     """Auth should pass when key is only in secrets, not in os.environ."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert check_agent_auth(_api_profile("openai"), {"OPENAI_API_KEY": "s3cret"}) is True
+    ok, _ = check_agent_auth(_api_profile("openai"), {"OPENAI_API_KEY": "s3cret"})
+    assert ok
 
 
 def test_api_secrets_env_takes_precedence(monkeypatch):
     """Key present in env should still work even if absent in secrets."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "env-key")
-    assert check_agent_auth(_api_profile("anthropic"), {}) is True
+    ok, _ = check_agent_auth(_api_profile("anthropic"), {})
+    assert ok
 
 
 def test_api_no_key_at_all_returns_false(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert check_agent_auth(_api_profile("openai"), {}) is False
+    ok, reason = check_agent_auth(_api_profile("openai"), {})
+    assert not ok
+    assert reason
 
 
 # ── API profiles — unsupported provider ───────────────────────────────
@@ -215,7 +238,8 @@ def test_synthesis_profile_works_like_any_api_profile(monkeypatch):
         timeout_seconds=300,
         allowed_tools=(),
     )
-    assert check_agent_auth(synth, {}) is True
+    ok, _ = check_agent_auth(synth, {})
+    assert ok
 
 
 def test_synthesis_profile_missing_key_returns_false(monkeypatch):
@@ -229,4 +253,6 @@ def test_synthesis_profile_missing_key_returns_false(monkeypatch):
         timeout_seconds=300,
         allowed_tools=(),
     )
-    assert check_agent_auth(synth, {}) is False
+    ok, reason = check_agent_auth(synth, {})
+    assert not ok
+    assert reason

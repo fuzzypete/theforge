@@ -17,7 +17,6 @@ from .defaults import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
-    PROVIDER_API_KEY_MAP,
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
@@ -71,16 +70,9 @@ def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> 
         timeout_seconds=plan_cfg.timeout,
         allowed_tools=(),
     )
-    if not check_agent_auth(_stub, secrets):
-        api_key_var = PROVIDER_API_KEY_MAP.get(plan_cfg.provider, "")
-        if plan_cfg.provider == "google":
-            key_hint = "GOOGLE_API_KEY (or GEMINI_API_KEY)"
-        else:
-            key_hint = f"${api_key_var}" if api_key_var else "the required key"
-        raise ValueError(
-            f"plan section uses provider '{plan_cfg.provider}' but the required "
-            f"environment variable {key_hint} is not set."
-        )
+    _ready, _reason = check_agent_auth(_stub, secrets)
+    if not _ready:
+        raise ValueError(f"plan section uses provider '{plan_cfg.provider}': {_reason}")
 
 
 def load_config(config_path: Path) -> ForgeConfig:

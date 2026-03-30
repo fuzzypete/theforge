@@ -197,21 +197,13 @@ def _parse_profile(
             allowed_tools=(),
             base_url=data.get("base_url"),
         )
-        if not check_agent_auth(_stub, secrets or {}):
-            from .defaults import PROVIDER_API_KEY_MAP as _KEY_MAP  # noqa: PLC0415
-
-            api_key_var = _KEY_MAP.get(provider, "")
-            # Build a human-readable key hint (google may also accept GEMINI_API_KEY)
-            if provider == "google":
-                key_hint = "GOOGLE_API_KEY (or GEMINI_API_KEY)"
-            else:
-                key_hint = f"${api_key_var}" if api_key_var else "the required key"
+        _ready, _reason = check_agent_auth(_stub, secrets or {})
+        if not _ready:
             log.warning(
-                "Profile %r uses provider %r but %s is not set — "
-                "this agent will be skipped at runtime.",
+                "Profile %r uses provider %r: %s — this agent will be skipped at runtime.",
                 name,
                 provider,
-                key_hint,
+                _reason,
             )
 
     tools = data.get("allowed_tools")

@@ -36,7 +36,8 @@ def _has_auth(agent: AgentDef, secrets: dict[str, str] | None = None) -> bool:
     """
     profile = agent.to_model_profile()
     try:
-        return check_agent_auth(profile, secrets)
+        ready, _ = check_agent_auth(profile, secrets)
+        return ready
     except ValueError:
         return True  # unknown provider/CLI — assume OK to avoid hard failure
 

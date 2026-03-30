@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from .auth import check_agent_auth
-from .defaults import DEFAULT_WORKSPACE, PROVIDER_API_KEY_MAP, PROVIDER_SDK_MAP, SUPPORTED_CLIS
+from .defaults import DEFAULT_WORKSPACE, PROVIDER_SDK_MAP, SUPPORTED_CLIS
 from .models import AgentDef, _planner_candidate_models
 from .profiles import _parse_profile
 from .types import (
@@ -89,16 +89,9 @@ def _parse_plan_agent_review(
                 timeout_seconds=0,
                 allowed_tools=(),
             )
-            if not check_agent_auth(_stub, secrets):
-                api_key_var = PROVIDER_API_KEY_MAP.get(par_provider, "")
-                if par_provider == "google":
-                    key_hint = "GOOGLE_API_KEY (or GEMINI_API_KEY)"
-                else:
-                    key_hint = f"${api_key_var}" if api_key_var else "the required key"
-                raise ValueError(
-                    f"plan_agent_review uses provider '{par_provider}' but the required "
-                    f"environment variable {key_hint} is not set."
-                )
+            _ready, _reason = check_agent_auth(_stub, secrets)
+            if not _ready:
+                raise ValueError(f"plan_agent_review uses provider '{par_provider}': {_reason}")
 
     par_pool: list[ModelProfile] = []
     if "pool" in par_data:
