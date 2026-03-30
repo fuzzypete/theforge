@@ -43,6 +43,7 @@ from .notify import (
     _plan_review_interactive,
 )
 from .pending_hitl import _pending_plan_review
+from .plan_trajectory import build_disposition_context, record_plan_attempt
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .remote_gates import _plan_review_remote
 from .state import CoordinatorResult, CoordinatorState, Phase
@@ -449,6 +450,8 @@ def _run_plan_agent_review(
         merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
         _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
 
+        record_plan_attempt(state, merged_pr.findings)
+
         if merged_pr.verdict == "APPROVE":
             state.plan_review_decision = "approve"
             if merged_pr.findings:
@@ -471,6 +474,7 @@ def _run_plan_agent_review(
                 outcome="approve",
                 cost_usd=round(_total_pr_cost, 6),
                 duration_s=round(_pr_elapsed, 2),
+                plan_regen_disposition=state.plan_regen_disposition,
             )
             try:
                 _cu._run_shell(["git", "add", str(PLAN_PATH)], cwd=workspace_path)
@@ -502,6 +506,7 @@ def _run_plan_agent_review(
             outcome="reject",
             cost_usd=round(_total_pr_cost, 6),
             duration_s=round(_pr_elapsed, 2),
+            plan_regen_disposition=state.plan_regen_disposition,
         )
 
         state.plan_regen_count += 1
@@ -605,6 +610,10 @@ def _run_plan_agent_review(
             4. Do NOT discard working parts of your plan. Only change what
                the findings call out.
         """)
+
+        disposition_ctx = build_disposition_context(state)
+        if disposition_ctx:
+            regen_prompt += f"\n\n{disposition_ctx}\n"
 
         if state.plan_escalation_note:
             regen_prompt += f"\n\n## Model Escalation\n\n{state.plan_escalation_note}\n"
@@ -723,6 +732,7 @@ def _run_human_plan_review(
             state.plan_output = updated
             state.plan_structured = parse_plan_output(updated)
             plan_text = updated
+            record_plan_attempt(state, [])
             write_trace(
                 workspace_path
                 / ".forge/traces"
@@ -757,6 +767,13 @@ def _run_human_plan_review(
 
         if plan_review_decision == "regenerate":
             state.plan_regen_count += 1
+            record_plan_attempt(state, [])
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN_REVIEW",
+                outcome="regenerate",
+                plan_regen_disposition=state.plan_regen_disposition,
+            )
             if state.plan_regen_count > config.retry.max_plan_regen_attempts:
                 state.plan_review_decision = "abandon"
                 _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — abandoning")
@@ -773,9 +790,15 @@ def _run_human_plan_review(
                 f"(attempt {state.plan_regen_count}/{_max2})"
             )
 
+            _disposition_ctx = build_disposition_context(state)
+            if _disposition_ctx:
+                regen_plan_prompt = plan_prompt + f"\n\n{_disposition_ctx}\n"
+            else:
+                regen_plan_prompt = plan_prompt
+
             _plan_start = time.monotonic()
             plan_result = run_agent(
-                prompt=plan_prompt,
+                prompt=regen_plan_prompt,
                 profile=plan_profile,
                 working_dir=workspace_path,
                 session_id=state.plan_session_id,
