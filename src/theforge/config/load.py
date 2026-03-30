@@ -321,7 +321,13 @@ def load_config(config_path: Path) -> ForgeConfig:
     # agents (PHASE_TIER["code_review"] in assignment.py maps all complexity levels
     # to "mid" or "strong").  Raise at load time if all reviewer-eligible agents
     # lack auth so the sprint fails fast rather than at the first review cycle.
-    if assignment_cfg.enabled and agents_list:
+    #
+    # Skip the check when an explicit review_pool is configured: preflight_flow
+    # preserves explicit reviewer overrides and bypasses adaptive code-reviewer
+    # selection entirely (mirrors the `review_pool not in _explicit_roles` guard
+    # in preflight_flow.py).
+    _adaptive_reviewers_active = assignment_cfg.enabled and _review_pool_is_default
+    if _adaptive_reviewers_active and agents_list:
         _REVIEWER_TIERS = {"mid", "strong"}
         reviewer_candidates = [a for a in agents_list if a.tier in _REVIEWER_TIERS]
         if reviewer_candidates:

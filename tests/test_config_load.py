@@ -1135,3 +1135,36 @@ class TestAssignmentReviewerAuthCrossCheck:
         ):
             with pytest.raises(ValueError, match="no reviewer-eligible agents have auth"):
                 load_config(config_path)
+
+    def test_explicit_review_pool_skips_auth_check(self, tmp_path):
+        """When an explicit review_pool is configured, adaptive reviewer selection is
+        bypassed at runtime (preflight_flow preserves explicit overrides).  The auth
+        cross-check must not raise even if all mid/strong agents lack auth."""
+        config_path = _write_config(
+            {
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "strong-unauthed",
+                        "provider": "anthropic",
+                        "model": "claude-3-opus",
+                        "tier": "strong",
+                    },
+                ],
+                # Explicit review_pool — adaptive code-reviewer selection is bypassed
+                "profiles": {
+                    "review": {
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                    },
+                },
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.assignment.enabled is True
+        assert config.review_pool_is_default is False
