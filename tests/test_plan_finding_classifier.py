@@ -135,24 +135,35 @@ class TestExtractAnchorsDottedPaths:
         assert "dotted_path" not in kinds_for_coordinator
         assert "file_path" in kinds_for_coordinator
 
-    def test_unknown_extension_filename_not_classified_as_dotted(self):
-        """Filenames with unrecognised extensions must not become dotted_path anchors."""
-        # schema.sql has extension 'sql' which is not in _KNOWN_EXTENSIONS
+    def test_sql_filename_classified_as_file_path(self):
+        """schema.sql must be a file_path anchor (sql is a known extension)."""
         anchors = extract_anchors("The schema.sql file is missing an index")
-        values = {a.value for a in anchors}
-        assert "schema.sql" not in values  # not a file_path (unknown ext)
-        # and must NOT become a dotted_path — the span is consumed
-        kinds = {a.kind for a in anchors}
-        assert "dotted_path" not in kinds or not any(
-            "schema" in a.value for a in anchors if a.kind == "dotted_path"
-        )
+        kinds_by_value = {a.value: a.kind for a in anchors}
+        assert kinds_by_value.get("schema.sql") == "file_path"
+        # Must NOT be classified as dotted_path
+        assert not any(a.kind == "dotted_path" and "schema" in a.value for a in anchors)
 
-    def test_requirements_in_not_classified_as_dotted(self):
-        """requirements.in must not become a dotted_path anchor."""
+    def test_requirements_in_classified_as_file_path(self):
+        """requirements.in must be a file_path anchor (in is a known extension)."""
         anchors = extract_anchors("Pin versions in requirements.in to fix this")
-        values = {a.value for a in anchors}
-        assert "requirements.in" not in values
+        kinds_by_value = {a.value: a.kind for a in anchors}
+        assert kinds_by_value.get("requirements.in") == "file_path"
         assert not any(a.kind == "dotted_path" and "requirements" in a.value for a in anchors)
+
+    def test_config_dev_is_dotted_path(self):
+        """config.dev must be a dotted_path anchor — dev is not a file extension."""
+        anchors = extract_anchors("The config.dev section is missing a key")
+        assert _anchor("config.dev", "dotted_path") in anchors
+
+    def test_state_init_is_dotted_path(self):
+        """state.init must be a dotted_path anchor — init is not a file extension."""
+        anchors = extract_anchors("state.init was not called correctly")
+        assert _anchor("state.init", "dotted_path") in anchors
+
+    def test_models_opus_is_dotted_path(self):
+        """models.opus must be a dotted_path anchor — opus is not a file extension."""
+        anchors = extract_anchors("Use models.opus for the plan reviewer")
+        assert _anchor("models.opus", "dotted_path") in anchors
 
 
 class TestExtractAnchorsExclusions:
@@ -517,10 +528,11 @@ class TestRegistryIntegration:
         # Both entries must be non-empty strings
         assert all(isinstance(p, str) and p for p in state.plan_match_provenance)
 
-    def test_unknown_extension_file_only_unmatched(self):
-        """Two findings sharing only an unknown-extension filename are unmatched."""
-        # schema.sql is not in _KNOWN_EXTENSIONS, so it produces no anchor
+    def test_sql_file_only_unmatched(self):
+        """Two findings sharing only schema.sql (file_path) are unmatched (file-path-only rule)."""
+        # schema.sql is now a file_path anchor; file-path-only overlap is insufficient
         current = [_finding("The schema.sql migration is missing an index")]
         prior = [_finding("schema.sql needs a composite index")]
         results = match_plan_findings(current, prior)
         assert results[0].prior_index is None
+        assert "file-path-only" in (results[0].abstain_reason or "")

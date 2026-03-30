@@ -80,6 +80,24 @@ _KNOWN_EXTENSIONS: frozenset[str] = frozenset(
         # Misc
         "lock",
         "log",
+        # Data / database
+        "sql",
+        "db",
+        "csv",
+        "xml",
+        "pdf",
+        # Image / binary
+        "png",
+        "jpg",
+        "jpeg",
+        "gif",
+        "svg",
+        "ico",
+        "gz",
+        "zip",
+        "out",
+        # pip-tools convention (.in → compiled requirements)
+        "in",
     }
 )
 
@@ -218,14 +236,6 @@ def extract_anchors(text: str) -> frozenset[Anchor]:
             continue
         if _has_single_char_non_first_segment(val):
             continue
-        # Exclude tokens that look like standalone filenames with unrecognised
-        # extensions (e.g. schema.sql, requirements.in, 001_init.sql).
-        # fullmatch confirms this is a single word.ext form rather than a
-        # multi-segment attribute chain like config.profiles.dev.
-        if _FILE_PATH_RE.fullmatch(val):
-            _ext = val.rsplit(".", 1)[-1].lower()
-            if _ext not in _KNOWN_EXTENSIONS:
-                continue
         anchors.add(Anchor(value=val, kind="dotted_path"))
 
     # ── 3. Multi-segment snake_case ────────────────────────────────────────
