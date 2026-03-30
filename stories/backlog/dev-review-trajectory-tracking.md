@@ -1,7 +1,6 @@
 ---
 name: "Dev review: trajectory tracking and surviving-family-aware fix prompt"
 slug: dev-review-trajectory-tracking
-depends_on: [plan-finding-identity]
 pytest_target: tests/test_review_phase.py
 ---
 
