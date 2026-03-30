@@ -315,8 +315,29 @@ def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
     return None
 
 
+def _check_behind_origin(config: ForgeConfig) -> None:
+    """Log an informational note if base_branch is behind origin.
+
+    Silently skips if the rev-list command fails (no remote, fetch needed, etc.).
+    This check is purely informational — it never blocks execution.
+    """
+    base_branch = config.workspace.base_branch
+    ok, out = _cu._run_shell(
+        f"git rev-list --count {base_branch}..origin/{base_branch}",
+        config.project_root,
+    )
+    if not ok:
+        return
+    try:
+        count = int(out.strip())
+    except ValueError:
+        return
+    if count > 0:
+        _cu._log(f"ℹ WORKSPACE  {base_branch} is {count} commit(s) behind origin/{base_branch}")
+
+
 def _create_workspace(
-    config: ForgeConfig, task: TaskStory
+    config: ForgeConfig, task: TaskStory, *, no_pull: bool = False
 ) -> tuple[Path | None, str | None, str | None]:
     """Create an isolated workspace. Returns (path, branch, error)."""
     slug = task.slug
@@ -334,7 +355,32 @@ def _create_workspace(
             _remove_worktree(workspace_path, branch_name, config.project_root, info_line)
         else:
             _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
+            if not no_pull:
+                _check_behind_origin(config)
             return workspace_path, branch_name, None
+
+    if not no_pull:
+        base_branch = config.workspace.base_branch
+        # Determine whether the project root currently has base_branch checked out.
+        # - If yes: `git fetch origin base:base` is rejected by git ("branch currently
+        #   checked out"), so fall back to `git pull --ff-only` which advances the
+        #   current (base) branch directly.
+        # - If no:  `git pull --ff-only` would fast-forward the *current* branch, not
+        #   base_branch — leaving local base stale.  Use `git fetch origin base:base`
+        #   to advance the local ref without a checkout.
+        _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
+        if current_branch.strip() == base_branch:
+            ok_pull, pull_out = _cu._run_shell(
+                f"git pull --ff-only origin {base_branch}", config.project_root
+            )
+        else:
+            ok_pull, pull_out = _cu._run_shell(
+                f"git fetch origin {base_branch}:{base_branch}", config.project_root
+            )
+        if ok_pull:
+            _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
+        else:
+            _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
 
     _cu._log(f"Creating workspace: {cmd}")
     ok, output = _cu._run_shell(cmd, config.project_root)
@@ -352,6 +398,8 @@ def _create_workspace(
         if existing_wt is not None:
             if existing_wt.exists():
                 _cu._log(f"↻ WORKSPACE  reusing existing worktree (registered): {existing_wt}")
+                if not no_pull:
+                    _check_behind_origin(config)
                 if config.workspace.setup_command:
                     _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                     ok_s, out_s = _run_setup_split(config.workspace.setup_command, existing_wt)
@@ -371,6 +419,8 @@ def _create_workspace(
 
         if commits_ahead:
             _cu._log(f"↻ WORKSPACE  branch has commits, reattaching worktree: {branch_name}")
+            if not no_pull:
+                _check_behind_origin(config)
             ok_add, add_out = _cu._run_shell(
                 f"git worktree add {workspace_path} {branch_name}", config.project_root
             )

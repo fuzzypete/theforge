@@ -89,6 +89,7 @@ def _run_single_story(
     resume: bool,
     effective_auto_merge: bool,
     state_update_fn: "Callable[[dict], None] | None",
+    no_pull: bool = False,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -112,6 +113,7 @@ def _run_single_story(
                 run_id=sprint_run_id,
                 sprint_name=sprint_name,
                 state_update_fn=state_update_fn,
+                no_pull=no_pull,
             )
         elif triage.action == "dev" and triage.worktree_path is not None:
             result = run_from_dev(
@@ -124,6 +126,7 @@ def _run_single_story(
                 run_id=sprint_run_id,
                 sprint_name=sprint_name,
                 state_update_fn=state_update_fn,
+                no_pull=no_pull,
             )
         else:
             result = run_task(
@@ -135,6 +138,7 @@ def _run_single_story(
                 run_id=sprint_run_id,
                 sprint_name=sprint_name,
                 state_update_fn=state_update_fn,
+                no_pull=no_pull,
             )
     else:
         result = run_task(
@@ -146,6 +150,7 @@ def _run_single_story(
             run_id=sprint_run_id,
             sprint_name=sprint_name,
             state_update_fn=state_update_fn,
+            no_pull=no_pull,
         )
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
@@ -217,6 +222,7 @@ def run_sprint(
     notify: bool = False,
     resume: bool = False,
     state_update_fn: "Callable[[dict], None] | None" = None,
+    no_pull: bool = False,
 ) -> SprintResult:
     """Run all stories in a sprint manifest with optional concurrency.
 
@@ -416,6 +422,7 @@ def run_sprint(
                     resume,
                     effective_am,
                     state_fn,
+                    no_pull,
                 )
                 active[task.slug] = fut
 
