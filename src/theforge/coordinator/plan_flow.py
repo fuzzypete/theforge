@@ -664,7 +664,10 @@ def _run_human_plan_review(
             state.plan_output = updated
             state.plan_structured = parse_plan_output(updated)
             plan_text = updated
-            write_trace(workspace_path / ".forge/traces" / "plan.txt", updated)
+            write_trace(
+                workspace_path / ".forge/traces" / f"plan-attempt-{state.plan_regen_count}.txt",
+                updated,
+            )
             _log(
                 "  ✓ PLAN_REVIEW   approve  "
                 f"({_fmt_duration(state.plan_review_waited_seconds or 0)})"
@@ -716,7 +719,10 @@ def _run_human_plan_review(
             state.plan_durations.append(_plan_elapsed)
             state.plan_results.append(plan_result)
             state.plan_session_id = plan_result.session_id or state.plan_session_id
-            write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
+            write_trace(
+                workspace_path / ".forge/traces" / f"plan-attempt-{state.plan_regen_count}.txt",
+                plan_result.output,
+            )
 
             if not plan_result.success:
                 state.phase = Phase.ESCALATE

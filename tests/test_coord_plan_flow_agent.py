@@ -279,6 +279,69 @@ class TestPlanAgentReview:
         assert len(result.state.plan_results) == 2
         assert len(result.state.plan_review_results) == 2
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_plan_agent_review_approve_with_p1_triggers_regen(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """APPROVE verdict carrying a P1 finding must trigger regen.
+
+        Findings drive the verdict, not the reviewer's stated verdict.
+        A reviewer saying APPROVE with a P1 must still block — this was
+        the core bug where the advisory-downgrade hack allowed P1s through.
+        """
+        config = _make_plan_agent_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        approve_with_p1 = """\
+```yaml
+verdict: APPROVE
+findings:
+  - severity: P1
+    description: "startup validation runs before CLI overrides are applied"
+    suggestion: "Move run_startup_checks() to after _apply_dev_model_override()"
+```
+"""
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nOriginal plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nFixed plan.", cost_usd=0.12),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_plan_pool.side_effect = [
+            [_make_agent_result(success=True, output=approve_with_p1, cost_usd=0.08)],
+            [_make_agent_result(success=True, output=PLAN_AGENT_APPROVE, cost_usd=0.06)],
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config=config, task=task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_regen_count == 1  # regen triggered despite APPROVE verdict
+        assert result.state.plan_output == "# Plan\n\nFixed plan."
+        assert len(result.state.plan_results) == 2
+
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
