@@ -404,7 +404,8 @@ class TestLoadConfig:
             },
             tmp_path,
         )
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_model_is_default is False
         assert config.plan.provider == "openai"
         assert config.plan.model == "gpt-4o"
@@ -709,7 +710,8 @@ class TestLoadConfig:
             tmp_path,
         )
 
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "haiku"
 
     def test_plan_agent_review_allows_cheap_model_when_no_mid_tier_agents(self, tmp_path):
@@ -748,7 +750,8 @@ class TestLoadConfig:
         )
 
         # Should not raise — the planner fallback always picks opus (highest budget), not haiku
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "haiku"
 
     def test_plan_agent_review_rejects_strong_model_when_no_mid_tier_agents(self, tmp_path):
@@ -828,7 +831,8 @@ class TestLoadConfig:
         )
 
         # Should not raise — adaptive planner selects opus, not sonnet
-        config = load_config(config_path)
+        with patch("theforge.config.load.check_agent_auth", return_value=(True, "")):
+            config = load_config(config_path)
         assert config.plan_agent_review.pool[0].model == "sonnet"
 
     def test_plan_agent_review_legacy_provider_profile_uses_api_default_tools(self, tmp_path):
