@@ -2,7 +2,6 @@
 name: "forge check-config — show effective config and surface problems before running"
 slug: forge-check-config
 pytest_target: tests/
-depends_on: [config-normalization]
 ---
 
 # forge check-config

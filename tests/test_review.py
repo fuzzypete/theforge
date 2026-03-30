@@ -181,8 +181,8 @@ findings: []
         assert result.verdict == "REJECT"
         assert len(result.parse_errors) == 1
 
-    def test_approve_with_p1_findings_downgrades_to_p2(self):
-        """APPROVE with P1 trusts the verdict and downgrades P1s to advisory P2s."""
+    def test_approve_with_p1_findings_preserved(self):
+        """APPROVE with P1 findings: severity preserved; merge computes verdict from findings."""
         yaml_text = """\
 ```yaml
 verdict: APPROVE
@@ -195,10 +195,10 @@ findings:
         result = parse_plan_review_output(yaml_text)
         assert result.verdict == "APPROVE"
         assert not result.parse_errors
-        assert result.findings[0].severity == "P2"
+        assert result.findings[0].severity == "P1"
 
-    def test_approve_with_p0_findings_downgrades_to_p2(self):
-        """APPROVE with P0 trusts the verdict and downgrades P0s to advisory P2s."""
+    def test_approve_with_p0_findings_preserved(self):
+        """APPROVE with P0 findings: severity preserved; merge computes verdict from findings."""
         yaml_text = """\
 ```yaml
 verdict: APPROVE
@@ -211,7 +211,7 @@ findings:
         result = parse_plan_review_output(yaml_text)
         assert result.verdict == "APPROVE"
         assert not result.parse_errors
-        assert result.findings[0].severity == "P2"
+        assert result.findings[0].severity == "P0"
 
     def test_approve_with_malformed_findings_demoted_to_reject(self):
         yaml_text = """\

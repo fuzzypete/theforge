@@ -307,17 +307,6 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
     # Cross-validation
     if verdict == "REJECT" and not findings:
         errors.append("REJECT verdict without findings — cannot justify rejection")
-    if verdict == "APPROVE" and blocking_count > 0:
-        # Reviewer intended to approve but flagged concerns as P1.
-        # Trust the verdict — downgrade P1s to advisory P2s so the findings
-        # reach the dev agent instead of discarding the entire response.
-        for i, f in enumerate(findings):
-            if f.severity in ("P0", "P1"):
-                findings[i] = PlanReviewFinding(
-                    severity="P2",
-                    description=f.description,
-                    suggestion=f.suggestion,
-                )
 
     # Any parse error on APPROVE → demote to REJECT
     if verdict == "APPROVE" and errors:
@@ -338,8 +327,10 @@ def merge_plan_review_results(
     Rules:
     - Reviewers with parse_errors are excluded (caller should log a warning).
     - If no valid reviewers remain → REJECT with combined parse errors.
-    - If any remaining reviewer has a P0 or P1 finding → REJECT (triggers regen).
-    - Else → APPROVE (P2s are advisory; included in merged findings).
+    - Verdict is findings-driven, not reviewer-verdict-driven:
+      - Any P0 finding → REJECT (plan is impossible to implement)
+      - Any P1 finding → REJECT (real gap that must be addressed before dev)
+      - Only P2s remain → APPROVE (pass P2s to dev as context)
     - All findings are prefixed with ``[name]`` for attribution.
     """
     import logging as _logging
@@ -366,9 +357,6 @@ def merge_plan_review_results(
             or ["All plan reviewers failed or produced parse errors"],
         )
 
-    has_p0_or_p1 = any(f.severity in ("P0", "P1") for name, r in valid for f in r.findings)
-    verdict = "REJECT" if has_p0_or_p1 else "APPROVE"
-
     all_findings: list[PlanReviewFinding] = []
     for name, r in valid:
         for f in r.findings:
@@ -379,6 +367,9 @@ def merge_plan_review_results(
                     suggestion=f.suggestion,
                 )
             )
+
+    has_p0_or_p1 = any(f.severity in ("P0", "P1") for f in all_findings)
+    verdict = "REJECT" if has_p0_or_p1 else "APPROVE"
 
     return PlanReviewResult(
         verdict=verdict,

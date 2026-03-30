@@ -208,7 +208,7 @@ def _run_plan_phase(
     state.plan_durations.append(_plan_elapsed)
     state.plan_results.append(plan_result)
     state.plan_session_id = plan_result.session_id or state.plan_session_id
-    write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
+    write_trace(workspace_path / ".forge/traces" / "plan-attempt-0.txt", plan_result.output)
 
     if plan_result.success:
         plan_text = plan_result.output
@@ -394,23 +394,19 @@ def _run_plan_agent_review(
                     f"{'; '.join(_parsed.parse_errors)}"
                 )
 
-            # Advisory downgrade: REJECT with only P1/P2 (no P0, no parse_errors) → APPROVE
-            _has_p0 = any(f.severity == "P0" for f in _parsed.findings)
-            if (
-                _parsed.verdict == "REJECT"
-                and not _has_p0
-                and _parsed.findings
-                and not _parsed.parse_errors
-            ):
-                _log(
-                    f"  ✓ PLAN_REVIEW   {_prof.name} approve "
-                    f"(advisory {len(_parsed.findings)} findings)"
-                )
-                _parsed = PlanReviewResult(
-                    verdict="APPROVE",
-                    findings=_parsed.findings,
-                    parse_errors=[],
-                )
+            _p1_count = sum(1 for f in _parsed.findings if f.severity in ("P0", "P1"))
+            _p2_count = sum(1 for f in _parsed.findings if f.severity == "P2")
+            _log(
+                f"  {'✓' if _p1_count == 0 else '✗'} PLAN_REVIEW   {_prof.name} "
+                f"({'no blockers' if _p1_count == 0 else f'{_p1_count} P1'}"
+                f"{f', {_p2_count} P2' if _p2_count else ''})"
+            )
+            # persist raw output regardless of approve/reject outcome
+            _write_log_artifact(
+                state.log_dir,
+                f"plan-review/attempt-{_attempt}/{_prof.name}.yaml",
+                _res.output or "",
+            )
             _parsed_prs.append(_parsed)
 
         merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
@@ -454,10 +450,6 @@ def _run_plan_agent_review(
             except Exception as _commit_err:
                 _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
             _write_log_artifact(state.log_dir, "plan.md", plan_text)
-            for _pr_prof, _pr_res in zip(par_profiles, pr_results):
-                _write_log_artifact(
-                    state.log_dir, f"plan-review/{_pr_prof.name}.yaml", _pr_res.output or ""
-                )
             return None  # continue to DEV
 
         # REJECT path
@@ -585,7 +577,10 @@ def _run_plan_agent_review(
         state.plan_durations.append(_plan_elapsed)
         state.plan_results.append(plan_result)
         state.plan_session_id = plan_result.session_id or state.plan_session_id
-        write_trace(workspace_path / ".forge/traces" / "plan.txt", plan_result.output)
+        write_trace(
+            workspace_path / ".forge/traces" / f"plan-attempt-{state.plan_regen_count}.txt",
+            plan_result.output,
+        )
 
         if not plan_result.success:
             state.phase = Phase.ESCALATE
