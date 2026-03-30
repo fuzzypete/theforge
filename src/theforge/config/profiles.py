@@ -6,17 +6,16 @@ import importlib
 import logging
 from typing import Any
 
+from .auth import agent_is_ready
 from .defaults import (
     API_PROVIDER_DEFAULT_TOOLS,
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
-    PROVIDER_API_KEY_MAP,
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
 from .models import _resolve_model_info
-from .secrets import _resolve_secret
 from .types import SUPPORTED_PROVIDERS, ModelProfile
 
 log = logging.getLogger("theforge.config")
@@ -187,19 +186,6 @@ def _parse_profile(
                     f"Profile {name!r} uses provider '{provider}' but the required "
                     f"SDK '{sdk}' is not installed. Please install it."
                 )
-        base_url_early = data.get("base_url")
-        _is_local = base_url_early and any(
-            base_url_early.startswith(p) for p in ("http://localhost", "http://127.0.0.1")
-        )
-        api_key_var = PROVIDER_API_KEY_MAP.get(provider)
-        if api_key_var and not _resolve_secret(api_key_var, secrets or {}) and not _is_local:
-            log.warning(
-                "Profile %r uses provider %r but $%s is not set — "
-                "this agent will be skipped at runtime.",
-                name,
-                provider,
-                api_key_var,
-            )
 
     tools = data.get("allowed_tools")
     reasoning_effort = data.get("reasoning_effort")
@@ -225,7 +211,7 @@ def _parse_profile(
     else:
         allowed_tools_tuple = default.allowed_tools
 
-    return ModelProfile(
+    profile = ModelProfile(
         name=name,
         cli=cli,
         provider=provider,
@@ -242,3 +228,16 @@ def _parse_profile(
         if (max_iter_raw := data.get("max_iterations")) is not None
         else None,
     )
+
+    # Warn if the profile won't have usable auth at runtime
+    if profile.provider is not None:
+        _ready, _reason = agent_is_ready(profile, secrets or {})
+        if not _ready:
+            log.warning(
+                "Profile %r uses provider %r but %s — this agent will be skipped at runtime.",
+                name,
+                provider,
+                _reason,
+            )
+
+    return profile

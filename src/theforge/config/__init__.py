@@ -7,6 +7,7 @@ directly from their owning sub-modules (e.g. ``theforge.config.profiles``).
 
 from __future__ import annotations
 
+from .auth import agent_is_ready
 from .defaults import (
     API_PROVIDER_DEFAULT_TOOLS,
     DEFAULT_DEV_PROFILE,
@@ -47,6 +48,8 @@ from .types import (
 )
 
 __all__ = [
+    # auth
+    "agent_is_ready",
     # types
     "AgentDef",
     "AssignmentConfig",

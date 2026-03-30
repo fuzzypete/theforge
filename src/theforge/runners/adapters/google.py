@@ -34,7 +34,8 @@ def _run_google(
     from theforge.schemas import review_json_schema
 
     merged = {**os.environ, **(secrets or {})}
-    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
+    api_key = merged.get("GOOGLE_API_KEY") or merged.get("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
 
     try:
         if plain_text:
@@ -147,7 +148,8 @@ def _make_google_adapter(
     from theforge.schemas import review_json_schema
 
     merged = {**os.environ, **(secrets or {})}
-    client = genai.Client(api_key=merged.get("GOOGLE_API_KEY"))
+    api_key = merged.get("GOOGLE_API_KEY") or merged.get("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
 
     # Pre-build the sanitized schema for finalization calls
     _finalize_schema = _sanitize_schema_for_google(review_json_schema())

@@ -6,10 +6,10 @@ import importlib
 import logging
 from typing import Any
 
-from .defaults import DEFAULT_WORKSPACE, PROVIDER_API_KEY_MAP, PROVIDER_SDK_MAP, SUPPORTED_CLIS
+from .auth import agent_is_ready
+from .defaults import DEFAULT_WORKSPACE, PROVIDER_SDK_MAP, SUPPORTED_CLIS
 from .models import AgentDef, _planner_candidate_models
 from .profiles import _parse_profile
-from .secrets import _resolve_secret
 from .types import (
     SUPPORTED_PROVIDERS,
     ModelProfile,
@@ -80,12 +80,19 @@ def _parse_plan_agent_review(
                         f"plan_agent_review uses provider '{par_provider}' but the required "
                         f"SDK '{sdk}' is not installed. Please install it."
                     )
-            api_key_var = PROVIDER_API_KEY_MAP.get(par_provider)
-            if api_key_var and not _resolve_secret(api_key_var, secrets):
-                raise ValueError(
-                    f"plan_agent_review uses provider '{par_provider}' but the required "
-                    f"environment variable ${api_key_var} is not set."
-                )
+            # Use unified auth check (merges os.environ + secrets, Google GEMINI_API_KEY fallback)
+            _par_profile = ModelProfile(
+                name="_plan_agent_review",
+                cli=None,
+                provider=par_provider,
+                model=str(par_data.get("model", "sonnet")),
+                budget_usd=float(par_data.get("budget_usd", 0.50)),
+                timeout_seconds=int(par_data.get("timeout", 300)),
+                allowed_tools=(),
+            )
+            ready, reason = agent_is_ready(_par_profile, secrets)
+            if not ready:
+                raise ValueError(f"plan_agent_review uses provider '{par_provider}' but {reason}")
 
     par_pool: list[ModelProfile] = []
     if "pool" in par_data:
