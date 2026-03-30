@@ -1,0 +1,5 @@
+name: "M3a Wave 3b — check-config (narrowed)"
+budget_usd: 15
+auto_merge: true
+specs:
+  - stories/backlog/forge-check-config.md

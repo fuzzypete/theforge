@@ -89,6 +89,9 @@ plan_agent_review:
       timeout_seconds: 300
       max_iterations: 30
 
+sprint:
+  max_parallel: 3
+
 hooks:
   post_run: .forge/hooks/post_run.sh
   timeout_seconds: 30

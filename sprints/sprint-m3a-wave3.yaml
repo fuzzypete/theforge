@@ -1,0 +1,9 @@
+name: "M3a Wave 3 — config cleanup, check-config, stability"
+budget_usd: 15
+auto_merge: true
+specs:
+  - stories/backlog/stale-approve-triage.md
+  - stories/backlog/workspace-auto-pull.md
+  - stories/backlog/config-normalization-cleanup.md
+  - stories/backlog/forge-check-config.md
+  - stories/backlog/hardening-bug-bundle.md
