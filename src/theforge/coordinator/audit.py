@@ -389,6 +389,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "waited_seconds": round(state.plan_review_waited_seconds or 0, 2),
                 "findings": state.plan_agent_review_findings,
                 "cost_usd": state.total_plan_review_cost,
+                **(
+                    {"reviewer_failures": state.plan_review_failures}
+                    if state.plan_review_failures
+                    else {}
+                ),
             }
             if state.plan_review_decision is not None
             else None

@@ -525,7 +525,7 @@ class TestPlanAgentReview:
     def test_plan_agent_review_parse_failure(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """Agent produces garbage — treated as REJECT, escalates after max retries."""
+        """Agent produces garbage — all reviewers fail → escalate immediately (no regen)."""
         config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             retry=RetryPolicy(
@@ -543,22 +543,13 @@ class TestPlanAgentReview:
         )
         mock_agent.side_effect = [
             _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
-            _make_agent_result(success=True, output="# Plan\n\nBetter plan.", cost_usd=0.12),
         ]
-        # Plan review pool returns garbage → parse error → REJECT each time
+        # Plan review pool returns garbage → parse error → all reviewers fail → immediate escalate
         mock_pool.side_effect = [
             [
                 _make_agent_result(
                     success=True,
                     output="I think the plan looks okay!",
-                    cost_usd=0.08,
-                    profile_name="plan-review",
-                )
-            ],
-            [
-                _make_agent_result(
-                    success=True,
-                    output="Still looks fine to me",
                     cost_usd=0.08,
                     profile_name="plan-review",
                 )
@@ -569,8 +560,10 @@ class TestPlanAgentReview:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        # plan review pool called twice; code review never reached
-        assert mock_pool.call_count == 2
+        # Pool called once; escalated immediately — no regen attempted
+        assert mock_pool.call_count == 1
+        assert result.state.plan_review_decision == "reject"
+        assert len(result.state.plan_review_failures) == 1
 
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
@@ -958,3 +951,351 @@ class TestPlanAgentReview:
         assert result.state.plan_regen_count > 0  # regen triggered by P1 pool findings
         assert result.state.plan_output == "# Plan\n\nFixed plan."
         assert len(result.state.plan_results) == 2
+
+
+# ── TestPlanReviewerFailureAudit ──────────────────────────────────────
+
+
+class TestPlanReviewerFailureAudit:
+    """Tests for per-reviewer failure recording and minimum-success escalation."""
+
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_single_reviewer_empty_output_recorded_in_failures(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Single reviewer returns empty output → failure recorded in plan_review_failures."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=0
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+        ]
+        # Reviewer returns empty output → parse error
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output="",
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert len(result.state.plan_review_failures) == 1
+        failure = result.state.plan_review_failures[0]
+        assert failure["attempt"] == 0
+        assert failure["reviewer"] == "plan-review"
+        assert len(failure["errors"]) > 0
+
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_all_reviewers_fail_escalates(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """All reviewers fail on first attempt → escalation with plan_review_decision='reject'."""
+        pool_config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=0
+            ),
+            plan_agent_review=PlanAgentReviewConfig(
+                enabled=True,
+                pool=[
+                    ModelProfile(
+                        name="reviewer-a",
+                        cli="claude",
+                        model="opus",
+                        budget_usd=2.00,
+                        timeout_seconds=600,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                    ModelProfile(
+                        name="reviewer-b",
+                        cli="claude",
+                        model="sonnet",
+                        budget_usd=1.00,
+                        timeout_seconds=300,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                ],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+        ]
+        # Both reviewers return unparseable output
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True, output="looks good to me!", profile_name="reviewer-a"
+                ),
+                _make_agent_result(success=True, output="seems fine!", profile_name="reviewer-b"),
+            ]
+        ]
+
+        result = run_task(config=pool_config, task=task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.plan_review_decision == "reject"
+        assert len(result.state.plan_review_failures) == 2
+        reviewer_names = {f["reviewer"] for f in result.state.plan_review_failures}
+        assert reviewer_names == {"reviewer-a", "reviewer-b"}
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_mixed_failure_one_succeeds_no_escalation(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """One reviewer fails, one succeeds → failure recorded but merge proceeds."""
+        pool_config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            plan_agent_review=PlanAgentReviewConfig(
+                enabled=True,
+                pool=[
+                    ModelProfile(
+                        name="reviewer-a",
+                        cli="claude",
+                        model="opus",
+                        budget_usd=2.00,
+                        timeout_seconds=600,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                    ModelProfile(
+                        name="reviewer-b",
+                        cli="claude",
+                        model="sonnet",
+                        budget_usd=1.00,
+                        timeout_seconds=300,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                ],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        # reviewer-a fails (garbage), reviewer-b approves
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output="looks good I think",
+                    cost_usd=0.08,
+                    profile_name="reviewer-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.04,
+                    profile_name="reviewer-b",
+                ),
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config=pool_config, task=task, interactive=True)
+
+        assert result.success is True
+        assert result.state.plan_review_decision == "approve"
+        # Failure was recorded for reviewer-a
+        assert len(result.state.plan_review_failures) == 1
+        assert result.state.plan_review_failures[0]["reviewer"] == "reviewer-a"
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_reviewer_failures_appear_in_audit(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Audit log includes reviewer_failures when failures exist."""
+        pool_config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            plan_agent_review=PlanAgentReviewConfig(
+                enabled=True,
+                pool=[
+                    ModelProfile(
+                        name="reviewer-a",
+                        cli="claude",
+                        model="opus",
+                        budget_usd=2.00,
+                        timeout_seconds=600,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                    ModelProfile(
+                        name="reviewer-b",
+                        cli="claude",
+                        model="sonnet",
+                        budget_usd=1.00,
+                        timeout_seconds=300,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                ],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        # reviewer-a fails, reviewer-b approves
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output="unparseable garbage",
+                    cost_usd=0.08,
+                    profile_name="reviewer-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.04,
+                    profile_name="reviewer-b",
+                ),
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config=pool_config, task=task, interactive=True)
+        audit = generate_audit_log(pool_config, task, result)
+
+        assert result.success is True
+        assert "reviewer_failures" in audit["plan_review"]
+        failures = audit["plan_review"]["reviewer_failures"]
+        assert len(failures) == 1
+        assert failures[0]["reviewer"] == "reviewer-a"
+        assert len(failures[0]["errors"]) > 0
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_no_failures_audit_omits_reviewer_failures_key(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Audit log omits reviewer_failures key when no failures occurred."""
+        config = _make_plan_agent_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_plan_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ]
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+        audit = generate_audit_log(config, task, result)
+
+        assert result.success is True
+        assert "reviewer_failures" not in audit["plan_review"]

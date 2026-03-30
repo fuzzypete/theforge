@@ -393,6 +393,13 @@ def _run_plan_agent_review(
                     f"  ⚠ PLAN_REVIEW   {_prof.name} parse issues: "
                     f"{'; '.join(_parsed.parse_errors)}"
                 )
+                state.plan_review_failures.append(
+                    {
+                        "attempt": _attempt,
+                        "reviewer": _prof.name,
+                        "errors": list(_parsed.parse_errors),
+                    }
+                )
 
             # Advisory downgrade: REJECT with only P1/P2 (no P0, no parse_errors) → APPROVE
             _has_p0 = any(f.severity == "P0" for f in _parsed.findings)
@@ -412,6 +419,25 @@ def _run_plan_agent_review(
                     parse_errors=[],
                 )
             _parsed_prs.append(_parsed)
+
+        # Minimum-success gate: at least one reviewer must parse successfully
+        _failed_this_attempt = sum(1 for _p in _parsed_prs if _p.parse_errors)
+        _successful_count = len(par_profiles) - _failed_this_attempt
+        if _successful_count < 1:
+            state.plan_review_decision = "reject"
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"All {len(par_profiles)} plan reviewer(s) failed to produce parseable output"
+                f" on attempt {_attempt}. Cannot determine a plan review verdict."
+            )
+            _log(f"  ✗ PLAN_REVIEW   {state.error}")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=state.error,
+            )
 
         merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
         _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
