@@ -745,8 +745,10 @@ findings:
         regen_prompt = regen_call.kwargs.get(
             "prompt", regen_call.args[0] if regen_call.args else ""
         )
-        assert "Previous Plan Review Findings" in regen_prompt
+        assert "Reviewer Findings" in regen_prompt
         assert "architecturally broken" in regen_prompt.lower()
+        # Regen prompt must include the planner's own previous plan
+        assert "Bad plan." in regen_prompt
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))

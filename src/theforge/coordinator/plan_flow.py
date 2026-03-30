@@ -18,6 +18,7 @@ import dataclasses
 import time
 from collections.abc import Callable
 from pathlib import Path
+from textwrap import dedent
 from typing import TYPE_CHECKING
 
 from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
@@ -574,18 +575,35 @@ def _run_plan_agent_review(
         )
         _log(f"  Findings:\n{findings_text}")
 
-        regen_prompt = build_plan_prompt(
-            task,
-            story_content=story_content,
-            preflight_output=(
-                preflight_result.output if preflight_result and preflight_result.success else None
-            ),
-        )
-        regen_prompt += (
-            "\n\n## Previous Plan Review Findings\n\n"
-            "The previous plan was REJECTED. Address these issues:\n\n"
-            f"{findings_text}\n"
-        )
+        regen_prompt = dedent(f"""\
+            You are a planning agent for **{task.name}**.
+
+            ## Your Role
+
+            You wrote the plan below. Reviewers found issues. Fix your plan
+            to address every P1 and P2 finding. Do not rewrite from scratch —
+            make targeted edits to the plan you already wrote.
+
+            ## Spec
+
+            {story_content}
+
+            ## Your Plan (current version)
+
+            {state.plan_output}
+
+            ## Reviewer Findings
+
+            {findings_text}
+
+            ## Instructions
+
+            1. Read each finding against your plan above.
+            2. Fix every P1 (must fix) and P2 (improvement).
+            3. Output the complete updated plan in the same YAML schema.
+            4. Do NOT discard working parts of your plan. Only change what
+               the findings call out.
+        """)
 
         if state.plan_escalation_note:
             regen_prompt += f"\n\n## Model Escalation\n\n{state.plan_escalation_note}\n"
