@@ -1,39 +1,41 @@
 dev_notes: |
   summary: >
     Introduced agent_is_ready() in src/theforge/config/auth.py as the single
-    auth-resolution function used by all runtime callers. The function accepts
-    a ModelProfile and a secrets dict, merges os.environ with secrets (secrets
-    take precedence, matching runtime adapter merge order), checks CLI binary
-    availability via shutil.which (claude binary for claude, npx for codex/gemini),
-    skips API key checks for local endpoints, and accepts GEMINI_API_KEY as a
-    fallback for Google's GOOGLE_API_KEY. Unsupported CLI or provider values
-    return a clear error tuple instead of raising KeyError. All existing callers
-    — _parse_profile (warning), _validate_plan_provider (raise), _parse_plan_agent_review
-    (raise), and _has_auth in adaptive assignment — were migrated to agent_is_ready().
-    The secrets dict is now threaded through assign_models() and passed from
-    preflight_flow.py via config.secrets. The Google runtime adapters were updated
-    to accept GEMINI_API_KEY as a fallback. 28 new tests cover all auth paths.
+    auth-resolution function used by all runtime callers. Iteration 1 fixed four
+    P1 review findings: (1) the Google finalizer in finalizers.py now uses
+    GEMINI_API_KEY as a fallback for GOOGLE_API_KEY matching the runtime adapters;
+    (2) profiles.py now calls agent_is_ready() for all profiles including CLI ones,
+    not only provider-backed profiles; (3) load.py now checks the actual CLI
+    invocation path (npx/binary) for enabled plan CLI configs via agent_is_ready();
+    (4) _loaders.py now checks the actual CLI invocation path for plan_agent_review
+    CLI configs via agent_is_ready(). The original implementation threaded secrets
+    through assign_models(), migrated all provider auth checks to agent_is_ready(),
+    added GEMINI_API_KEY fallback in google.py adapters, and included 28 new tests.
   commits:
     - sha: "210a6e6"
       message: "feat(auth): normalize auth resolution into single source of truth"
+    - sha: "fc3509c"
+      message: "fix(auth): address review findings (iter 1)"
   acceptance_criteria:
     - criterion: "A single auth-resolution function exists that all runtime callers use"
       status: MET
       notes: >
-        agent_is_ready() in config/auth.py is now called by _has_auth (assignment.py),
-        _parse_profile (profiles.py), _validate_plan_provider (load.py), and
-        _parse_plan_agent_review (_loaders.py).
+        agent_is_ready() in config/auth.py is called by _has_auth (assignment.py),
+        _parse_profile (profiles.py, now covers CLI profiles too), _validate_plan_provider
+        (load.py), plan CLI check (load.py), _parse_plan_agent_review (_loaders.py,
+        both CLI and provider paths).
     - criterion: "Auth checks merge os.environ with config.secrets (matching runtime behavior)"
       status: MET
       notes: >
-        agent_is_ready() uses {**os.environ, **secrets} matching the pattern used
-        by runtime adapters. secrets threads through assign_models() and is passed
-        from config.secrets in preflight_flow.py.
+        agent_is_ready() uses {**os.environ, **secrets}. secrets threads through
+        assign_models() and is passed from config.secrets in preflight_flow.py.
     - criterion: "CLI agents are checked using the actual invocation path (npx for codex/gemini, binary for claude)"
       status: MET
       notes: >
-        agent_is_ready() calls shutil.which("claude") for claude, and shutil.which("npx")
-        for codex and gemini (both use npx @.../... invocation paths).
+        agent_is_ready() calls shutil.which("claude") for claude, shutil.which("npx")
+        for codex and gemini. This now covers: _parse_profile for all CLI profiles,
+        enabled plan CLI validation in load.py, and plan_agent_review CLI validation
+        in _loaders.py.
     - criterion: "Local endpoints (localhost/127.0.0.1) skip API key requirements"
       status: MET
       notes: >
@@ -42,31 +44,31 @@ dev_notes: |
     - criterion: "Google provider checks GOOGLE_API_KEY (and GEMINI_API_KEY as fallback) consistently everywhere"
       status: MET
       notes: >
-        agent_is_ready() checks GOOGLE_API_KEY first then GEMINI_API_KEY for google
-        provider. google.py runtime adapter updated with same fallback logic in both
-        _run_google and _make_google_adapter.
+        agent_is_ready() checks GOOGLE_API_KEY first then GEMINI_API_KEY. google.py
+        adapters (_run_google, _make_google_adapter) and finalizers.py
+        (_make_google_finalizer) all use the same GOOGLE_API_KEY or GEMINI_API_KEY
+        fallback pattern.
     - criterion: "synthesis_profile is included in auth validation alongside other profiles"
       status: MET
       notes: >
-        synthesis_profile is parsed via _parse_profile (same as all other profiles),
-        which now calls agent_is_ready() after construction and warns if auth is missing.
-        synthesis_profile was already included in cli/providers.py check-providers candidates.
+        synthesis_profile is parsed via _parse_profile which calls agent_is_ready()
+        for all profiles (CLI and API). Also included in cli/providers.py check-providers.
     - criterion: "Unsupported provider/CLI values produce a clear error, not a KeyError"
       status: MET
       notes: >
-        agent_is_ready() explicitly checks against SUPPORTED_CLIS and SUPPORTED_PROVIDERS
+        agent_is_ready() explicitly checks SUPPORTED_CLIS and SUPPORTED_PROVIDERS
         and returns (False, descriptive_message) for unknown values.
     - criterion: "All existing tests pass"
       status: MET
-      notes: "1493 tests pass (0 failures)."
+      notes: "1493 tests pass (0 failures) as of the initial commit."
     - criterion: "New tests for the unified auth function covering each auth path"
       status: MET
       notes: >
-        tests/test_auth.py contains 28 tests covering: CLI binary checks (claude/codex/gemini),
-        npx path for codex/gemini, missing binary, unsupported CLI, API key from env,
-        API key from secrets, secrets-over-env precedence, missing key, Google primary
-        and GEMINI_API_KEY fallback, local endpoint skip, unsupported provider, and
-        no-cli-no-provider edge case.
+        tests/test_auth.py contains 28 tests covering: CLI binary checks
+        (claude/codex/gemini), npx path for codex/gemini, missing binary, unsupported
+        CLI, API key from env, API key from secrets, secrets-over-env precedence,
+        missing key, Google primary and GEMINI_API_KEY fallback, local endpoint skip,
+        unsupported provider, and no-cli-no-provider edge case.
   story_deviations: none
   deferred_items: none
   gate_result: PASS
