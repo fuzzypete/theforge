@@ -41,6 +41,9 @@ campaign-audit.yaml
 # Test artifacts (MagicMock path materialization when log_file is a MagicMock)
 MagicMock/
 
+# Handoff files — per-run artifacts, never committed
+handoff.yaml
+
 # OS
 .DS_Store
 .forge/.env

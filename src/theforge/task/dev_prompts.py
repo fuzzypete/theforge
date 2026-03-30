@@ -189,7 +189,7 @@ def build_dev_prompt(
         1. Implement the spec. Write tests for new functionality.
         2. Run `make fmt` then `make lint`. Fix any failures.
         3. {gate_section}
-        4. Commit your changes:
+        4. Commit your changes (do NOT commit `{handoff_file}` — it is gitignored):
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
@@ -216,7 +216,8 @@ def build_dev_prompt(
            ```
 
            List ALL commits (`git log --oneline`). List EVERY acceptance criterion.
-           This is your voice in the review — the reviewer reads it before the diff.'''
+           This is your voice in the review — the reviewer reads it before the diff.
+           Do NOT `git add` this file — it is read from disk, not from git.'''
         if handoff_file
         else ""
     }

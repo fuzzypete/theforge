@@ -205,7 +205,7 @@ def build_fix_prompt(
 
         1. Fix each P1 finding. Address P2 findings if feasible.
         2. Run `make fmt` to auto-fix formatting.
-        3. Commit your changes:
+        3. Commit your changes (do NOT commit `{handoff_file}` — it is gitignored):
            ```bash
            git add <files-you-changed>
            git commit -m "fix(<scope>): address review findings (iter {iteration})"
@@ -217,7 +217,8 @@ def build_fix_prompt(
         + '''
            in this iteration. The reviewer reads `dev_notes` before the diff —
            stale notes from a previous iteration will confuse the next review.
-           Update the `summary`, `commits`, and `acceptance_criteria` fields.'''
+           Update the `summary`, `commits`, and `acceptance_criteria` fields.
+           Do NOT `git add` this file — it is read from disk, not from git.'''
         if handoff_file
         else ""
     }
