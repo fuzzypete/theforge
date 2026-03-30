@@ -198,6 +198,7 @@ def _run_preflight_phase(
             _esc_history,
             _explicit if _explicit else None,
             state.sprint_promotions,
+            config.secrets,
         )
 
         import dataclasses as _dc  # noqa: PLC0415

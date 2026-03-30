@@ -8,7 +8,6 @@ which are called only by the coordinator.
 from __future__ import annotations
 
 import logging
-import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,27 +18,27 @@ from .config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
-    PROVIDER_API_KEY_MAP,
     AgentDef,
     AssignmentConfig,
     ModelProfile,
 )
+from .config.auth import check_agent_auth
 
 log = logging.getLogger(__name__)
 
 
-def _has_auth(agent: AgentDef) -> bool:
+def _has_auth(agent: AgentDef, secrets: dict[str, str] | None = None) -> bool:
     """Return True if the agent's provider has usable auth.
 
-    CLI agents (provider is None) always have auth (the CLI handles its own).
-    API agents need their provider's API key in the environment.
+    Delegates to ``check_agent_auth`` which merges os.environ with secrets and
+    handles CLI binary checks, local endpoints, and Google fallback keys.
+    Unsupported provider/CLI values are treated as having auth (best-effort).
     """
-    if not agent.provider:
-        return True  # CLI agent — auth handled by the CLI binary
-    key_var = PROVIDER_API_KEY_MAP.get(agent.provider)
-    if not key_var:
-        return True  # Unknown provider — assume OK
-    return bool(os.getenv(key_var))
+    profile = agent.to_model_profile()
+    try:
+        return check_agent_auth(profile, secrets)
+    except ValueError:
+        return True  # unknown provider/CLI — assume OK to avoid hard failure
 
 
 # ── Data classes ───────────────────────────────────────────────────────
@@ -118,12 +117,16 @@ def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
     return sorted(matches, key=lambda a: a.budget_usd)
 
 
-def _pick_agent(agents: list[AgentDef], tier: str) -> AgentDef | None:
+def _pick_agent(
+    agents: list[AgentDef],
+    tier: str,
+    secrets: dict[str, str] | None = None,
+) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
     Skips API agents whose provider key is missing from the environment.
     """
-    candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a)]
+    candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
@@ -141,6 +144,7 @@ def _select_reviewers(
     n: int,
     prefer_cross_provider: bool,
     exclude_model: str | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -152,9 +156,11 @@ def _select_reviewers(
     """
     # Build candidate list: prefer strong, fall back to requested tier
     # Filter by auth availability — skip agents whose API key is missing
-    strong = [a for a in _agents_by_tier(agents, "strong") if _has_auth(a)]
+    strong = [a for a in _agents_by_tier(agents, "strong") if _has_auth(a, secrets)]
     tier_agents = (
-        [a for a in _agents_by_tier(agents, tier) if _has_auth(a)] if tier != "strong" else []
+        [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
+        if tier != "strong"
+        else []
     )
     # Merge: strong first, then same-tier, deduplicated
     seen_names: set[str] = set()
@@ -185,7 +191,7 @@ def _select_reviewers(
         preferred = [a for a in candidates if a.model != exclude_model]
         if not preferred:
             # Widen search: any authed agent with a different model
-            preferred = [a for a in agents if _has_auth(a) and a.model != exclude_model]
+            preferred = [a for a in agents if _has_auth(a, secrets) and a.model != exclude_model]
         if not preferred:
             # Widen further: any agent regardless of auth with a different model
             preferred = [a for a in agents if a.model != exclude_model]
@@ -373,6 +379,7 @@ def assign_models(
     escalation_history: list[EscalationRecord] | None = None,
     explicit_profiles: dict[str, ModelProfile] | None = None,
     sprint_promotions: dict[str, str] | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -397,7 +404,7 @@ def assign_models(
         rationale["dev"] = f"explicit override: {dev_profile.model}"
     else:
         # Check promotion
-        dev_agent_for_check: AgentDef | None = _pick_agent(agents, dev_base_tier)
+        dev_agent_for_check: AgentDef | None = _pick_agent(agents, dev_base_tier, secrets)
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
         promoted = _check_promotion(norm_complexity, dev_model_name, history, sprint_promotions)
         effective_dev_tier = dev_base_tier
@@ -418,10 +425,10 @@ def assign_models(
         else:
             rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
 
-        dev_agent = _pick_agent(agents, effective_dev_tier)
+        dev_agent = _pick_agent(agents, effective_dev_tier, secrets)
         if dev_agent is None:
             # Fall back to any authed agent
-            authed = [a for a in agents if _has_auth(a)]
+            authed = [a for a in agents if _has_auth(a, secrets)]
             if authed:
                 dev_agent = sorted(authed, key=lambda a: a.budget_usd)[0]
                 rationale["dev"] += " (fallback: cheapest authed)"
@@ -436,9 +443,9 @@ def assign_models(
         rationale["preflight"] = f"explicit override: {preflight_profile.model}"
     else:
         tier = PHASE_TIER["preflight"][norm_complexity]
-        agent = _pick_agent(agents, tier)
+        agent = _pick_agent(agents, tier, secrets)
         if agent is None:
-            authed = [a for a in agents if _has_auth(a)]
+            authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: a.budget_usd)[0]
         preflight_profile = _agent_to_profile(
             agent,
@@ -453,9 +460,9 @@ def assign_models(
         rationale["planner"] = f"explicit override: {planner_profile.model}"
     else:
         tier = PHASE_TIER["plan"][norm_complexity]
-        agent = _pick_agent(agents, tier)
+        agent = _pick_agent(agents, tier, secrets)
         if agent is None:
-            authed = [a for a in agents if _has_auth(a)]
+            authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
         planner_profile = _agent_to_profile(agent, role="review")
         rationale["planner"] = f"tier {tier} (${agent.budget_usd:.2f})"
@@ -473,7 +480,12 @@ def assign_models(
         )
         planner_model = planner_profile.model
         selected = _select_reviewers(
-            agents, tier, n, assignment_config.prefer_cross_provider, exclude_model=planner_model
+            agents,
+            tier,
+            n,
+            assignment_config.prefer_cross_provider,
+            exclude_model=planner_model,
+            secrets=secrets,
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
@@ -494,7 +506,12 @@ def assign_models(
         )
         dev_model = dev_profile.model
         selected = _select_reviewers(
-            agents, tier, n, assignment_config.prefer_cross_provider, exclude_model=dev_model
+            agents,
+            tier,
+            n,
+            assignment_config.prefer_cross_provider,
+            exclude_model=dev_model,
+            secrets=secrets,
         )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]

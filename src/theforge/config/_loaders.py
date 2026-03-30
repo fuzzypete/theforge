@@ -6,10 +6,10 @@ import importlib
 import logging
 from typing import Any
 
+from .auth import check_agent_auth
 from .defaults import DEFAULT_WORKSPACE, PROVIDER_API_KEY_MAP, PROVIDER_SDK_MAP, SUPPORTED_CLIS
 from .models import AgentDef, _planner_candidate_models
 from .profiles import _parse_profile
-from .secrets import _resolve_secret
 from .types import (
     SUPPORTED_PROVIDERS,
     ModelProfile,
@@ -80,11 +80,24 @@ def _parse_plan_agent_review(
                         f"plan_agent_review uses provider '{par_provider}' but the required "
                         f"SDK '{sdk}' is not installed. Please install it."
                     )
-            api_key_var = PROVIDER_API_KEY_MAP.get(par_provider)
-            if api_key_var and not _resolve_secret(api_key_var, secrets):
+            _stub = ModelProfile(
+                name="plan_agent_review",
+                cli=None,
+                provider=par_provider,
+                model="",
+                budget_usd=0.0,
+                timeout_seconds=0,
+                allowed_tools=(),
+            )
+            if not check_agent_auth(_stub, secrets):
+                api_key_var = PROVIDER_API_KEY_MAP.get(par_provider, "")
+                if par_provider == "google":
+                    key_hint = "GOOGLE_API_KEY (or GEMINI_API_KEY)"
+                else:
+                    key_hint = f"${api_key_var}" if api_key_var else "the required key"
                 raise ValueError(
                     f"plan_agent_review uses provider '{par_provider}' but the required "
-                    f"environment variable ${api_key_var} is not set."
+                    f"environment variable {key_hint} is not set."
                 )
 
     par_pool: list[ModelProfile] = []
