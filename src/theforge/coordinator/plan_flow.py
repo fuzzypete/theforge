@@ -665,7 +665,9 @@ def _run_human_plan_review(
             state.plan_structured = parse_plan_output(updated)
             plan_text = updated
             write_trace(
-                workspace_path / ".forge/traces" / f"plan-attempt-{state.plan_regen_count}.txt",
+                workspace_path
+                / ".forge/traces"
+                / f"plan-attempt-{state.plan_regen_count}-approved.txt",
                 updated,
             )
             _log(
