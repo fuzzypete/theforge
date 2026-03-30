@@ -190,10 +190,10 @@ def build_review_prompt(
             report them even if they are unrelated to the original spec.
 
             ### Part 3 — Additional Findings
-            You may report new P1 findings ONLY if they are:
-            (a) a direct regression from the fix (covered in Part 2), OR
-            (b) a critical issue that is independently, concretely evidenced
-                (file + line + what breaks).
+            You may report new P1 findings ONLY if they are a direct regression
+            from the fix — code that was correct before and is now broken by
+            changes in these commits. Pre-existing issues in code not modified
+            by these commits are P2, not P1, regardless of severity.
             Do NOT escalate speculative or style concerns to P1 in this section.
 
         """)
@@ -278,14 +278,17 @@ def build_review_prompt(
 
         ## Severity Definitions
 
-        - **P1** (blocking): A concrete, demonstrable problem that would break
-          the code at runtime, violate a specific acceptance criterion, corrupt
-          data, or leave a critical path untested. You MUST be able to point to
-          the exact file, line, and what would go wrong. Spec violations are P1
-          only if the code actually fails to satisfy the criterion — not if the
-          approach differs from what you'd prefer.
+        - **P1** (blocking): A concrete, demonstrable problem **in code introduced
+          or modified by these commits** that would break at runtime, violate a
+          specific acceptance criterion, corrupt data, or leave a critical path
+          untested. You MUST be able to point to the exact file, line, and what
+          would go wrong. Spec violations are P1 only if the code actually fails
+          to satisfy the criterion — not if the approach differs from what you'd
+          prefer.
         - **P2** (non-blocking): Style, minor improvement, non-critical missing
-          test, suggestion for future work. Does NOT block merge.
+          test, suggestion for future work. Does NOT block merge. **Pre-existing
+          issues in code not modified by these commits are always P2** — they are
+          valuable signal but they do not block this change.
 
         ## Rules
 
@@ -306,11 +309,11 @@ def build_review_prompt(
           compliance against explicit acceptance criteria and requirements.
         - **Spec-to-runtime traceability**: For each AC in the spec, verify
           BOTH layers: (a) the logic exists in the codebase, AND (b) it is
-          actually invoked at runtime by the coordinator/runner/CLI. Code that
-          produces correct output but is never called does NOT satisfy the AC.
-          When an AC depends on a function's output being consumed by its
-          caller, verify the caller actually uses it — unused return values
-          that are required to satisfy an AC are P1.
+          actually invoked at runtime by the calling code. Code that produces
+          correct output but is never called does NOT satisfy the AC. When an
+          AC depends on a function's output being consumed by its caller,
+          verify the caller actually uses it — unused return values that are
+          required to satisfy an AC are P1.
         - **YAML safety**: In `description` and `suggestion` fields, do NOT use
           backslashes or double-quote characters inside double-quoted strings —
           they break YAML parsing. Use single quotes or paraphrase instead.
