@@ -174,21 +174,34 @@ def collect_all_surviving_themes(metadata: list[dict]) -> list[str]:
 
 
 def dominant_surviving_theme(metadata: list[dict]) -> str:
-    """Return the non-file-path theme surviving in the most consecutive attempt pairs.
+    """Return the non-file-path theme from the latest attempt pair with the most
+    historical consecutive-pair survivals.
 
-    Counts how many consecutive (i, i+1) pairs each non-file-path theme survives.
-    Returns the theme with the highest count. Alphabetic tiebreak for determinism.
+    Only themes that survive in the latest (most recent) consecutive pair are
+    candidates, ensuring the "rejected strategy" refers to what is actively
+    failing in the current attempt rather than a resolved older theme.  Among
+    qualifying candidates, the theme with the highest total pair-survival count
+    is returned. Alphabetically smallest breaks ties for determinism.
     Returns empty string if no qualifying theme exists.
     """
     if len(metadata) < 2:
         return ""
 
+    # Restrict candidates to themes surviving in the latest pair only.
+    latest_prev = set(metadata[-2].get("finding_themes", []))
+    latest_curr = set(metadata[-1].get("finding_themes", []))
+    candidates = {t for t in latest_prev & latest_curr if not _is_file_path_anchor(t)}
+
+    if not candidates:
+        return ""
+
+    # Score candidates by total historical pair-survival count.
     pair_counts: dict[str, int] = {}
     for i in range(1, len(metadata)):
         prev_set = set(metadata[i - 1].get("finding_themes", []))
         curr_set = set(metadata[i].get("finding_themes", []))
         for theme in prev_set & curr_set:
-            if not _is_file_path_anchor(theme):
+            if theme in candidates:
                 pair_counts[theme] = pair_counts.get(theme, 0) + 1
 
     if not pair_counts:

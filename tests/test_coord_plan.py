@@ -481,6 +481,31 @@ def test_dominant_surviving_theme_single_entry_returns_empty():
     assert dominant_surviving_theme([_meta(finding_themes=["load_config"])]) == ""
 
 
+def test_dominant_surviving_theme_prefers_latest_pair_over_older_resolved():
+    """Regression: an older resolved theme must not beat the currently-failing theme.
+
+    History: [alpha_theme+beta_theme, p1=2] → [alpha_theme+gamma_theme, p1=1] → [gamma_theme, p1=1]
+
+    The p1 count drops from 2→1 at attempt 2, so classify([1,2])="patch" (decreasing).
+    At attempt 3 the count is flat (1→1) and gamma survives pair (2,3), and since the
+    prior disposition was "patch" the outer call returns "backtrack" (not "escalate").
+
+    alpha_theme survived pair (1,2) but NOT pair (2,3).
+    gamma_theme survived pair (2,3) — the latest failing pair.
+    Both have historical pair_count=1, but gamma_theme must win because only themes
+    present in the latest pair are candidates.
+    """
+    metadata = [
+        _meta(p1_count=2, finding_themes=["alpha_theme", "beta_theme"]),
+        _meta(p1_count=1, finding_themes=["alpha_theme", "gamma_theme"]),
+        _meta(p1_count=1, finding_themes=["gamma_theme"]),
+    ]
+    # Verify the disposition is backtrack (not escalate) at the 3-entry level
+    assert classify_disposition(metadata) == "backtrack"
+    # dominant_surviving_theme must pick gamma_theme, NOT alpha_theme
+    assert dominant_surviving_theme(metadata) == "gamma_theme"
+
+
 # ── Early escalation integration test ────────────────────────────────
 
 
