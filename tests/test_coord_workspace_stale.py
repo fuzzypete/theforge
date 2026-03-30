@@ -193,6 +193,8 @@ class TestStaleWorktree:
         assert not workspace.exists()
 
         def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "main")  # project root is on base branch
             if "mkdir" in cmd:
                 workspace.mkdir(parents=True, exist_ok=True)
                 return (True, "")
@@ -206,10 +208,10 @@ class TestStaleWorktree:
 
         assert err is None
         assert path == workspace
-        # rev-parse should NOT have been called (no stale check needed)
+        # The stale-check git log --oneline should NOT have been called (no existing worktree)
         for call in mock_shell.call_args_list:
             cmd_arg = call[0][0]
-            assert "rev-parse" not in cmd_arg
+            assert "--oneline" not in cmd_arg
 
     @patch("theforge.coordinator.util._run_shell")
     def test_stale_worktree_removed_on_create(self, mock_shell, tmp_path):

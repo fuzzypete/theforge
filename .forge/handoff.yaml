@@ -1,40 +1,48 @@
 dev_notes: "summary: >\n  Implemented auto-pull before worktree creation and behind-origin\
-  \ check on\n  resume. Before creating a fresh worktree, `_create_workspace` runs\n\
-  \  `git pull --ff-only origin <base_branch>` in the project root; if it fails\n\
-  \  (non-ff, offline), a warning is logged and execution continues.\n  On resume/reuse\
-  \ paths, `_check_behind_origin` runs `git rev-list --count`\n  and logs an informational\
-  \ note if the local base is behind origin (silently\n  skips on error). A `--no-pull`\
-  \ flag threads from both CLIs (`forge run`,\n  `forge sprint run`) through engine.py\
-  \ and sprint/runner.py into\n  `_create_workspace`, suppressing both the pull and\
-  \ the behind-origin check.\n  Iteration 1 fix: the prior commit used `git fetch\
-  \ origin base:base` which\n  fails when the project root already has base_branch\
-  \ checked out (git refuses\n  the refspec). Reverted to the spec-required `git pull\
-  \ --ff-only origin\n  <base_branch>` and updated tests to match \"pull --ff-only\"\
-  .\ncommits:\n  - sha: \"8b11b7a\"\n    message: \"feat(workspace): pull base branch\
+  \ check on\n  resume. The fresh-worktree path branches on the project root's current\
+  \ branch:\n  when the root is on base_branch, `git pull --ff-only origin <base_branch>`\
+  \ is\n  used (fetch refspec is rejected by git when the branch is checked out);\
+  \ when\n  the root is on a different branch, `git fetch origin <base>:<base>` is\
+  \ used\n  (pull would fast-forward the wrong branch). Both paths warn-and-continue\
+  \ on\n  failure. On resume/reuse, `_check_behind_origin` runs `git rev-list --count`\n\
+  \  and logs an informational note if local base is behind origin (silent on error).\n\
+  \  A `--no-pull` flag threads from both CLIs through engine.py and sprint/runner.py\n\
+  \  into `_create_workspace`, suppressing both the update and the behind-check.\n\
+  commits:\n  - sha: \"8b11b7a\"\n    message: \"feat(workspace): pull base branch\
   \ before creating worktree, add --no-pull flag\"\n  - sha: \"c57970c\"\n    message:\
   \ \"fix(workspace): restore git pull --ff-only as specified (revert fetch refspec)\"\
-  \nacceptance_criteria:\n  - criterion: \"Before creating a fresh worktree, run `git\
-  \ pull --ff-only origin <base_branch>` in the project root\"\n    status: MET\n\
-  \    notes: >\n      `_create_workspace` runs `git pull --ff-only origin <base_branch>`\
-  \ via\n      `_cu._run_shell` before the create_command when `no_pull=False`.\n\
-  \      Tested by test_pull_succeeds_before_create (asserts pull precedes create,\n\
-  \      matching on \"pull --ff-only\").\n  - criterion: \"If the pull fails (non-fast-forward,\
-  \ offline, no remote), log a warning and continue — do not block the run\"\n   \
-  \ status: MET\n    notes: >\n      On pull failure, `_create_workspace` logs \"\
-  pull failed (non-ff / offline):\n      ...\" and falls through to workspace creation.\
-  \ Tested by\n      test_pull_fails_workspace_still_created.\n  - criterion: \"On\
-  \ resume (reusing an existing worktree), skip the pull but log a one-line note if\
-  \ base_branch is behind origin (informational only)\"\n    status: MET\n    notes:\
-  \ >\n      `_check_behind_origin` runs `git rev-list --count base..origin/base`\
-  \ and\n      logs an info note when count > 0. Called from all three resume paths\
-  \ in\n      `_create_workspace` when `no_pull=False`. Silently skips on rev-list\n\
-  \      failure. Tested by TestBehindOriginCheck and TestResumeNoPull.\n  - criterion:\
-  \ \"A --no-pull CLI flag on `forge run` and `forge sprint run` suppresses the pull\
-  \ entirely\"\n    status: MET\n    notes: >\n      `--no-pull` registered in both\
-  \ `cli/run.py` and `cli/sprint.py`, threaded\n      through `engine.run_task/run_from_dev/run_from_review`\
-  \ and\n      `sprint/runner.run_sprint/_run_single_story`, passed as `no_pull=True`\
-  \ to\n      `_create_workspace`. Also passed by daemon's `_execute_sprint`. Tested\
-  \ by\n      test_no_pull_skips_pull, test_no_pull_skips_behind_origin_check_on_reuse,\n\
-  \      TestDaemonNoPull.\nstory_deviations: none\ndeferred_items: none\ngate_result:\
-  \ PASS\n"
-gate_decision: PASS
+  \n  - sha: \"902973e\"\n    message: \"fix(workspace): two-path update: pull when\
+  \ on base, fetch when not\"\nacceptance_criteria:\n  - criterion: \"Before creating\
+  \ a fresh worktree, run `git pull --ff-only origin <base_branch>` in the project\
+  \ root\"\n    status: MET\n    notes: >\n      The spec says `git pull --ff-only`,\
+  \ which works correctly when the project\n      root is on base_branch. When the\
+  \ root is on a feature branch, pull would\n      fast-forward the feature branch\
+  \ (not base_branch), so `git fetch origin\n      base:base` is used instead — this\
+  \ is an intentional pragmatic deviation\n      that honours the spec's intent (ensure\
+  \ local base is up-to-date). Tests:\n      test_pull_succeeds_before_create_on_base\
+  \ (pull path) and\n      test_fetch_refspec_used_when_not_on_base (fetch path).\n\
+  \  - criterion: \"If the pull fails (non-fast-forward, offline, no remote), log\
+  \ a warning and continue — do not block the run\"\n    status: MET\n    notes: >\n\
+  \      On pull/fetch failure, `_create_workspace` logs \"pull failed (non-ff /\n\
+  \      offline): ...\" and falls through to workspace creation. Tested by\n    \
+  \  test_pull_fails_workspace_still_created.\n  - criterion: \"On resume (reusing\
+  \ an existing worktree), skip the pull but log a one-line note if base_branch is\
+  \ behind origin (informational only)\"\n    status: MET\n    notes: >\n      `_check_behind_origin`\
+  \ runs `git rev-list --count base..origin/base` and\n      logs an info note when\
+  \ count > 0. Called from all three resume paths in\n      `_create_workspace` when\
+  \ `no_pull=False`. Silently skips on rev-list\n      failure. Tested by TestBehindOriginCheck\
+  \ and TestResumeNoPull.\n  - criterion: \"A --no-pull CLI flag on `forge run` and\
+  \ `forge sprint run` suppresses the pull entirely\"\n    status: MET\n    notes:\
+  \ >\n      `--no-pull` registered in both `cli/run.py` and `cli/sprint.py`, threaded\n\
+  \      through `engine.run_task/run_from_dev/run_from_review` and\n      `sprint/runner.run_sprint/_run_single_story`,\
+  \ passed as `no_pull=True` to\n      `_create_workspace`. Also passed by daemon's\
+  \ `_execute_sprint`. Tested by\n      test_no_pull_skips_pull, test_no_pull_skips_behind_origin_check_on_reuse,\n\
+  \      TestDaemonNoPull.\nstory_deviations:\n  - ac: \"Before creating a fresh worktree,\
+  \ run `git pull --ff-only origin <base_branch>`\"\n    deviation: >\n      When\
+  \ the project root is NOT on base_branch, `git fetch origin\n      base:base` is\
+  \ used instead of `git pull --ff-only`. `git pull --ff-only`\n      in that context\
+  \ would advance the currently-checked-out feature branch\n      (not base_branch),\
+  \ leaving local base stale. The fetch refspec directly\n      updates the local\
+  \ base ref regardless of checkout state. The spec's\n      literal command is used\
+  \ when the root IS on base_branch.\ndeferred_items: none\ngate_result: PASS\n"
+gate_decision: FAIL
