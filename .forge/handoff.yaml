@@ -1,41 +1,36 @@
 dev_notes: |
   summary: >
-    Introduced per-story flock-based concurrency guard to prevent double-spending
-    when two sprint launches target the same stories. A new `sprint/lock.py` module
-    creates `.forge/locks/<slug>.lock` files and acquires `fcntl.flock(LOCK_EX|LOCK_NB)`
-    on each. `cli/sprint.py` calls `acquire_story_locks` before daemonize so the parent
-    gets immediate conflict feedback; the grandchild inherits held fds through the
-    double-fork. The `--detach` path releases locks before daemon submission (the daemon
-    re-acquires). `daemon.py`'s `_execute_sprint` acquires locks with try/finally for
-    cleanup; `_run_loop` catches `SprintConflictError` and records `conflict_refused`
-    outcome rather than `crashed`. A `parse_manifest_slugs` helper was added to
-    `runner.py` for lightweight slug extraction without raising on empty/invalid manifests,
-    keeping pre-existing tests with empty story lists unaffected. 11 new tests cover unit
-    locking, cross-process conflict detection, rollback-on-partial-conflict, and
-    cmd_sprint integration.
+    Added per-reviewer failure tracking and a minimum-success escalation gate for the
+    plan agent review phase. When a plan reviewer returns empty or unparseable output,
+    the failure is now persisted in CoordinatorState.plan_review_failures as a list of
+    dicts (attempt, reviewer name, errors). If zero reviewers produce parseable output
+    in a given attempt, the coordinator immediately escalates with plan_review_decision
+    set to "reject" rather than silently continuing. The audit plan_review block now
+    includes a reviewer_failures key (only when failures exist). The existing
+    test_plan_agent_review_parse_failure test was updated to reflect the new behavior
+    (immediate escalation on attempt 0 rather than retry-then-escalate). Five new tests
+    cover: single empty-output escalation, all-reviewers-fail escalation, mixed failure
+    with successful merge, audit serialization of failures, and clean-run omits key.
   commits:
-    - sha: "732fd1b"
-      message: "feat(sprint): add per-story flock-based concurrency guard"
+    - sha: "128eb8d"
+      message: "fix(plan-review): record reviewer failures in audit and escalate when all fail"
   acceptance_criteria:
-    - criterion: "Sprint launch detects if any of its stories already have active worktrees"
+    - criterion: "Plan reviewer failures are recorded in the audit log"
       status: MET
       notes: >
-        parse_manifest_slugs extracts slugs then acquire_story_locks checks for
-        LOCK_EX|LOCK_NB conflicts. A story is "active" if its lock file is held by a
-        live process — flock is released automatically by the OS on process death, so
-        stale locks from killed processes are never a problem.
-    - criterion: "Sprint refuses to start when conflict is detected"
+        state.plan_review_failures accumulates {attempt, reviewer, errors} dicts in the
+        parse loop in plan_flow.py before merge_plan_review_results discards them.
+        audit.py emits reviewer_failures in the plan_review block when the list is non-empty.
+    - criterion: >
+        If successful reviewers drop below a minimum, the run escalates rather than
+        silently approving
       status: MET
       notes: >
-        cmd_sprint returns exit 1 before daemonize is called. The daemon path raises
-        SprintConflictError in _execute_sprint, preventing run_sprint from being called.
-        Whole-sprint abort was chosen per the spec's "refuses to start" language.
-    - criterion: "User is told which stories are already running when a conflict is detected"
-      status: MET
-      notes: >
-        cli/sprint.py prints "[forge] Stories already running: <slug1>, <slug2>. Aborting."
-        to stderr. daemon.py prints "[daemon] Sprint '<slug>' refused: stories already
-        running: <slugs>" to stdout and records conflicting_slugs in the completed entry.
+        After the per-reviewer parse loop, _failed_this_attempt is counted and
+        successful_count = len(par_profiles) - _failed_this_attempt. If successful_count < 1
+        the coordinator sets plan_review_decision="reject", phase=ESCALATE, and returns
+        a failure CoordinatorResult immediately, before merge_plan_review_results is called.
+        Minimum threshold is hardcoded to 1; a future story can make it configurable.
   story_deviations: none
   deferred_items: none
   gate_result: PASS

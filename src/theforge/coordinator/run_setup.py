@@ -8,6 +8,7 @@ worktree instead of creating one from scratch.
 from __future__ import annotations
 
 import datetime
+import shutil
 import time
 from pathlib import Path
 
@@ -74,6 +75,13 @@ def _setup_resume_entry(
         )
 
     state.workspace_path = workspace_path
+
+    # Sync forge.yaml from project root into the worktree
+    _forge_yaml_src = config.project_root / "forge.yaml"
+    _forge_yaml_dst = workspace_path / "forge.yaml"
+    if _forge_yaml_src.exists():
+        shutil.copy2(_forge_yaml_src, _forge_yaml_dst)
+        _cu._log(f"  ↺ RESUME   synced forge.yaml from {_forge_yaml_src}")
 
     # Restore session IDs from prior run if available
     _sessions = load_sessions(workspace_path)

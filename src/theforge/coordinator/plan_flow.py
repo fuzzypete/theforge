@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from theforge.artifacts import PLAN_PATH, ensure_parent_dir, resolve_plan_path
+from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.review import (
@@ -141,6 +141,15 @@ def _run_plan_phase(
     )
     if not should_plan:
         return None
+
+    # Remove stale plan files from prior runs before the plan agent writes a new one
+    _cleaned = 0
+    for _stale in plan_paths(workspace_path):
+        if _stale.exists():
+            _stale.unlink()
+            _cleaned += 1
+    if _cleaned:
+        _log(f"  ↺ PLAN   removed {_cleaned} stale plan file(s)")
 
     state.phase = Phase.PLAN
     if state_update_fn is not None:
@@ -393,6 +402,13 @@ def _run_plan_agent_review(
                     f"  ⚠ PLAN_REVIEW   {_prof.name} parse issues: "
                     f"{'; '.join(_parsed.parse_errors)}"
                 )
+                state.plan_review_failures.append(
+                    {
+                        "attempt": _attempt,
+                        "reviewer": _prof.name,
+                        "errors": list(_parsed.parse_errors),
+                    }
+                )
 
             _p1_count = sum(1 for f in _parsed.findings if f.severity in ("P0", "P1"))
             _p2_count = sum(1 for f in _parsed.findings if f.severity == "P2")
@@ -408,6 +424,25 @@ def _run_plan_agent_review(
                 _res.output or "",
             )
             _parsed_prs.append(_parsed)
+
+        # Minimum-success gate: at least one reviewer must parse successfully
+        _failed_this_attempt = sum(1 for _p in _parsed_prs if _p.parse_errors)
+        _successful_count = len(par_profiles) - _failed_this_attempt
+        if _successful_count < 1:
+            state.plan_review_decision = "reject"
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"All {len(par_profiles)} plan reviewer(s) failed to produce parseable output"
+                f" on attempt {_attempt}. Cannot determine a plan review verdict."
+            )
+            _log(f"  ✗ PLAN_REVIEW   {state.error}")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=state.error,
+            )
 
         merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
         _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
