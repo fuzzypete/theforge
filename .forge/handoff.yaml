@@ -12,20 +12,21 @@ dev_notes: "summary: >\n  Implemented auto-pull before worktree creation and beh
   \ before creating worktree, add --no-pull flag\"\n  - sha: \"c57970c\"\n    message:\
   \ \"fix(workspace): restore git pull --ff-only as specified (revert fetch refspec)\"\
   \n  - sha: \"902973e\"\n    message: \"fix(workspace): two-path update: pull when\
-  \ on base, fetch when not\"\nacceptance_criteria:\n  - criterion: \"Before creating\
-  \ a fresh worktree, run `git pull --ff-only origin <base_branch>` in the project\
-  \ root\"\n    status: MET\n    notes: >\n      The spec says `git pull --ff-only`,\
-  \ which works correctly when the project\n      root is on base_branch. When the\
-  \ root is on a feature branch, pull would\n      fast-forward the feature branch\
-  \ (not base_branch), so `git fetch origin\n      base:base` is used instead — this\
-  \ is an intentional pragmatic deviation\n      that honours the spec's intent (ensure\
-  \ local base is up-to-date). Tests:\n      test_pull_succeeds_before_create_on_base\
+  \ on base, fetch when not\"\n  - sha: \"d945654\"\n    message: \"fix(workspace):\
+  \ update stale worktree test for two-branch pull detection\"\nacceptance_criteria:\n\
+  \  - criterion: \"Before creating a fresh worktree, run `git pull --ff-only origin\
+  \ <base_branch>` in the project root\"\n    status: MET\n    notes: >\n      The\
+  \ spec says `git pull --ff-only`, which works correctly when the project\n      root\
+  \ is on base_branch. When the root is on a feature branch, pull would\n      fast-forward\
+  \ the feature branch (not base_branch), so `git fetch origin\n      base:base` is\
+  \ used instead — this is an intentional pragmatic deviation\n      that honours the\
+  \ spec's intent (ensure local base is up-to-date). Tests:\n      test_pull_succeeds_before_create_on_base\
   \ (pull path) and\n      test_fetch_refspec_used_when_not_on_base (fetch path).\n\
   \  - criterion: \"If the pull fails (non-fast-forward, offline, no remote), log\
   \ a warning and continue — do not block the run\"\n    status: MET\n    notes: >\n\
   \      On pull/fetch failure, `_create_workspace` logs \"pull failed (non-ff /\n\
-  \      offline): ...\" and falls through to workspace creation. Tested by\n    \
-  \  test_pull_fails_workspace_still_created.\n  - criterion: \"On resume (reusing\
+  \      offline): ...\" and falls through to workspace creation. Tested by\n     \
+  \ test_pull_fails_workspace_still_created.\n  - criterion: \"On resume (reusing\
   \ an existing worktree), skip the pull but log a one-line note if base_branch is\
   \ behind origin (informational only)\"\n    status: MET\n    notes: >\n      `_check_behind_origin`\
   \ runs `git rev-list --count base..origin/base` and\n      logs an info note when\
@@ -45,4 +46,4 @@ dev_notes: "summary: >\n  Implemented auto-pull before worktree creation and beh
   \ leaving local base stale. The fetch refspec directly\n      updates the local\
   \ base ref regardless of checkout state. The spec's\n      literal command is used\
   \ when the root IS on base_branch.\ndeferred_items: none\ngate_result: PASS\n"
-gate_decision: FAIL
+gate_decision: PASS
