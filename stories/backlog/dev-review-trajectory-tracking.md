@@ -44,17 +44,43 @@ Specifically:
 - When surviving findings are detected after 2+ cycles, the fix prompt
   includes a trajectory summary and switches framing
 
+## Family identity rules
+
+A family is identified by a **seed anchor** — the first non-file anchor that
+caused a match between two findings across cycles. Once a family exists with
+seed anchor `load_config`, any future finding whose anchors include
+`load_config` joins that family. The seed anchor is frozen at family creation
+time and never changes.
+
+- If a finding matches multiple existing families, it joins the family with
+  the longest history (most cycles). Ties broken by alphabetical order of
+  seed anchor.
+- If a finding has no anchor overlap with any existing family, it starts a
+  new family (classified as **new**).
+- File-path-only overlap does not create or join a family — consistent with
+  the `plan-finding-identity` matching constraint that file paths require a
+  second anchor. A finding in `coordinator.py` and another in `coordinator.py`
+  sharing no other anchor remain in separate families.
+
 ## State requirements
 
 `CoordinatorState` must have a persisted per-family trajectory store,
 separate from the existing rolling `cycle_history`. Each entry stores:
 
-- The anchor set identifying the family
+- The seed anchor identifying the family
 - The cycle numbers where the family appeared
 - A one-line description from each cycle's finding
 
 This store must survive across all review cycles for the run. It is not
 capped or rolled like `cycle_history`.
+
+## Reuse of plan-finding-identity
+
+This story reuses the full matching machinery from `plan-finding-identity` —
+anchor extraction, pairwise matching, and provenance logging. The extraction
+rules, anchor classes, and matching constraints (including file-path-only
+insufficiency) are identical. Only the consumer differs: dev fix prompt
+framing instead of plan regen disposition.
 
 ## Relationship to existing finding registry
 
@@ -70,10 +96,13 @@ findings differently and that is expected.
 - After each review merge, the coordinator extracts structural anchors from
   findings and matches them against prior-cycle findings using the anchor
   model from `plan-finding-identity`
-- Each finding family is classified as new or surviving based on anchor
+- Each finding family is classified as new or surviving based on seed anchor
   overlap — no semantic or prose-based judgment
+- File-path-only anchor overlap does not create or join a family
 - A per-family trajectory store is persisted on `CoordinatorState`, recording
-  anchor set, cycle numbers, and one-line description per appearance
+  seed anchor, cycle numbers, and one-line description per appearance
+- When a finding matches multiple families, it joins the one with the longest
+  history; ties broken alphabetically by seed anchor
 - The fix prompt includes a trajectory summary when surviving findings are
   detected after 2+ cycles
 - The trajectory summary includes: the anchor(s) identifying the family, the
