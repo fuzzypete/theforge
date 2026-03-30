@@ -1,36 +1,72 @@
 dev_notes: |
   summary: >
-    Added per-reviewer failure tracking and a minimum-success escalation gate for the
-    plan agent review phase. When a plan reviewer returns empty or unparseable output,
-    the failure is now persisted in CoordinatorState.plan_review_failures as a list of
-    dicts (attempt, reviewer name, errors). If zero reviewers produce parseable output
-    in a given attempt, the coordinator immediately escalates with plan_review_decision
-    set to "reject" rather than silently continuing. The audit plan_review block now
-    includes a reviewer_failures key (only when failures exist). The existing
-    test_plan_agent_review_parse_failure test was updated to reflect the new behavior
-    (immediate escalation on attempt 0 rather than retry-then-escalate). Five new tests
-    cover: single empty-output escalation, all-reviewers-fail escalation, mixed failure
-    with successful merge, audit serialization of failures, and clean-run omits key.
+    Introduced agent_is_ready() in src/theforge/config/auth.py as the single
+    auth-resolution function used by all runtime callers. The function accepts
+    a ModelProfile and a secrets dict, merges os.environ with secrets (secrets
+    take precedence, matching runtime adapter merge order), checks CLI binary
+    availability via shutil.which (claude binary for claude, npx for codex/gemini),
+    skips API key checks for local endpoints, and accepts GEMINI_API_KEY as a
+    fallback for Google's GOOGLE_API_KEY. Unsupported CLI or provider values
+    return a clear error tuple instead of raising KeyError. All existing callers
+    — _parse_profile (warning), _validate_plan_provider (raise), _parse_plan_agent_review
+    (raise), and _has_auth in adaptive assignment — were migrated to agent_is_ready().
+    The secrets dict is now threaded through assign_models() and passed from
+    preflight_flow.py via config.secrets. The Google runtime adapters were updated
+    to accept GEMINI_API_KEY as a fallback. 28 new tests cover all auth paths.
   commits:
-    - sha: "128eb8d"
-      message: "fix(plan-review): record reviewer failures in audit and escalate when all fail"
+    - sha: "210a6e6"
+      message: "feat(auth): normalize auth resolution into single source of truth"
   acceptance_criteria:
-    - criterion: "Plan reviewer failures are recorded in the audit log"
+    - criterion: "A single auth-resolution function exists that all runtime callers use"
       status: MET
       notes: >
-        state.plan_review_failures accumulates {attempt, reviewer, errors} dicts in the
-        parse loop in plan_flow.py before merge_plan_review_results discards them.
-        audit.py emits reviewer_failures in the plan_review block when the list is non-empty.
-    - criterion: >
-        If successful reviewers drop below a minimum, the run escalates rather than
-        silently approving
+        agent_is_ready() in config/auth.py is now called by _has_auth (assignment.py),
+        _parse_profile (profiles.py), _validate_plan_provider (load.py), and
+        _parse_plan_agent_review (_loaders.py).
+    - criterion: "Auth checks merge os.environ with config.secrets (matching runtime behavior)"
       status: MET
       notes: >
-        After the per-reviewer parse loop, _failed_this_attempt is counted and
-        successful_count = len(par_profiles) - _failed_this_attempt. If successful_count < 1
-        the coordinator sets plan_review_decision="reject", phase=ESCALATE, and returns
-        a failure CoordinatorResult immediately, before merge_plan_review_results is called.
-        Minimum threshold is hardcoded to 1; a future story can make it configurable.
+        agent_is_ready() uses {**os.environ, **secrets} matching the pattern used
+        by runtime adapters. secrets threads through assign_models() and is passed
+        from config.secrets in preflight_flow.py.
+    - criterion: "CLI agents are checked using the actual invocation path (npx for codex/gemini, binary for claude)"
+      status: MET
+      notes: >
+        agent_is_ready() calls shutil.which("claude") for claude, and shutil.which("npx")
+        for codex and gemini (both use npx @.../... invocation paths).
+    - criterion: "Local endpoints (localhost/127.0.0.1) skip API key requirements"
+      status: MET
+      notes: >
+        agent_is_ready() checks profile.base_url and returns (True, "") early for
+        http://localhost and http://127.0.0.1 prefixes.
+    - criterion: "Google provider checks GOOGLE_API_KEY (and GEMINI_API_KEY as fallback) consistently everywhere"
+      status: MET
+      notes: >
+        agent_is_ready() checks GOOGLE_API_KEY first then GEMINI_API_KEY for google
+        provider. google.py runtime adapter updated with same fallback logic in both
+        _run_google and _make_google_adapter.
+    - criterion: "synthesis_profile is included in auth validation alongside other profiles"
+      status: MET
+      notes: >
+        synthesis_profile is parsed via _parse_profile (same as all other profiles),
+        which now calls agent_is_ready() after construction and warns if auth is missing.
+        synthesis_profile was already included in cli/providers.py check-providers candidates.
+    - criterion: "Unsupported provider/CLI values produce a clear error, not a KeyError"
+      status: MET
+      notes: >
+        agent_is_ready() explicitly checks against SUPPORTED_CLIS and SUPPORTED_PROVIDERS
+        and returns (False, descriptive_message) for unknown values.
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "1493 tests pass (0 failures)."
+    - criterion: "New tests for the unified auth function covering each auth path"
+      status: MET
+      notes: >
+        tests/test_auth.py contains 28 tests covering: CLI binary checks (claude/codex/gemini),
+        npx path for codex/gemini, missing binary, unsupported CLI, API key from env,
+        API key from secrets, secrets-over-env precedence, missing key, Google primary
+        and GEMINI_API_KEY fallback, local endpoint skip, unsupported provider, and
+        no-cli-no-provider edge case.
   story_deviations: none
   deferred_items: none
   gate_result: PASS
