@@ -9,6 +9,8 @@ from theforge.coordinator.plan_trajectory import (
     _is_file_path_anchor,
     build_disposition_context,
     classify_disposition,
+    collect_all_surviving_themes,
+    dominant_surviving_theme,
     extract_finding_themes,
     record_plan_attempt,
 )
@@ -294,16 +296,17 @@ def test_build_disposition_context_empty_for_no_entries():
     assert build_disposition_context(state) == ""
 
 
-def test_build_disposition_context_returns_markdown_table():
+def test_build_disposition_context_returns_markdown_table_for_patch():
+    """Patch disposition still renders a trajectory table."""
     state = CoordinatorState()
     state.plan_attempt_metadata = [
         _meta(files_touched=3, p1_count=2, p2_count=1, finding_themes=["load_config"]),
-        _meta(files_touched=3, p1_count=2, p2_count=1, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=1, p2_count=0, finding_themes=["strict_auth"]),
     ]
-    state.plan_regen_disposition = "backtrack"
+    state.plan_regen_disposition = "patch"
     ctx = build_disposition_context(state)
     assert "## Trajectory Analysis" in ctx
-    assert "**backtrack**" in ctx
+    assert "**patch**" in ctx
     assert "| Attempt |" in ctx
     assert "| 1 |" in ctx
     assert "| 2 |" in ctx
@@ -320,7 +323,8 @@ def test_build_disposition_context_patch_guidance():
     assert "Focus on the new findings only" in ctx
 
 
-def test_build_disposition_context_backtrack_guidance():
+def test_build_disposition_context_backtrack_has_rejected_n_times():
+    """Backtrack disposition opens with 'has been rejected N times'."""
     state = CoordinatorState()
     state.plan_attempt_metadata = [
         _meta(p1_count=2, finding_themes=["load_config"]),
@@ -328,10 +332,67 @@ def test_build_disposition_context_backtrack_guidance():
     ]
     state.plan_regen_disposition = "backtrack"
     ctx = build_disposition_context(state)
-    assert "Re-examine your approach" in ctx
+    assert "has been rejected 2 times" in ctx
 
 
-def test_build_disposition_context_escalate_guidance():
+def test_build_disposition_context_backtrack_learned_constraints():
+    """Backtrack prompt includes Learned constraints section with deduped themes."""
+    state = CoordinatorState()
+    state.plan_attempt_metadata = [
+        _meta(p1_count=2, finding_themes=["load_config", "strict_auth"]),
+        _meta(p1_count=2, finding_themes=["load_config", "validate_plan"]),
+    ]
+    state.plan_regen_disposition = "backtrack"
+    ctx = build_disposition_context(state)
+    assert "### Learned constraints" in ctx
+    # All non-file-path themes across all attempts are listed
+    assert "load_config" in ctx
+    assert "strict_auth" in ctx
+    assert "validate_plan" in ctx
+
+
+def test_build_disposition_context_backtrack_learned_constraints_excludes_file_paths():
+    """File-path anchors are excluded from Learned constraints."""
+    state = CoordinatorState()
+    state.plan_attempt_metadata = [
+        _meta(p1_count=2, finding_themes=["load_config", "coordinator.py"]),
+        _meta(p1_count=2, finding_themes=["load_config", "coordinator.py"]),
+    ]
+    state.plan_regen_disposition = "backtrack"
+    ctx = build_disposition_context(state)
+    assert "load_config" in ctx
+    assert "coordinator.py" not in ctx
+
+
+def test_build_disposition_context_backtrack_rejected_strategy():
+    """Backtrack prompt includes Rejected strategy section with dominant theme."""
+    state = CoordinatorState()
+    state.plan_attempt_metadata = [
+        _meta(p1_count=2, finding_themes=["load_config"]),
+        _meta(p1_count=2, finding_themes=["load_config"]),
+    ]
+    state.plan_regen_disposition = "backtrack"
+    ctx = build_disposition_context(state)
+    assert "### Rejected strategy" in ctx
+    assert "`load_config`" in ctx
+    assert "consecutive reviews" in ctx
+
+
+def test_build_disposition_context_backtrack_instructions():
+    """Backtrack prompt closes with do-not-patch instruction."""
+    state = CoordinatorState()
+    state.plan_attempt_metadata = [
+        _meta(p1_count=2, finding_themes=["load_config"]),
+        _meta(p1_count=2, finding_themes=["load_config"]),
+    ]
+    state.plan_regen_disposition = "backtrack"
+    ctx = build_disposition_context(state)
+    assert "Do not patch the current plan" in ctx
+    assert "Do not repeat the rejected strategy" in ctx
+
+
+def test_build_disposition_context_escalate_returns_empty_string():
+    """Escalate disposition returns empty string — coordinator handles escalation."""
     state = CoordinatorState()
     state.plan_attempt_metadata = [
         _meta(p1_count=2, finding_themes=["load_config"]),
@@ -339,8 +400,230 @@ def test_build_disposition_context_escalate_guidance():
         _meta(p1_count=2, finding_themes=["load_config"]),
     ]
     state.plan_regen_disposition = "escalate"
-    ctx = build_disposition_context(state)
-    assert "fundamentally different approach" in ctx
+    assert build_disposition_context(state) == ""
+
+
+# ── collect_all_surviving_themes ─────────────────────────────────────
+
+
+def test_collect_all_surviving_themes_unions_all_attempts():
+    """Returns union of all themes across all attempts, deduped."""
+    metadata = [
+        _meta(finding_themes=["load_config", "strict_auth"]),
+        _meta(finding_themes=["load_config", "validate_plan"]),
+        _meta(finding_themes=["strict_auth", "check_agent"]),
+    ]
+    result = collect_all_surviving_themes(metadata)
+    assert result == sorted(["load_config", "strict_auth", "validate_plan", "check_agent"])
+
+
+def test_collect_all_surviving_themes_filters_file_path_anchors():
+    """File-path anchors are excluded from the result."""
+    metadata = [
+        _meta(finding_themes=["load_config", "coordinator.py", "src/theforge/config.py"]),
+        _meta(finding_themes=["load_config", "plan_flow.py"]),
+    ]
+    result = collect_all_surviving_themes(metadata)
+    assert "load_config" in result
+    assert "coordinator.py" not in result
+    assert "src/theforge/config.py" not in result
+    assert "plan_flow.py" not in result
+
+
+def test_collect_all_surviving_themes_empty_metadata():
+    assert collect_all_surviving_themes([]) == []
+
+
+# ── dominant_surviving_theme ──────────────────────────────────────────
+
+
+def test_dominant_surviving_theme_returns_most_surviving():
+    """Returns the theme with the most consecutive-pair survivals."""
+    metadata = [
+        _meta(finding_themes=["load_config", "strict_auth"]),
+        _meta(finding_themes=["load_config", "strict_auth"]),
+        _meta(finding_themes=["load_config"]),
+    ]
+    # load_config survives 2 pairs, strict_auth survives 1 pair
+    assert dominant_surviving_theme(metadata) == "load_config"
+
+
+def test_dominant_surviving_theme_alphabetic_tiebreak():
+    """Alphabetic tiebreak when counts are equal."""
+    metadata = [
+        _meta(finding_themes=["alpha_theme", "beta_theme"]),
+        _meta(finding_themes=["alpha_theme", "beta_theme"]),
+    ]
+    # Both survive 1 pair; alphabetic tiebreak → alpha_theme
+    assert dominant_surviving_theme(metadata) == "alpha_theme"
+
+
+def test_dominant_surviving_theme_filters_file_paths():
+    """File-path anchors are excluded from dominant theme selection."""
+    metadata = [
+        _meta(finding_themes=["coordinator.py", "load_config"]),
+        _meta(finding_themes=["coordinator.py", "load_config"]),
+    ]
+    # coordinator.py is a file-path anchor; load_config should win
+    assert dominant_surviving_theme(metadata) == "load_config"
+
+
+def test_dominant_surviving_theme_empty_if_no_non_file_path_themes():
+    """Returns empty string when only file-path anchors survive."""
+    metadata = [
+        _meta(finding_themes=["coordinator.py"]),
+        _meta(finding_themes=["coordinator.py"]),
+    ]
+    assert dominant_surviving_theme(metadata) == ""
+
+
+def test_dominant_surviving_theme_single_entry_returns_empty():
+    assert dominant_surviving_theme([_meta(finding_themes=["load_config"])]) == ""
+
+
+# ── Early escalation integration test ────────────────────────────────
+
+
+def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
+    """When disposition becomes 'escalate', coordinator escalates without re-running plan agent."""
+    from theforge.agent_types import AgentResult
+    from theforge.config import (
+        DEFAULT_DEV_PROFILE,
+        DEFAULT_PREFLIGHT_PROFILE,
+        ForgeConfig,
+        LogConfig,
+        ModelProfile,
+        PlanAgentReviewConfig,
+        PlanConfig,
+        PlanReviewConfig,
+        RetryPolicy,
+        WorkspaceConfig,
+    )
+    from theforge.coordinator.plan_flow import _run_plan_agent_review
+    from theforge.coordinator.state import CoordinatorState, Phase
+    from theforge.review import PlanReviewFinding, PlanReviewResult
+    from theforge.task import TaskStory
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / ".forge").mkdir(parents=True)
+
+    state = CoordinatorState()
+    state.phase = Phase.PLAN_REVIEW
+    state.plan_output = "plan: {}"
+    # Plan proposes 3 files so record_plan_attempt records files_touched=3 (flat → escalate)
+    state.plan_structured = {"steps": [{"files": ["a.py", "b.py", "c.py"]}]}
+    # Pre-seed 2 "backtrack-pattern" entries; a 3rd matching entry → disposition="escalate".
+    # p1_count=1 matches the mock finding count so the count doesn't decrease (which would
+    # trigger patch disposition instead of escalate).
+    state.plan_attempt_metadata = [
+        _meta(files_touched=3, p1_count=1, p2_count=0, finding_themes=["load_config"]),
+        _meta(files_touched=3, p1_count=1, p2_count=0, finding_themes=["load_config"]),
+    ]
+    state.plan_regen_disposition = "backtrack"
+    state.plan_regen_count = 0
+
+    review_profile = ModelProfile(
+        name="plan-review",
+        cli="claude",
+        model="claude-opus-4",
+        provider="anthropic",
+        budget_usd=0.5,
+        timeout_seconds=60,
+        allowed_tools=[],
+    )
+    plan_profile = ModelProfile(
+        name="plan",
+        cli="claude",
+        model="claude-opus-4",
+        provider="anthropic",
+        budget_usd=0.5,
+        timeout_seconds=60,
+        allowed_tools=[],
+    )
+
+    config = ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=None,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        plan=PlanConfig(enabled=True, budget_usd=0.5, timeout=60),
+        plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=60),
+        plan_agent_review=PlanAgentReviewConfig(enabled=True, pool=[review_profile]),
+        log=LogConfig(enabled=False),
+    )
+
+    story_file = tmp_path / "story.md"
+    story_file.write_text("Do something.", encoding="utf-8")
+    task = TaskStory(name="test", slug="test", story_path=story_file)
+
+    mock_logger = MagicMock()
+    mock_run_agent = MagicMock()
+
+    # Review returns REQUEST_CHANGES with load_config finding (same theme → 3rd entry → escalate)
+    review_result = PlanReviewResult(
+        verdict="REQUEST_CHANGES",
+        findings=[
+            PlanReviewFinding(
+                severity="P1",
+                description="load_config is wrong",
+                suggestion="fix it",
+            )
+        ],
+        parse_errors=[],
+    )
+    pool_result = AgentResult(
+        success=True,
+        output="verdict: REQUEST_CHANGES",
+        session_id=None,
+        cost_usd=0.0,
+        exit_code=0,
+        raw={},
+    )
+
+    with (
+        patch("theforge.coordinator.plan_flow.run_agent", mock_run_agent),
+        patch("theforge.coordinator.plan_flow.run_agent_pool", return_value=[pool_result]),
+        patch(
+            "theforge.coordinator.plan_flow.parse_plan_review_output", return_value=review_result
+        ),
+        patch(
+            "theforge.coordinator.plan_flow.merge_plan_review_results", return_value=review_result
+        ),
+        patch("theforge.coordinator.plan_flow.match_plan_findings", return_value=[]),
+        patch("theforge.coordinator.plan_flow.format_provenance", return_value=""),
+        patch("theforge.coordinator.plan_flow.save_sessions"),
+        patch("theforge.coordinator.plan_flow.write_trace"),
+        patch("theforge.coordinator.plan_flow._write_log_artifact"),
+        patch("theforge.coordinator.plan_flow._escalate_notify"),
+    ):
+        result = _run_plan_agent_review(
+            state=state,
+            config=config,
+            task=task,
+            story_content="Do something.",
+            workspace_path=workspace,
+            plan_profile=plan_profile,
+            plan_text="# Plan",
+            preflight_result=None,
+            notify=False,
+            logger=mock_logger,
+        )
+
+    assert result is not None
+    assert result.phase == Phase.ESCALATE
+    assert result.success is False
+    # The plan regen agent must NOT have been called — escalation was immediate
+    mock_run_agent.assert_not_called()
 
 
 # ── Regression tests ──────────────────────────────────────────────────
