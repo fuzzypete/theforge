@@ -1,4 +1,4 @@
-name: "M4 — plan regen: finding identity + trajectory tracking + backtrack prompt"
+name: "Plan regen: finding identity + trajectory tracking + backtrack prompt"
 budget_usd: 20
 specs:
   - stories/backlog/plan-finding-identity.md
