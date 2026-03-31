@@ -568,6 +568,9 @@ def run_task(
         if start_phase is not None and start_phase.value > Phase.PREFLIGHT.value:
             state.preflight_verdict = "SKIPPED"
             _log("  ⚡ PREFLIGHT   skipped (--from phase)")
+            # When starting at REVIEW (or later), skip DEV on the first iteration
+            # so the existing worktree is reviewed before the dev agent is invoked.
+            _skip_dev_first = start_phase.value >= Phase.REVIEW.value
             result = _coordinator_loop(
                 state,
                 config,
@@ -576,6 +579,7 @@ def run_task(
                 _task_start,
                 interactive=interactive,
                 auto_merge=auto_merge,
+                skip_dev_first_iter=_skip_dev_first,
                 notify=notify,
                 logger=logger,
                 state_update_fn=state_update_fn,
