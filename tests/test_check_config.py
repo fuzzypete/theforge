@@ -418,6 +418,96 @@ class TestCheckConfigPlanPhase:
         assert not plan_in_phases
 
 
+class TestCheckConfigPhaseAuth:
+    def test_exit_1_dev_auth_failure(self, tmp_path: Path, capsys) -> None:
+        config = _make_forge_config(tmp_path)
+
+        def _mock_auth(profile, secrets=None):
+            if profile.name == "dev":
+                return (False, "'claude' not found in PATH")
+            return (True, "")
+
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", side_effect=_mock_auth),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "WARNINGS" in out
+        assert "'claude' not found in PATH" in out
+        assert "✗" in out
+
+    def test_exit_1_preflight_auth_failure(self, tmp_path: Path, capsys) -> None:
+        config = _make_forge_config(tmp_path)
+
+        def _mock_auth(profile, secrets=None):
+            if profile.name == "preflight":
+                return (False, "'claude' not found in PATH")
+            return (True, "")
+
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", side_effect=_mock_auth),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "WARNINGS" in out
+        assert "✗" in out
+
+    def test_exit_1_plan_auth_failure(self, tmp_path: Path, capsys) -> None:
+        plan = PlanConfig(
+            enabled=True, provider="anthropic", cli=None, model="claude-opus-4-6", budget_usd=1.0
+        )
+        config = _make_forge_config(tmp_path, plan=plan)
+
+        def _mock_auth(profile, secrets=None):
+            if profile.name == "plan":
+                return (False, "ANTHROPIC_API_KEY not set")
+            return (True, "")
+
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", side_effect=_mock_auth),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "WARNINGS" in out
+        assert "ANTHROPIC_API_KEY not set" in out
+
+
+class TestCheckConfigDeprecatedFields:
+    def test_deprecated_field_produces_warning_and_exit_1(self, tmp_path: Path, capsys) -> None:
+        import logging
+
+        config = _make_forge_config(tmp_path)
+
+        def _load_with_deprecation(path):
+            logging.getLogger("theforge.config").warning(
+                "plan.model_name is deprecated — use plan.model instead"
+            )
+            return config
+
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", side_effect=_load_with_deprecation),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                return_value=(True, ""),
+            ),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "WARNINGS" in out
+        assert "plan.model_name is deprecated" in out
+
+
 class TestRegisterParser:
     def test_register_parser(self) -> None:
         import argparse

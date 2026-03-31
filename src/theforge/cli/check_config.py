@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import logging
 import sys
-import warnings
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
 from theforge.config import ForgeConfig, ModelProfile, load_config
 from theforge.config.auth import check_agent_auth
 from theforge.config.types import PlanConfig
+
+
+class _CapturingHandler(logging.Handler):
+    """Logging handler that captures WARNING+ records into a list."""
+
+    def __init__(self, records: list[str]) -> None:
+        super().__init__(level=logging.WARNING)
+        self._records = records
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self._records.append(record.getMessage())
 
 
 def _transport_label(profile: ModelProfile) -> str:
@@ -49,18 +60,26 @@ def _format_config(
         ("dev", config.dev_profile),
     ]:
         transport = _transport_label(profile)
+        ready, reason = auth_results.get(profile.name, (True, ""))
+        auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {label:<12}{transport:<30}  timeout={profile.timeout_seconds}s"
-            f"  budget=${profile.budget_usd:.2f}"
+            f"  budget=${profile.budget_usd:.2f}{auth_str}"
         )
+        if not ready:
+            warnings_list.append(f"{label}: {reason}")
 
     # Plan phase — show if enabled, from PlanConfig
     if config.plan.enabled:
         transport = _plan_transport_label(config.plan)
+        ready, reason = auth_results.get("plan", (True, ""))
+        auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {'plan':<12}{transport:<30}  timeout={config.plan.timeout}s"
-            f"  budget=${config.plan.budget_usd:.2f}"
+            f"  budget=${config.plan.budget_usd:.2f}{auth_str}"
         )
+        if not ready:
+            warnings_list.append(f"plan: {reason}")
     lines.append("")
 
     # ── REVIEW POOL ───────────────────────────────────────────────────────
@@ -164,17 +183,18 @@ def cmd_check_config(args: object) -> int:
         print("[check-config] No forge.yaml found", file=sys.stderr)
         return 2
 
-    # Capture deprecation warnings emitted by load_config
+    # Capture WARNING+ log records emitted by theforge.config during load
     captured_warnings: list[str] = []
+    log_handler = _CapturingHandler(captured_warnings)
+    config_logger = logging.getLogger("theforge.config")
+    config_logger.addHandler(log_handler)
     try:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            config = load_config(config_path)
-        for w in caught:
-            captured_warnings.append(str(w.message))
+        config = load_config(config_path)
     except Exception as exc:
         print(f"[check-config] Invalid config: {exc}", file=sys.stderr)
         return 2
+    finally:
+        config_logger.removeHandler(log_handler)
 
     # Collect all profiles to auth-check
     auth_results: dict[str, tuple[bool, str]] = {}
@@ -197,7 +217,7 @@ def cmd_check_config(args: object) -> int:
         for p in config.plan_agent_review.profiles:
             _check(p)
 
-    # Plan phase auth check (P1 from plan review: include planner transport)
+    # Plan phase auth check
     if config.plan.enabled:
         plan_profile = ModelProfile(
             name="plan",
@@ -217,13 +237,14 @@ def cmd_check_config(args: object) -> int:
 
     output, exit_code = _format_config(config, auth_results)
 
-    # Fold in captured deprecation warnings
+    # Fold in captured log warnings (e.g. deprecated fields)
     if captured_warnings:
         if exit_code == 0:
             exit_code = 1
         extra = "\n".join(f"  ⚠ {w}" for w in captured_warnings)
-        if "WARNINGS" in output:
-            output = output.rstrip() + "\n" + extra
+        if "WARNINGS\n" in output:
+            # Insert before the blank line that follows the WARNINGS block
+            output = output.replace("\nWARNINGS\n", "\nWARNINGS\n" + extra + "\n", 1)
         else:
             output = output.rstrip() + "\n\nWARNINGS\n" + extra
 
