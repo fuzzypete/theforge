@@ -23,6 +23,29 @@ class _CapturingHandler(logging.Handler):
         self._records.append(record.getMessage())
 
 
+# Auth results are keyed by "section:name" to avoid collisions between
+# profiles in different sections that happen to share a name.
+AuthResults = dict[str, tuple[bool, str]]
+
+
+def _auth_key(section: str, name: str) -> str:
+    return f"{section}:{name}"
+
+
+def _run_auth(
+    profile: ModelProfile,
+    section: str,
+    results: AuthResults,
+    secrets: dict[str, str],
+) -> None:
+    """Check auth for *profile* and store under section-scoped key."""
+    key = _auth_key(section, profile.name)
+    try:
+        results[key] = check_agent_auth(profile, secrets)
+    except ValueError as exc:
+        results[key] = (False, str(exc))
+
+
 def _transport_label(profile: ModelProfile) -> str:
     """Return 'cli / model' or 'provider / model'."""
     transport = profile.cli if profile.cli is not None else (profile.provider or "?")
@@ -37,7 +60,7 @@ def _plan_transport_label(plan: PlanConfig) -> str:
 
 def _format_config(
     config: ForgeConfig,
-    auth_results: dict[str, tuple[bool, str]],
+    auth_results: AuthResults,
 ) -> tuple[str, int]:
     """Build the output string and determine exit code.
 
@@ -60,7 +83,7 @@ def _format_config(
         ("dev", config.dev_profile),
     ]:
         transport = _transport_label(profile)
-        ready, reason = auth_results.get(profile.name, (True, ""))
+        ready, reason = auth_results.get(_auth_key("phase", profile.name), (True, ""))
         auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {label:<12}{transport:<30}  timeout={profile.timeout_seconds}s"
@@ -69,10 +92,9 @@ def _format_config(
         if not ready:
             warnings_list.append(f"{label}: {reason}")
 
-    # Plan phase — show if enabled, from PlanConfig
     if config.plan.enabled:
         transport = _plan_transport_label(config.plan)
-        ready, reason = auth_results.get("plan", (True, ""))
+        ready, reason = auth_results.get(_auth_key("phase", "plan"), (True, ""))
         auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {'plan':<12}{transport:<30}  timeout={config.plan.timeout}s"
@@ -86,7 +108,7 @@ def _format_config(
     lines.append("REVIEW POOL")
     for profile in config.review_pool:
         transport = _transport_label(profile)
-        ready, reason = auth_results.get(profile.name, (True, ""))
+        ready, reason = auth_results.get(_auth_key("review", profile.name), (True, ""))
         auth_str = "✓ auth" if ready else f"✗ {reason}"
         role_str = f"  role={profile.review_role}" if profile.review_role else ""
         lines.append(
@@ -99,7 +121,7 @@ def _format_config(
     if config.synthesis_profile is not None:
         profile = config.synthesis_profile
         transport = _transport_label(profile)
-        ready, reason = auth_results.get(profile.name, (True, ""))
+        ready, reason = auth_results.get(_auth_key("synthesis", profile.name), (True, ""))
         auth_str = "✓ auth" if ready else f"✗ {reason}"
         lines.append(
             f"  {profile.name:<22}{transport:<30}  (synthesis)  budget=${profile.budget_usd:.2f}"
@@ -114,7 +136,7 @@ def _format_config(
         lines.append("PLAN REVIEWERS")
         for profile in config.plan_agent_review.profiles:
             transport = _transport_label(profile)
-            ready, reason = auth_results.get(profile.name, (True, ""))
+            ready, reason = auth_results.get(_auth_key("plan_review", profile.name), (True, ""))
             auth_str = "✓ auth" if ready else f"✗ {reason}"
             lines.append(
                 f"  {profile.name:<22}{transport:<30}  budget=${profile.budget_usd:.2f}"
@@ -130,7 +152,7 @@ def _format_config(
         for agent in config.agents:
             transport = agent.cli if agent.cli is not None else (agent.provider or "?")
             transport_str = f"{transport} / {agent.model}"
-            ready, reason = auth_results.get(agent.name, (True, ""))
+            ready, reason = auth_results.get(_auth_key("agent", agent.name), (True, ""))
             auth_str = "✓ auth" if ready else f"✗ {reason}"
             lines.append(f"  {agent.name:<22}{transport_str:<30}  tier={agent.tier:<8}{auth_str}")
             if not ready:
@@ -196,28 +218,24 @@ def cmd_check_config(args: object) -> int:
     finally:
         config_logger.removeHandler(log_handler)
 
-    # Collect all profiles to auth-check
-    auth_results: dict[str, tuple[bool, str]] = {}
+    # Auth results are keyed "section:name" to prevent cross-section name
+    # collisions (e.g., a plan reviewer named "plan" must not mask the
+    # plan-phase stub check).
+    auth_results: AuthResults = {}
 
-    def _check(profile: ModelProfile) -> None:
-        if profile.name in auth_results:
-            return
-        try:
-            auth_results[profile.name] = check_agent_auth(profile, config.secrets)
-        except ValueError as exc:
-            auth_results[profile.name] = (False, str(exc))
+    _run_auth(config.preflight_profile, "phase", auth_results, config.secrets)
+    _run_auth(config.dev_profile, "phase", auth_results, config.secrets)
 
-    _check(config.preflight_profile)
-    _check(config.dev_profile)
     for p in config.review_pool:
-        _check(p)
+        _run_auth(p, "review", auth_results, config.secrets)
+
     if config.synthesis_profile is not None:
-        _check(config.synthesis_profile)
+        _run_auth(config.synthesis_profile, "synthesis", auth_results, config.secrets)
+
     if config.plan_agent_review.enabled:
         for p in config.plan_agent_review.profiles:
-            _check(p)
+            _run_auth(p, "plan_review", auth_results, config.secrets)
 
-    # Plan phase auth check
     if config.plan.enabled:
         plan_profile = ModelProfile(
             name="plan",
@@ -228,12 +246,10 @@ def cmd_check_config(args: object) -> int:
             timeout_seconds=config.plan.timeout,
             allowed_tools=(),
         )
-        _check(plan_profile)
+        _run_auth(plan_profile, "phase", auth_results, config.secrets)
 
-    # Adaptive pool agents
     for agent in config.agents:
-        agent_profile = agent.to_model_profile(allowed_tools=())
-        _check(agent_profile)
+        _run_auth(agent.to_model_profile(allowed_tools=()), "agent", auth_results, config.secrets)
 
     output, exit_code = _format_config(config, auth_results)
 
@@ -243,7 +259,6 @@ def cmd_check_config(args: object) -> int:
             exit_code = 1
         extra = "\n".join(f"  ⚠ {w}" for w in captured_warnings)
         if "WARNINGS\n" in output:
-            # Insert before the blank line that follows the WARNINGS block
             output = output.replace("\nWARNINGS\n", "\nWARNINGS\n" + extra + "\n", 1)
         else:
             output = output.rstrip() + "\n\nWARNINGS\n" + extra

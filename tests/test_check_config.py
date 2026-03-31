@@ -186,7 +186,7 @@ class TestCheckConfigWarnings:
         config = _make_forge_config(tmp_path, review_pool=review_pool)
 
         def _mock_auth(profile, secrets=None):
-            if profile.name == "deepseek-reviewer":
+            if profile.provider == "deepseek":
                 return (False, "DEEPSEEK_API_KEY not set")
             return (True, "")
 
@@ -423,7 +423,7 @@ class TestCheckConfigPhaseAuth:
         config = _make_forge_config(tmp_path)
 
         def _mock_auth(profile, secrets=None):
-            if profile.name == "dev":
+            if profile.cli == "claude" and profile.name == "dev":
                 return (False, "'claude' not found in PATH")
             return (True, "")
 
@@ -465,8 +465,38 @@ class TestCheckConfigPhaseAuth:
         config = _make_forge_config(tmp_path, plan=plan)
 
         def _mock_auth(profile, secrets=None):
-            if profile.name == "plan":
+            if profile.provider == "anthropic" and profile.name == "plan":
                 return (False, "ANTHROPIC_API_KEY not set")
+            return (True, "")
+
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", side_effect=_mock_auth),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "WARNINGS" in out
+        assert "ANTHROPIC_API_KEY not set" in out
+
+    def test_plan_reviewer_named_plan_does_not_mask_phase_plan_auth(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Regression: a plan reviewer named 'plan' must not mask plan-phase auth failure."""
+        plan = PlanConfig(
+            enabled=True, provider="anthropic", cli=None, model="claude-opus-4-6", budget_usd=1.0
+        )
+        # Plan reviewer also named "plan" — would collide if keyed by name only
+        plan_reviewer = _api_profile("plan", provider="openai", model="gpt-4")
+        plan_agent_review = PlanAgentReviewConfig(enabled=True, pool=[plan_reviewer])
+        config = _make_forge_config(tmp_path, plan=plan, plan_agent_review=plan_agent_review)
+
+        def _mock_auth(profile, secrets=None):
+            # Plan-phase stub: provider=anthropic, name=plan → auth fails
+            if profile.provider == "anthropic" and profile.name == "plan":
+                return (False, "ANTHROPIC_API_KEY not set")
+            # Plan reviewer: provider=openai, name=plan → auth ok
             return (True, "")
 
         with (
