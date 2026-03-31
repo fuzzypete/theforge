@@ -85,6 +85,29 @@ def build_preflight_prompt(
 
         When verdict is ALREADY_DONE or BLOCKED, set complexity to "small" as a placeholder.
 
+        ## Spec Sufficiency Classification
+
+        When verdict is PROCEED, also assess whether this spec is
+        **implementation-ready** or **needs planning**.
+
+        This is orthogonal to complexity — a large refactor can be
+        implementation-ready if the spec author documented every pitfall,
+        and a small feature can need planning if the spec is vague.
+
+        Classify as `implementation_ready` when ALL of the following hold:
+        - The spec has a detailed **Notes** section with specific file paths,
+          function names, patterns, or implementation pitfalls
+        - Implementation hints are concrete and actionable, not generic
+        - Acceptance criteria describe **observable behaviors** that can be
+          verified by reading code or running tests (not implementation steps)
+        - The spec's detail density is high relative to the assessed complexity
+
+        Classify as `needs_planning` when ANY of the following hold:
+        - No Notes section, or Notes is sparse/generic
+        - Implementation approach is unclear or underspecified
+        - Acceptance criteria describe HOW to implement rather than WHAT to observe
+        - Spec lacks enough detail for a dev agent to proceed without a plan
+
         ## Output Format
 
         You MUST output ONLY a YAML block. No prose before or after.
@@ -94,6 +117,8 @@ def build_preflight_prompt(
         verdict: PROCEED | ALREADY_DONE | BLOCKED
         complexity: small | medium | large
         reason: "<1-2 sentence explanation of your classification>"
+        sufficiency: implementation_ready | needs_planning
+        sufficiency_reason: "<1-2 sentence explanation of the sufficiency classification>"
         spec_issues:
           - type: contradiction | ambiguity | impossible_constraint
             description: "<what conflicts or is unclear>"
@@ -107,6 +132,7 @@ def build_preflight_prompt(
 
         Use `spec_issues: []` if the spec is clean.
         Use `warnings: []` if there are no non-blocking advisories.
+        Always include `sufficiency` and `sufficiency_reason` when verdict is PROCEED.
 
         ## Rules
 
@@ -200,7 +226,7 @@ def build_plan_review_prompt(
             covered: true | false
             plan_section: "<which part of the plan addresses this, or 'missing'>"
         findings:
-          - severity: P0 | P1 | P2
+          - severity: P0 | P1 | P1-impl | P2
             description: "<what is wrong with the plan>"
             suggestion: "<how to fix it>"
         ```
@@ -250,19 +276,25 @@ def build_plan_review_prompt(
 
         - **P0** (impossible): Plan cannot be implemented as written. Wrong API,
           hallucinated function, missing caller that would break at runtime.
-        - **P1** (must fix): Plan has a real gap that will probably cause dev to
-          fail or produce broken code. The plan will be regenerated to address it.
+        - **P1** (architectural blocker): Plan proposes an approach that is
+          structurally wrong — wrong API, hallucinated function, missing callers,
+          broken data flow. The plan itself needs a different approach.
+        - **P1-impl** (implementation detail): Plan's approach is sound but doesn't
+          pre-solve an implementation concern — edge case handling, specific guard
+          clause, key collision strategy, monotonic counter details. The dev agent
+          can and should resolve these during implementation. Does not block the plan.
         - **P2** (improvement): Plan could be more precise but dev can work it out.
           Does not block the plan.
 
         ## Rules
 
         - verdict MUST be APPROVE if there are zero P0 and zero P1 findings
+          (P1-impl findings do NOT count as blockers)
         - verdict MUST be REJECT if any P0 or P1 finding exists
         - REJECT MUST include at least one P0 or P1 finding
         - **List ALL issues in a single pass.** Multiple findings in one REJECT
           is far better than discovering new issues across multiple cycles.
-        - APPROVE with P2 suggestions is valid and encouraged
+        - APPROVE with P1-impl and P2 suggestions is valid and encouraged
         - Be specific: cite the plan section, the actual codebase function/file,
           and why it would fail
         - A plan does not need to be perfect — it needs to not be wrong

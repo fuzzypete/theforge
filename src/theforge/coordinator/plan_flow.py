@@ -116,6 +116,7 @@ def _run_plan_phase(
         plan_path is None
         and config.plan.enabled
         and state.preflight_complexity in ("medium", "large")
+        and state.preflight_sufficiency != "implementation_ready"
     )
     if _should_validate_spec:
         from theforge.story_validator import validate_story  # noqa: PLC0415
@@ -146,8 +147,11 @@ def _run_plan_phase(
         plan_path is None
         and config.plan.enabled
         and state.preflight_complexity in ("medium", "large")
+        and state.preflight_sufficiency != "implementation_ready"
     )
     if not should_plan:
+        if state.preflight_sufficiency == "implementation_ready":
+            _log("  ↩ PLAN   skipped — spec classified as implementation-ready")
         return None
 
     # Remove stale plan files from prior runs before the plan agent writes a new one

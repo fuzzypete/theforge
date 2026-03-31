@@ -49,6 +49,8 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
 
 _VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
 
+_VALID_SUFFICIENCIES = frozenset({"implementation_ready", "needs_planning"})
+
 
 def _parse_preflight_warnings(output: str) -> list[str]:
     """Extract warnings list from preflight agent output. Returns [] if absent."""
@@ -96,6 +98,34 @@ def _parse_preflight_complexity(output: str) -> str:
         pass
 
     return "medium"
+
+
+def _parse_preflight_sufficiency(output: str) -> str:
+    """Extract sufficiency from preflight agent output.
+
+    Returns 'implementation_ready' or 'needs_planning'.
+    Defaults to 'needs_planning' on parse failure — fail-safe toward full pipeline.
+    """
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            raw = str(parsed.get("sufficiency", "needs_planning")).lower()
+            if raw in _VALID_SUFFICIENCIES:
+                return raw
+    except yaml.YAMLError:
+        pass
+
+    return "needs_planning"
 
 
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
