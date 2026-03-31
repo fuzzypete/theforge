@@ -135,3 +135,10 @@ findings differently and that is expected.
 - **Trajectory summary truncation:** If a family survives 5+ cycles, the
   per-cycle descriptions in the trajectory summary should be truncated to
   keep the fix prompt from growing unbounded.
+- **Cycle numbering gotcha:** Do NOT use `state.cycle_history_total` or
+  `state.cycle_history_total + 1` as the cycle key for trajectory snapshots.
+  `_append_cycle_history()` in `completion.py` is the only place that
+  increments `cycle_history_total`, and it is NOT called on the
+  exhausted-cycle continue path at `review_phase.py:659-701`. Use
+  `state.review_cycle` instead — it is incremented at the top of every
+  review phase entry and is monotonically stable across all paths.
