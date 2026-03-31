@@ -7,6 +7,7 @@ import sys
 
 from theforge.cli import (
     audit,
+    check_config,
     daemon,
     hooks,
     ideate,
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     sprint.register_parser(subparsers)
     ideate.register_parser(subparsers)
     providers.register_parser(subparsers)
+    check_config.register_parser(subparsers)
     audit.register_parser(subparsers)
     telemetry.register_parser(subparsers)
     daemon.register_parser(subparsers)
@@ -75,6 +77,7 @@ def main() -> None:
         "sprint": sprint.cmd_sprint,
         "ideate": ideate.cmd_ideate,
         "check-providers": providers.cmd_check_providers,
+        "check-config": check_config.cmd_check_config,
         "audit": audit.cmd_audit,
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,
