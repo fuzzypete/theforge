@@ -207,7 +207,7 @@ def _submit_plan_review_schema() -> dict:
                         "additionalProperties": False,
                         "required": ["severity", "description"],
                         "properties": {
-                            "severity": {"type": "string", "enum": ["P1", "P2"]},
+                            "severity": {"type": "string", "enum": ["P1", "P1-impl", "P2"]},
                             "description": {"type": "string"},
                         },
                     },

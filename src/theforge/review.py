@@ -269,6 +269,8 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
         )
 
     verdict = data.get("verdict", "").upper()
+    if verdict == "REQUEST_CHANGES":
+        verdict = "REJECT"
     if verdict not in ("APPROVE", "REJECT"):
         return PlanReviewResult(
             verdict="REJECT",
