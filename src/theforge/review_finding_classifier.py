@@ -204,18 +204,33 @@ def classify_families(
         entry["seed_anchor"]: i for i, entry in enumerate(trajectory_store)
     }
 
-    # Build membership map: (cycle_num, description_prefix) -> frozen_seed_anchor.
+    # Build collision-resistant membership map: (cycle, file, line, full_desc) -> frozen_seed.
     # This enforces the frozen-seed identity constraint: when a current finding matches
     # a prior finding that is already in family F, the match can only produce an action
     # for family F — and only if the current shared anchors include F's frozen seed.
     # Without this check, a current finding that shares only a non-seed anchor with a
     # familied prior finding would incorrectly create a new family seeded by that
     # alternate anchor.
-    _prior_membership: dict[tuple[int, str], str] = {}
+    #
+    # Keys use (cycle, file, line, full_description) rather than (cycle, description[:200])
+    # to avoid collisions when two familied findings from the same cycle share the same
+    # 200-character description prefix.
+    _cycle_findings_lookup: dict[int, list["ReviewFinding"]] = {
+        cycle_num: findings for cycle_num, findings in prior_cycle_findings
+    }
+    _prior_membership: dict[tuple, str] = {}
     for family in trajectory_store:
         fam_seed = family["seed_anchor"]
-        for cyc, desc in zip(family["cycles"], family["descriptions"]):
-            _prior_membership[(cyc, desc)] = fam_seed
+        for cyc, stored_desc in zip(family["cycles"], family["descriptions"]):
+            cycle_rfs = _cycle_findings_lookup.get(cyc, [])
+            matched_rf = next(
+                (rf for rf in cycle_rfs if rf.description[:200] == stored_desc), None
+            )
+            if matched_rf is not None:
+                key: tuple = (cyc, matched_rf.file, matched_rf.line, matched_rf.description)
+            else:
+                key = (cyc, None, None, stored_desc)
+            _prior_membership[key] = fam_seed
 
     # For each current finding, find its best match across all prior cycles.
     # We track the best (seed_anchor, prior_cycle, shared_anchors, prior_finding) per
@@ -244,7 +259,12 @@ def classify_families(
             # valid for F — and only when F's frozen seed is among the current shared
             # anchors.  If the frozen seed is absent, skip this match entirely: do NOT
             # create a new family seeded by an alternate anchor present in the match.
-            prior_key = (prior_cycle_num, prior_finding.description[:200])
+            prior_key = (
+                prior_cycle_num,
+                prior_finding.file,
+                prior_finding.line,
+                prior_finding.description,
+            )
             frozen_seed = _prior_membership.get(prior_key)
             if frozen_seed is not None:
                 if frozen_seed not in shared_non_file_values:

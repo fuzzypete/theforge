@@ -361,6 +361,75 @@ class TestClassifyFamilies:
         assert 3 in store[0]["cycles"]
         assert len(surviving) == 1
 
+    def test_frozen_seed_no_collision_on_shared_200_char_prefix(self):
+        """Regression (P1 bug): two familied findings from the same cycle sharing the same
+        200-character description prefix must not collide in the membership map and cause
+        a valid match to bypass the frozen-seed check.
+
+        Setup: two distinct families seeded in C1→C2 whose C2 members share a long
+        common description prefix (first 200 chars identical). A C3 finding that shares
+        only the non-seed anchor of one family must remain unfamilied for BOTH families.
+        Prior to the fix the second family's C2 member overwrote the first in the map,
+        making the first appear unfamilied and allowing a spurious new family.
+        """
+        prefix = "a" * 180  # 180 chars shared by both C2 descriptions
+        # Family A: seeded by "load_config"
+        c1a = [_rf(f"load_config {prefix} initial")]
+        c2a = [
+            ReviewFinding(
+                severity="P1",
+                file="src/a.py",
+                line=10,
+                description=f"load_config {prefix} still broken",
+                suggestion=None,
+            )
+        ]
+        # Family B: seeded by "parse_input" — C2 description shares the same 200-char prefix
+        c1b = [_rf(f"parse_input {prefix} initial")]
+        c2b = [
+            ReviewFinding(
+                severity="P1",
+                file="src/b.py",
+                line=20,
+                description=f"parse_input {prefix} still broken",
+                suggestion=None,
+            )
+        ]
+
+        store, _ = classify_families(
+            current_findings=c2a,
+            current_cycle=2,
+            trajectory_store=[],
+            prior_cycle_findings=[(1, c1a)],
+        )
+        store, _ = classify_families(
+            current_findings=c2b,
+            current_cycle=2,
+            trajectory_store=store,
+            prior_cycle_findings=[(1, c1b)],
+        )
+        assert len(store) == 2, (
+            f"Expected 2 families after C2; got {[f['seed_anchor'] for f in store]}"
+        )
+
+        # C3: shares only "load_config" (not "parse_input") — must join load_config family only
+        c3 = [_rf(f"load_config {prefix} persists in C3")]
+        store, surviving = classify_families(
+            current_findings=c3,
+            current_cycle=3,
+            trajectory_store=store,
+            prior_cycle_findings=[(1, c1a), (1, c1b), (2, c2a), (2, c2b)],
+        )
+        seeds = {f["seed_anchor"] for f in store}
+        assert "load_config" in seeds
+        assert "parse_input" in seeds
+        load_fam = next(f for f in store if f["seed_anchor"] == "load_config")
+        parse_fam = next(f for f in store if f["seed_anchor"] == "parse_input")
+        assert 3 in load_fam["cycles"], "C3 must join load_config family"
+        assert 3 not in parse_fam["cycles"], "C3 must NOT join parse_input family"
+        assert len(surviving) == 1
+        assert surviving[0]["seed_anchor"] == "load_config"
+
 
 # ── 3. Prompt content for surviving vs new-only ───────────────────────────────
 
