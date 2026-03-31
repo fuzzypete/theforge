@@ -287,5 +287,9 @@ def build_fix_prompt(
         ## Important
 
         {gate_bullet}- Focus on fixing the identified findings. Do not refactor unrelated code.
+        - When a finding describes a **pattern bug** (e.g., a flawed lookup key,
+          an unsafe cast, a missing guard), search the entire file — and related
+          files — for **all occurrences** of that pattern before committing your
+          fix. Do not patch only the line the reviewer cited.
         - Do NOT leave uncommitted changes.
     """)
