@@ -200,7 +200,7 @@ def build_plan_review_prompt(
             covered: true | false
             plan_section: "<which part of the plan addresses this, or 'missing'>"
         findings:
-          - severity: P0 | P1 | P2
+          - severity: P0 | P1 | P1-impl | P2
             description: "<what is wrong with the plan>"
             suggestion: "<how to fix it>"
         ```
@@ -250,19 +250,25 @@ def build_plan_review_prompt(
 
         - **P0** (impossible): Plan cannot be implemented as written. Wrong API,
           hallucinated function, missing caller that would break at runtime.
-        - **P1** (must fix): Plan has a real gap that will probably cause dev to
-          fail or produce broken code. The plan will be regenerated to address it.
+        - **P1** (architectural blocker): Plan proposes an approach that is
+          structurally wrong — wrong API, hallucinated function, missing callers,
+          broken data flow. The plan itself needs a different approach.
+        - **P1-impl** (implementation detail): Plan's approach is sound but doesn't
+          pre-solve an implementation concern — edge case handling, specific guard
+          clause, key collision strategy, monotonic counter details. The dev agent
+          can and should resolve these during implementation. Does not block the plan.
         - **P2** (improvement): Plan could be more precise but dev can work it out.
           Does not block the plan.
 
         ## Rules
 
         - verdict MUST be APPROVE if there are zero P0 and zero P1 findings
+          (P1-impl findings do NOT count as blockers)
         - verdict MUST be REJECT if any P0 or P1 finding exists
         - REJECT MUST include at least one P0 or P1 finding
         - **List ALL issues in a single pass.** Multiple findings in one REJECT
           is far better than discovering new issues across multiple cycles.
-        - APPROVE with P2 suggestions is valid and encouraged
+        - APPROVE with P1-impl and P2 suggestions is valid and encouraged
         - Be specific: cite the plan section, the actual codebase function/file,
           and why it would fail
         - A plan does not need to be perfect — it needs to not be wrong
