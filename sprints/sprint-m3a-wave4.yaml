@@ -1,0 +1,8 @@
+name: "M3a Wave 4 — check-config, hardening, config normalization"
+budget_usd: 60
+max_parallel: 3
+auto_merge: true
+stories:
+  - stories/backlog/forge-check-config.md
+  - stories/backlog/hardening-bug-bundle.md
+  - stories/backlog/config-normalization-cleanup.md
