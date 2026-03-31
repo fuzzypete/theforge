@@ -854,3 +854,145 @@ class TestFromPhaseSkip:
         assert result.phase == Phase.VALIDATE
         assert result.state.preflight_verdict == "SKIPPED"
         mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_from_review_skips_dev_on_first_iter(
+        self, mock_shell, mock_dev_agent, mock_pool, tmp_path
+    ):
+        """--from review: DEV must NOT run before the first REVIEW iteration."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        plan_path = workspace / ".forge" / "plan.md"
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text("# Plan\n- step 1", encoding="utf-8")
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, start_phase=Phase.REVIEW)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "SKIPPED"
+        # DEV must NOT have been called — we started at REVIEW
+        mock_dev_agent.assert_not_called()
+        # REVIEW pool must have run exactly once
+        assert mock_pool.call_count == 1
+
+
+class TestHandoffPersistence:
+    """Test that handoff.yaml is copied to .forge/logs after VALIDATE."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_handoff_copied_to_log_dir(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """handoff.yaml is copied to .forge/logs/<slug>/ after a passing gate."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        log_dir = tmp_path / ".forge" / "logs" / "test-task"
+        assert log_dir.exists(), "log directory was not created"
+        handoff_copies = list(log_dir.glob("handoff-iter-*.yaml"))
+        assert len(handoff_copies) >= 1, "handoff was not copied to log dir"
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_handoff_copy_failure_does_not_block_pipeline(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """A failure writing handoff to logs must not cause the pipeline to fail."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        with patch(
+            "theforge.coordinator.engine.resolve_handoff_path",
+            side_effect=OSError("disk full"),
+        ):
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+
+
+class TestStartupFailureEscalation:
+    """Test that a dev agent startup failure escalates immediately."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_startup_failure_escalates(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Dev startup_failure escalates; VALIDATE/REVIEW must not run."""
+        from theforge.runners import AgentResult
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_dev_agent.return_value = AgentResult(
+            success=False,
+            output="command not found: claude",
+            session_id=None,
+            cost_usd=None,
+            exit_code=127,
+            raw={},
+            startup_failure=True,
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert "no agent available" in result.message
+        # dev_agent called once; no VALIDATE or REVIEW
+        assert mock_dev_agent.call_count == 1
+        mock_pool.assert_not_called()

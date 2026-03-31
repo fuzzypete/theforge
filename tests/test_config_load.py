@@ -1194,3 +1194,40 @@ class TestAssignmentReviewerAuthCrossCheck:
         ):
             with pytest.raises(ValueError, match="no reviewer-eligible agents have auth"):
                 load_config(config_path)
+
+
+class TestDefaultFlags:
+    """Tests for plan_model_is_default and review_pool_is_default flags."""
+
+    def test_plan_model_is_default_when_no_plan_key(self, tmp_path):
+        """plan_model_is_default is True when forge.yaml has no plan key."""
+        config_path = _write_config({"profiles": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan_model_is_default is True
+
+    def test_plan_model_is_default_false_when_plan_model_set(self, tmp_path):
+        """plan_model_is_default is False when plan.model is explicitly configured."""
+        config_path = _write_config({"plan": {"model": "claude-opus-4-5"}}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan_model_is_default is False
+
+    def test_plan_model_is_default_false_when_plan_cli_set(self, tmp_path):
+        """plan_model_is_default is False when plan.cli is explicitly configured."""
+        config_path = _write_config({"plan": {"cli": "claude"}}, tmp_path)
+        config = load_config(config_path)
+        assert config.plan_model_is_default is False
+
+    def test_review_pool_is_default_when_no_review_pool(self, tmp_path):
+        """review_pool_is_default is True when forge.yaml has no review_pool configured."""
+        config_path = _write_config({"profiles": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.review_pool_is_default is True
+
+    def test_review_pool_is_default_false_when_explicitly_configured(self, tmp_path):
+        """review_pool_is_default is False when review_pool is explicitly configured."""
+        config_path = _write_config(
+            {"profiles": {"review_pool": [{"name": "my-reviewer", "cli": "claude"}]}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.review_pool_is_default is False

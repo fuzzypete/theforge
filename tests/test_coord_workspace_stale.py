@@ -740,3 +740,63 @@ class TestWorkspaceBranchCollision:
         captured = capsys.readouterr()
         assert "⚠ WORKSPACE" in captured.err
         assert "stale branch" in captured.err
+
+
+class TestRunSetupSplit:
+    """Unit tests for _run_setup_split in workspace.py."""
+
+    def test_verbatim_fallback_when_pattern_not_matched(self, tmp_path):
+        """When command doesn't match the venv guard pattern, runs it verbatim."""
+        from theforge.coordinator.workspace import _run_setup_split
+
+        calls = []
+
+        def fake_shell(cmd, cwd, **kw):
+            calls.append(cmd)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split("pip install -e .", tmp_path)
+
+        assert ok is True
+        assert calls == ["pip install -e ."]
+
+    def test_venv_guard_pattern_splits_correctly(self, tmp_path):
+        """When command matches venv guard, venv creation and install run separately."""
+        from theforge.coordinator.workspace import _run_setup_split
+
+        cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kw):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert len(calls) == 2
+        assert "test -d .venv" in calls[0]
+        assert "python -m venv" in calls[0]
+        # Second call is just the install command, not the venv creation
+        assert "pip install -e ." in calls[1]
+        assert "python -m venv" not in calls[1]
+
+    def test_venv_creation_failure_stops_early(self, tmp_path):
+        """If venv creation fails, the install command is not run."""
+        from theforge.coordinator.workspace import _run_setup_split
+
+        cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kw):
+            calls.append(cmd_arg)
+            return (False, "venv error")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is False
+        assert out == "venv error"
+        assert len(calls) == 1  # install was not called
