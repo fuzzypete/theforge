@@ -1168,3 +1168,29 @@ class TestAssignmentReviewerAuthCrossCheck:
             config = load_config(config_path)
         assert config.assignment.enabled is True
         assert config.review_pool_is_default is False
+
+    def test_models_based_config_with_assignment_unauthenticated_reviewers_raises(self, tmp_path):
+        """Regression: models-based smart config + assignment.enabled should apply the
+        same reviewer auth guard as classic config.  Previously _review_pool_is_default
+        was never set in the models path, so the guard was silently skipped."""
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "claude/opus"],
+                "assignment": {"enabled": True},
+                "agents": [
+                    {
+                        "name": "api-reviewer",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "tier": "strong",
+                    },
+                ],
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("importlib.import_module"),
+        ):
+            with pytest.raises(ValueError, match="no reviewer-eligible agents have auth"):
+                load_config(config_path)

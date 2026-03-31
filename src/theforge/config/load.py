@@ -170,6 +170,9 @@ def load_config(config_path: Path) -> ForgeConfig:
                 ]
 
         smart_config_models = [str(m) for m in models_list]
+        # The review pool is auto-assigned from the models list, not user-specified.
+        # Treat it as default so the assignment reviewer auth guard applies.
+        _review_pool_is_default = True
 
     else:
         # ── Classic config: profiles key ──────────────────────────────────
