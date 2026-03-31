@@ -1,0 +1,7 @@
+name: "Plan review adaptive — severity calibration, spec sufficiency, runner bugs"
+budget_usd: 45
+max_parallel: 3
+auto_merge: true
+stories:
+  - stories/backlog/plan-review-severity-calibration.md
+  - stories/backlog/preflight-spec-sufficiency.md
