@@ -81,6 +81,33 @@ def build_handoff_fix_prompt(
     """)
 
 
+def _build_task_framing(surviving_families: list[dict] | None) -> tuple[str, int]:
+    """Build the first numbered task item(s) for the 'Your Task' section.
+
+    Returns (framing_text, next_step_number) so callers can number subsequent
+    steps correctly.
+
+    When surviving families are present the framing switches from
+    'fix each P1 finding' to 'reconsider approach for persistent issues'.
+    """
+    if surviving_families:
+        n = len(surviving_families)
+        family_labels = "; ".join(
+            f"`{f.get('seed_anchor', '?')}` ({len(set(f.get('cycles', [])))} cycles)"
+            for f in surviving_families
+        )
+        text = (
+            f"1. **Reconsider your approach** for the surviving issue(s) below — "
+            f"local patching has not resolved them across {n} cycle(s) "
+            f"({family_labels}). "
+            "Step back and address the underlying design tension rather than applying "
+            "another incremental fix.\n"
+            "2. Fix remaining new P1 findings. Address P2 findings if feasible."
+        )
+        return text, 3
+    return "1. Fix each P1 finding. Address P2 findings if feasible.", 2
+
+
 def build_fix_prompt(
     task: TaskStory,
     *,
@@ -95,6 +122,7 @@ def build_fix_prompt(
     handoff_file: str = "handoff.yaml",
     plan_output: str | dict | None = None,
     classified_p1s: list | None = None,  # list[FindingRecord]
+    surviving_families: list[dict] | None = None,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -146,11 +174,19 @@ def build_fix_prompt(
 
                 {plan_output}
             """)
-        context_sections += dedent("""\
+        if surviving_families:
+            context_sections += dedent("""\
 
-            Fix the P1 findings **within this plan's approach**.
-            Do NOT redesign or adopt a different strategy.
-        """)
+                The following issue(s) have persisted across multiple review cycles.
+                You may need to reconsider the approach for these specific areas —
+                staying within the plan's approach has not resolved them.
+            """)
+        else:
+            context_sections += dedent("""\
+
+                Fix the P1 findings **within this plan's approach**.
+                Do NOT redesign or adopt a different strategy.
+            """)
     if cycle_history:
         history_lines = []
         for h in cycle_history:
@@ -166,6 +202,26 @@ def build_fix_prompt(
             ## Previous Review Cycles
 
         """) + "\n".join(history_lines)
+
+    if surviving_families:
+        traj_lines: list[str] = []
+        for family in surviving_families:
+            seed = family.get("seed_anchor", "")
+            cycles = family.get("cycles", [])
+            descriptions = family.get("descriptions", [])
+            n_cycles = len(set(cycles))
+            # Truncate to most recent 5 descriptions if the family is long-lived
+            if len(descriptions) > 5:
+                descriptions = descriptions[-5:]
+            traj_lines.append(f"### Family: `{seed}` ({n_cycles} cycles)")
+            for i, desc in enumerate(descriptions):
+                traj_lines.append(f"- Cycle appearance {i + 1}: {desc}")
+            traj_lines.append("")
+        context_sections += dedent("""\
+
+            ## Trajectory Summary
+
+        """) + "\n".join(traj_lines)
 
     # Build the P1 findings section with disposition annotations if available
     if classified_p1s:
@@ -189,6 +245,11 @@ def build_fix_prompt(
 
             {review_findings}""")
 
+    _task_framing, _next_step = _build_task_framing(surviving_families)
+    _fmt_step = _next_step
+    _commit_step = _next_step + 1
+    _handoff_step = _next_step + 2
+
     return dedent(f"""\
         You are continuing work on **{task.name}** (iteration {iteration}).
 
@@ -203,15 +264,15 @@ def build_fix_prompt(
 
         ## Your Task
 
-        1. Fix each P1 finding. Address P2 findings if feasible.
-        2. Run `make fmt` to auto-fix formatting.
-        3. Commit your changes (do NOT commit `{handoff_file}` — it is gitignored):
+        {_task_framing}
+        {_fmt_step}. Run `make fmt` to auto-fix formatting.
+        {_commit_step}. Commit your changes (do NOT commit `{handoff_file}` — it is gitignored):
            ```bash
            git add <files-you-changed>
            git commit -m "fix(<scope>): address review findings (iter {iteration})"
            ```
         {
-        "4. **Update `dev_notes` in `"
+        f"{_handoff_step}. **Update `dev_notes` in `"
         + handoff_file
         + "`** to reflect what you changed"
         + '''
