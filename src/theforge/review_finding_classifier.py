@@ -169,14 +169,6 @@ def match_review_findings(
     return results
 
 
-def _select_seed_anchor(shared_anchors: tuple[Anchor, ...]) -> str | None:
-    """Select the seed anchor: lexicographically first non-file anchor."""
-    non_file = [a for a in shared_anchors if a.kind != "file_path"]
-    if not non_file:
-        return None
-    return min(non_file, key=lambda a: a.value).value
-
-
 def classify_families(
     current_findings: list["ReviewFinding"],
     current_cycle: int,
@@ -222,18 +214,36 @@ def classify_families(
         for result in results:
             if result.prior_index is None:
                 continue
-            seed = _select_seed_anchor(result.shared_anchors)
-            if seed is None:
+
+            # Collect all shared non-file anchor values from this match.
+            shared_non_file_values = [
+                a.value for a in result.shared_anchors if a.kind != "file_path"
+            ]
+            if not shared_non_file_values:
                 # File-path-only match — no valid seed, skip family creation
                 continue
+
             ci = result.current_index
             prior_finding = prior_findings[result.prior_index]
-            # Check if this current finding should join an existing family via this match
-            if seed in seed_to_idx:
-                existing_family = trajectory_store[seed_to_idx[seed]]
-                existing_len = len(set(existing_family["cycles"]))
+
+            # Find which shared anchors are existing family seeds.
+            # This is the critical step: a match whose shared anchors include
+            # "load_config" and "helper_func" must join the "load_config" family
+            # (if it exists), not create a new "helper_func" family just because
+            # "helper_func" is lex-first.
+            matching_existing_seeds = [v for v in shared_non_file_values if v in seed_to_idx]
+
+            if matching_existing_seeds:
+                # Pick the best existing family: longest history, alphabetical tie-break
+                effective_seed = min(
+                    matching_existing_seeds,
+                    key=lambda s: (-len(set(trajectory_store[seed_to_idx[s]]["cycles"])), s),
+                )
+                existing_len = len(set(trajectory_store[seed_to_idx[effective_seed]]["cycles"]))
             else:
-                existing_len = 0  # new family would be created
+                # No existing family matched — lex-first anchor seeds a potential new family
+                effective_seed = min(shared_non_file_values)
+                existing_len = 0
 
             if ci in best_match_for:
                 # Compare to existing best: prefer longer family history, then alpha seed
@@ -249,16 +259,21 @@ def classify_families(
 
                 # Choose longer history; ties broken alphabetically
                 if existing_len > _existing_fam_len or (
-                    existing_len == _existing_fam_len and seed < _existing_seed
+                    existing_len == _existing_fam_len and effective_seed < _existing_seed
                 ):
                     best_match_for[ci] = (
-                        seed,
+                        effective_seed,
                         prior_cycle_num,
                         result.shared_anchors,
                         prior_finding,
                     )
             else:
-                best_match_for[ci] = (seed, prior_cycle_num, result.shared_anchors, prior_finding)
+                best_match_for[ci] = (
+                    effective_seed,
+                    prior_cycle_num,
+                    result.shared_anchors,
+                    prior_finding,
+                )
 
     # Apply the best matches: update or create families
     current_in_families: set[str] = set()  # seed_anchors touched in this cycle

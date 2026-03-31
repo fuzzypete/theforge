@@ -261,6 +261,37 @@ class TestClassifyFamilies:
         assert 3 in alpha_fam["cycles"]
         assert 3 not in beta_fam["cycles"]
 
+    def test_lexfirst_shared_anchor_not_existing_seed_joins_existing_family(self):
+        """Regression: when lex-first shared anchor is NOT an existing family seed but
+        another shared anchor IS, the finding must join the existing family — not create
+        a new one seeded by the lex-first anchor.
+
+        Scenario:
+        - Family A: seed = "load_config" (3 cycles), Family B: seed = "parse_input" (2 cycles)
+        - Current finding shares {helper_func, load_config, parse_input} with prior finding
+        - lex-first of shared non-file anchors = "helper_func" (not an existing seed)
+        - But "load_config" IS an existing seed with 3 cycles
+        - Must join "load_config" family, NOT create new "helper_func" family
+        """
+        store = [
+            {"seed_anchor": "load_config", "cycles": [1, 2, 3], "descriptions": ["a", "b", "c"]},
+            {"seed_anchor": "parse_input", "cycles": [1, 2], "descriptions": ["x", "y"]},
+        ]
+        # Current finding has all three anchors; prior also has all three
+        current = [_rf("helper_func and load_config and parse_input all broken")]
+        prior = [_rf("helper_func load_config parse_input all failing together")]
+        updated, surviving = classify_families(
+            current_findings=current,
+            current_cycle=4,
+            trajectory_store=store,
+            prior_cycle_findings=[(3, prior)],
+        )
+        # Must join "load_config" (3 cycles, longest), NOT create new "helper_func" family
+        seed_anchors = {f["seed_anchor"] for f in updated}
+        assert "helper_func" not in seed_anchors, "New 'helper_func' family must NOT be created"
+        load_config_fam = next(f for f in updated if f["seed_anchor"] == "load_config")
+        assert 4 in load_config_fam["cycles"]
+
 
 # ── 3. Prompt content for surviving vs new-only ───────────────────────────────
 
