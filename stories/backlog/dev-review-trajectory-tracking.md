@@ -124,21 +124,51 @@ findings differently and that is expected.
 
 ## Notes
 
-- **Serialization:** The family trajectory store must serialize/deserialize
-  correctly for `forge run --resume`. `CoordinatorState` is a dataclass —
-  family data should use a generic dict representation or be added to the
-  serialization map.
+- **Cycle numbering gotcha:** Neither `state.review_cycle` nor
+  `state.cycle_history_total` is a safe cycle key for trajectory snapshots.
+  `review_cycle` is decremented on the exhausted-cycle continue path
+  (`review_phase.py:700-701`) and reset to 0 on extend/reject
+  (`review_phase.py:393, :419`). `cycle_history_total` is only incremented
+  inside `_append_cycle_history()` (`completion.py:191-199`), which is NOT
+  called on the exhausted-cycle continue path. The correct approach is to
+  introduce a **dedicated monotonic trajectory counter** on
+  `CoordinatorState` that is incremented exactly once when a review result
+  is accepted for trajectory tracking.
+- **Current vs historical families:** The fix prompt must distinguish
+  families that are active in the CURRENT review cycle from families that
+  survived in the past but are no longer appearing. Pass a current-cycle
+  matched-family set (or the current trajectory cycle id) into
+  `build_fix_prompt()` so framing switches only when a currently active
+  family has survived 2+ cycles — not whenever any historical family
+  reached that threshold.
+- **Plan-approach guard contradiction:** When `plan_output` is present,
+  `fix_prompts.py` emits "Do NOT redesign or adopt a different strategy."
+  This directly contradicts the "reconsider the approach" framing for
+  surviving families. When surviving families trigger the reframed prompt,
+  suppress or replace the existing plan-approach guard so the agent
+  receives one coherent set of instructions.
+- **Anchor extraction scope:** Extract structural anchors from
+  `finding.description` and the direct `finding.file` field only. Do NOT
+  extract anchors from `finding.suggestion` — the reused
+  `plan_finding_classifier.extract_anchors()` is description-only by
+  design.
+- **Family creation must seed both cycles:** When a family is first
+  created from a valid cross-cycle match, record BOTH the prior-cycle
+  appearance and the current-cycle appearance in the family's cycle list
+  and descriptions. A family created from a cycle-1/cycle-2 match must
+  show cycles `[1, 2]`, not just `[2]`.
+- **Resume persistence via `save_sessions()`:**
+  `src/theforge/sessions.py:17` rewrites `.forge/sessions.json` from
+  scratch on every call. Multiple callers (`dev_phase.py`, `review_pool.py`,
+  `plan_flow.py`, `engine.py`) invoke it and will drop trajectory keys
+  unless those keys are preserved. Either teach `save_sessions()` to
+  merge/retain extra keys, or ensure every caller passes the trajectory
+  fields through so later writes do not erase them.
 - **ReviewFinding has `file` and `line`** unlike `PlanReviewFinding`. Dev
-  review findings will produce richer file-path anchors. The matching
-  machinery should leverage this — the `file` field provides a direct anchor
-  without needing to extract paths from description text.
+  review findings will produce richer file-path anchors. The `file` field
+  provides a direct anchor without needing to extract paths from description
+  text. However, `ReviewFinding.file` can be placeholder strings like
+  `"unknown"` or empty — only treat non-empty, path-like values as anchors.
 - **Trajectory summary truncation:** If a family survives 5+ cycles, the
   per-cycle descriptions in the trajectory summary should be truncated to
   keep the fix prompt from growing unbounded.
-- **Cycle numbering gotcha:** Do NOT use `state.cycle_history_total` or
-  `state.cycle_history_total + 1` as the cycle key for trajectory snapshots.
-  `_append_cycle_history()` in `completion.py` is the only place that
-  increments `cycle_history_total`, and it is NOT called on the
-  exhausted-cycle continue path at `review_phase.py:659-701`. Use
-  `state.review_cycle` instead — it is incremented at the top of every
-  review phase entry and is monotonically stable across all paths.

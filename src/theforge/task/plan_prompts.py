@@ -85,6 +85,29 @@ def build_preflight_prompt(
 
         When verdict is ALREADY_DONE or BLOCKED, set complexity to "small" as a placeholder.
 
+        ## Spec Sufficiency Classification
+
+        When verdict is PROCEED, also assess whether this spec is
+        **implementation-ready** or **needs planning**.
+
+        This is orthogonal to complexity — a large refactor can be
+        implementation-ready if the spec author documented every pitfall,
+        and a small feature can need planning if the spec is vague.
+
+        Classify as `implementation_ready` when ALL of the following hold:
+        - The spec has a detailed **Notes** section with specific file paths,
+          function names, patterns, or implementation pitfalls
+        - Implementation hints are concrete and actionable, not generic
+        - Acceptance criteria describe **observable behaviors** that can be
+          verified by reading code or running tests (not implementation steps)
+        - The spec's detail density is high relative to the assessed complexity
+
+        Classify as `needs_planning` when ANY of the following hold:
+        - No Notes section, or Notes is sparse/generic
+        - Implementation approach is unclear or underspecified
+        - Acceptance criteria describe HOW to implement rather than WHAT to observe
+        - Spec lacks enough detail for a dev agent to proceed without a plan
+
         ## Output Format
 
         You MUST output ONLY a YAML block. No prose before or after.
@@ -94,6 +117,8 @@ def build_preflight_prompt(
         verdict: PROCEED | ALREADY_DONE | BLOCKED
         complexity: small | medium | large
         reason: "<1-2 sentence explanation of your classification>"
+        sufficiency: implementation_ready | needs_planning
+        sufficiency_reason: "<1-2 sentence explanation of the sufficiency classification>"
         spec_issues:
           - type: contradiction | ambiguity | impossible_constraint
             description: "<what conflicts or is unclear>"
@@ -107,6 +132,7 @@ def build_preflight_prompt(
 
         Use `spec_issues: []` if the spec is clean.
         Use `warnings: []` if there are no non-blocking advisories.
+        Always include `sufficiency` and `sufficiency_reason` when verdict is PROCEED.
 
         ## Rules
 

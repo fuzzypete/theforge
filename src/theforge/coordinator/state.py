@@ -178,6 +178,7 @@ class CoordinatorState:
     preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
     preflight_reason: str | None = None
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
+    preflight_sufficiency: str | None = None  # "implementation_ready" | "needs_planning"
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
     preflight_result: AgentResult | None = None
     plan_results: list[AgentResult] = field(default_factory=list)

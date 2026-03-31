@@ -35,6 +35,7 @@ from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
     _apply_complexity_adaptation,
     _parse_preflight_complexity,
+    _parse_preflight_sufficiency,
     _parse_preflight_verdict,
     _parse_preflight_warnings,
 )
@@ -124,6 +125,7 @@ def _run_preflight_phase(
             f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
         )
         state.preflight_complexity = "large"
+        state.preflight_sufficiency = "needs_planning"
         _log("  ⚠ PREFLIGHT failed — defaulting complexity to large")
 
     state.preflight_verdict = verdict
@@ -141,6 +143,9 @@ def _run_preflight_phase(
         complexity = _parse_preflight_complexity(preflight_result.output)
         state.preflight_complexity = complexity
         _log(f"  Complexity: {complexity} (from preflight)")
+        sufficiency = _parse_preflight_sufficiency(preflight_result.output)
+        state.preflight_sufficiency = sufficiency
+        _log(f"  Sufficiency: {sufficiency}")
     else:
         complexity = state.preflight_complexity
         _log(f"  Complexity: {complexity} (preflight failed — using fallback)")
@@ -255,6 +260,7 @@ def _run_preflight_phase(
         "verdict": verdict,
         "reason": reason,
         "complexity": state.preflight_complexity,
+        "sufficiency": state.preflight_sufficiency,
         "cost_usd": preflight_result.cost_usd,
         "duration_s": round(_preflight_elapsed, 2),
     }
