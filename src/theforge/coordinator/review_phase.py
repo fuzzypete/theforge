@@ -16,6 +16,7 @@ from theforge.review import (
     _best_individual_result,
     review_to_dev_handoff,
 )
+from theforge.review_finding_classifier import classify_families
 from theforge.task import TaskStory, build_review_prompt
 
 from .completion import _append_cycle_history, _finalize_approve
@@ -48,6 +49,7 @@ from .review_context import (
     _get_handoff_content,
 )
 from .review_pool import _run_review_pool
+from .run_setup import save_trajectory_state
 from .state import (
     CoordinatorResult,
     CoordinatorState,
@@ -541,6 +543,54 @@ def _run_review_phase(
         # Cycle 1: any P1 is blocking (no prior baseline to classify against)
         _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
+
+    # ── Trajectory classification ─────────────────────────────────────────
+    # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
+    # Uses a dedicated monotonic counter (trajectory_cycle) that is never reset
+    # or decremented by extend/reject/exhausted-gate paths — unlike review_cycle.
+    state.trajectory_cycle += 1
+
+    # Snapshot this cycle's findings as plain dicts for cross-cycle matching
+    _finding_snapshot: list[dict] = [
+        {
+            "file": f.file,
+            "line": f.line,
+            "description": f.description,
+            "severity": f.severity,
+        }
+        for f in parsed_review.findings
+    ]
+    state.review_cycle_findings.append((state.trajectory_cycle, _finding_snapshot))
+
+    # Classify families on cycle 2+ (need at least one prior cycle to match against)
+    if state.trajectory_cycle >= 2:
+        # Reconstruct ReviewFinding objects from stored dicts for the matching machinery
+        _prior_rf: list[tuple[int, list[ReviewFinding]]] = [
+            (
+                cycle_num,
+                [
+                    ReviewFinding(
+                        severity=fd.get("severity", "P1"),
+                        file=fd.get("file", ""),
+                        line=fd.get("line"),
+                        description=fd.get("description", ""),
+                        suggestion=None,
+                    )
+                    for fd in findings
+                ],
+            )
+            for cycle_num, findings in state.review_cycle_findings[:-1]
+        ]
+        state.finding_trajectory, state.surviving_families = classify_families(
+            current_findings=list(parsed_review.findings),
+            current_cycle=state.trajectory_cycle,
+            trajectory_store=state.finding_trajectory,
+            prior_cycle_findings=_prior_rf,
+        )
+    else:
+        state.surviving_families = []
+
+    save_trajectory_state(workspace_path, state)
 
     _log_review_findings(parsed_review, _p1_count, _p2_count, _review_cost, logger)
 

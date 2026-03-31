@@ -108,6 +108,7 @@ def _run_dev_phase(
             if state.plan_structured is not None
             else state.plan_output,
             classified_p1s=[r for r in state.finding_registry if r.severity == "P1"] or None,
+            surviving_families=state.surviving_families or None,
         )
         state.escalation_note = None  # consumed
     else:

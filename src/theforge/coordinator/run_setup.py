@@ -8,9 +8,12 @@ worktree instead of creating one from scratch.
 from __future__ import annotations
 
 import datetime
+import logging
 import shutil
 import time
 from pathlib import Path
+
+import yaml
 
 from theforge.config import ForgeConfig
 from theforge.sessions import load_sessions
@@ -20,6 +23,73 @@ from . import util as _cu
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .state import CoordinatorResult, CoordinatorState, Phase
+
+_logger = logging.getLogger(__name__)
+
+
+def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None:
+    """Persist trajectory fields to <workspace_path>/.forge/trajectory.yaml.
+
+    Called after each review cycle classification so the trajectory survives
+    a ``forge run --resume``.
+
+    Design note: trajectory data is stored in a dedicated sidecar file rather
+    than in ``.forge/sessions.json`` (via ``save_sessions()``).  ``save_sessions()``
+    rewrites ``.forge/sessions.json`` from scratch on every call, and multiple
+    callers (dev_phase.py, review_pool.py, plan_flow.py, engine.py) invoke it
+    between review cycles.  Adding trajectory keys to sessions.json would require
+    every caller to pass those keys through so later writes don't erase them.
+    A sidecar avoids that coupling: trajectory writes are independent of session
+    writes, and neither can silently clobber the other.
+    """
+    sidecar = workspace_path / ".forge" / "trajectory.yaml"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "trajectory_cycle": state.trajectory_cycle,
+        "finding_trajectory": state.finding_trajectory,
+        "review_cycle_findings": [
+            [cycle_num, findings] for cycle_num, findings in state.review_cycle_findings
+        ],
+        "surviving_families": state.surviving_families,
+    }
+    sidecar.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+
+
+def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None:
+    """Restore trajectory fields from <workspace_path>/.forge/trajectory.yaml.
+
+    Called in ``_setup_resume_entry`` so post-resume trajectory numbering
+    continues from the correct baseline.  Missing or corrupt sidecar files are
+    handled gracefully — state fields remain at their defaults.
+    """
+    sidecar = workspace_path / ".forge" / "trajectory.yaml"
+    if not sidecar.exists():
+        return
+
+    try:
+        raw = sidecar.read_text(encoding="utf-8")
+        if not raw.strip():
+            return
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            _logger.warning("trajectory.yaml: expected a dict, got %s — ignoring", type(data))
+            return
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("trajectory.yaml: failed to parse (%s) — ignoring", exc)
+        return
+
+    if "trajectory_cycle" in data:
+        state.trajectory_cycle = int(data["trajectory_cycle"])
+    if "finding_trajectory" in data and isinstance(data["finding_trajectory"], list):
+        state.finding_trajectory = data["finding_trajectory"]
+    if "review_cycle_findings" in data and isinstance(data["review_cycle_findings"], list):
+        state.review_cycle_findings = [
+            (int(entry[0]), list(entry[1]))
+            for entry in data["review_cycle_findings"]
+            if isinstance(entry, (list, tuple)) and len(entry) == 2
+        ]
+    if "surviving_families" in data and isinstance(data["surviving_families"], list):
+        state.surviving_families = data["surviving_families"]
 
 
 def _setup_resume_entry(
@@ -75,6 +145,9 @@ def _setup_resume_entry(
         )
 
     state.workspace_path = workspace_path
+
+    # Restore trajectory data from sidecar (survives --resume)
+    load_trajectory_state(workspace_path, state)
 
     # Sync forge.yaml from project root into the worktree
     _forge_yaml_src = config.project_root / "forge.yaml"

@@ -232,6 +232,22 @@ class CoordinatorState:
     # Human-readable log of match/abstain decisions, one entry per plan review
     # attempt (index 0 = first attempt).  Accumulated across regen cycles so
     # the full decision history is available for post-hoc audit inspection.
+    # ── Trajectory tracking (dev review family classification) ─────────────────
+    # Monotonically increasing counter used as the key for trajectory snapshots.
+    # This is separate from review_cycle, which resets to 0 on extend/reject and
+    # decrements on exhausted-cycle gate continue — mutations that are correct for
+    # budget management but would corrupt trajectory history if used as the key.
+    trajectory_cycle: int = 0
+    # Per-family trajectory store.  Each dict: {seed_anchor, cycles, descriptions}.
+    # Plain dicts with basic types (str, int, list) for serialization compatibility.
+    finding_trajectory: list[dict] = field(default_factory=list)
+    # Snapshot of (trajectory_cycle_number, [finding_dicts]) from each review cycle.
+    # Used so family classification can match current findings against all prior cycles.
+    # Each finding_dict stores file, line, description, severity.
+    review_cycle_findings: list[tuple[int, list[dict]]] = field(default_factory=list)
+    # Families from the most recent classification that are present in 2+ cycles.
+    # Consumed by build_fix_prompt on the RETRY_DEV path.  Reset each classification.
+    surviving_families: list[dict] = field(default_factory=list)
     sprint_promotions: dict[str, str] = field(default_factory=dict)
     # Maps complexity (LOW/MEDIUM/HIGH) → promoted tier string.
     # Sticky within a sprint (single forge process lifetime); resets on process exit.
