@@ -204,6 +204,19 @@ def classify_families(
         entry["seed_anchor"]: i for i, entry in enumerate(trajectory_store)
     }
 
+    # Build membership map: (cycle_num, description_prefix) -> frozen_seed_anchor.
+    # This enforces the frozen-seed identity constraint: when a current finding matches
+    # a prior finding that is already in family F, the match can only produce an action
+    # for family F — and only if the current shared anchors include F's frozen seed.
+    # Without this check, a current finding that shares only a non-seed anchor with a
+    # familied prior finding would incorrectly create a new family seeded by that
+    # alternate anchor.
+    _prior_membership: dict[tuple[int, str], str] = {}
+    for family in trajectory_store:
+        fam_seed = family["seed_anchor"]
+        for cyc, desc in zip(family["cycles"], family["descriptions"]):
+            _prior_membership[(cyc, desc)] = fam_seed
+
     # For each current finding, find its best match across all prior cycles.
     # We track the best (seed_anchor, prior_cycle, shared_anchors, prior_finding) per
     # current finding index.
@@ -216,9 +229,9 @@ def classify_families(
                 continue
 
             # Collect all shared non-file anchor values from this match.
-            shared_non_file_values = [
+            shared_non_file_values = {
                 a.value for a in result.shared_anchors if a.kind != "file_path"
-            ]
+            }
             if not shared_non_file_values:
                 # File-path-only match — no valid seed, skip family creation
                 continue
@@ -226,24 +239,41 @@ def classify_families(
             ci = result.current_index
             prior_finding = prior_findings[result.prior_index]
 
-            # Find which shared anchors are existing family seeds.
-            # This is the critical step: a match whose shared anchors include
-            # "load_config" and "helper_func" must join the "load_config" family
-            # (if it exists), not create a new "helper_func" family just because
-            # "helper_func" is lex-first.
-            matching_existing_seeds = [v for v in shared_non_file_values if v in seed_to_idx]
-
-            if matching_existing_seeds:
-                # Pick the best existing family: longest history, alphabetical tie-break
-                effective_seed = min(
-                    matching_existing_seeds,
-                    key=lambda s: (-len(set(trajectory_store[seed_to_idx[s]]["cycles"])), s),
-                )
-                existing_len = len(set(trajectory_store[seed_to_idx[effective_seed]]["cycles"]))
+            # ── Frozen-seed constraint ──────────────────────────────────────────
+            # If the matched prior finding is already in family F, this match is only
+            # valid for F — and only when F's frozen seed is among the current shared
+            # anchors.  If the frozen seed is absent, skip this match entirely: do NOT
+            # create a new family seeded by an alternate anchor present in the match.
+            prior_key = (prior_cycle_num, prior_finding.description[:200])
+            frozen_seed = _prior_membership.get(prior_key)
+            if frozen_seed is not None:
+                if frozen_seed not in shared_non_file_values:
+                    # Current finding overlaps with a familied prior finding, but not
+                    # on the defining identity anchor — leave current finding unfamilied.
+                    continue
+                effective_seed = frozen_seed
+                existing_len = len(set(trajectory_store[seed_to_idx[frozen_seed]]["cycles"]))
             else:
-                # No existing family matched — lex-first anchor seeds a potential new family
-                effective_seed = min(shared_non_file_values)
-                existing_len = 0
+                # Prior finding is not in any family.
+                # Find which shared anchors correspond to existing family seeds.
+                # A match whose shared anchors include "load_config" must join the
+                # "load_config" family (if it exists), not create a new one seeded by
+                # a lex-first anchor that happens not to be an existing seed.
+                matching_existing_seeds = [v for v in shared_non_file_values if v in seed_to_idx]
+
+                if matching_existing_seeds:
+                    # Pick the best existing family: longest history, alphabetical tie-break
+                    effective_seed = min(
+                        matching_existing_seeds,
+                        key=lambda s: (-len(set(trajectory_store[seed_to_idx[s]]["cycles"])), s),
+                    )
+                    existing_len = len(
+                        set(trajectory_store[seed_to_idx[effective_seed]]["cycles"])
+                    )
+                else:
+                    # No existing family matched — lex-first anchor seeds a potential new family
+                    effective_seed = min(shared_non_file_values)
+                    existing_len = 0
 
             if ci in best_match_for:
                 # Compare to existing best: prefer longer family history, then alpha seed
