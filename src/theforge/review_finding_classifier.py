@@ -306,8 +306,6 @@ def classify_families(
                 )
 
     # Apply the best matches: update or create families
-    current_in_families: set[str] = set()  # seed_anchors touched in this cycle
-
     for ci, (seed, prior_cycle_num, shared_anchors, prior_finding) in best_match_for.items():
         current_finding = current_findings[ci]
 
@@ -329,8 +327,6 @@ def classify_families(
             }
             trajectory_store.append(new_family)
             seed_to_idx[seed] = len(trajectory_store) - 1
-
-        current_in_families.add(seed)
 
     # Surviving families: present in 2+ distinct cycles AND in current_cycle
     surviving = [

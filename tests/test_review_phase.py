@@ -292,6 +292,75 @@ class TestClassifyFamilies:
         load_config_fam = next(f for f in updated if f["seed_anchor"] == "load_config")
         assert 4 in load_config_fam["cycles"]
 
+    def test_frozen_seed_constraint_no_new_family_from_non_seed_anchor(self):
+        """Regression (P1 bug): a current finding that shares only a non-seed anchor with
+        a prior finding that is ALREADY IN an existing family must NOT create a new family.
+
+        Scenario:
+        - Cycle 1+2: family seeded by "load_config" (shared anchors {load_config, parse_input})
+        - Cycle 3: finding shares ONLY "parse_input" with cycle-2 finding
+        - Expected: cycle-3 finding remains unfamilied (no new "parse_input" family)
+        - Buggy behavior: incorrectly creates new "parse_input" family seeded at cycles [2, 3],
+          causing it to appear in surviving_families and trigger approach-switch mode
+        """
+        # C1 and C2 both have load_config and parse_input → family created at cycle 1-2
+        c1 = [_rf("load_config and parse_input validation is absent")]
+        c2 = [_rf("load_config and parse_input check is still missing")]
+
+        store, _ = classify_families(
+            current_findings=c2,
+            current_cycle=2,
+            trajectory_store=[],
+            prior_cycle_findings=[(1, c1)],
+        )
+        # Family seeded by "load_config" (lex-first of {load_config, parse_input})
+        assert len(store) == 1
+        assert store[0]["seed_anchor"] == "load_config"
+
+        # C3 only shares "parse_input" with C2 — load_config is NOT in C3's text
+        c3 = [_rf("parse_input broken again missing validation check")]
+
+        store, surviving = classify_families(
+            current_findings=c3,
+            current_cycle=3,
+            trajectory_store=store,
+            prior_cycle_findings=[(1, c1), (2, c2)],
+        )
+        # C3 must remain unfamilied — no new "parse_input" family should appear
+        assert len(store) == 1, (
+            f"Expected 1 family (load_config), got {[f['seed_anchor'] for f in store]}"
+        )
+        assert store[0]["seed_anchor"] == "load_config"
+        assert 3 not in store[0]["cycles"], "C3 must not join load_config family (no shared seed)"
+        assert surviving == [], f"No surviving families expected; got {surviving}"
+
+    def test_frozen_seed_constraint_join_when_seed_present(self):
+        """Counterpart: a current finding sharing the frozen seed DOES join the family."""
+        c1 = [_rf("load_config and parse_input validation is absent")]
+        c2 = [_rf("load_config and parse_input check is still missing")]
+
+        store, _ = classify_families(
+            current_findings=c2,
+            current_cycle=2,
+            trajectory_store=[],
+            prior_cycle_findings=[(1, c1)],
+        )
+
+        # C3 shares both load_config AND parse_input with C2
+        c3 = [_rf("load_config and parse_input still broken together")]
+
+        store, surviving = classify_families(
+            current_findings=c3,
+            current_cycle=3,
+            trajectory_store=store,
+            prior_cycle_findings=[(1, c1), (2, c2)],
+        )
+        # C3 shares the frozen seed "load_config" → must join the existing family
+        assert len(store) == 1
+        assert store[0]["seed_anchor"] == "load_config"
+        assert 3 in store[0]["cycles"]
+        assert len(surviving) == 1
+
 
 # ── 3. Prompt content for surviving vs new-only ───────────────────────────────
 
@@ -506,6 +575,39 @@ class TestTrajectoryStatePersistence:
         load_trajectory_state(workspace, state)
 
         assert state.trajectory_cycle == 0
+
+    def test_trajectory_sidecar_survives_multiple_save_sessions_calls(self, tmp_path):
+        """trajectory.yaml must not be clobbered by save_sessions() calls.
+
+        save_sessions() rewrites .forge/sessions.json from scratch.  Multiple
+        callers (dev_phase, review_pool, plan_flow, engine) invoke it between
+        review cycles.  The trajectory sidecar must remain intact because it is
+        a separate file — not merged into sessions.json.
+        """
+        from theforge.sessions import save_sessions
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        # Write trajectory data
+        state = CoordinatorState()
+        state.trajectory_cycle = 3
+        state.finding_trajectory = [
+            {"seed_anchor": "load_config", "cycles": [1, 2, 3], "descriptions": ["a", "b", "c"]}
+        ]
+        save_trajectory_state(workspace, state)
+
+        # Simulate multiple save_sessions() calls (as done by coordinator callers)
+        save_sessions(workspace, "sess-1", {})
+        save_sessions(workspace, "sess-2", {"reviewer": "sess-r"})
+        save_sessions(workspace, "sess-3", {})
+
+        # trajectory.yaml must still be intact
+        fresh = CoordinatorState()
+        load_trajectory_state(workspace, fresh)
+        assert fresh.trajectory_cycle == 3
+        assert len(fresh.finding_trajectory) == 1
+        assert fresh.finding_trajectory[0]["seed_anchor"] == "load_config"
 
 
 # ── 5. Classification runs on all review outcomes ─────────────────────────────

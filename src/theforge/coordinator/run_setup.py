@@ -32,6 +32,15 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
 
     Called after each review cycle classification so the trajectory survives
     a ``forge run --resume``.
+
+    Design note: trajectory data is stored in a dedicated sidecar file rather
+    than in ``.forge/sessions.json`` (via ``save_sessions()``).  ``save_sessions()``
+    rewrites ``.forge/sessions.json`` from scratch on every call, and multiple
+    callers (dev_phase.py, review_pool.py, plan_flow.py, engine.py) invoke it
+    between review cycles.  Adding trajectory keys to sessions.json would require
+    every caller to pass those keys through so later writes don't erase them.
+    A sidecar avoids that coupling: trajectory writes are independent of session
+    writes, and neither can silently clobber the other.
     """
     sidecar = workspace_path / ".forge" / "trajectory.yaml"
     sidecar.parent.mkdir(parents=True, exist_ok=True)
