@@ -135,8 +135,10 @@ def test_api_local_endpoint_skips_key_deepseek():
     assert ok
 
 
-def test_api_google_local_endpoint_still_requires_key():
+def test_api_google_local_endpoint_still_requires_key(monkeypatch):
     """google does not support local endpoints — key is always required."""
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     profile = _api_profile("google", base_url="http://localhost:11434")
     ok, reason = check_agent_auth(profile, {})
     assert not ok
