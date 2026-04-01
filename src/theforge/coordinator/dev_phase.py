@@ -130,6 +130,7 @@ def _run_dev_phase(
             escalation_note=state.escalation_note,
             cycle_history=state.cycle_history or None,
             handoff_file=config.validation.handoff_file,
+            preflight_sufficiency=state.preflight_sufficiency,
         )
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed
