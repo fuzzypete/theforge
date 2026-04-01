@@ -1,0 +1,8 @@
+name: "M3a final — hard conventions, stale approve fix, dev prompt obedience"
+budget_usd: 60
+max_parallel: 3
+auto_merge: true
+stories:
+  - stories/backlog/hard-conventions.md
+  - stories/backlog/stale-approve-triage.md
+  - stories/backlog/dev-prompt-plan-obedience.md
