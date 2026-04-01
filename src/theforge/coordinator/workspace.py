@@ -342,12 +342,14 @@ _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml")
 def _deindex_forge_artifacts(workspace_path: Path) -> None:
     """Remove .forge/handoff.yaml and .forge/trajectory.yaml from the git index.
 
-    Uses --ignore-unmatch so the call is a no-op when files are not tracked.
-    This prevents merge conflicts and dirty-worktree noise from gitignored files
-    that were previously committed or accidentally staged.
+    Uses -f so removal succeeds even when the index entry has staged content that
+    differs from both HEAD and the working tree (the agent-misbehavior state described
+    in the story).  Uses --ignore-unmatch so the call is a no-op when files are not
+    tracked.  This prevents merge conflicts and dirty-worktree noise from gitignored
+    files that were previously committed or accidentally staged.
     """
     files_arg = " ".join(_FORGE_ARTIFACTS)
-    ok, out = _cu._run_shell(f"git rm --cached --ignore-unmatch {files_arg}", workspace_path)
+    ok, out = _cu._run_shell(f"git rm -f --cached --ignore-unmatch {files_arg}", workspace_path)
     if not ok:
         _cu._log(f"⚠ WORKSPACE  git rm --cached failed: {out.strip()}")
 

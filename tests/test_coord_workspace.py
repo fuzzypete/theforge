@@ -348,21 +348,41 @@ class TestDaemonNoPull:
 
 
 class TestDeindexForgeArtifacts:
-    """_deindex_forge_artifacts runs git rm --cached --ignore-unmatch on handoff + trajectory."""
+    """_deindex_forge_artifacts runs git rm -f --cached --ignore-unmatch on both artifacts."""
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_issues_git_rm_cached_ignore_unmatch(self, mock_log, mock_shell, tmp_path):
-        """The helper runs git rm --cached --ignore-unmatch for both forge artifacts."""
+    def test_issues_git_rm_force_cached_ignore_unmatch(self, mock_log, mock_shell, tmp_path):
+        """The helper runs git rm -f --cached --ignore-unmatch for both forge artifacts."""
         mock_shell.return_value = (True, "")
 
         _deindex_forge_artifacts(tmp_path)
 
         assert mock_shell.call_count == 1
         cmd_issued = mock_shell.call_args[0][0]
-        assert "git rm --cached --ignore-unmatch" in cmd_issued
+        assert "git rm" in cmd_issued
+        assert "-f" in cmd_issued
+        assert "--cached" in cmd_issued
+        assert "--ignore-unmatch" in cmd_issued
         for artifact in _FORGE_ARTIFACTS:
             assert artifact in cmd_issued
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_force_flag_present_for_diverged_index(self, mock_log, mock_shell, tmp_path):
+        """git rm -f is used so removal succeeds when index entry diverges from HEAD/worktree.
+
+        This is the agent-misbehavior state: handoff.yaml is tracked but its index
+        content differs from both HEAD and the working tree.  Without -f git rm
+        --cached refuses to remove it.  With -f it succeeds unconditionally.
+        """
+        mock_shell.return_value = (True, "rm '.forge/handoff.yaml'")
+
+        _deindex_forge_artifacts(tmp_path)
+
+        cmd_issued = mock_shell.call_args[0][0]
+        # -f must appear before --cached (or anywhere) in the command
+        assert "-f" in cmd_issued.split()
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
