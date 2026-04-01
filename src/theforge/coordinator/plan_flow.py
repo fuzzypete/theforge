@@ -216,6 +216,7 @@ def _run_plan_phase(
         preflight_output=(
             preflight_result.output if preflight_result and preflight_result.success else None
         ),
+        conventions=config.conventions_soft,
     )
 
     _plan_start = time.monotonic()

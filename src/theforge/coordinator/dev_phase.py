@@ -109,6 +109,7 @@ def _run_dev_phase(
             else state.plan_output,
             classified_p1s=[r for r in state.finding_registry if r.severity == "P1"] or None,
             surviving_families=state.surviving_families or None,
+            conventions=config.conventions_soft,
         )
         state.escalation_note = None  # consumed
     else:
@@ -131,6 +132,7 @@ def _run_dev_phase(
             cycle_history=state.cycle_history or None,
             handoff_file=config.validation.handoff_file,
             preflight_sufficiency=state.preflight_sufficiency,
+            conventions=config.conventions_soft,
         )
         state.escalation_note = None  # consumed
     state.retry_reason = None  # consumed

@@ -2,6 +2,7 @@ from textwrap import dedent
 
 from theforge.coordinator.state import CycleHistory
 
+from .conventions import render_conventions_block
 from .story import TaskStory
 
 _REVIEW_ROLE_SECTIONS: dict[str, str] = {
@@ -138,6 +139,7 @@ def build_review_prompt(
     review_role: str | None = None,
     dev_notes: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
+    conventions: list[str] | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -257,7 +259,7 @@ def build_review_prompt(
         ## Spec
 
         {story_content}
-        {dev_notes_section}
+        {dev_notes_section}{render_conventions_block(conventions)}
         ## Commits
 
         The following commits implement the spec on branch `{branch}`.
@@ -286,9 +288,12 @@ def build_review_prompt(
           to satisfy the criterion — not if the approach differs from what you'd
           prefer.
         - **P2** (non-blocking): Style, minor improvement, non-critical missing
-          test, suggestion for future work. Does NOT block merge. **Pre-existing
-          issues in code not modified by these commits are always P2** — they are
-          valuable signal but they do not block this change.
+          test, suggestion for future work, or a project convention violation.
+          Does NOT block merge. **Pre-existing issues in code not modified by
+          these commits are always P2** — they are valuable signal but they do
+          not block this change. Convention violations (from ## Project
+          Conventions, if present) are P2 findings — cite the convention by
+          name in the description.
 
         ## Rules
 

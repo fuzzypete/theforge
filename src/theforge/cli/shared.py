@@ -141,6 +141,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
         branch_name=branch_name,
         story_content=story_content,
         gate_command=config.validation.gate_command,
+        conventions=config.conventions_soft,
     )
     review_prompt = build_review_prompt(
         task,
@@ -149,6 +150,7 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content="(dry run — no handoff available)",
+        conventions=config.conventions_soft,
     )
 
     sep = "=" * 60

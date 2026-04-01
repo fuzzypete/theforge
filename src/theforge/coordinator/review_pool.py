@@ -130,6 +130,7 @@ def _run_review_pool(
                     review_role=p.review_role,
                     dev_notes=dev_notes,
                     cycle_history=state.cycle_history if state.cycle_history else None,
+                    conventions=config.conventions_soft,
                 )
                 for p in config.review_pool
             ]
@@ -144,6 +145,7 @@ def _run_review_pool(
                 mode=config.review_pool[0].mode,
                 dev_notes=dev_notes,
                 cycle_history=state.cycle_history if state.cycle_history else None,
+                conventions=config.conventions_soft,
             )
         )
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
