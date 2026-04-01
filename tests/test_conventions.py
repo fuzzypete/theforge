@@ -123,6 +123,19 @@ class TestCircularImportCheck:
         violations = _check_circular_imports(tmp_path)
         assert any(v.rule == "no_circular_imports" for v in violations)
 
+    def test_init_relative_import_no_false_positive(self, tmp_path):
+        """from . import a in sub/__init__.py resolves to sub.a, not top-level a."""
+        # Layout: a.py → theforge.sub (package), sub/__init__.py → .a (=sub.a), sub/a.py
+        # This is acyclic: a → sub → sub.a (no cycle back to a)
+        pkg = tmp_path / "src" / "theforge"
+        sub = pkg / "sub"
+        sub.mkdir(parents=True)
+        _write(pkg / "a.py", "from theforge import sub\n")
+        _write(sub / "__init__.py", "from . import a\n")
+        _write(sub / "a.py", "# leaf\n")
+        violations = _check_circular_imports(tmp_path)
+        assert not any(v.rule == "no_circular_imports" for v in violations)
+
     def test_external_src_package_ignored(self, tmp_path):
         """Cycles in src/other_pkg are not reported (spec scopes to src/theforge)."""
         # Create a cycle in an unrelated package under src/

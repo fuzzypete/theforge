@@ -90,13 +90,20 @@ def _collect_imports(py_file: Path, src_root: Path) -> list[str]:
     Produces both the base module (e.g. "theforge") and dotted sub-imports
     (e.g. "theforge.b") so that `from theforge import b` resolves to
     "theforge.b" via _best_match when "theforge.b" is a known module.
+
+    Relative imports are resolved using the *unnormalized* module path so that
+    `from . import a` in sub/__init__.py correctly resolves to theforge.sub.a
+    rather than theforge.a (which would be wrong after __init__ is stripped).
     """
     try:
         tree = ast.parse(py_file.read_text(encoding="utf-8", errors="replace"))
     except SyntaxError:
         return []
 
-    current = _module_name(py_file, src_root)
+    # Unnormalized path keeps __init__ so relative imports anchor correctly.
+    rel = py_file.relative_to(src_root)
+    current_for_relative = ".".join(rel.with_suffix("").parts)
+
     imports: list[str] = []
 
     for node in ast.walk(tree):
@@ -105,17 +112,21 @@ def _collect_imports(py_file: Path, src_root: Path) -> list[str]:
                 imports.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level and node.level > 0:
-                # Relative import — resolve to absolute
-                parts = current.split(".")
+                # Relative import — resolve to absolute using unnormalized path
+                parts = current_for_relative.split(".")
                 base_parts = parts[: -(node.level)]
                 base = ".".join(base_parts)
                 if node.module:
+                    # `from .sub import a` → add theforge.sub and theforge.sub.a
                     resolved = f"{base}.{node.module}" if base else node.module
+                    imports.append(resolved)
+                    for alias in node.names:
+                        imports.append(f"{resolved}.{alias.name}")
                 else:
-                    resolved = base
-                imports.append(resolved)
-                for alias in node.names:
-                    imports.append(f"{resolved}.{alias.name}")
+                    # `from . import a` — no intermediate module; only add theforge.sub.a
+                    # Do NOT add base itself (would create a self-reference for __init__.py)
+                    for alias in node.names:
+                        imports.append(f"{base}.{alias.name}" if base else alias.name)
             elif node.module:
                 imports.append(node.module)
                 # Also add module.name variants (handles `from pkg import submod`)
