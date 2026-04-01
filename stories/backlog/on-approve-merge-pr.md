@@ -1,6 +1,7 @@
 ---
 name: "on_approve: merge-pr — auto-merge with PR audit trail"
 slug: on-approve-merge-pr
+github_issue: 159
 pytest_target: tests/
 ---
 

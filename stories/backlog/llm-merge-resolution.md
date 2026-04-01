@@ -1,8 +1,8 @@
 ---
 name: "LLM-assisted merge conflict resolution"
 slug: llm-merge-resolution
+github_issue: 145
 pytest_target: tests/
-depends_on: [artifacts-under-forge]
 ---
 
 # LLM-Assisted Merge Conflict Resolution
