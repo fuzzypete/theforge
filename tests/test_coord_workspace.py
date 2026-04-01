@@ -1,4 +1,4 @@
-"""Tests for workspace auto-pull behavior.
+"""Tests for workspace auto-pull behavior and git index hygiene.
 
 Covers:
 - Fresh workspace: pull succeeds before worktree creation
@@ -8,6 +8,7 @@ Covers:
 - no_pull=True: no pull attempted on fresh path
 - no_pull=True: no behind-origin check on resume path
 - Daemon sprint_args dict includes no_pull; _execute_sprint passes it to run_sprint
+- _deindex_forge_artifacts: runs git rm --cached --ignore-unmatch on all return paths
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import _make_config, _make_task
 
-from theforge.coordinator.workspace import _check_behind_origin, _create_workspace
+from theforge.coordinator.workspace import (
+    _FORGE_ARTIFACTS,
+    _check_behind_origin,
+    _create_workspace,
+    _deindex_forge_artifacts,
+)
 
 # ── Fresh workspace pull tests ────────────────────────────────────────
 
@@ -336,3 +342,144 @@ class TestDaemonNoPull:
         mock_rs.assert_called_once()
         _, kwargs = mock_rs.call_args
         assert kwargs.get("no_pull") is True
+
+
+# ── Deindex forge artifacts tests ─────────────────────────────────────
+
+
+class TestDeindexForgeArtifacts:
+    """_deindex_forge_artifacts runs git rm --cached --ignore-unmatch on handoff + trajectory."""
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_issues_git_rm_cached_ignore_unmatch(self, mock_log, mock_shell, tmp_path):
+        """The helper runs git rm --cached --ignore-unmatch for both forge artifacts."""
+        mock_shell.return_value = (True, "")
+
+        _deindex_forge_artifacts(tmp_path)
+
+        assert mock_shell.call_count == 1
+        cmd_issued = mock_shell.call_args[0][0]
+        assert "git rm --cached --ignore-unmatch" in cmd_issued
+        for artifact in _FORGE_ARTIFACTS:
+            assert artifact in cmd_issued
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_logs_warning_on_failure(self, mock_log, mock_shell, tmp_path):
+        """When git rm fails, a warning is logged and no exception raised."""
+        mock_shell.return_value = (False, "not a git repository")
+
+        _deindex_forge_artifacts(tmp_path)  # must not raise
+
+        log_calls = [str(c) for c in mock_log.call_args_list]
+        assert any("git rm --cached failed" in c for c in log_calls)
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_runs_in_workspace_path(self, mock_log, mock_shell, tmp_path):
+        """git rm runs with the workspace path as cwd."""
+        mock_shell.return_value = (True, "")
+
+        workspace = tmp_path / "my-worktree"
+        workspace.mkdir()
+        _deindex_forge_artifacts(workspace)
+
+        cwd_used = mock_shell.call_args[0][1]
+        assert cwd_used == workspace
+
+
+class TestDeindexRunsOnAllReturnPaths:
+    """_create_workspace calls _deindex_forge_artifacts on every successful return path."""
+
+    @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_deindex_called_on_new_workspace(self, mock_log, mock_shell, mock_deindex, tmp_path):
+        """Fresh workspace creation: deindex runs before returning."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)
+            if "pull --ff-only" in cmd:
+                return (True, "")
+            if "mkdir" in cmd:
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, _, err = _create_workspace(config, task, no_pull=False)
+
+        assert err is None
+        mock_deindex.assert_called_once_with(workspace_path)
+
+    @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_deindex_called_on_reuse_existing_worktree(
+        self, mock_log, mock_shell, mock_deindex, tmp_path
+    ):
+        """Reusing an existing non-stale worktree: deindex runs before returning."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        wt_path = tmp_path / task.slug
+        wt_path.mkdir(parents=True, exist_ok=True)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc1234 a commit\n")
+            if "rev-list" in cmd:
+                return (True, "0\n")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, _, err = _create_workspace(config, task, no_pull=True)
+
+        assert err is None
+        mock_deindex.assert_called_once_with(workspace_path)
+
+    @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_deindex_called_on_reattach(self, mock_log, mock_shell, mock_deindex, tmp_path):
+        """Reattaching a branch that has commits: deindex runs before returning."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+
+        wt_path = tmp_path / task.slug
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "main")
+            if "pull --ff-only" in cmd:
+                return (True, "")
+            if cmd.startswith("mkdir"):
+                # First mkdir (worktree creation) fails to trigger reattach path
+                return (False, "already exists")
+            if "branch --list" in cmd:
+                return (True, "feat/test-task")
+            if "worktree list" in cmd:
+                return (True, "")  # no registered worktree
+            if "git log" in cmd and ".." in cmd:
+                return (True, "abc1234 a commit\n")  # has commits
+            if "worktree add" in cmd:
+                wt_path.mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            if "rev-list" in cmd:
+                return (True, "0\n")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, _, err = _create_workspace(config, task, no_pull=False)
+
+        assert err is None
+        mock_deindex.assert_called_once_with(workspace_path)
