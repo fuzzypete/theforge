@@ -10,7 +10,7 @@ workspace:
   auto_push: true
 
 validation:
-  gate_command: ".venv/bin/python -m pytest tests/ -q -n auto --dist loadfile"
+  gate_command: ".venv/bin/python -m pytest tests/ -q -n auto --dist worksteal"
   handoff_file: ".forge/handoff.yaml"
   gate_decision_key: "gate_decision"
 

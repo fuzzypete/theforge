@@ -16,11 +16,11 @@ test:
 	PYTHONPATH=src python -m pytest tests/ -v
 
 # Opt-in parallel run: useful for local iteration when not running a sprint.
-# Uses loadfile grouping to keep module-level state contained per worker.
+# Uses worksteal for even distribution — tests are fully parallel-safe.
 # Avoid running this inside a forge sprint with max_parallel > 1 — between
 # the two layers you can easily saturate all cores.
 test-parallel:
-	PYTHONPATH=src python -m pytest tests/ -v -n auto --dist loadfile
+	PYTHONPATH=src python -m pytest tests/ -v -n auto --dist worksteal
 
 # Gate: run tests and write .forge/handoff.yaml
 gate:

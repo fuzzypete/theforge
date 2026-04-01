@@ -291,5 +291,10 @@ def build_fix_prompt(
           an unsafe cast, a missing guard), search the entire file — and related
           files — for **all occurrences** of that pattern before committing your
           fix. Do not patch only the line the reviewer cited.
+        - **After fixing the finding, audit all code you changed in prior cycles
+          for collateral effects.** Each fix can shift execution paths and expose
+          new failures in adjacent code you already touched. Re-read your earlier
+          commits, check edge cases in those paths, and verify your new tests
+          actually exercise the full flow with all external dependencies mocked.
         - Do NOT leave uncommitted changes.
     """)
