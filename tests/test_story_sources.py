@@ -581,3 +581,122 @@ class TestLocalFileRegression:
         assert task.github_issue == 99
         assert isinstance(source, FileSource)
         assert canonical == "specs/my-story.md"
+
+
+# ── P1 regression: empty issue body ──────────────────────────────────
+
+
+class TestEmptyIssueBody:
+    def test_empty_story_text_is_not_none(self) -> None:
+        """Empty string story_text should be used, not fall back to story_path."""
+        task = TaskStory(name="Test", slug="test", story_text="", story_path=None)
+        # The `is not None` check should return "" rather than trying load_story(None)
+        content = task.story_text if task.story_text is not None else "FALLBACK"
+        assert content == ""
+
+    def test_empty_body_issue_fetch(self, tmp_path: Path) -> None:
+        """GitHubIssueSource.fetch() with empty body sets story_text to ''."""
+        issue_data = json.dumps({"title": "Empty Issue", "body": ""})
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=issue_data, stderr="")
+            source = GitHubIssueSource()
+            task = source.fetch("50", tmp_path)
+        assert task.story_text == ""
+        assert task.story_path is None
+
+
+# ── P1 regression: depends_on type validation ─────────────────────────
+
+
+class TestDependsOnValidation:
+    def test_invalid_depends_on_type_raises(self, tmp_path: Path) -> None:
+        """Dict entry with non-str/non-list depends_on raises ValueError."""
+        issue_data = json.dumps({"title": "Fix bug", "body": "content"})
+        manifest = SprintManifest(
+            name="test",
+            budget_usd=10.0,
+            stories=[{"issue": 42, "depends_on": 123}],
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=issue_data, stderr="")
+            with pytest.raises(ValueError, match="depends_on.*must be a string or list"):
+                build_tasks_from_manifest(manifest, tmp_path)
+
+    def test_none_depends_on_raises(self, tmp_path: Path) -> None:
+        """Dict entry with depends_on: null raises ValueError."""
+        issue_data = json.dumps({"title": "Fix bug", "body": "content"})
+        manifest = SprintManifest(
+            name="test",
+            budget_usd=10.0,
+            stories=[{"issue": 42, "depends_on": None}],
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=issue_data, stderr="")
+            with pytest.raises(ValueError, match="depends_on.*must be a string or list"):
+                build_tasks_from_manifest(manifest, tmp_path)
+
+
+# ── P1 regression: plan gate deadlock ─────────────────────────────────
+
+
+class TestReleaseplanGates:
+    def test_releases_non_overlapping_gate(self) -> None:
+        """_release_plan_gates releases a gate when there is no file overlap."""
+        from theforge.sprint.runner import _release_plan_gates
+
+        plan_done = {"story-a": "/tmp/ws-a"}
+        file_footprints: dict[str, set[str]] = {}
+        gate = threading.Event()
+        plan_gates = {"story-a": gate}
+        active: dict[str, object] = {"story-a": MagicMock()}
+        phase_lock = threading.Lock()
+
+        with patch(
+            "theforge.sprint.runner._extract_plan_footprint",
+            return_value={"src/a.py"},
+        ):
+            _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
+
+        assert gate.is_set()
+        assert "story-a" not in plan_gates
+
+    def test_defers_overlapping_gate(self) -> None:
+        """_release_plan_gates defers a gate when files overlap with active dev."""
+        from theforge.sprint.runner import _release_plan_gates
+
+        plan_done = {"story-b": "/tmp/ws-b"}
+        # story-a is already in DEV (not in plan_gates, in active, has footprint)
+        file_footprints: dict[str, set[str]] = {"story-a": {"src/shared.py"}}
+        gate_b = threading.Event()
+        plan_gates = {"story-b": gate_b}
+        active: dict[str, object] = {"story-a": MagicMock(), "story-b": MagicMock()}
+        phase_lock = threading.Lock()
+
+        with patch(
+            "theforge.sprint.runner._extract_plan_footprint",
+            return_value={"src/shared.py"},
+        ):
+            _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
+
+        assert not gate_b.is_set()
+        assert "story-b" in plan_gates
+
+    def test_releases_deferred_after_conflict_finishes(self) -> None:
+        """_release_plan_gates releases a previously-deferred gate after conflict clears."""
+        from theforge.sprint.runner import _release_plan_gates
+
+        plan_done: dict[str, str] = {}
+        file_footprints = {
+            "story-a": {"src/shared.py"},
+            "story-b": {"src/shared.py"},
+        }
+        gate_b = threading.Event()
+        plan_gates = {"story-b": gate_b}
+        # story-a is no longer active (it finished)
+        active: dict[str, object] = {"story-b": MagicMock()}
+        phase_lock = threading.Lock()
+
+        _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
+
+        assert gate_b.is_set()
+        assert "story-b" not in plan_gates

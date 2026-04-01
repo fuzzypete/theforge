@@ -173,6 +173,6 @@ def _setup_resume_entry(
         branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
 
-    story_content = task.story_text if task.story_text else load_story(task.story_path)
+    story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
 
     return state, logger, branch_name, story_content, _task_start

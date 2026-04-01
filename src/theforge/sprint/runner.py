@@ -81,6 +81,61 @@ def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str
         return []
 
 
+def _release_plan_gates(
+    plan_done: dict[str, str],
+    file_footprints: dict[str, set[str]],
+    plan_gates: dict[str, threading.Event],
+    active: dict[str, object],
+    phase_lock: threading.Lock,
+) -> None:
+    """Check newly-planned stories and release their gates if no file overlap.
+
+    Called from the scheduling loop — both the poll interval and after a future
+    completes — to avoid deadlock when gated workers block in _run_fresh.
+    """
+    with phase_lock:
+        pd_snapshot = dict(plan_done)
+
+    for pd_slug in pd_snapshot:
+        if pd_slug not in file_footprints:
+            ws_path = Path(pd_snapshot[pd_slug])
+            footprint = _extract_plan_footprint(ws_path)
+            file_footprints[pd_slug] = footprint
+
+            # Check overlap with stories already past their gate (in DEV)
+            active_dev_files: set[str] = set()
+            for other_slug, other_files in file_footprints.items():
+                if other_slug != pd_slug and other_slug in active and other_slug not in plan_gates:
+                    active_dev_files |= other_files
+
+            overlap = footprint & active_dev_files
+            if overlap:
+                _log(
+                    f"WARNING: {pd_slug} overlaps with active stories on: "
+                    f"{', '.join(sorted(overlap))}"
+                )
+            else:
+                if pd_slug in plan_gates:
+                    plan_gates[pd_slug].set()
+                    del plan_gates[pd_slug]
+
+    # Re-check deferred gates (conflicting story may have finished)
+    for deferred_slug, gate in list(plan_gates.items()):
+        if deferred_slug in file_footprints:
+            active_dev_files = set()
+            for other_slug, other_files in file_footprints.items():
+                if (
+                    other_slug != deferred_slug
+                    and other_slug in active
+                    and other_slug not in plan_gates
+                ):
+                    active_dev_files |= other_files
+            overlap = file_footprints[deferred_slug] & active_dev_files
+            if not overlap:
+                gate.set()
+                del plan_gates[deferred_slug]
+
+
 def _extract_plan_footprint(workspace_path: Path) -> set[str]:
     """Extract the set of files referenced in a plan's steps.
 
@@ -581,7 +636,8 @@ def run_sprint(
             if not active:
                 # Deadlock: remaining tasks have unmet or budget-blocked deps
                 # Release any pending plan gates so worker threads can exit
-                for _gate in plan_gates.values():
+                for g_slug, _gate in plan_gates.items():
+                    _log(f"Releasing plan gate for {g_slug} (deadlock cleanup)")
                     _gate.set()
                 plan_gates.clear()
                 for t in dag.remaining():
@@ -596,13 +652,35 @@ def run_sprint(
                 break
 
             _log(f"[debug] calling wait() with {len(active)} active futures")
-            done_futs, _ = wait(list(active.values()), return_when=FIRST_COMPLETED, timeout=3600)
+            # Use a short poll interval when plan gates are pending so the
+            # scheduler can release gated workers between polls.  Without
+            # this, gated workers block in _run_fresh waiting for their gate
+            # while the scheduler blocks here waiting for a future to finish
+            # — a deadlock.
+            _poll_interval = 2.0 if plan_gates else 3600.0
+            _total_waited = 0.0
+            done_futs: set = set()
+            while not done_futs and _total_waited < 3600.0:
+                done_futs, _ = wait(
+                    list(active.values()),
+                    return_when=FIRST_COMPLETED,
+                    timeout=_poll_interval,
+                )
+                if not done_futs and use_plan_gates:
+                    # Service plan gates while polling
+                    _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
+                    # If we just released any gates, re-poll immediately
+                    if not plan_gates:
+                        _poll_interval = 3600.0
+                _total_waited += _poll_interval
+
             _log(f"[debug] wait() returned: {len(done_futs)} done")
             batch_number += 1
 
             if not done_futs:
                 # Timeout: all active workers hung for >3600s — cancel and fail them
-                for _gate in plan_gates.values():
+                for g_slug, _gate in plan_gates.items():
+                    _log(f"TIMEOUT releasing plan gate for {g_slug}")
                     _gate.set()
                 plan_gates.clear()
                 for slug, fut in list(active.items()):
@@ -689,51 +767,7 @@ def run_sprint(
 
             # ── Overlap detection: check plan gates ────────────────────
             if use_plan_gates:
-                with phase_lock:
-                    _pd_snapshot = dict(plan_done)
-                for pd_slug in _pd_snapshot:
-                    if pd_slug not in file_footprints:
-                        ws_path = Path(_pd_snapshot[pd_slug])
-                        footprint = _extract_plan_footprint(ws_path)
-                        file_footprints[pd_slug] = footprint
-
-                        # Check overlap with stories already past their gate (in DEV)
-                        active_dev_files: set[str] = set()
-                        for other_slug, other_files in file_footprints.items():
-                            if (
-                                other_slug != pd_slug
-                                and other_slug in active
-                                and other_slug not in plan_gates
-                            ):
-                                active_dev_files |= other_files
-
-                        overlap = footprint & active_dev_files
-                        if overlap:
-                            _log(
-                                f"WARNING: {pd_slug} overlaps with active stories on: "
-                                f"{', '.join(sorted(overlap))}"
-                            )
-                            # Don't release gate — defer until conflicting story finishes
-                        else:
-                            if pd_slug in plan_gates:
-                                plan_gates[pd_slug].set()
-                                del plan_gates[pd_slug]
-
-                # Re-check deferred gates after a story completes
-                for deferred_slug, gate in list(plan_gates.items()):
-                    if deferred_slug in file_footprints:
-                        active_dev_files = set()
-                        for other_slug, other_files in file_footprints.items():
-                            if (
-                                other_slug != deferred_slug
-                                and other_slug in active
-                                and other_slug not in plan_gates
-                            ):
-                                active_dev_files |= other_files
-                        overlap = file_footprints[deferred_slug] & active_dev_files
-                        if not overlap:
-                            gate.set()
-                            del plan_gates[deferred_slug]
+                _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
 
             # Flush pending merges in dependency order (parallel mode only)
             if manifest.max_parallel > 1 and auto_merge and pending_merges:

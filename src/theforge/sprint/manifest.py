@@ -198,6 +198,11 @@ def build_tasks_from_manifest(
                     overrides["depends_on"] = [raw_deps]
                 elif isinstance(raw_deps, list):
                     overrides["depends_on"] = [str(d) for d in raw_deps]
+                else:
+                    raise ValueError(
+                        f"'depends_on' must be a string or list, got "
+                        f"{type(raw_deps).__name__}: {entry!r}"
+                    )
             if "pytest_target" in entry:
                 overrides["pytest_target"] = entry["pytest_target"]
             if overrides:
