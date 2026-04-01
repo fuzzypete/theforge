@@ -190,6 +190,8 @@ def _triage_spec(
     story_path: str,
     config: ForgeConfig,
     project_root: Path,
+    *,
+    task: TaskStory | None = None,
 ) -> StoryTriage:
     """Determine the optimal re-entry point for a story.
 
@@ -199,9 +201,12 @@ def _triage_spec(
       0 commits ahead?          → full (stale; run_task will clean up)
       gate passes?              → review
       gate fails?               → dev
+
+    When *task* is provided, skip building from disk (used for issue-backed stories).
     """
-    full_path = (project_root / story_path).resolve()
-    task = _build_task_from_story(full_path)
+    if task is None:
+        full_path = (project_root / story_path).resolve()
+        task = _build_task_from_story(full_path)
     slug = task.slug
 
     branch = config.workspace.branch_pattern.format(slug=slug)

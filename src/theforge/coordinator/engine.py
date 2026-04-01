@@ -433,7 +433,7 @@ def run_task(
     state = CoordinatorState()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
-    story_content = load_story(task.story_path)
+    story_content = task.story_text if task.story_text else load_story(task.story_path)
     _sprint_name = sprint_name  # passed to _make_story_log_dir for sprint nesting
 
     # ── Structured logger ──────────────────────────────────────────
@@ -926,7 +926,7 @@ def run_review_only(
     branch_name = config.workspace.branch_pattern.format(slug=task.slug)
     state.branch_name = branch_name
 
-    story_content = load_story(task.story_path)
+    story_content = task.story_text if task.story_text else load_story(task.story_path)
 
     return _run_review_only_phase(
         state,

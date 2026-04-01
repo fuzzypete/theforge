@@ -25,7 +25,7 @@ def _log(msg: str) -> None:
 def _write_sprint_audit(
     manifest: SprintManifest,
     result: SprintResult,
-    story_paths: list[Path],
+    canonical_refs: list[str],
     started_at: datetime.datetime,
     finished_at: datetime.datetime,
     duration: float,
@@ -43,9 +43,15 @@ def _write_sprint_audit(
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
-    for spec_str, story_path in zip(manifest.stories, story_paths):
-        if spec_str in results_by_spec:
-            res = results_by_spec[spec_str]
+    for canonical_ref in canonical_refs:
+        display_key = (
+            f"Issue #{canonical_ref.split(':')[1]}"
+            if canonical_ref.startswith("issue:")
+            else canonical_ref
+        )
+        slug = slug_map.get(canonical_ref, Path(canonical_ref).stem)
+        if canonical_ref in results_by_spec:
+            res = results_by_spec[canonical_ref]
             preflight = res.state.preflight_verdict or "PROCEED"
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
 
@@ -67,9 +73,8 @@ def _write_sprint_audit(
                     cycle_entry["p2_count"] = sum(1 for f in r.findings if f.severity == "P2")
                 reviews_summary.append(cycle_entry)
 
-            slug = slug_map.get(spec_str, story_path.stem)
             entry: dict = {
-                "path": spec_str,
+                "path": display_key,
                 "outcome": outcome,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
@@ -85,9 +90,8 @@ def _write_sprint_audit(
             entry["batch"] = batch_assignments.get(slug, 0)
         else:
             # Skipped due to budget or pre-skip (resume)
-            slug = slug_map.get(spec_str, story_path.stem)
             entry = {
-                "path": spec_str,
+                "path": display_key,
                 "outcome": "SKIPPED",
                 "cost_usd": 0.0,
                 "preflight": None,
@@ -136,7 +140,7 @@ def _write_sprint_audit(
 def _write_sprint_summary(
     manifest: SprintManifest,
     result: SprintResult,
-    story_paths: list[Path],
+    canonical_refs: list[str],
     started_at: datetime.datetime,
     finished_at: datetime.datetime,
     duration: float,
@@ -153,10 +157,15 @@ def _write_sprint_summary(
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
-    for spec_str, story_path in zip(manifest.stories, story_paths):
-        slug = slug_map.get(spec_str, story_path.stem)
-        if spec_str in results_by_spec:
-            res = results_by_spec[spec_str]
+    for canonical_ref in canonical_refs:
+        display_key = (
+            f"Issue #{canonical_ref.split(':')[1]}"
+            if canonical_ref.startswith("issue:")
+            else canonical_ref
+        )
+        slug = slug_map.get(canonical_ref, Path(canonical_ref).stem)
+        if canonical_ref in results_by_spec:
+            res = results_by_spec[canonical_ref]
             preflight = res.state.preflight_verdict or "PROCEED"
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
             last_verdict = ""
@@ -165,7 +174,7 @@ def _write_sprint_summary(
             elif res.success:
                 last_verdict = "APPROVE"
             entry: dict = {
-                "path": spec_str,
+                "path": display_key,
                 "slug": slug,
                 "outcome": outcome,
                 "verdict": last_verdict or None,
@@ -179,7 +188,7 @@ def _write_sprint_summary(
             entry["batch"] = batch_assignments.get(slug, 0)
         else:
             entry = {
-                "path": spec_str,
+                "path": display_key,
                 "slug": slug,
                 "outcome": "SKIPPED",
                 "verdict": None,

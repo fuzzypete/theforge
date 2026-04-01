@@ -31,6 +31,8 @@ def _archive_story_to_done(
     Returns True if the move succeeded, False otherwise (best-effort).
     When *commit* is True a small git commit is created for the move.
     """
+    if story_path is None:
+        return False  # nothing to archive for issue-sourced stories
     src = Path(story_path)
     # Only move files that live under specs/backlog/
     try:
@@ -97,6 +99,10 @@ def _create_pr(
         findings_md = "_No findings._"
 
     closes_line = f"\n\nCloses #{task.github_issue}" if task.github_issue else ""
+    if task.story_path is None and task.github_issue:
+        story_line = f"{task.name} (GitHub Issue #{task.github_issue})"
+    else:
+        story_line = f"{task.name} (`{task.story_path}`)"
     pr_body = (
         f"## Summary\n\n"
         f"{parsed_review.summary}\n\n"
@@ -109,7 +115,7 @@ def _create_pr(
         f"## Findings\n\n"
         f"{findings_md}\n\n"
         f"## Story\n\n"
-        f"{task.name} (`{task.story_path}`)\n\n"
+        f"{story_line}\n\n"
         f"---\n"
         f"*Created automatically by [TheForge](https://github.com/fuzzypete/theforge)*"
         f"{closes_line}"

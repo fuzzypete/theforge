@@ -27,8 +27,10 @@ from .manifest import (
     SprintResult,
     _build_task_from_story,
     _validate_story_paths,
+    build_tasks_from_manifest,
     load_sprint_manifest,
 )
+from .sources import StorySource
 
 
 def _log(msg: str) -> None:
@@ -63,19 +65,120 @@ def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str
         if not isinstance(stories, list):
             return []
         slugs: list[str] = []
-        for spec_str in stories:
-            if not isinstance(spec_str, str):
-                continue
-            story_path = (config.project_root / spec_str).resolve()
-            if story_path.exists():
-                task = _build_task_from_story(story_path)
-                slugs.append(task.slug)
-            else:
-                # Fallback: use file stem as slug
-                slugs.append(Path(spec_str).stem)
+        for entry in stories:
+            if isinstance(entry, dict) and "issue" in entry:
+                slugs.append(entry.get("slug", f"issue-{entry['issue']}"))
+            elif isinstance(entry, str):
+                story_path = (config.project_root / entry).resolve()
+                if story_path.exists():
+                    task = _build_task_from_story(story_path)
+                    slugs.append(task.slug)
+                else:
+                    # Fallback: use file stem as slug
+                    slugs.append(Path(entry).stem)
         return slugs
     except Exception:
         return []
+
+
+def _extract_plan_footprint(workspace_path: Path) -> set[str]:
+    """Extract the set of files referenced in a plan's steps.
+
+    Reads .forge/plan.md from the workspace, parses YAML plan data, and collects
+    file paths from all steps. Returns empty set on any parse failure (best-effort).
+    """
+    from ..artifacts import PLAN_PATH  # noqa: PLC0415
+    from ..task.plan_parser import parse_plan_output  # noqa: PLC0415
+
+    plan_file = workspace_path / PLAN_PATH
+    if not plan_file.exists():
+        return set()
+    try:
+        text = plan_file.read_text(encoding="utf-8")
+        plan_data = parse_plan_output(text)
+        if plan_data is None:
+            return set()
+        files: set[str] = set()
+        for step in plan_data.get("steps", []):
+            files.update(step.get("files", []))
+        return files
+    except Exception:
+        return set()
+
+
+def _run_fresh(
+    config: ForgeConfig,
+    task: TaskStory,
+    sprint_run_id: str,
+    sprint_name: str,
+    interactive: bool,
+    notify: bool,
+    effective_auto_merge: bool,
+    state_update_fn: "Callable[[dict], None] | None",
+    no_pull: bool,
+    plan_gate: "threading.Event | None",
+) -> CoordinatorResult:
+    """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
+    if plan_gate is None:
+        return run_task(
+            config,
+            task,
+            interactive=interactive,
+            auto_merge=effective_auto_merge,
+            notify=notify,
+            run_id=sprint_run_id,
+            sprint_name=sprint_name,
+            state_update_fn=state_update_fn,
+            no_pull=no_pull,
+        )
+
+    # Phase 1: run through PLAN only
+    plan_result = run_task(
+        config,
+        task,
+        interactive=interactive,
+        auto_merge=False,
+        notify=notify,
+        run_id=sprint_run_id,
+        sprint_name=sprint_name,
+        state_update_fn=state_update_fn,
+        no_pull=no_pull,
+        stop_phase=Phase.PLAN_REVIEW,
+    )
+
+    if not plan_result.success:
+        return plan_result
+
+    workspace_path = plan_result.state.workspace_path
+    if workspace_path is None:
+        return plan_result
+
+    # Signal plan completion so scheduler can check footprints
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "spec": task.slug,
+                "phase": "PLAN_DONE",
+                "workspace_path": str(workspace_path),
+            }
+        )
+
+    # Wait for scheduler to release the gate (with safety timeout)
+    plan_gate.wait(timeout=7200)
+
+    # Phase 2: continue from DEV
+    return run_from_dev(
+        config,
+        task,
+        workspace_path,
+        interactive=interactive,
+        auto_merge=effective_auto_merge,
+        notify=notify,
+        run_id=sprint_run_id,
+        sprint_name=sprint_name,
+        state_update_fn=state_update_fn,
+        no_pull=no_pull,
+    )
 
 
 def _run_single_story(
@@ -90,11 +193,18 @@ def _run_single_story(
     effective_auto_merge: bool,
     state_update_fn: "Callable[[dict], None] | None",
     no_pull: bool = False,
+    plan_gate: "threading.Event | None" = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
     Designed to run in a worker thread. Dispatches to run_task / run_from_review /
     run_from_dev based on triage (resume mode) or always run_task (fresh mode).
+
+    When *plan_gate* is provided (parallel overlap detection), fresh runs are split:
+    1. run_task with stop_phase=PLAN_REVIEW
+    2. Signal PLAN_DONE via state_update_fn
+    3. Wait on plan_gate for scheduler release
+    4. run_from_dev to continue
     """
     started_at = datetime.datetime.now(datetime.timezone.utc)
 
@@ -129,28 +239,30 @@ def _run_single_story(
                 no_pull=no_pull,
             )
         else:
-            result = run_task(
+            result = _run_fresh(
                 config,
                 task,
-                interactive=interactive,
-                auto_merge=effective_auto_merge,
-                notify=notify,
-                run_id=sprint_run_id,
-                sprint_name=sprint_name,
-                state_update_fn=state_update_fn,
-                no_pull=no_pull,
+                sprint_run_id,
+                sprint_name,
+                interactive,
+                notify,
+                effective_auto_merge,
+                state_update_fn,
+                no_pull,
+                plan_gate,
             )
     else:
-        result = run_task(
+        result = _run_fresh(
             config,
             task,
-            interactive=interactive,
-            auto_merge=effective_auto_merge,
-            notify=notify,
-            run_id=sprint_run_id,
-            sprint_name=sprint_name,
-            state_update_fn=state_update_fn,
-            no_pull=no_pull,
+            sprint_run_id,
+            sprint_name,
+            interactive,
+            notify,
+            effective_auto_merge,
+            state_update_fn,
+            no_pull,
+            plan_gate,
         )
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
@@ -163,11 +275,15 @@ def _make_worker_phase_fn(
     worker_phases: dict[str, str],
     phase_lock: threading.Lock,
     outer_fn: "Callable[[dict], None] | None",
+    plan_done: "dict[str, str] | None" = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper that tracks per-worker phase.
 
     Updates worker_phases[slug] from updates["phase"] and (under lock) forwards
     updates to the outer daemon state_update_fn if provided.
+
+    When *plan_done* is provided and a PLAN_DONE phase update arrives, stores
+    the workspace_path in plan_done[slug] for the scheduler to read.
     """
 
     def _update(updates: dict) -> None:
@@ -175,6 +291,10 @@ def _make_worker_phase_fn(
         with phase_lock:
             if phase:
                 worker_phases[slug] = phase
+            if phase == "PLAN_DONE" and plan_done is not None:
+                ws = updates.get("workspace_path", "")
+                if ws:
+                    plan_done[slug] = ws
             if outer_fn is not None:
                 outer_fn(updates)
 
@@ -247,9 +367,15 @@ def run_sprint(
     manifest = load_sprint_manifest(manifest_path)
     if manifest.max_parallel is None:
         manifest.max_parallel = config.sprint.max_parallel
-    story_paths = _validate_story_paths(manifest, config.project_root)
+    # Validate file-based story paths (issue entries validated at fetch time)
+    _validate_story_paths(manifest, config.project_root)
+    # Build unified context mapping: (task, source, canonical_ref) per entry
+    task_entries = build_tasks_from_manifest(manifest, config.project_root)
+    slug_to_context: dict[str, tuple[TaskStory, StorySource, str]] = {
+        task.slug: (task, source, canonical_ref) for task, source, canonical_ref in task_entries
+    }
 
-    total = len(story_paths)
+    total = len(task_entries)
     noun = "stories" if total != 1 else "story"
     print(
         f'[sprint] "{manifest.name}"  {total} {noun}  budget=${manifest.budget_usd:.2f}'
@@ -302,18 +428,12 @@ def run_sprint(
     stopped_reason: str | None = None
     merged_slugs: set[str] = set()
 
-    # Pre-scan: parse all TaskStorys once and build maps.
-    _parsed_tasks: dict[Path, TaskStory] = {
-        _sp: _build_task_from_story(_sp) for _sp in story_paths
-    }
-    slug_to_spec: dict[str, str] = {}
-    for spec_str, story_path in zip(manifest.stories, story_paths):
-        task = _parsed_tasks[story_path]
-        slug_to_spec[task.slug] = spec_str
+    # Derive slug_to_spec from unified context mapping
+    slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
 
     dependent_slugs: set[str] = set()
-    for _t in _parsed_tasks.values():
-        dependent_slugs.update(_t.depends_on)  # type: ignore[union-attr]
+    for task, _src, _ref in task_entries:
+        dependent_slugs.update(task.depends_on)
 
     # Resume mode: triage all stories and carry forward prior costs
     triages: dict[str, StoryTriage] = {}
@@ -322,16 +442,16 @@ def run_sprint(
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
         _log("Triaging specs...")
-        for spec_str in manifest.stories:
-            triage = _triage_spec(spec_str, config, config.project_root)
-            triages[spec_str] = triage
+        for slug, (task, _src, canonical_ref) in slug_to_context.items():
+            triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
+            triages[canonical_ref] = triage
             action_label = triage.action.upper().replace("_", " ")
             _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
 
     # Build satisfied set: slugs already merged to main that are not in this manifest.
     # Includes triage skip_merged/skip results (resume mode) and any cross-sprint
     # depends_on slugs whose branch is already merged to the base branch.
-    manifest_slugs = {t.slug for t in _parsed_tasks.values()}
+    manifest_slugs = set(slug_to_context.keys())
     satisfied_slugs: set[str] = set()
 
     if resume:
@@ -348,19 +468,14 @@ def run_sprint(
                 satisfied_slugs.add(dep_slug)
 
     # Build DAG
-    dag = build_dag(list(_parsed_tasks.values()), satisfied=satisfied_slugs)
+    all_tasks = [ctx[0] for ctx in slug_to_context.values()]
+    dag = build_dag(all_tasks, satisfied=satisfied_slugs)
 
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
     if resume:
-        for spec_str in manifest.stories:
-            triage = triages.get(spec_str)
+        for slug, (_task, _src, canonical_ref) in slug_to_context.items():
+            triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
-                # Look up task by spec_str
-                story_path = (config.project_root / spec_str).resolve()
-                task = _parsed_tasks.get(story_path)
-                if task is None:
-                    continue
-                slug = task.slug
                 action_label = triage.action.upper().replace("_", " ")
                 _log(f"SKIP {slug} ({triage.reason})")
                 specs_succeeded += 1
@@ -377,6 +492,12 @@ def run_sprint(
     phase_lock = threading.Lock()
     pending_merges: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
     _submission_counter = [0]  # mutable for closure capture; counts submitted stories
+
+    # Overlap detection state (plan gates)
+    file_footprints: dict[str, set[str]] = {}  # slug -> files from plan
+    plan_gates: dict[str, threading.Event] = {}  # slug -> gate for PLAN→DEV pause
+    plan_done: dict[str, str] = {}  # slug -> workspace_path (set by phase callback)
+    use_plan_gates = manifest.max_parallel > 1  # only for parallel mode
 
     with ThreadPoolExecutor(max_workers=manifest.max_parallel) as pool:
         while not dag.is_done():
@@ -426,8 +547,18 @@ def run_sprint(
                     flush=True,
                 )
 
+                # Create plan gate for fresh parallel runs
+                gate: threading.Event | None = None
+                if use_plan_gates and triage is None:
+                    gate = threading.Event()
+                    plan_gates[task.slug] = gate
+
                 state_fn = _make_worker_phase_fn(
-                    task.slug, worker_phases, phase_lock, state_update_fn
+                    task.slug,
+                    worker_phases,
+                    phase_lock,
+                    state_update_fn,
+                    plan_done=plan_done if use_plan_gates else None,
                 )
                 fut = pool.submit(
                     _run_single_story,
@@ -442,12 +573,17 @@ def run_sprint(
                     effective_am,
                     state_fn,
                     no_pull,
+                    gate,
                 )
                 active[task.slug] = fut
 
             _log(f"[debug] post-submit: active={list(active.keys())}")
             if not active:
                 # Deadlock: remaining tasks have unmet or budget-blocked deps
+                # Release any pending plan gates so worker threads can exit
+                for _gate in plan_gates.values():
+                    _gate.set()
+                plan_gates.clear()
                 for t in dag.remaining():
                     unmet = dag.unmet_deps(t.slug)
                     if unmet:
@@ -466,6 +602,9 @@ def run_sprint(
 
             if not done_futs:
                 # Timeout: all active workers hung for >3600s — cancel and fail them
+                for _gate in plan_gates.values():
+                    _gate.set()
+                plan_gates.clear()
                 for slug, fut in list(active.items()):
                     fut.cancel()
                     _log(f"TIMEOUT {slug} (worker unresponsive after 3600s — marking as failed)")
@@ -527,11 +666,74 @@ def run_sprint(
                 specs_failed += df
                 specs_skipped += dsk
 
+                # Fire StorySource lifecycle callbacks
+                ctx = slug_to_context.get(slug)
+                if ctx:
+                    _ctx_task, source, _ctx_ref = ctx
+                    if result.success:
+                        try:
+                            source.on_complete(task, result, config)
+                        except Exception as exc:
+                            _log(f"WARN on_complete callback failed for {slug}: {exc}")
+                    elif result.phase == Phase.ESCALATE:
+                        try:
+                            source.on_escalate(task, result.state, config)
+                        except Exception as exc:
+                            _log(f"WARN on_escalate callback failed for {slug}: {exc}")
+
                 # Parallel merge ordering: queue successful stories for dependency-ordered merge
                 if manifest.max_parallel > 1 and auto_merge and result.success:
                     pending_merges[slug] = (task, result)
 
                 _print_worker_status(active, worker_phases, dag, total)
+
+            # ── Overlap detection: check plan gates ────────────────────
+            if use_plan_gates:
+                with phase_lock:
+                    _pd_snapshot = dict(plan_done)
+                for pd_slug in _pd_snapshot:
+                    if pd_slug not in file_footprints:
+                        ws_path = Path(_pd_snapshot[pd_slug])
+                        footprint = _extract_plan_footprint(ws_path)
+                        file_footprints[pd_slug] = footprint
+
+                        # Check overlap with stories already past their gate (in DEV)
+                        active_dev_files: set[str] = set()
+                        for other_slug, other_files in file_footprints.items():
+                            if (
+                                other_slug != pd_slug
+                                and other_slug in active
+                                and other_slug not in plan_gates
+                            ):
+                                active_dev_files |= other_files
+
+                        overlap = footprint & active_dev_files
+                        if overlap:
+                            _log(
+                                f"WARNING: {pd_slug} overlaps with active stories on: "
+                                f"{', '.join(sorted(overlap))}"
+                            )
+                            # Don't release gate — defer until conflicting story finishes
+                        else:
+                            if pd_slug in plan_gates:
+                                plan_gates[pd_slug].set()
+                                del plan_gates[pd_slug]
+
+                # Re-check deferred gates after a story completes
+                for deferred_slug, gate in list(plan_gates.items()):
+                    if deferred_slug in file_footprints:
+                        active_dev_files = set()
+                        for other_slug, other_files in file_footprints.items():
+                            if (
+                                other_slug != deferred_slug
+                                and other_slug in active
+                                and other_slug not in plan_gates
+                            ):
+                                active_dev_files |= other_files
+                        overlap = file_footprints[deferred_slug] & active_dev_files
+                        if not overlap:
+                            gate.set()
+                            del plan_gates[deferred_slug]
 
             # Flush pending merges in dependency order (parallel mode only)
             if manifest.max_parallel > 1 and auto_merge and pending_merges:
@@ -621,18 +823,15 @@ def run_sprint(
                 _sc_body_lines.append(f"Stopped: {stopped_reason}")
             send_notifications(config, _sc_title, "\n".join(_sc_body_lines))
 
-    # Build slug map for audit writers
-    slug_map: dict[str, str] = {}
-    for spec_str, sp in zip(manifest.stories, story_paths):
-        t = _parsed_tasks.get(sp)
-        if t is not None:
-            slug_map[spec_str] = t.slug
+    # Build slug map and canonical_refs for audit writers
+    slug_map: dict[str, str] = {ctx[2]: slug for slug, ctx in slug_to_context.items()}
+    canonical_refs = [ctx[2] for ctx in slug_to_context.values()]
 
     # Write sprint-audit.yaml (existing format; kept for backward compatibility)
     _write_sprint_audit(
         manifest=manifest,
         result=sprint_result,
-        story_paths=story_paths,
+        canonical_refs=canonical_refs,
         started_at=started_at,
         finished_at=finished_at,
         duration=duration,
@@ -647,7 +846,7 @@ def run_sprint(
         _write_sprint_summary(
             manifest=manifest,
             result=sprint_result,
-            story_paths=story_paths,
+            canonical_refs=canonical_refs,
             started_at=started_at,
             finished_at=finished_at,
             duration=duration,
@@ -664,12 +863,12 @@ def run_sprint(
 
         _stories = []
         for spec_str, res in results:
-            # Derive slug: use workspace_path leaf (set during WORKSPACE phase) or spec stem
+            # Derive slug: use workspace_path leaf (set during WORKSPACE phase) or slug_map
             _ws = res.state.workspace_path
             if _ws is not None:
                 _slug = _ws.name
             else:
-                _slug = Path(spec_str).stem
+                _slug = slug_map.get(spec_str, Path(spec_str).stem)
             _verdict = ""
             if res.state.review_results:
                 _verdict = res.state.review_results[-1].verdict

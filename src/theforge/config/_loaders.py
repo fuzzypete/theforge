@@ -33,7 +33,10 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
         ),
         auto_push=bool(ws_data.get("auto_push", DEFAULT_WORKSPACE.auto_push)),
         setup_command=ws_data.get("setup_command", DEFAULT_WORKSPACE.setup_command),
-        on_approve=str(ws_data.get("on_approve", "none")),
+        on_approve={"merge-pr": "pr", "ask": "pr"}.get(
+            str(ws_data.get("on_approve", "none")),
+            str(ws_data.get("on_approve", "none")),
+        ),
         pr_labels=tuple(ws_data.get("pr_labels", [])),
         pr_draft=bool(ws_data.get("pr_draft", False)),
     )
