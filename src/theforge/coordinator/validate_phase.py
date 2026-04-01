@@ -8,6 +8,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from theforge.config import ForgeConfig
+from theforge.conventions import check_hard_conventions
 from theforge.task import TaskStory
 
 from . import util as _cu
@@ -207,5 +208,44 @@ def _run_validate_phase(
         return _ValidateOutcome.ESCALATE, CoordinatorResult(
             success=False, phase=state.phase, state=state, message=state.error
         )
+
+    # Hard convention checks (post-gate, only on PASS path)
+    if config.conventions_hard is not None:
+        cv_violations = check_hard_conventions(config.conventions_hard, workspace_path)
+        if cv_violations:
+            state.convention_violations = [
+                {
+                    "rule": v.rule,
+                    "file": v.file,
+                    "detail": v.detail,
+                    "blocking": v.blocking,
+                }
+                for v in cv_violations
+            ]
+            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in cv_violations]
+            human_feedback = "Hard convention violations detected:\n" + "\n".join(lines)
+            state.human_feedback = human_feedback
+            state.retry_reason = "convention_violations"
+            _log(f"  ✗ VALIDATE   convention violations ({len(cv_violations)} found)")
+            for v in cv_violations:
+                _log(f"    [{v.rule}] {v.file}: {v.detail}")
+            if dev_calls_this_cycle >= config.retry.max_dev_iterations:
+                state.phase = Phase.ESCALATE
+                state.error = f"Hard convention violations after {state.dev_iteration} attempts"
+                _log(f"✗ ESCALATE   {state.error}")
+                if logger:
+                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                    logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+                _escalate_notify(task, state, notify, config)
+                return _ValidateOutcome.ESCALATE, CoordinatorResult(
+                    success=False, phase=state.phase, state=state, message=state.error
+                )
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
+            return _ValidateOutcome.RETRY_DEV, None
+        else:
+            state.convention_violations = []
+    else:
+        state.convention_violations = []
 
     return _ValidateOutcome.PASS, None

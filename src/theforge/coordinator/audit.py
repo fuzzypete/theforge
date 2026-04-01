@@ -456,6 +456,9 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             if state.story_validation_result is not None
             else None
         ),
+        "convention_violations": state.convention_violations
+        if state.convention_violations
+        else None,
         "finding_registry": [
             {
                 "finding_id": r.finding_id,
