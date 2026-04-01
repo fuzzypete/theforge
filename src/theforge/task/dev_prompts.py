@@ -24,6 +24,7 @@ def build_dev_prompt(
     escalation_note: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
     handoff_file: str = "handoff.yaml",
+    preflight_sufficiency: str | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -86,6 +87,13 @@ def build_dev_prompt(
             {human_feedback}
         """)
 
+    _relaxed = preflight_sufficiency == "implementation_ready"
+    _obedience_text = (
+        "Use the plan as a guide — adapt freely if you discover the approach needs adjustment."
+        if _relaxed
+        else "Follow it closely — do not re-derive the approach from scratch."
+    )
+
     plan_section = ""
     if plan_output:
         if isinstance(plan_output, dict):
@@ -94,8 +102,7 @@ def build_dev_prompt(
                 "## Implementation Plan (from planning agent)",
                 "",
                 "The planning agent has already analysed this codebase and produced a",
-                "detailed implementation plan. Follow it closely — do not re-derive the",
-                "approach from scratch.",
+                f"detailed implementation plan. {_obedience_text}",
                 "",
                 f"**Approach:** {plan_output.get('approach', '')}",
                 "",
@@ -116,8 +123,7 @@ def build_dev_prompt(
                 ## Implementation Plan (from planning agent)
 
                 The planning agent has already analysed this codebase and produced a
-                detailed implementation plan. Follow it closely — do not re-derive the
-                approach from scratch.
+                detailed implementation plan. {_obedience_text}
 
                 {plan_output}
             """)
