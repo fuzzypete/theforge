@@ -3,6 +3,7 @@ from textwrap import dedent
 
 from theforge.coordinator.state import CycleHistory
 
+from .conventions import render_conventions_block
 from .story import TaskStory
 
 
@@ -123,6 +124,7 @@ def build_fix_prompt(
     plan_output: str | dict | None = None,
     classified_p1s: list | None = None,  # list[FindingRecord]
     surviving_families: list[dict] | None = None,
+    conventions: list[str] | None = None,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -202,6 +204,10 @@ def build_fix_prompt(
             ## Previous Review Cycles
 
         """) + "\n".join(history_lines)
+
+    _conventions_block = render_conventions_block(conventions)
+    if _conventions_block:
+        context_sections += _conventions_block
 
     if surviving_families:
         traj_lines: list[str] = []

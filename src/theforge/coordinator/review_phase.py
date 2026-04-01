@@ -809,6 +809,7 @@ def _run_review_only_phase(
         mode=config.review_pool[0].mode,
         dev_notes=dev_notes,
         cycle_history=None,
+        conventions=config.conventions_soft,
     )
 
     meta = ReviewCycleMetadata(

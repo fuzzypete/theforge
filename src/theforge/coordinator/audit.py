@@ -486,5 +486,6 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             for r in state.finding_registry
             if r.severity == "P1" and r.disposition == "net_new"
         ],
+        "conventions": {"soft": config.conventions_soft} if config.conventions_soft else None,
         **_build_phases_block(state, config),
     }

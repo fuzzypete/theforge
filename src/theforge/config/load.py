@@ -360,7 +360,19 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
     sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
 
-    # Conventions config
+    # Conventions config — soft
+    conventions_soft_raw = raw.get("conventions", {}).get("soft", [])
+    if not isinstance(conventions_soft_raw, list):
+        raise ValueError(
+            "forge.yaml 'conventions.soft' must be a list of strings,"
+            f" got {conventions_soft_raw!r}"
+        )
+    for _item in conventions_soft_raw:
+        if not isinstance(_item, str):
+            raise ValueError(f"forge.yaml 'conventions.soft' items must be strings, got {_item!r}")
+    conventions_soft_list: list[str] = conventions_soft_raw
+
+    # Conventions config — hard
     conventions_hard_raw = raw.get("conventions", {}).get("hard", None)
     if conventions_hard_raw is None:
         conventions_hard_cfg: HardConventionsConfig | None = None
@@ -420,4 +432,5 @@ def load_config(config_path: Path) -> ForgeConfig:
         review_pool_is_default=_review_pool_is_default,
         plan_model_is_default=_plan_model_is_default,
         conventions_hard=conventions_hard_cfg,
+        conventions_soft=conventions_soft_list,
     )

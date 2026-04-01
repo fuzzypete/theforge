@@ -294,6 +294,7 @@ class ForgeConfig:
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
+    conventions_soft: list[str] = field(default_factory=list)  # [] = no soft conventions
 
     @property
     def review_profile(self) -> ModelProfile:

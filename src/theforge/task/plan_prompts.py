@@ -1,6 +1,7 @@
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
+from .conventions import render_conventions_block
 from .plan_parser import PlanData
 from .story import TaskStory
 
@@ -306,6 +307,7 @@ def build_plan_prompt(
     *,
     story_content: str,
     preflight_output: str | None = None,
+    conventions: list[str] | None = None,
 ) -> str:
     """Build the planning agent prompt.
 
@@ -388,4 +390,4 @@ def build_plan_prompt(
           against the actual codebase before relying on it.
         - If something in the spec is ambiguous or contradictory, say so
           explicitly in risks rather than guessing.
-    """)
+    """) + render_conventions_block(conventions)

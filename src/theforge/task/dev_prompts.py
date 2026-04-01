@@ -3,6 +3,7 @@ from textwrap import dedent
 
 from theforge.coordinator.state import CycleHistory
 
+from .conventions import render_conventions_block
 from .plan_parser import PlanData
 from .story import TaskStory
 
@@ -25,6 +26,7 @@ def build_dev_prompt(
     cycle_history: list[CycleHistory] | None = None,
     handoff_file: str = "handoff.yaml",
     preflight_sufficiency: str | None = None,
+    conventions: list[str] | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -189,7 +191,7 @@ def build_dev_prompt(
         > most reasonable interpretation and flag the ambiguity in `dev_notes`.
 
         {story_content}
-        {feedback_section}{preflight_section}
+        {feedback_section}{preflight_section}{render_conventions_block(conventions)}
         ## Workflow
 
         1. Implement the spec. Write tests for new functionality.
