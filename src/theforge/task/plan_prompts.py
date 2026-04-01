@@ -320,9 +320,7 @@ def build_plan_prompt(
     *,
     story_content: str,
     preflight_output: str | None = None,
-
     conventions: list[str] | None = None,
-
     work_type: str | None = None,
 ) -> str:
     """Build the planning agent prompt.
