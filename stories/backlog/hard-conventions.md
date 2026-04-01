@@ -1,7 +1,6 @@
 ---
 name: "Hard conventions — mechanically enforced code structure rules"
 slug: hard-conventions
-depends_on: [config-normalization]
 pytest_target: tests/
 ---
 
