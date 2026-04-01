@@ -30,7 +30,16 @@ class StoryTriage:
 
 
 def _is_branch_merged(branch: str, base_branch: str, project_root: Path) -> bool:
-    """Return True if branch has commits and is an ancestor of base_branch (merged)."""
+    """Return True if branch is an ancestor of base_branch AND base has moved ahead.
+
+    Two checks are required:
+    1. --is-ancestor: branch tip is reachable from base_branch (merged or at same commit).
+    2. branch..base_branch count > 0: base has at least one commit not in branch,
+       meaning base advanced past the branch tip after the merge occurred.
+       A branch created at the current base HEAD has count == 0 and is NOT treated
+       as merged. A truly merged branch (FF or merge commit) will have count > 0
+       once base has any subsequent commit (including the merge commit itself).
+    """
     try:
         merge_result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, base_branch],
@@ -39,8 +48,12 @@ def _is_branch_merged(branch: str, base_branch: str, project_root: Path) -> bool
             timeout=30,
         )
         if merge_result.returncode == 0:
+            # Count commits in base_branch NOT reachable from branch.
+            # After a real merge, base always has the merge commit (or later commits)
+            # that aren't reachable from the branch tip → count > 0.
+            # A branch at the exact current base HEAD has count == 0.
             ahead_result = subprocess.run(
-                ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
+                ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
                 cwd=str(project_root),
                 capture_output=True,
                 timeout=30,
