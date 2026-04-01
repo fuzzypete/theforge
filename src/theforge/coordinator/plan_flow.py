@@ -274,7 +274,7 @@ def _run_plan_phase(
             if result is not None:
                 return result
 
-        elif config.plan_review.enabled and _work_type != "refactor":
+        elif config.plan_review.enabled:
             result = _run_human_plan_review(
                 state=state,
                 config=config,
@@ -288,9 +288,13 @@ def _run_plan_phase(
                 run_id=run_id,
             )
             if result is not None:
-                return result
-        elif config.plan_review.enabled and _work_type == "refactor":
-            _log("  ↩ PLAN_REVIEW   advisory only (refactor work type — human review skipped)")
+                if _work_type == "refactor":
+                    _log(
+                        "  ⚠ PLAN_REVIEW   advisory (refactor — "
+                        "human rejection not blocking, continuing to DEV)"
+                    )
+                else:
+                    return result
 
     else:
         state.phase = Phase.ESCALATE

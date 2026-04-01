@@ -21,6 +21,7 @@ from theforge.config import (
     ForgeConfig,
     PlanAgentReviewConfig,
     PlanConfig,
+    PlanReviewConfig,
     RetryPolicy,
     WorkspaceConfig,
 )
@@ -590,6 +591,134 @@ class TestWorkTypeStoredOnState:
         result = run_task(config, task)
 
         assert result.state.preflight_work_type == "feature"
+
+
+# ── Refactor + human plan review (advisory) ──────────────────────────
+
+
+def _make_human_plan_review_config(tmp_path: Path) -> ForgeConfig:
+    """Test config with plan + human plan_review enabled (no agent review)."""
+    return ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+        plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=300),
+    )
+
+
+class TestRefactorHumanPlanReviewAdvisory:
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_refactor_human_review_runs_advisory(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        mock_interactive,
+        mock_human_review,
+        tmp_path,
+    ):
+        """Refactor + human plan review: review IS run (not skipped), continues to DEV."""
+        config = _make_human_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_REFACTOR, cost_usd=0.02
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Plan\n\nStep 1: reorganize modules.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.30)
+
+        mock_preflight.return_value = preflight_result
+        mock_plan_agent.return_value = plan_result
+        mock_dev_agent.return_value = dev_result
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_interactive.return_value = "approve"
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # Human plan review was invoked (not skipped)
+        assert mock_interactive.called
+        assert result.state.preflight_work_type == "refactor"
+
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_refactor_human_review_rejection_not_blocking(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        mock_interactive,
+        mock_human_review,
+        tmp_path,
+    ):
+        """Refactor + human plan review: human rejection is advisory — does not stop pipeline."""
+        config = _make_human_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_REFACTOR, cost_usd=0.02
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Plan\n\nStep 1: reorganize modules.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.30)
+
+        mock_preflight.return_value = preflight_result
+        mock_plan_agent.return_value = plan_result
+        mock_dev_agent.return_value = dev_result
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        # Human says "regenerate" repeatedly until max attempts exhausted → abandon
+        mock_interactive.return_value = "regenerate"
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # Pipeline should continue to DEV despite human rejection (advisory mode)
+        assert result.success is True
+        # Human review was invoked
+        assert mock_interactive.called
+        assert result.state.preflight_work_type == "refactor"
 
 
 # ── Audit log test ────────────────────────────────────────────────────
