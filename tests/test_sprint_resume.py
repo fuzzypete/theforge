@@ -421,7 +421,7 @@ class TestResumeSprintIntegration:
             worktree_path=None,
         )
 
-        def triage_side_effect(spec_path, config, project_root):
+        def triage_side_effect(spec_path, config, project_root, *, task=None):
             if "feature-a" in spec_path:
                 return merged_triage
             return full_triage
@@ -644,7 +644,7 @@ class TestSprintDependencies:
         )
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
 
-        def triage_side_effect(spec_path, config, project_root):
+        def triage_side_effect(spec_path, config, project_root, *, task=None):
             if "spec-a" in spec_path:
                 return merged_triage
             return full_triage
@@ -681,7 +681,7 @@ class TestSprintDependencies:
         )
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
 
-        def triage_side_effect(spec_path, config, project_root):
+        def triage_side_effect(spec_path, config, project_root, *, task=None):
             if "spec-a" in spec_path:
                 return approved_triage
             return full_triage

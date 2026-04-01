@@ -11,8 +11,9 @@ class TaskStory:
     """A single unit of work for the orchestrator to execute."""
 
     name: str  # human-readable, e.g. "Phase 6H: per-user export"
-    story_path: Path  # path to the story file
     slug: str  # workspace slug, e.g. "export-service"
+    story_path: Path | None = None  # path to the story file (None for issue-sourced stories)
+    story_text: str | None = None  # inline story content (used when story_path is None)
     pytest_target: str | None = None  # specific test target, or None for all
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first

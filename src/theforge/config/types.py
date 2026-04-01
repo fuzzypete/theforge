@@ -112,7 +112,7 @@ class WorkspaceConfig:
     stale_worktree_days: int = 1  # remove worktrees older than N days; 0 = always remove
     auto_push: bool = False  # push base_branch to origin after successful auto-merge
     setup_command: str | None = None  # optional command run once after workspace creation
-    on_approve: str = "none"  # "merge" (auto-merge) | "pr" (create GitHub PR) | "none" (skip)
+    on_approve: str = "none"  # "merge" | "pr" | "none"; aliases: "ask" → "pr", "merge-pr" → "pr"
     pr_labels: tuple[str, ...] = ()  # labels to apply when on_approve="pr"
     pr_draft: bool = False  # create PR as draft when on_approve="pr"
 

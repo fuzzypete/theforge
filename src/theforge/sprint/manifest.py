@@ -17,7 +17,7 @@ class SprintManifest:
 
     name: str
     budget_usd: float
-    stories: list[str]  # relative paths to story files
+    stories: list[str | dict]  # relative paths to story files or {issue: N} dicts
     max_parallel: int | None = None
 
 
@@ -85,8 +85,21 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
             stories = specs_legacy
     if not stories or not isinstance(stories, list):
         raise ValueError("Sprint manifest must have a non-empty 'stories' list")
-    if not all(isinstance(s, str) for s in stories):
-        raise ValueError("All entries in 'stories' must be strings (file paths)")
+    for entry in stories:
+        if isinstance(entry, str):
+            continue
+        if isinstance(entry, dict):
+            if "issue" not in entry:
+                raise ValueError(f"Dict entries in 'stories' must have an 'issue' key: {entry!r}")
+            if not isinstance(entry["issue"], int):
+                raise ValueError(
+                    f"'issue' value must be an integer, got {type(entry['issue']).__name__}: "
+                    f"{entry!r}"
+                )
+            continue
+        raise ValueError(
+            f"Entries in 'stories' must be strings or dicts, got {type(entry).__name__}: {entry!r}"
+        )
 
     return SprintManifest(
         name=name, budget_usd=budget_usd, stories=stories, max_parallel=max_parallel
@@ -94,13 +107,19 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
 
 
 def _validate_story_paths(manifest: SprintManifest, project_root: Path) -> list[Path]:
-    """Resolve and validate all story paths. Raises ValueError if any are missing."""
+    """Resolve and validate all story paths. Raises ValueError if any are missing.
+
+    Only validates string entries (file paths). Dict entries (issue refs) are
+    skipped since they are validated at runtime by GitHubIssueSource.fetch().
+    """
     resolved: list[Path] = []
     missing: list[str] = []
-    for spec_str in manifest.stories:
-        path = (project_root / spec_str).resolve()
+    for entry in manifest.stories:
+        if not isinstance(entry, str):
+            continue  # skip issue entries
+        path = (project_root / entry).resolve()
         if not path.exists():
-            missing.append(spec_str)
+            missing.append(entry)
         else:
             resolved.append(path)
     if missing:
@@ -149,3 +168,50 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         depends_on=depends_on,
         github_issue=github_issue,
     )
+
+
+def build_tasks_from_manifest(
+    manifest: SprintManifest,
+    project_root: Path,
+) -> list[tuple]:
+    """Build (task, source, canonical_ref) tuples from a manifest.
+
+    For file entries, resolves the path and builds the task from frontmatter.
+    For issue entries, fetches the issue via gh CLI and applies overrides
+    (depends_on, slug) from the manifest dict.
+    """
+    from .sources import StorySource, resolve  # noqa: PLC0415
+
+    results: list[tuple[TaskStory, StorySource, str]] = []
+    for entry in manifest.stories:
+        source, ref, canonical_ref = resolve(entry, project_root)
+        task = source.fetch(ref, project_root)
+
+        # Apply overrides from dict entries
+        if isinstance(entry, dict):
+            overrides: dict = {}
+            if "slug" in entry:
+                overrides["slug"] = entry["slug"]
+            if "depends_on" in entry:
+                raw_deps = entry["depends_on"]
+                if isinstance(raw_deps, str):
+                    overrides["depends_on"] = [raw_deps]
+                elif isinstance(raw_deps, list):
+                    overrides["depends_on"] = [str(d) for d in raw_deps]
+                else:
+                    raise ValueError(
+                        f"'depends_on' must be a string or list, got "
+                        f"{type(raw_deps).__name__}: {entry!r}"
+                    )
+            if "pytest_target" in entry:
+                overrides["pytest_target"] = entry["pytest_target"]
+            if overrides:
+                from dataclasses import replace
+
+                task = replace(task, **overrides)
+                # Update canonical_ref if slug was overridden
+                if "slug" in overrides:
+                    canonical_ref = f"issue:{entry['issue']}"
+
+        results.append((task, source, canonical_ref))
+    return results
