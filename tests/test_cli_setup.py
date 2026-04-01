@@ -188,6 +188,24 @@ class TestBuildTask:
         assert task.name == "My Cool Feature"
         assert task.slug == "my-cool-feature"
 
+    def test_github_issue_parsed(self, tmp_path):
+        spec = tmp_path / "task.md"
+        spec.write_text("---\nslug: my-task\ngithub_issue: 42\n---\n", encoding="utf-8")
+        task = _build_task(spec)
+        assert task.github_issue == 42
+
+    def test_github_issue_absent(self, tmp_path):
+        spec = tmp_path / "task.md"
+        spec.write_text("---\nslug: my-task\n---\n", encoding="utf-8")
+        task = _build_task(spec)
+        assert task.github_issue is None
+
+    def test_github_issue_malformed_ignored(self, tmp_path):
+        spec = tmp_path / "task.md"
+        spec.write_text("---\nslug: my-task\ngithub_issue: abc\n---\n", encoding="utf-8")
+        task = _build_task(spec)
+        assert task.github_issue is None
+
 
 # ── TestFindConfig ────────────────────────────────────────────────────
 

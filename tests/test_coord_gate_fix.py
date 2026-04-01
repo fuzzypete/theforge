@@ -579,6 +579,52 @@ class TestCreatePR:
         assert pr_call[0][0][:3] == ["gh", "pr", "create"]
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
+    def test_pr_body_includes_closes_when_issue_set(self, mock_run, tmp_path):
+        """PR body contains 'Closes #N' when task.github_issue is set."""
+        from theforge.coordinator.completion import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec, github_issue=99)
+        state = CoordinatorState()
+
+        mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""})(),
+        ]
+
+        _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        pr_call = mock_run.call_args_list[1]
+        body_idx = pr_call[0][0].index("--body") + 1
+        body = pr_call[0][0][body_idx]
+        assert "Closes #99" in body
+
+    @patch("theforge.coordinator.validate_phase.subprocess.run")
+    def test_pr_body_no_closes_when_issue_absent(self, mock_run, tmp_path):
+        """PR body omits 'Closes' line when task.github_issue is None."""
+        from theforge.coordinator.completion import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec)
+        state = CoordinatorState()
+
+        mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""})(),
+        ]
+
+        _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        pr_call = mock_run.call_args_list[1]
+        body_idx = pr_call[0][0].index("--body") + 1
+        body = pr_call[0][0][body_idx]
+        assert "Closes" not in body
+
+    @patch("theforge.coordinator.validate_phase.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):
         """If git push fails, _create_pr returns failure without calling gh."""
         from theforge.coordinator.completion import _create_pr

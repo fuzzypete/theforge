@@ -136,7 +136,10 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
     else:
         depends_on = []
     raw_issue = fm.get("github_issue")
-    github_issue = int(raw_issue) if raw_issue is not None else None
+    try:
+        github_issue = int(raw_issue) if raw_issue is not None else None
+    except (ValueError, TypeError):
+        github_issue = None
     return TaskStory(
         name=name,
         story_path=story_path,

@@ -75,7 +75,10 @@ def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
     resolved_slug = slug or fm.get("slug") or story_path.stem
 
     raw_issue = fm.get("github_issue")
-    github_issue = int(raw_issue) if raw_issue is not None else None
+    try:
+        github_issue = int(raw_issue) if raw_issue is not None else None
+    except (ValueError, TypeError):
+        github_issue = None
     return TaskStory(
         name=fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title()),
         story_path=story_path.resolve(),
