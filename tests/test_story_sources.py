@@ -83,13 +83,14 @@ class TestGitHubIssueSource:
             with pytest.raises(RuntimeError, match="gh issue view"):
                 source.fetch("999", tmp_path)
 
-    def test_on_complete_closes_issue_in_merge_mode(self) -> None:
+    def test_on_complete_closes_issue_in_merge_mode(self, tmp_path: Path) -> None:
         task = TaskStory(name="Test", slug="test", github_issue=42)
         result = MagicMock()
         result.merge = {"merged": True}
         result.state.review_results = [MagicMock(summary="All good")]
         config = MagicMock()
         config.workspace.on_approve = "merge"
+        config.project_root = tmp_path
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -100,6 +101,44 @@ class TestGitHubIssueSource:
         cmd = mock_run.call_args[0][0]
         assert "close" in cmd
         assert "42" in cmd
+        assert mock_run.call_args.kwargs["cwd"] == str(tmp_path)
+
+    def test_on_complete_uses_project_root_cwd(self, tmp_path: Path) -> None:
+        """gh issue close must use project_root as cwd regardless of process cwd."""
+        task = TaskStory(name="Test", slug="test", github_issue=7)
+        result = MagicMock()
+        result.merge = {"merged": True}
+        result.state.review_results = []
+        config = MagicMock()
+        config.workspace.on_approve = "merge"
+        config.project_root = tmp_path / "my-repo"
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            source = GitHubIssueSource()
+            source.on_complete(task, result, config)
+
+        assert mock_run.call_args.kwargs["cwd"] == str(tmp_path / "my-repo")
+
+    def test_on_complete_logs_warning_on_nonzero_exit(self, tmp_path: Path) -> None:
+        """A nonzero exit from gh issue close is logged, not silently swallowed."""
+        task = TaskStory(name="Test", slug="test", github_issue=42)
+        result = MagicMock()
+        result.merge = {"merged": True}
+        result.state.review_results = []
+        config = MagicMock()
+        config.workspace.on_approve = "merge"
+        config.project_root = tmp_path
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="not found", stdout="")
+            with patch("theforge.sprint.sources._log") as mock_log:
+                source = GitHubIssueSource()
+                source.on_complete(task, result, config)
+
+        mock_log.warning.assert_called_once()
+        msg = mock_log.warning.call_args[0][0]
+        assert "close" in msg
 
     def test_on_complete_noop_for_pr_mode(self) -> None:
         task = TaskStory(name="Test", slug="test", github_issue=42)
@@ -127,11 +166,12 @@ class TestGitHubIssueSource:
 
         mock_run.assert_not_called()
 
-    def test_on_escalate_comments_on_issue(self) -> None:
+    def test_on_escalate_comments_on_issue(self, tmp_path: Path) -> None:
         task = TaskStory(name="Test", slug="test", github_issue=42)
         state = MagicMock()
         state.error = "Gate failed"
         config = MagicMock()
+        config.project_root = tmp_path
 
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
@@ -142,6 +182,48 @@ class TestGitHubIssueSource:
         cmd = mock_run.call_args[0][0]
         assert "comment" in cmd
         assert "42" in cmd
+        assert mock_run.call_args.kwargs["cwd"] == str(tmp_path)
+
+    def test_on_escalate_uses_project_root_cwd(self, tmp_path: Path) -> None:
+        """gh issue comment must use project_root as cwd regardless of process cwd."""
+        task = TaskStory(name="Test", slug="test", github_issue=5)
+        state = MagicMock()
+        state.error = "timeout"
+        config = MagicMock()
+        config.project_root = tmp_path / "my-repo"
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            source = GitHubIssueSource()
+            source.on_escalate(task, state, config)
+
+        assert mock_run.call_args.kwargs["cwd"] == str(tmp_path / "my-repo")
+
+    def test_on_escalate_logs_warning_on_nonzero_exit(self, tmp_path: Path) -> None:
+        """A nonzero exit from gh issue comment is logged, not silently swallowed."""
+        task = TaskStory(name="Test", slug="test", github_issue=42)
+        state = MagicMock()
+        state.error = "timeout"
+        config = MagicMock()
+        config.project_root = tmp_path
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="auth error", stdout="")
+            with patch("theforge.sprint.sources._log") as mock_log:
+                source = GitHubIssueSource()
+                source.on_escalate(task, state, config)
+
+        mock_log.warning.assert_called_once()
+        msg = mock_log.warning.call_args[0][0]
+        assert "comment" in msg
+
+    def test_fetch_raises_on_malformed_json(self, tmp_path: Path) -> None:
+        """Malformed JSON from gh is wrapped in a clear RuntimeError."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="not-json", stderr="")
+            source = GitHubIssueSource()
+            with pytest.raises(RuntimeError, match="malformed JSON"):
+                source.fetch("42", tmp_path)
 
     def test_is_story_source(self) -> None:
         assert isinstance(GitHubIssueSource(), StorySource)

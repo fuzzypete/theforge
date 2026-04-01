@@ -93,7 +93,10 @@ class GitHubIssueSource:
             err = proc.stderr.strip() or proc.stdout.strip()
             raise RuntimeError(f"gh issue view #{number} failed: {err}")
 
-        data = json.loads(proc.stdout)
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"gh issue view #{number} returned malformed JSON: {exc}") from exc
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")
 
@@ -127,7 +130,7 @@ class GitHubIssueSource:
         comment = f"Completed by TheForge. {summary}".strip()
 
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 [
                     "gh",
                     "issue",
@@ -138,10 +141,17 @@ class GitHubIssueSource:
                 ],
                 capture_output=True,
                 text=True,
+                cwd=str(config.project_root),
                 timeout=30,
             )
         except Exception as exc:
             _log.warning("gh issue close #%s failed: %s", task.github_issue, exc)
+            return
+        if proc.returncode != 0:
+            err = proc.stderr.strip() or proc.stdout.strip()
+            _log.warning(
+                "gh issue close #%s failed (exit %d): %s", task.github_issue, proc.returncode, err
+            )
 
     def on_escalate(
         self,
@@ -157,7 +167,7 @@ class GitHubIssueSource:
         comment = f"TheForge escalated this story: {error}"
 
         try:
-            subprocess.run(
+            proc = subprocess.run(
                 [
                     "gh",
                     "issue",
@@ -168,10 +178,20 @@ class GitHubIssueSource:
                 ],
                 capture_output=True,
                 text=True,
+                cwd=str(config.project_root),
                 timeout=30,
             )
         except Exception as exc:
             _log.warning("gh issue comment #%s failed: %s", task.github_issue, exc)
+            return
+        if proc.returncode != 0:
+            err = proc.stderr.strip() or proc.stdout.strip()
+            _log.warning(
+                "gh issue comment #%s failed (exit %d): %s",
+                task.github_issue,
+                proc.returncode,
+                err,
+            )
 
 
 def resolve(
