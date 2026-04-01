@@ -4,10 +4,11 @@ Every file format TheForge accepts as input.
 
 ---
 
-## Story file (`specs/*.md`)
+## Story file (`stories/*.md` by default)
 
 The primary input. Describes WHAT to build and WHY. The dev agent implements
-exactly what the acceptance criteria say.
+exactly what the acceptance criteria say. Story files can live anywhere; `stories/`
+is simply the default directory created by `forge init`.
 
 ### Template
 
@@ -74,9 +75,9 @@ name: "Sprint Name — brief description"
 budget_usd: 50
 auto_merge: true    # optional: merge each APPROVED story automatically
 specs:
-  - specs/story-one.md
-  - specs/story-two.md
-  - specs/story-three.md
+  - stories/story-one.md
+  - stories/story-two.md
+  - stories/story-three.md
 ```
 
 ### Fields
@@ -223,8 +224,8 @@ profiles:
 # ── Plan phase (optional) ─────────────────────────────────
 plan:
   enabled: true
-  model: claude
-  model_name: sonnet
+  cli: claude
+  model: sonnet
   budget_usd: 1.00
   timeout: 600
 
@@ -245,6 +246,11 @@ notifications:
   ntfy:
     priority: high
     # url resolved from NTFY_URL in .forge/.env
+
+# ── Smart config (optional) ────────────────────────────────
+smart_config_models:
+  - claude/sonnet
+  - openai/gpt-5.4
 
 # ── Secrets (optional) ────────────────────────────────────
 # API keys are read from .forge/.env (run `forge secrets-init` to create)
@@ -297,7 +303,7 @@ not implementation.
 ### Usage
 
 ```bash
-forge ideate briefs/my-feature.md --output specs/my-feature.md
+forge ideate briefs/my-feature.md --output stories/my-feature.md
 ```
 
 ---
@@ -305,6 +311,9 @@ forge ideate briefs/my-feature.md --output specs/my-feature.md
 ## Secrets file (`.forge/.env`)
 
 Standard dotenv format. Created by `forge secrets-init`.
+
+If you still have a legacy `.forge/secrets.yaml`, migrate those values into
+`.forge/.env`.
 
 ```bash
 # .forge/.env — project-scoped secrets (gitignored)

@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init", help="Generate a starter forge.yaml")
     subparsers.add_parser(
         "secrets-init",
-        help="Create .forge/secrets.yaml skeleton and update .gitignore",
+        help="Create .forge/.env skeleton and update .gitignore",
     )
     subparsers.add_parser("version", help="Print the installed version")
     subparsers.add_parser(

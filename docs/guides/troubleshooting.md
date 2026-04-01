@@ -111,7 +111,7 @@ claude --version
 claude auth login
 
 # API-mode providers — update key in .forge/.env
-forge secrets-init    # recreates .forge/.env skeleton
+forge secrets-init
 # then edit .forge/.env with fresh keys
 
 # Retest
@@ -142,7 +142,8 @@ profiles:
 
 **Symptom:** API-mode agents fail with auth errors despite key being set.
 
-**Cause:** `.forge/.env` not created, or env var not exported to subprocess.
+**Cause:** `.forge/.env` not created, or you still have a legacy
+`.forge/secrets.yaml` that was never migrated.
 
 **Fix:**
 ```bash
@@ -150,6 +151,9 @@ forge secrets-init               # creates .forge/.env
 cat .forge/.env                  # verify key is present and non-empty
 # TheForge loads .forge/.env automatically — no manual export needed
 ```
+
+If you still have `.forge/secrets.yaml`, copy those values into `.forge/.env`
+and remove the old file.
 
 ---
 
@@ -220,7 +224,7 @@ git worktree remove .forge/worktrees/<slug> --force
 git branch -D forge/<slug>
 
 # Then rerun
-forge run specs/my-feature.md --verbose
+forge run stories/my-feature.md --verbose
 ```
 
 ---
@@ -268,8 +272,32 @@ profiles:
     timeout_seconds: 900   # default is often 600
 
 # Or resume from where it left off
-forge run specs/my-feature.md --resume --verbose
+forge run stories/my-feature.md --resume --verbose
 ```
+
+If you want to watch the run live instead of letting it detach, use `--fg`.
+
+---
+
+### Run detached and I can't see output
+
+**Symptom:** `forge run` or `forge sprint` returned quickly, but work appears to
+still be running in the background.
+
+**Cause:** Detached execution is the default unless you pass `--fg`.
+
+**Fix:**
+```bash
+forge status
+forge logs <run-id>
+forge stop <run-id>      # if you need to terminate it
+
+# Next time, stay attached:
+forge run stories/my-feature.md --fg --verbose
+```
+
+For sprints, `--no-pull` is also useful in offline or CI environments where
+you don't want fresh worktrees to `git pull --ff-only`.
 
 ---
 
@@ -299,7 +327,7 @@ truncated by a budget/token limit.
 
 **Fix:**
 - Increase `budget_usd` for the reviewer profile
-- Run `forge review specs/my-feature.md --verbose` to retry review only
+- Run `forge review stories/my-feature.md --verbose` to retry review only
 - Check the raw review output in `forge_audit.yaml`
 
 ---
@@ -318,7 +346,7 @@ cat .forge/worktrees/<slug>/forge_audit.yaml
 
 # Refine the story and try again (story may be too vague or too large)
 # Or make manual fixes in the worktree, then re-review
-forge review specs/my-feature.md --verbose
+forge review stories/my-feature.md --verbose
 ```
 
 ---
@@ -352,7 +380,7 @@ For a guaranteed clean start: delete the worktree and rerun without `--resume`.
 ```bash
 git worktree remove .forge/worktrees/<slug> --force
 git branch -D forge/<slug>
-forge run specs/my-feature.md --verbose   # no --resume
+forge run stories/my-feature.md --verbose   # no --resume
 ```
 
 ---

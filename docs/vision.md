@@ -44,8 +44,8 @@ The dev prompt includes a preamble that tells agents:
 - Context and background sections are informational, not requirements
 - Ambiguity should be flagged in `dev_notes`
 
-Story files live in `specs/` by convention (e.g. `specs/my-feature.md`) and are
-passed to `forge run <story-file>`. `forge init` creates `specs/TEMPLATE.md` with
+Story files live in `stories/` by default (e.g. `stories/my-feature.md`) and are
+passed to `forge run <story-file>`. `forge init` creates `stories/TEMPLATE.md` with
 annotated structure so new projects have a reference for what a well-written story
 looks like.
 
@@ -425,7 +425,7 @@ only the ideation agents are LLMs.
 
 ## Testing Strategy
 
-1. **Dogfood loop:** Forge develops itself. Specs in `specs/` are run
+1. **Dogfood loop:** Forge develops itself. Stories in `stories/` are run
    through `forge run` to implement features in TheForge. This has
    been validated end-to-end: multi-CLI, multi-model review, HITL,
    live activity, and preflight were all implemented or tested via

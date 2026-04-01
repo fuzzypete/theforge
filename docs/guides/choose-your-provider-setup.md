@@ -153,15 +153,17 @@ air-gapped environments). Uses Ollama for fully local inference.
 ```yaml
 profiles:
   dev:
-    provider: ollama
+    provider: openai
     model: qwen2.5-coder:32b      # strong local coding model
+    base_url: http://localhost:11434/v1
     budget_usd: 0                  # no cost tracking for local
     timeout_seconds: 1800          # local models are slower — increase timeout
     allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
   review_pool:
     - name: local-reviewer
-      provider: ollama
+      provider: openai
       model: qwen2.5-coder:32b
+      base_url: http://localhost:11434/v1
       budget_usd: 0
       timeout_seconds: 900
       allowed_tools: [Read, Bash, Glob, Grep]
@@ -191,8 +193,9 @@ local review for privacy with cloud dev for speed.
 ```yaml
 profiles:
   dev:
-    provider: ollama
+    provider: openai
     model: qwen2.5-coder:32b
+    base_url: http://localhost:11434/v1
     budget_usd: 0
     timeout_seconds: 1800
     allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
@@ -234,10 +237,12 @@ authentication — no keys needed in `.forge/.env`.
 ## Verify your setup
 
 ```bash
+forge check-config
 forge check-providers
 ```
 
-Run this after any provider config change to confirm all models respond correctly.
+Run `forge check-config` after any config change, then `forge check-providers`
+to confirm your API-mode models respond correctly.
 
 ---
 

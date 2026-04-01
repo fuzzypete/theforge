@@ -3,8 +3,8 @@
 This guide walks you through your first forge run — from installation to merged
 feature branch.
 
-> **Terminology note:** The primary term is "story" — stories live in `specs/`
-> by convention, but the `specs/` directory name is a filesystem convention, not
+> **Terminology note:** The primary term is "story" — stories live in `stories/`
+> by default, but the directory name is a filesystem convention, not
 > a different concept. Sprints run multiple stories sequentially. Briefs are
 > free-form ideation inputs (not stories). The review pool is the set of models
 > that review each implementation.
@@ -43,7 +43,7 @@ forge init
 
 This creates:
 - `forge.yaml` — project configuration (models, budgets, timeouts)
-- `specs/TEMPLATE.md` — annotated story template
+- `stories/TEMPLATE.md` — annotated story template
 - `.gitignore` entry for `.forge/.env`
 
 ## 3. Edit forge.yaml
@@ -93,9 +93,19 @@ DEEPSEEK_API_KEY=sk-...
 > For CLI-mode agents (Claude Code, Codex CLI, Gemini CLI), authentication is
 > handled by each CLI's own setup — no keys needed in `.forge/.env`.
 
-## 5. Write your first story
+## 5. Validate the setup
 
-Copy `specs/TEMPLATE.md` to `specs/my-feature.md` and fill it in:
+```bash
+forge check-config
+forge check-providers
+```
+
+`forge check-config` is the fastest way to catch config drift, missing auth,
+and deprecated settings before spending tokens on a real run.
+
+## 6. Write your first story
+
+Copy `stories/TEMPLATE.md` to `stories/my-feature.md` and fill it in:
 
 ```markdown
 ---
@@ -127,10 +137,10 @@ load balancer probes.
 - **Problem section:** Context for the agent, but NOT requirements. The agent
   implements ACs, not prose.
 
-## 6. Run it
+## 7. Run it
 
 ```bash
-forge run specs/my-feature.md --verbose
+forge run stories/my-feature.md --verbose
 ```
 
 You'll see the pipeline in real time:
@@ -150,7 +160,7 @@ You'll see the pipeline in real time:
 [forge] ▸ DONE        add-health-check
 ```
 
-## 7. Inspect the results
+## 8. Inspect the results
 
 The implementation lives on a feature branch:
 
@@ -171,17 +181,17 @@ The audit shows:
 - Review verdict, findings, and reviewer breakdown
 - Total cost and duration
 
-## 8. Merge (optional)
+## 9. Merge (optional)
 
 ```bash
 # Auto-merge on the next run
-forge run specs/my-feature.md --auto-merge
+forge run stories/my-feature.md --auto-merge
 
 # Or merge manually
 git merge forge/add-health-check
 ```
 
-## 9. Run multiple specs as a sprint
+## 10. Run multiple stories as a sprint
 
 Create a sprint manifest (`sprints/my-sprint.yaml`):
 
@@ -189,9 +199,9 @@ Create a sprint manifest (`sprints/my-sprint.yaml`):
 name: "My First Sprint"
 budget_usd: 20
 specs:
-  - specs/add-health-check.md
-  - specs/add-logging.md
-  - specs/fix-auth-bug.md
+  - stories/add-health-check.md
+  - stories/add-logging.md
+  - stories/fix-auth-bug.md
 ```
 
 Run it:
@@ -272,8 +282,9 @@ abort the forge run. See `.forge/hooks/README.md` for full documentation.
   to have an agent create an implementation plan before dev starts
 - **Generate stories from briefs:** Use `forge ideate "problem description"` to
   have multiple models collaboratively write a story
-- **Check provider health:** Run `forge check-providers` to verify all your
-  configured models respond correctly
+- **Check config health:** Run `forge check-config` after config edits
+- **Check provider health:** Run `forge check-providers` to verify your
+  API-mode models respond correctly
 - **File findings as issues:** Run `forge init-hooks` to scaffold the GitHub
   Issues hook
 - **Something went wrong?** See the [Troubleshooting guide](troubleshooting.md)
@@ -288,7 +299,7 @@ A full view of every file TheForge touches and who owns it.
 ```
 your-project/
 ├── forge.yaml                         # USER — project config (models, budgets, gate)
-├── specs/                             # USER — story inputs
+├── stories/                           # USER — story inputs
 │   ├── TEMPLATE.md                    # USER — annotated story template (from forge init)
 │   └── my-feature.md                  # USER — your stories
 ├── sprints/                           # USER — sprint manifests
@@ -313,7 +324,7 @@ your-project/
 | Entry | Owner | Safe to delete? | When? |
 |-------|-------|----------------|-------|
 | `forge.yaml` | You | No | — |
-| `specs/`, `sprints/`, `briefs/` | You | No | — |
+| `stories/`, `sprints/`, `briefs/` | You | No | — |
 | `.forge/.env` | You | No — contains secrets | — |
 | `.forge/hooks/` | You | Yes | If you don't use hooks |
 | `.forge/logs/` | Generated | Yes | After reviewing |
@@ -334,3 +345,5 @@ your-project/
   the run; a P1 finding triggers a retry. This is mechanical, not advisory.
 - **Your repo is always safe** — all agent work happens in a worktree on a
   feature branch. Main is untouched until you explicitly merge.
+- **Defaults are conventions, not constraints** — `stories/` and `forge/{slug}`
+  are starter defaults, but both story paths and branch patterns are configurable.

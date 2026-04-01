@@ -5,6 +5,47 @@ All notable changes to TheForge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-04-01
+
+### Added
+
+- **Config diagnostics:** `forge check-config` shows the effective config,
+  auth readiness, and startup warnings before a run
+- **Operational commands:** `forge status`, `forge logs`, `forge stop`, and
+  `forge decide` for monitoring detached runs and resolving pending decisions
+- **Telemetry reporting:** `forge telemetry` summarizes per-phase cost and
+  duration across historical runs
+- **Run controls:** `forge run` now supports `--until`, `--from`,
+  `--reviewers`, `--max-cycles`, `--fg`, and `--no-pull`
+- **Preflight classification upgrades:** work-type classification and
+  spec-sufficiency assessment inform planning depth and review behavior
+- **Conventions support:** soft conventions are prompt-injected and hard
+  conventions can enforce line counts, test mirroring, and circular-import rules
+- **Sprint safety:** story-level concurrency guards and stricter dependency
+  handling prevent conflicting runs
+- **Editable-install version suffixes:** `forge version` appends `-dev+g<hash>`
+  when an editable checkout is ahead of the latest tag
+
+### Changed
+
+- **Package layout:** large modules were split into focused packages:
+  `cli/`, `config/`, `coordinator/`, `runners/`, `sprint/`, and `task/`
+- **Story scaffolding:** `forge init` now creates `stories/TEMPLATE.md`
+- **Ideation output:** `forge ideate` now defaults to `stories/<slug>.md`
+- **Secrets path:** `.forge/.env` is the canonical secrets file; legacy
+  `.forge/secrets.yaml` should be migrated
+- **Local model configuration:** OpenAI-compatible local servers are configured
+  with `provider: openai` and `base_url`
+
+### Fixed
+
+- **Resume/worktree hygiene:** better stale-state triage and root-config sync
+- **Plan review reliability:** improved regeneration prompts, trace retention,
+  and failure auditing
+- **Review severity scoping:** P1 findings are scoped to code changed by the run
+- **Provider/config validation:** stronger auth checks, normalization, and
+  startup warnings
+
 ## [0.1.0] — 2026-03-19
 
 ### Added

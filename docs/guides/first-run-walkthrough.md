@@ -64,18 +64,28 @@ makes will land on this branch, leaving your main branch untouched.
 ```
 
 **What happened:** A fast model scans the codebase to determine whether the
-story might already be implemented. If it returns `SKIP`, the run stops here
+story might already be implemented. If it returns `ALREADY_DONE`, the run stops here
 (cost: ~$0.05). If it returns `PROCEED`, the full pipeline continues.
 
-**If PREFLIGHT returns SKIP:**
+**If PREFLIGHT returns ALREADY_DONE:**
 ```
 [forge] ▸ PREFLIGHT   sonnet
-[forge]   Verdict: SKIP
+[forge]   Verdict: ALREADY_DONE
 [forge]   Reason: greet_json() already exists in src/app.py with JSON output
-[forge] ▸ DONE        add-greeting (preflight skip)
+[forge] ▸ DONE        add-greeting (already done)
 ```
 The run ends cleanly. No dev, no validation, no review. This is correct behavior
 if you re-run a story after it's already been implemented and merged.
+
+**If PREFLIGHT returns BLOCKED:**
+```
+[forge] ▸ PREFLIGHT   sonnet
+[forge]   Verdict: BLOCKED
+[forge]   Reason: acceptance criteria contradict each other about the endpoint shape
+[forge] ▸ ESCALATE    add-greeting
+```
+
+This is a spec problem, not a model failure. Fix the story first, then rerun.
 
 ---
 
@@ -189,7 +199,7 @@ are included in the audit but don't trigger retries.
 [forge] ═══════════════════════════════════════════════
 [forge]   APPROVE — ready to merge
 [forge]   Run: git merge forge/add-greeting
-[forge]   Or:  forge run specs/add-greeting.md --auto-merge
+[forge]   Or:  forge run stories/add-greeting.md --auto-merge
 [forge] ═══════════════════════════════════════════════
 ```
 
@@ -202,7 +212,7 @@ git diff main forge/add-greeting
 git merge forge/add-greeting
 
 # Or auto-merge on the next run
-forge run specs/add-greeting.md --auto-merge
+forge run stories/add-greeting.md --auto-merge
 ```
 
 ---
@@ -231,12 +241,12 @@ cd .forge/worktrees/add-greeting
 # ... edit files manually ...
 
 # Re-review (skip plan+dev, just review)
-forge review specs/add-greeting.md --verbose
+forge review stories/add-greeting.md --verbose
 
 # Or clean up and start fresh
 git worktree remove .forge/worktrees/add-greeting --force
 git branch -D forge/add-greeting
-forge run specs/add-greeting.md --verbose
+forge run stories/add-greeting.md --verbose
 ```
 
 ---
@@ -246,7 +256,7 @@ forge run specs/add-greeting.md --verbose
 If the run is interrupted (Ctrl+C, crash, timeout):
 
 ```bash
-forge run specs/add-greeting.md --resume --verbose
+forge run stories/add-greeting.md --resume --verbose
 ```
 
 The coordinator detects the existing worktree state and resumes from the last

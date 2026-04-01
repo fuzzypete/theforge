@@ -13,139 +13,105 @@ forge init
 ```
 
 **Use this when:** Starting a new project with TheForge for the first time.
-**Avoid this when:** You already have a `forge.yaml` — it will overwrite it.
+**Avoid this when:** You already have a `forge.yaml` and want to keep it.
 
 **Creates:**
-- `forge.yaml` — starter config with Claude dev + review
-- `specs/TEMPLATE.md` — annotated story template
+- `forge.yaml` — starter config with Claude dev + review defaults
+- `stories/TEMPLATE.md` — annotated story template
 - `.gitignore` entry for `.forge/.env`
 
 ---
 
 ## `forge run`
 
-Execute the full pipeline (plan → dev → validate → review) for a single story.
+Execute the full pipeline for a single story.
 
 ```bash
-forge run <spec-file> [flags]
+forge run <story-file> [flags]
 ```
 
-**Use this when:** You have a single story ready and want end-to-end execution.
-**Avoid this when:** Running many stories — use `forge sprint` instead.
-**Pairs well with:** `--verbose` on first use to see what's happening; `--auto-merge` for unattended runs.
+**Use this when:** You have one story ready and want end-to-end execution.
+**Avoid this when:** Running many stories — use `forge sprint`.
 
 **Flags:**
 
 | Flag | Description |
 |------|-------------|
-| `--verbose`, `-v` | Show tool activity and raw agent output in real time |
-| `--auto-merge` | Merge feature branch to main after APPROVE |
+| `--verbose`, `-v` | Show tool activity, heartbeats, and raw agent output |
+| `--auto-merge` | Merge feature branch into the base branch after APPROVE |
 | `--interactive` | Pause at APPROVE for human confirmation |
-| `--resume` | Detect existing worktree state and resume from the right phase |
-| `--plan <path>` | Inject a pre-written plan, skip PLAN phase |
-| `--slug <name>` | Override slug from spec frontmatter |
-| `--config <path>` | Path to forge.yaml (default: walk up from spec) |
-| `--dry-run` | Print prompts without invoking agents |
-| `--no-notify` | Suppress OS/ntfy notifications |
+| `--resume` | Triage an existing worktree and resume from the best phase |
+| `--plan <path>` | Inject a pre-written plan and skip PLAN |
+| `--slug <name>` | Override the story slug |
+| `--config <path>` | Path to `forge.yaml` |
+| `--dry-run` | Print prompts/config without invoking agents |
+| `--no-notify` | Suppress notifications |
+| `--until <phase>` | Stop after a specific phase and preserve the worktree |
+| `--from <phase>` | Resume from a specific phase in an existing worktree |
+| `--reviewers <N>` | Limit the review pool to the first N reviewers |
+| `--max-cycles <N>` | Cap review→dev cycles for this run |
+| `--dev-model <provider/model@base_url>` | Override the dev model for one run |
+| `--plan-model <provider/model>` | Override the plan model for one run |
+| `--fg` | Run in the foreground instead of detaching |
+| `--no-pull` | Skip `git pull --ff-only` before fresh worktree creation |
 
 **Examples:**
 
 ```bash
-# Basic run
-forge run specs/add-auth.md --verbose
-
-# Resume a failed run from where it left off
-forge run specs/add-auth.md --resume --verbose
-
-# Inject a pre-written plan
-forge run specs/add-auth.md --plan docs/plans/auth-plan.md
-
-# Dry run — see what prompts would be sent
-forge run specs/add-auth.md --dry-run
+forge run stories/add-auth.md --verbose
+forge run stories/add-auth.md --resume --verbose
+forge run stories/add-auth.md --plan docs/plans/auth-plan.md
+forge run stories/add-auth.md --until plan --fg --verbose
+forge run stories/add-auth.md --from review --fg
 ```
 
 ### Flag guidance
 
 **`--resume`**
-**Use this when:** A run was interrupted (crash, Ctrl+C, timeout) and you want
-to continue without losing the work already done.
-**Avoid this when:** The worktree was manually edited in ways that might confuse
-state detection — delete the worktree and start fresh instead.
-**Pairs well with:** `--verbose` to verify which phase it resumed from.
+Use this when a run was interrupted and you want automatic state detection.
 
-See [Resume Behavior](#resume-behavior) for the full state recovery matrix.
+**`--until` / `--from`**
+Use these for partial workflows, inspection checkpoints, or explicit re-entry
+into an existing worktree. Avoid combining them with `--resume`.
 
----
-
-**`--verbose`**
-**Use this when:** Diagnosing provider issues, gate failures, or worktree behavior;
-or any time you want to see agent tool calls in real time.
-**Avoid this when:** Running unattended in CI — use log files instead.
-**Pairs well with:** `--resume` when diagnosing a resume scenario.
-
----
-
-**`--auto-merge`**
-**Use this when:** You trust the review gate and want fully unattended runs.
-**Avoid this when:** You want to inspect the diff before merging.
-**Pairs well with:** `forge sprint` for batch unattended runs.
-
----
-
-**`--interactive`**
-**Use this when:** You want a human checkpoint before merge even after APPROVE.
-**Avoid this when:** Unattended/CI runs — it will block indefinitely waiting for input.
-**Pairs well with:** `--verbose` to see what you're approving.
-
----
-
-**`--dry-run`**
-**Use this when:** You want to inspect the prompts that will be sent before
-committing real API spend; or when writing a new story and validating it reads correctly.
-**Avoid this when:** You actually want to run the pipeline.
-**Pairs well with:** Any story you're writing for the first time.
+**`--fg`**
+Use this when you want foreground execution. Detached execution is the default.
 
 ---
 
 ## `forge review`
 
-Run only the review phase on an existing worktree (skip plan/dev).
+Run only the review phase on an existing worktree.
 
 ```bash
-forge review <spec-file> [flags]
+forge review <story-file> [flags]
 ```
 
-**Use this when:** You've manually implemented a feature in a worktree and want
-multi-model review, or a previous review failed to parse and you want to retry.
-**Avoid this when:** You haven't run dev yet — there's nothing to review.
-**Pairs well with:** `--verbose` to see the reviewer's reading activity.
+**Use this when:** You implemented or fixed something in a worktree and want to
+run review without re-running PLAN/DEV.
 
 **Flags:**
 
 | Flag | Description |
 |------|-------------|
-| `--worktree <path>` | Explicit worktree path (default: derived from slug) |
+| `--worktree <path>` | Explicit worktree path |
 | `--auto-merge` | Merge after APPROVE |
 | `--verbose`, `-v` | Show reviewer activity |
 | `--slug <name>` | Override slug |
-| `--config <path>` | Path to forge.yaml |
+| `--config <path>` | Path to `forge.yaml` |
 | `--no-notify` | Suppress notifications |
 
 ---
 
 ## `forge sprint`
 
-Run multiple stories sequentially through the full pipeline.
+Run multiple stories from a sprint manifest.
 
 ```bash
 forge sprint <manifest.yaml> [flags]
 ```
 
-**Use this when:** You have a batch of related stories to run — e.g., all stories
-in a milestone, or an end-of-day unattended run.
-**Avoid this when:** Stories have dependencies on each other that aren't tracked
-via `depends_on` in the manifest — they may conflict.
-**Pairs well with:** `--auto-merge` and `--resume` for reliable unattended batch runs.
+**Use this when:** You want batch execution with shared budget and story ordering.
 
 **Flags:**
 
@@ -154,96 +120,155 @@ via `depends_on` in the manifest — they may conflict.
 | `--verbose`, `-v` | Show activity for all stories |
 | `--auto-merge` | Auto-merge each approved story |
 | `--interactive` | Pause at each APPROVE |
-| `--resume` | Auto-triage each story and resume from correct phase |
-| `--config <path>` | Path to forge.yaml |
+| `--resume` | Auto-triage each story and resume from the correct phase |
+| `--config <path>` | Path to `forge.yaml` |
 | `--no-notify` | Suppress notifications |
+| `--detach` | Queue the sprint on a running daemon and return immediately |
+| `--fg` | Run in the foreground instead of detaching |
+| `--no-pull` | Skip `git pull --ff-only` before fresh worktree creation |
 
 **Sprint manifest format:**
 
 ```yaml
 name: "Sprint Name"
-budget_usd: 50          # total budget across all stories
-auto_merge: true         # auto-merge each APPROVED story (optional)
+budget_usd: 50
+auto_merge: true
 specs:
-  - specs/story-one.md
-  - specs/story-two.md
-  - specs/story-three.md
+  - stories/story-one.md
+  - stories/story-two.md
+  - stories/story-three.md
 ```
-
-Stories run in order. A failed story doesn't block subsequent ones. Budget is
-shared — if story-one uses $30 of a $50 budget, story-two gets $20.
 
 ---
 
 ## `forge ideate`
 
-Multi-LLM deliberation to generate a story from a problem description.
+Run multi-model deliberation to generate a story from a brief.
 
 ```bash
 forge ideate <brief-text-or-file> [flags]
 ```
 
-**Use this when:** You have a fuzzy idea and want a well-structured story with
-acceptance criteria before running the pipeline.
-**Avoid this when:** You already have clear acceptance criteria — write the story
-directly.
-**Pairs well with:** Saving output to `specs/` and reviewing it before running.
+**Use this when:** You have a fuzzy problem statement and want a structured story.
 
 **Flags:**
 
 | Flag | Description |
 |------|-------------|
-| `--output <path>` | Write generated story to file (default: stdout) |
-| `--rounds <N>` | Deliberation rounds, 1-3 (default: 2) |
-| `--config <path>` | Path to forge.yaml |
-| `--dry-run` | Print to stdout, don't write file |
+| `--output <path>` | Write generated story to file (default: `stories/<slug>.md`) |
+| `--rounds <N>` | Deliberation rounds, 1-3 |
+| `--config <path>` | Path to `forge.yaml` |
+| `--dry-run` | Print the synthesized story without writing a file |
 | `--verbose`, `-v` | Show deliberation activity |
 
 **Examples:**
 
 ```bash
-# From inline text
-forge ideate "Add rate limiting to the API" --output specs/rate-limiting.md
-
-# From a brief file
-forge ideate briefs/rate-limiting.txt --output specs/rate-limiting.md
+forge ideate "Add rate limiting to the API" --output stories/rate-limiting.md
+forge ideate briefs/rate-limiting.txt --output stories/rate-limiting.md
 ```
-
-Multiple models generate ideas independently, cross-review each other's output,
-and the coordinator synthesizes converged conclusions into a story.
 
 ---
 
 ## `forge check-providers`
 
-Smoke-test all configured AI providers to verify connectivity and auth.
+Smoke-test API-mode profiles in `forge.yaml`.
 
 ```bash
 forge check-providers [flags]
 ```
 
-**Use this when:** Before the first run on a new machine, after rotating API keys,
-or when debugging provider errors.
-**Avoid this when:** — (always safe to run)
-**Pairs well with:** Running immediately after `forge init` or after changing `forge.yaml`.
+**Use this when:** Verifying hosted-provider auth and connectivity.
 
 **Flags:**
 
 | Flag | Description |
 |------|-------------|
-| `--profile <name>` | Test only one specific profile |
-| `--config <path>` | Path to forge.yaml |
+| `--profile <name>` | Test only one API profile |
+| `--config <path>` | Path to `forge.yaml` |
 
-**Example output:**
+---
 
+## `forge check-config`
+
+Show the effective config, auth readiness, and warnings.
+
+```bash
+forge check-config [forge.yaml]
 ```
-[check] Testing 4 provider(s)...
-  ✓ claude-reviewer (claude/opus)         0.8s
-  ✓ codex-reviewer (openai/o4-mini)       1.2s
-  ✓ gemini-reviewer (google/gemini-2.5-flash)  0.6s
-  ✗ deepseek-reviewer (deepseek/deepseek-chat)  error: 401 Unauthorized
-[check] 3 of 4 providers healthy
+
+**Use this when:** After editing config, before a release, or when debugging model wiring.
+
+---
+
+## `forge telemetry`
+
+Show historical per-phase cost and duration from `.forge/audits/history.jsonl`.
+
+```bash
+forge telemetry [flags]
 ```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--since <YYYY-MM-DD>` | Only include runs on or after this date |
+| `--phase <phase>` | Show a single phase (`preflight`, `plan`, `plan_review`, `dev`, `validate`, `review`) |
+| `--config <path>` | Path to `forge.yaml` |
+
+---
+
+## `forge status`
+
+Show active detached runs and pending decisions.
+
+```bash
+forge status
+```
+
+---
+
+## `forge logs`
+
+Tail the log file for a running detached run.
+
+```bash
+forge logs <run-id>
+```
+
+---
+
+## `forge stop`
+
+Send `SIGTERM` to a running detached run.
+
+```bash
+forge stop <run-id>
+```
+
+---
+
+## `forge decide`
+
+Record a decision for a pending HITL checkpoint.
+
+```bash
+forge decide <run-id> <action>
+```
+
+---
+
+## `forge daemon`
+
+Manage the legacy persistent daemon runner.
+
+```bash
+forge daemon <start|stop|status|install|uninstall>
+```
+
+`forge daemon` is deprecated now that `forge run` and `forge sprint` auto-detach
+by default, but it remains available for daemon-specific workflows.
 
 ---
 
@@ -255,12 +280,17 @@ Create a `.forge/.env` skeleton for API keys.
 forge secrets-init
 ```
 
-**Use this when:** Setting up API-mode providers (OpenAI, Google, DeepSeek).
-**Avoid this when:** Using only CLI-mode providers (Claude Code, Codex CLI, Gemini CLI)
-— they handle auth themselves, no `.forge/.env` needed.
+**Use this when:** Setting up API-mode providers such as OpenAI, Google, Anthropic, or DeepSeek.
 
-**Creates:** `.forge/.env` with commented-out entries for all supported providers.
-Also updates `.gitignore` to exclude `.forge/.env`.
+---
+
+## `forge init-hooks`
+
+Scaffold `.forge/hooks/post_run.sh` and hook documentation.
+
+```bash
+forge init-hooks
+```
 
 ---
 
@@ -272,10 +302,16 @@ Display a human-readable summary of an audit file.
 forge audit <audit-file.yaml>
 ```
 
-**Use this when:** Reviewing a run's outcome, cost breakdown, or reviewer findings.
-**Avoid this when:** — (always safe to run, read-only)
+---
 
-Shows: outcome, timing, cost breakdown, review verdicts, findings.
+## `forge version`
+
+Print the installed version, and in editable installs show branch, commit, and
+tag distance.
+
+```bash
+forge version
+```
 
 ---
 
@@ -283,20 +319,21 @@ Shows: outcome, timing, cost breakdown, review verdicts, findings.
 
 | Interrupted state | Resume behavior | Notes |
 |-------------------|-----------------|-------|
-| During PLAN | Reruns PLAN | Plan output not persisted until complete |
-| During DEV | Reruns DEV iter from scratch | Previous partial edits are in worktree |
+| During PLAN | Reruns PLAN | Plan output is not persisted until complete |
+| During DEV | Reruns DEV iter from scratch | Previous partial edits remain in the worktree |
 | Failed VALIDATE (gate FAIL) | Reruns DEV with gate failure context | Normal retry path |
 | Failed REVIEW parse / schema error | Reruns REVIEW | Review is re-invoked; no dev iteration consumed |
 | REVIEW returned REQUEST_CHANGES | Reruns DEV with P1 findings | Normal review loop |
 | Provider crashed / timed out mid-phase | Reruns the crashed phase | Safe; phases are idempotent |
-| Stale worktree from previous run | Resumes from last confirmed phase | May produce unexpected results if story changed |
-| Manual human edits made to worktree | Resumes from VALIDATE | Coordinator sees edited state |
+| Stale worktree from previous run | Resumes from last confirmed phase | May produce unexpected results if the story changed |
+| Manual human edits made to worktree | Resumes from VALIDATE | Coordinator sees the edited state |
 
 **Force a clean restart:**
+
 ```bash
 git worktree remove .forge/worktrees/<slug> --force
 git branch -D forge/<slug>
-forge run specs/my-feature.md --verbose   # no --resume
+forge run stories/my-feature.md --verbose
 ```
 
 ---
@@ -310,14 +347,15 @@ forge run specs/my-feature.md --verbose   # no --resume
 | `GOOGLE_API_KEY` | API-mode Google agents |
 | `DEEPSEEK_API_KEY` | API-mode DeepSeek agents |
 | `NTFY_URL` | Notification endpoint |
+| `SLACK_WEBHOOK_URL` | Slack notifications when configured |
 
-Set these in `.forge/.env` (project-scoped) or as shell environment variables.
+Set these in `.forge/.env` or as shell environment variables.
 
 ---
 
 ## See also
 
-- [Troubleshooting](troubleshooting.md) — common errors and fixes
-- [Getting Started](getting-started.md) — initial setup walkthrough
-- [Inputs Reference](inputs-reference.md) — story and sprint file formats
-- [Provider Setup Guide](choose-your-provider-setup.md) — which provider pattern to use
+- [Getting Started](getting-started.md)
+- [Inputs Reference](inputs-reference.md)
+- [Provider Setup Guide](choose-your-provider-setup.md)
+- [Troubleshooting](troubleshooting.md)

@@ -40,6 +40,10 @@ git commit -m "initial: hello-forge scaffold"
 forge run specs/add-greeting.md --verbose
 ```
 
+This example keeps its stories under `specs/` for continuity. New projects
+created with `forge init` now scaffold `stories/TEMPLATE.md`, but any story
+file path works.
+
 Expected shape of a successful run:
 
 ```text
