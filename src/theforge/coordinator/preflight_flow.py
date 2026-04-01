@@ -38,6 +38,7 @@ from .preflight import (
     _parse_preflight_sufficiency,
     _parse_preflight_verdict,
     _parse_preflight_warnings,
+    _parse_preflight_work_type,
 )
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
@@ -126,6 +127,7 @@ def _run_preflight_phase(
         )
         state.preflight_complexity = "large"
         state.preflight_sufficiency = "needs_planning"
+        state.preflight_work_type = "feature"
         _log("  ⚠ PREFLIGHT failed — defaulting complexity to large")
 
     state.preflight_verdict = verdict
@@ -146,6 +148,9 @@ def _run_preflight_phase(
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
         state.preflight_sufficiency = sufficiency
         _log(f"  Sufficiency: {sufficiency}")
+        work_type = _parse_preflight_work_type(preflight_result.output)
+        state.preflight_work_type = work_type
+        _log(f"  Work type: {work_type}")
     else:
         complexity = state.preflight_complexity
         _log(f"  Complexity: {complexity} (preflight failed — using fallback)")

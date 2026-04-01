@@ -51,6 +51,32 @@ _VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
 
 _VALID_SUFFICIENCIES = frozenset({"implementation_ready", "needs_planning"})
 
+_VALID_WORK_TYPES = frozenset({"feature", "refactor", "mechanical", "bug"})
+
+
+def _parse_preflight_work_type(output: str) -> str:
+    """Extract work_type from preflight agent output. Defaults to 'feature' if absent."""
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            raw = str(parsed.get("work_type", "feature")).lower()
+            if raw in _VALID_WORK_TYPES:
+                return raw
+    except yaml.YAMLError:
+        pass
+
+    return "feature"
+
 
 def _parse_preflight_warnings(output: str) -> list[str]:
     """Extract warnings list from preflight agent output. Returns [] if absent."""
