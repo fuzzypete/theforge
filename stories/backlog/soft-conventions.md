@@ -1,7 +1,6 @@
 ---
 name: "Soft conventions — prompt-injected project standards for plan/dev/review"
 slug: soft-conventions
-depends_on: [hard-conventions]
 pytest_target: tests/
 ---
 
