@@ -591,7 +591,11 @@ class TestCreatePR:
 
         mock_run.side_effect = [
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-            type("Proc", (), {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""})(),
+            type(
+                "Proc",
+                (),
+                {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""},
+            )(),
         ]
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
@@ -614,7 +618,11 @@ class TestCreatePR:
 
         mock_run.side_effect = [
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
-            type("Proc", (), {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""})(),
+            type(
+                "Proc",
+                (),
+                {"returncode": 0, "stdout": "https://github.com/test/pr/1\n", "stderr": ""},
+            )(),
         ]
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
