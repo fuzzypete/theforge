@@ -29,6 +29,59 @@ class StoryTriage:
     slug: str = ""
 
 
+def _is_branch_merged(
+    branch: str,
+    base_branch: str,
+    project_root: Path,
+    slug: str | None = None,
+) -> bool:
+    """Return True if branch has been merged into base_branch.
+
+    Two detection paths handle the two merge strategies theforge uses:
+
+    1. Regular merge commit (git merge --no-edit fallback):
+       --is-ancestor passes AND branch..base_branch count > 0 (base advanced
+       past the branch tip via a merge commit).
+
+    2. Fast-forward merge (git merge --ff-only, preferred):
+       After an FF merge, branch and base point at the same commit, so
+       branch..base_branch count == 0.  This is indistinguishable from a branch
+       created at the current base HEAD using git state alone.  When slug is
+       provided, the audit trail (has_review_approve) acts as the tiebreaker:
+       a story that ran through the pipeline has an APPROVE record; a freshly
+       created branch with no work does not.
+
+    A branch that was merely created at base HEAD (count == 0, no audit entry)
+    correctly returns False.
+    """
+    try:
+        merge_result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", branch, base_branch],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        if merge_result.returncode == 0:
+            # Count commits in base_branch NOT reachable from branch.
+            ahead_result = subprocess.run(
+                ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
+            )
+            ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
+            if ahead_count > 0:
+                # Regular merge: base has commits not in branch.
+                return True
+            # Fast-forward merge: branch and base at the same tip (count == 0).
+            # Fall back to the audit trail when the slug is known.
+            if slug is not None:
+                return has_review_approve(project_root, slug, base_branch, branch)
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    return False
+
+
 class StoryDAG:
     """Dependency-aware scheduler for concurrent story execution.
 
@@ -42,10 +95,12 @@ class StoryDAG:
     mark_skipped() adds only to _finished (story is done but deps not satisfied).
     """
 
-    def __init__(self, tasks: list[TaskStory]) -> None:
+    def __init__(self, tasks: list[TaskStory], satisfied: set[str] | None = None) -> None:
         self._tasks: dict[str, TaskStory] = {t.slug: t for t in tasks}
         self._deps: dict[str, set[str]] = {t.slug: set(t.depends_on) for t in tasks}
-        self._completed: set[str] = set()  # satisfied: merged or ALREADY_DONE
+        self._completed: set[str] = (
+            set(satisfied) if satisfied else set()
+        )  # satisfied: merged or ALREADY_DONE
         self._finished: set[str] = set()  # all done: any outcome
 
     def ready(self) -> list[TaskStory]:
@@ -79,26 +134,35 @@ class StoryDAG:
         return [task for slug, task in self._tasks.items() if slug not in self._finished]
 
 
-def build_dag(tasks: list[TaskStory]) -> StoryDAG:
+def build_dag(tasks: list[TaskStory], satisfied: set[str] | None = None) -> StoryDAG:
     """Build a StoryDAG from a list of TaskStory objects.
 
     Raises ValueError if:
-    - any depends_on slug references a story not present in the manifest
+    - any depends_on slug references a story not present in the manifest and not in satisfied
     - circular dependencies are detected
+
+    Args:
+        tasks: Stories in this sprint manifest.
+        satisfied: Slugs already merged to main (from prior sprints). Dependencies
+            on these slugs are treated as met without requiring them in the manifest.
     """
     known_slugs = {t.slug for t in tasks}
+    _satisfied = satisfied or set()
 
-    # Validate all depends_on slugs exist in the manifest
+    # Validate all depends_on slugs exist in the manifest or are pre-satisfied
     for task in tasks:
-        missing = [dep for dep in task.depends_on if dep not in known_slugs]
+        missing = [
+            dep for dep in task.depends_on if dep not in known_slugs and dep not in _satisfied
+        ]
         if missing:
             raise ValueError(
                 f"Story '{task.slug}' depends on unknown slug(s): {', '.join(missing)}. "
                 f"All depends_on slugs must reference stories in the sprint manifest."
             )
 
-    # Detect circular dependencies via DFS (gray/white/black coloring)
-    deps = {t.slug: list(t.depends_on) for t in tasks}
+    # Detect circular dependencies via DFS (gray/white/black coloring).
+    # Exclude satisfied slugs — they are external and not in the DFS graph.
+    deps = {t.slug: [d for d in t.depends_on if d not in _satisfied] for t in tasks}
     visited: set[str] = set()
     in_stack: set[str] = set()
 
@@ -119,7 +183,7 @@ def build_dag(tasks: list[TaskStory]) -> StoryDAG:
         if task.slug not in visited:
             _dfs(task.slug)
 
-    return StoryDAG(tasks)
+    return StoryDAG(tasks, satisfied=_satisfied)
 
 
 def _triage_spec(
@@ -144,39 +208,17 @@ def _triage_spec(
     base_branch = config.workspace.base_branch
     worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
 
-    # 1. Check if already merged to base branch
-    # --is-ancestor alone is not enough: a branch created at main HEAD with
-    # zero new commits also passes --is-ancestor.  We must also verify the
-    # branch has commits that diverge from main (i.e. it's not just pointing
-    # at the same commit or an older one).
-    try:
-        merge_result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", branch, base_branch],
-            cwd=str(project_root),
-            capture_output=True,
-            timeout=30,
+    # 1. Check if already merged to base branch.
+    # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
+    # for fast-forward merges where branch and base land on the same commit.
+    if _is_branch_merged(branch, base_branch, project_root, slug=slug):
+        return StoryTriage(
+            story_path=story_path,
+            action="skip_merged",
+            reason=f"already merged to {base_branch}",
+            worktree_path=None,
+            slug=slug,
         )
-        if merge_result.returncode == 0:
-            # Verify branch actually has unique commits (not just at base HEAD)
-            ahead_result = subprocess.run(
-                ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
-                cwd=str(project_root),
-                capture_output=True,
-                timeout=30,
-            )
-            ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
-            if ahead_count > 0:
-                return StoryTriage(
-                    story_path=story_path,
-                    action="skip_merged",
-                    reason=f"already merged to {base_branch}",
-                    worktree_path=None,
-                    slug=slug,
-                )
-            # ahead_count == 0: branch exists at base HEAD, not truly merged —
-            # fall through to worktree checks below
-    except (subprocess.TimeoutExpired, OSError, ValueError):
-        pass  # Branch may not exist yet — treat as not merged
 
     # 2. Check if worktree exists
     if not worktree_path.exists():
