@@ -1231,3 +1231,56 @@ class TestDefaultFlags:
         )
         config = load_config(config_path)
         assert config.review_pool_is_default is False
+
+
+class TestConventionsConfig:
+    def test_conventions_hard_parsed(self, tmp_path):
+        """forge.yaml with conventions.hard section parses into HardConventionsConfig."""
+        from theforge.config.types import HardConventionsConfig
+
+        config_path = _write_config(
+            {
+                "conventions": {
+                    "hard": {
+                        "max_module_lines": 300,
+                        "max_test_file_lines": 800,
+                        "no_circular_imports": True,
+                        "test_mirrors_source": False,
+                    }
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert isinstance(config.conventions_hard, HardConventionsConfig)
+        assert config.conventions_hard.max_module_lines == 300
+        assert config.conventions_hard.max_test_file_lines == 800
+        assert config.conventions_hard.no_circular_imports is True
+        assert config.conventions_hard.test_mirrors_source is False
+
+    def test_conventions_absent_is_none(self, tmp_path):
+        """forge.yaml without conventions section yields conventions_hard=None."""
+        config_path = _write_config({}, tmp_path)
+        config = load_config(config_path)
+        assert config.conventions_hard is None
+
+    def test_conventions_hard_defaults(self, tmp_path):
+        """conventions.hard with empty dict uses sensible defaults."""
+        from theforge.config.types import HardConventionsConfig
+
+        config_path = _write_config({"conventions": {"hard": {}}}, tmp_path)
+        config = load_config(config_path)
+        assert isinstance(config.conventions_hard, HardConventionsConfig)
+        assert config.conventions_hard.max_module_lines == 500
+        assert config.conventions_hard.max_test_file_lines == 1000
+        assert config.conventions_hard.no_circular_imports is True
+        assert config.conventions_hard.test_mirrors_source is True
+
+    def test_conventions_hard_invalid_type_raises(self, tmp_path):
+        """conventions.hard with wrong type raises ValueError."""
+        config_path = _write_config(
+            {"conventions": {"hard": {"max_module_lines": "not-an-int"}}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="max_module_lines"):
+            load_config(config_path)

@@ -225,6 +225,7 @@ class CoordinatorState:
     escalate_decision: str | None = None  # "approve" | "reject" | "continue"
     escalate_reason: str | None = None  # human-readable escalation reason
     story_validation_result: StoryValidationResult | None = None
+    convention_violations: list[dict] = field(default_factory=list)
     plan_validation_findings: list[dict] = field(default_factory=list)
     plan_finding_registry: list[PlanFindingRecord] = field(default_factory=list)
     # Stable identity records for plan review findings across regen cycles,

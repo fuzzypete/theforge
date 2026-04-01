@@ -258,6 +258,16 @@ class SprintConfig:
 
 
 @dataclass(frozen=True)
+class HardConventionsConfig:
+    """Mechanically enforced code structure rules."""
+
+    max_module_lines: int = 500
+    max_test_file_lines: int = 1000
+    no_circular_imports: bool = True
+    test_mirrors_source: bool = True
+
+
+@dataclass(frozen=True)
 class ForgeConfig:
     """Top-level orchestrator configuration loaded from forge.yaml."""
 
@@ -283,6 +293,7 @@ class ForgeConfig:
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
+    conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
 
     @property
     def review_profile(self) -> ModelProfile:

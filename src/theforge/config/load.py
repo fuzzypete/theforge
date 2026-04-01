@@ -26,6 +26,7 @@ from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
     ForgeConfig,
+    HardConventionsConfig,
     HooksConfig,
     LogConfig,
     ModelProfile,
@@ -359,6 +360,42 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
     sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
 
+    # Conventions config
+    conventions_hard_raw = raw.get("conventions", {}).get("hard", None)
+    if conventions_hard_raw is None:
+        conventions_hard_cfg: HardConventionsConfig | None = None
+    else:
+        _max_module = conventions_hard_raw.get("max_module_lines", 500)
+        _max_test = conventions_hard_raw.get("max_test_file_lines", 1000)
+        _no_circular = conventions_hard_raw.get("no_circular_imports", True)
+        _test_mirrors = conventions_hard_raw.get("test_mirrors_source", True)
+        if not isinstance(_max_module, int):
+            raise ValueError(
+                "forge.yaml 'conventions.hard.max_module_lines' must be an int,"
+                f" got {_max_module!r}"
+            )
+        if not isinstance(_max_test, int):
+            raise ValueError(
+                "forge.yaml 'conventions.hard.max_test_file_lines' must be an int,"
+                f" got {_max_test!r}"
+            )
+        if not isinstance(_no_circular, bool):
+            raise ValueError(
+                "forge.yaml 'conventions.hard.no_circular_imports' must be a bool,"
+                f" got {_no_circular!r}"
+            )
+        if not isinstance(_test_mirrors, bool):
+            raise ValueError(
+                "forge.yaml 'conventions.hard.test_mirrors_source' must be a bool,"
+                f" got {_test_mirrors!r}"
+            )
+        conventions_hard_cfg = HardConventionsConfig(
+            max_module_lines=_max_module,
+            max_test_file_lines=_max_test,
+            no_circular_imports=_no_circular,
+            test_mirrors_source=_test_mirrors,
+        )
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -382,4 +419,5 @@ def load_config(config_path: Path) -> ForgeConfig:
         assignment=assignment_cfg,
         review_pool_is_default=_review_pool_is_default,
         plan_model_is_default=_plan_model_is_default,
+        conventions_hard=conventions_hard_cfg,
     )

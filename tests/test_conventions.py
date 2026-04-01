@@ -1,0 +1,226 @@
+"""Tests for src/theforge/conventions.py."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from theforge.config.types import HardConventionsConfig
+from theforge.conventions import (
+    ConventionViolation,
+    _check_circular_imports,
+    _check_line_counts,
+    _check_test_mirrors,
+    check_hard_conventions,
+)
+
+
+def _make_config(**kwargs) -> HardConventionsConfig:
+    defaults = dict(
+        max_module_lines=500,
+        max_test_file_lines=1000,
+        no_circular_imports=True,
+        test_mirrors_source=True,
+    )
+    defaults.update(kwargs)
+    return HardConventionsConfig(**defaults)
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+# ── Line count tests ──────────────────────────────────────────────────
+
+
+class TestLineCountCheck:
+    def test_line_count_violation(self, tmp_path):
+        """File over max_module_lines is reported."""
+        py_file = tmp_path / "src" / "theforge" / "big.py"
+        _write(py_file, "\n" * 501)  # 501 lines (empty lines count)
+        cfg = _make_config(max_module_lines=500)
+        violations = _check_line_counts(cfg, tmp_path)
+        assert any(v.rule == "max_module_lines" and "big.py" in v.file for v in violations)
+
+    def test_line_count_ok(self, tmp_path):
+        """File at exactly the limit is not reported."""
+        py_file = tmp_path / "src" / "theforge" / "small.py"
+        _write(py_file, "\n" * 500)  # 500 lines
+        cfg = _make_config(max_module_lines=500)
+        violations = _check_line_counts(cfg, tmp_path)
+        assert not any(v.rule == "max_module_lines" and "small.py" in v.file for v in violations)
+
+    def test_test_file_line_count_violation(self, tmp_path):
+        """Test file over max_test_file_lines is reported with correct rule."""
+        py_file = tmp_path / "tests" / "test_big.py"
+        _write(py_file, "\n" * 1001)
+        cfg = _make_config(max_test_file_lines=1000)
+        violations = _check_line_counts(cfg, tmp_path)
+        assert any(v.rule == "max_test_file_lines" and "test_big.py" in v.file for v in violations)
+
+    def test_test_file_line_count_ok(self, tmp_path):
+        """Test file at limit is not reported."""
+        py_file = tmp_path / "tests" / "test_ok.py"
+        _write(py_file, "\n" * 1000)
+        cfg = _make_config(max_test_file_lines=1000)
+        violations = _check_line_counts(cfg, tmp_path)
+        assert not any(
+            v.rule == "max_test_file_lines" and "test_ok.py" in v.file for v in violations
+        )
+
+    def test_missing_src_dir_ok(self, tmp_path):
+        """No src/ dir → no violations, no crash."""
+        cfg = _make_config()
+        violations = _check_line_counts(cfg, tmp_path)
+        assert violations == []
+
+
+# ── Circular import tests ─────────────────────────────────────────────
+
+
+class TestCircularImportCheck:
+    def test_circular_import_detected(self, tmp_path):
+        """Two files that import each other → no_circular_imports violation."""
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        _write(pkg / "a.py", "from theforge import b\n")
+        _write(pkg / "b.py", "from theforge import a\n")
+        violations = _check_circular_imports(tmp_path)
+        assert any(v.rule == "no_circular_imports" for v in violations)
+
+    def test_no_circular_imports(self, tmp_path):
+        """Linear imports → no violation."""
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        _write(pkg / "a.py", "# standalone\n")
+        _write(pkg / "b.py", "from theforge import a\n")
+        _write(pkg / "c.py", "from theforge import b\n")
+        violations = _check_circular_imports(tmp_path)
+        assert not any(v.rule == "no_circular_imports" for v in violations)
+
+    def test_missing_src_dir_ok(self, tmp_path):
+        """No src/ dir → no violations."""
+        violations = _check_circular_imports(tmp_path)
+        assert violations == []
+
+    def test_syntax_error_skipped(self, tmp_path):
+        """Syntax-error files are skipped without crashing."""
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        _write(pkg / "bad.py", "def foo(\n")  # syntax error
+        violations = _check_circular_imports(tmp_path)
+        # no crash; bad.py has no imports to form a cycle
+        assert not any(v.rule == "no_circular_imports" for v in violations)
+
+
+# ── Test mirror tests ─────────────────────────────────────────────────
+
+
+class TestTestMirrorCheck:
+    def test_missing_test_mirror(self, tmp_path):
+        """src/theforge/bar.py with no tests/test_bar.py → violation."""
+        _write(tmp_path / "src" / "theforge" / "bar.py", "# module\n")
+        (tmp_path / "tests").mkdir(parents=True)
+        violations = _check_test_mirrors(tmp_path)
+        assert any(v.rule == "test_mirrors_source" and "bar.py" in v.file for v in violations)
+
+    def test_test_mirror_ok(self, tmp_path):
+        """Mirror exists → no violation."""
+        _write(tmp_path / "src" / "theforge" / "bar.py", "# module\n")
+        _write(tmp_path / "tests" / "test_bar.py", "# tests\n")
+        violations = _check_test_mirrors(tmp_path)
+        assert not any(v.rule == "test_mirrors_source" and "bar.py" in v.file for v in violations)
+
+    def test_package_mirror_glob(self, tmp_path):
+        """src/theforge/pkg/ with tests/test_pkg_foo.py → no violation."""
+        (tmp_path / "src" / "theforge" / "pkg").mkdir(parents=True)
+        _write(tmp_path / "tests" / "test_pkg_foo.py", "# tests\n")
+        violations = _check_test_mirrors(tmp_path)
+        assert not any(v.rule == "test_mirrors_source" and "pkg" in v.file for v in violations)
+
+    def test_package_mirror_dir(self, tmp_path):
+        """src/theforge/pkg/ with tests/test_pkg/ → no violation."""
+        (tmp_path / "src" / "theforge" / "pkg").mkdir(parents=True)
+        (tmp_path / "tests" / "test_pkg").mkdir(parents=True)
+        violations = _check_test_mirrors(tmp_path)
+        assert not any(v.rule == "test_mirrors_source" and "pkg" in v.file for v in violations)
+
+    def test_package_missing_mirror(self, tmp_path):
+        """src/theforge/pkg/ with no tests/ mirror → violation."""
+        (tmp_path / "src" / "theforge" / "pkg").mkdir(parents=True)
+        (tmp_path / "tests").mkdir(parents=True)
+        violations = _check_test_mirrors(tmp_path)
+        assert any(v.rule == "test_mirrors_source" and "pkg" in v.file for v in violations)
+
+    def test_dunder_skipped(self, tmp_path):
+        """__init__.py and __pycache__ are not checked."""
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        _write(pkg / "__init__.py", "# init\n")
+        (pkg / "__pycache__").mkdir()
+        (tmp_path / "tests").mkdir(parents=True)
+        violations = _check_test_mirrors(tmp_path)
+        assert violations == []
+
+    def test_missing_src_or_tests_ok(self, tmp_path):
+        """Missing src or tests dir → no crash, no violations."""
+        violations = _check_test_mirrors(tmp_path)
+        assert violations == []
+
+
+# ── check_hard_conventions integration ───────────────────────────────
+
+
+class TestCheckHardConventions:
+    def test_all_checks_run(self, tmp_path):
+        """check_hard_conventions calls all enabled checks."""
+        # Set up a violation in each category
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        # line count violation
+        _write(pkg / "big.py", "\n" * 6)
+        # missing test mirror
+        (tmp_path / "tests").mkdir(parents=True)
+        cfg = _make_config(max_module_lines=5, no_circular_imports=False, test_mirrors_source=True)
+        violations = check_hard_conventions(cfg, tmp_path)
+        rules = {v.rule for v in violations}
+        assert "max_module_lines" in rules
+        assert "test_mirrors_source" in rules
+
+    def test_disabled_checks_not_run(self, tmp_path):
+        """no_circular_imports=False and test_mirrors_source=False → those checks skipped."""
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        _write(pkg / "a.py", "from theforge import b\n")
+        _write(pkg / "b.py", "from theforge import a\n")
+        (tmp_path / "tests").mkdir(parents=True)
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        violations = check_hard_conventions(cfg, tmp_path)
+        assert not any(v.rule == "no_circular_imports" for v in violations)
+        assert not any(v.rule == "test_mirrors_source" for v in violations)
+
+    def test_violations_cleared_on_clean_pass(self, tmp_path):
+        """Violations list is [] when all checks pass (stale state not returned)."""
+        pkg = tmp_path / "src" / "theforge"
+        pkg.mkdir(parents=True)
+        _write(pkg / "ok.py", "# fine\n")
+        _write(tmp_path / "tests" / "test_ok.py", "# fine\n")
+        cfg = _make_config()
+        violations = check_hard_conventions(cfg, tmp_path)
+        assert violations == []
+
+    def test_violation_dataclass_fields(self, tmp_path):
+        """ConventionViolation has correct fields."""
+        _write(tmp_path / "src" / "theforge" / "over.py", "\n" * 6)
+        (tmp_path / "tests").mkdir(parents=True)
+        cfg = _make_config(
+            max_module_lines=5, no_circular_imports=False, test_mirrors_source=False
+        )
+        violations = check_hard_conventions(cfg, tmp_path)
+        assert len(violations) >= 1
+        v = violations[0]
+        assert isinstance(v, ConventionViolation)
+        assert v.rule
+        assert v.file
+        assert v.detail
+        assert v.blocking is True
