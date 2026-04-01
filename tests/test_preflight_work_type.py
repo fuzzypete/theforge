@@ -300,6 +300,8 @@ findings: []
 
 
 class TestMechanicalSkipsPlanReview:
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -312,6 +314,8 @@ class TestMechanicalSkipsPlanReview:
         mock_preflight,
         mock_plan_agent,
         mock_plan_review_pool,
+        mock_review_pool,
+        mock_human_review,
         tmp_path,
     ):
         """For mechanical work type, plan review pool is NOT invoked."""
@@ -334,7 +338,8 @@ class TestMechanicalSkipsPlanReview:
         mock_plan_agent.return_value = plan_result
         mock_dev_agent.return_value = dev_result
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_plan_review_pool.return_value = [
+        mock_plan_review_pool.return_value = []
+        mock_review_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
@@ -350,6 +355,8 @@ class TestMechanicalSkipsPlanReview:
 
 
 class TestRefactorAdvisoryPlanReview:
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -362,6 +369,8 @@ class TestRefactorAdvisoryPlanReview:
         mock_preflight,
         mock_plan_agent,
         mock_plan_review_pool,
+        mock_review_pool,
+        mock_human_review,
         tmp_path,
     ):
         """For refactor work type, even a P1 REJECT from the reviewer does not block."""
@@ -384,14 +393,17 @@ class TestRefactorAdvisoryPlanReview:
         mock_plan_agent.return_value = plan_result
         mock_dev_agent.return_value = dev_result
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # Reviewer returns REJECT with P1 — but advisory mode should ignore it
+        # Plan reviewer returns REJECT with P1 — but advisory mode should ignore it
         mock_plan_review_pool.return_value = [
             _make_agent_result(success=True, output=PLAN_AGENT_REJECT, profile_name="reviewer")
+        ]
+        mock_review_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task)
 
-        # Should succeed even though reviewer rejected
+        # Should succeed even though plan reviewer rejected
         assert result.success is True
         # Plan review pool WAS called
         assert mock_plan_review_pool.call_count == 1
@@ -399,6 +411,8 @@ class TestRefactorAdvisoryPlanReview:
         assert mock_dev_agent.call_count == 1
         assert result.state.preflight_work_type == "refactor"
 
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -411,6 +425,8 @@ class TestRefactorAdvisoryPlanReview:
         mock_preflight,
         mock_plan_agent,
         mock_plan_review_pool,
+        mock_review_pool,
+        mock_human_review,
         tmp_path,
     ):
         """Refactor advisory: plan review runs once only, no regeneration."""
@@ -435,6 +451,9 @@ class TestRefactorAdvisoryPlanReview:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_review_pool.return_value = [
             _make_agent_result(success=True, output=PLAN_AGENT_REJECT, profile_name="reviewer")
+        ]
+        mock_review_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task)
