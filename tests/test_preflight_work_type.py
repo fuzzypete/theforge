@@ -720,6 +720,59 @@ class TestRefactorHumanPlanReviewAdvisory:
         assert mock_interactive.called
         assert result.state.preflight_work_type == "refactor"
 
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow._plan_review_interactive")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_refactor_human_explicit_abandon_is_terminal(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        mock_interactive,
+        mock_human_review,
+        tmp_path,
+    ):
+        """Refactor + human plan review: explicit 'abandon' stops the pipeline."""
+        config = _make_human_plan_review_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=PREFLIGHT_REFACTOR, cost_usd=0.02
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Plan\n\nStep 1: reorganize modules.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.30)
+
+        mock_preflight.return_value = preflight_result
+        mock_plan_agent.return_value = plan_result
+        mock_dev_agent.return_value = dev_result
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        # Human explicitly abandons — this should stop the run even in advisory mode
+        mock_interactive.return_value = "abandon"
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        # Explicit abandon must stop the pipeline — not advisory
+        assert result.success is False
+        assert result.phase == Phase.PLAN_REVIEW
+        assert "abandoned by human" in result.message
+        # Dev agent should NOT have run
+        assert mock_dev_agent.call_count == 0
+
 
 # ── Audit log test ────────────────────────────────────────────────────
 

@@ -288,10 +288,10 @@ def _run_plan_phase(
                 run_id=run_id,
             )
             if result is not None:
-                if _work_type == "refactor":
+                if _work_type == "refactor" and not _is_terminal_plan_result(result):
                     _log(
                         "  ⚠ PLAN_REVIEW   advisory (refactor — "
-                        "human rejection not blocking, continuing to DEV)"
+                        "regen exhausted but not blocking, continuing to DEV)"
                     )
                 else:
                     return result
@@ -337,6 +337,22 @@ def _run_plan_phase(
             _log("  ✓ PLAN_VALIDATION  all checks passed")
 
     return None
+
+
+def _is_terminal_plan_result(result: "CoordinatorResult") -> bool:
+    """Return True if a plan-review result represents a terminal stop (not advisory).
+
+    Used to distinguish refactor-advisory non-blocking outcomes from explicit
+    operator cancellations and hard errors:
+
+    - ESCALATE phase → always terminal (plan regen failure, unreadable plan file)
+    - "abandoned by human" message → explicit operator cancel → terminal
+    - "rejected N time(s)" message → exhausted regen attempts → NOT terminal
+      (for refactor advisory, proceed to DEV)
+    """
+    if result.phase == Phase.ESCALATE:
+        return True
+    return "abandoned by human" in (result.message or "")
 
 
 def _run_plan_agent_review(
