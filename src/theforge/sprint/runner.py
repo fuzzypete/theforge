@@ -661,18 +661,19 @@ def run_sprint(
             _total_waited = 0.0
             done_futs: set = set()
             while not done_futs and _total_waited < 3600.0:
+                _current_interval = _poll_interval
                 done_futs, _ = wait(
                     list(active.values()),
                     return_when=FIRST_COMPLETED,
-                    timeout=_poll_interval,
+                    timeout=_current_interval,
                 )
                 if not done_futs and use_plan_gates:
                     # Service plan gates while polling
                     _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
-                    # If we just released any gates, re-poll immediately
+                    # All gates released — switch to long poll
                     if not plan_gates:
                         _poll_interval = 3600.0
-                _total_waited += _poll_interval
+                _total_waited += _current_interval
 
             _log(f"[debug] wait() returned: {len(done_futs)} done")
             batch_number += 1

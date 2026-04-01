@@ -700,3 +700,28 @@ class TestReleaseplanGates:
 
         assert gate_b.is_set()
         assert "story-b" not in plan_gates
+
+    def test_poll_loop_no_false_timeout_after_last_gate_released(self):
+        """Releasing the last plan gate must not cause a false timeout.
+
+        Regression: _poll_interval was mutated to 3600 before being added to
+        _total_waited, making the loop think the full timeout had elapsed.
+        """
+
+        # Simulate the polling loop logic from run_sprint
+        plan_gates: dict[str, threading.Event] = {"story-a": threading.Event()}
+        _poll_interval = 2.0
+        _total_waited = 0.0
+
+        # First poll: no future completes, we release the last gate
+        _current_interval = _poll_interval
+        # Simulate: wait() returned no done futures
+        # Release gates
+        plan_gates.pop("story-a")
+        if not plan_gates:
+            _poll_interval = 3600.0
+        _total_waited += _current_interval
+
+        # After one 2s poll, total_waited should be 2.0, NOT 3600.0
+        assert _total_waited == 2.0, f"Expected 2.0 but got {_total_waited}"
+        assert _total_waited < 3600.0, "Loop would false-timeout"
