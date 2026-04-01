@@ -29,16 +29,30 @@ class StoryTriage:
     slug: str = ""
 
 
-def _is_branch_merged(branch: str, base_branch: str, project_root: Path) -> bool:
-    """Return True if branch is an ancestor of base_branch AND base has moved ahead.
+def _is_branch_merged(
+    branch: str,
+    base_branch: str,
+    project_root: Path,
+    slug: str | None = None,
+) -> bool:
+    """Return True if branch has been merged into base_branch.
 
-    Two checks are required:
-    1. --is-ancestor: branch tip is reachable from base_branch (merged or at same commit).
-    2. branch..base_branch count > 0: base has at least one commit not in branch,
-       meaning base advanced past the branch tip after the merge occurred.
-       A branch created at the current base HEAD has count == 0 and is NOT treated
-       as merged. A truly merged branch (FF or merge commit) will have count > 0
-       once base has any subsequent commit (including the merge commit itself).
+    Two detection paths handle the two merge strategies theforge uses:
+
+    1. Regular merge commit (git merge --no-edit fallback):
+       --is-ancestor passes AND branch..base_branch count > 0 (base advanced
+       past the branch tip via a merge commit).
+
+    2. Fast-forward merge (git merge --ff-only, preferred):
+       After an FF merge, branch and base point at the same commit, so
+       branch..base_branch count == 0.  This is indistinguishable from a branch
+       created at the current base HEAD using git state alone.  When slug is
+       provided, the audit trail (has_review_approve) acts as the tiebreaker:
+       a story that ran through the pipeline has an APPROVE record; a freshly
+       created branch with no work does not.
+
+    A branch that was merely created at base HEAD (count == 0, no audit entry)
+    correctly returns False.
     """
     try:
         merge_result = subprocess.run(
@@ -49,9 +63,6 @@ def _is_branch_merged(branch: str, base_branch: str, project_root: Path) -> bool
         )
         if merge_result.returncode == 0:
             # Count commits in base_branch NOT reachable from branch.
-            # After a real merge, base always has the merge commit (or later commits)
-            # that aren't reachable from the branch tip → count > 0.
-            # A branch at the exact current base HEAD has count == 0.
             ahead_result = subprocess.run(
                 ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
                 cwd=str(project_root),
@@ -59,7 +70,13 @@ def _is_branch_merged(branch: str, base_branch: str, project_root: Path) -> bool
                 timeout=30,
             )
             ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
-            return ahead_count > 0
+            if ahead_count > 0:
+                # Regular merge: base has commits not in branch.
+                return True
+            # Fast-forward merge: branch and base at the same tip (count == 0).
+            # Fall back to the audit trail when the slug is known.
+            if slug is not None:
+                return has_review_approve(project_root, slug, base_branch, branch)
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
     return False
@@ -191,11 +208,10 @@ def _triage_spec(
     base_branch = config.workspace.base_branch
     worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
 
-    # 1. Check if already merged to base branch
-    # --is-ancestor alone is not enough: a branch created at main HEAD with
-    # zero new commits also passes --is-ancestor.  _is_branch_merged also
-    # verifies the branch has unique commits before declaring it merged.
-    if _is_branch_merged(branch, base_branch, project_root):
+    # 1. Check if already merged to base branch.
+    # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
+    # for fast-forward merges where branch and base land on the same commit.
+    if _is_branch_merged(branch, base_branch, project_root, slug=slug):
         return StoryTriage(
             story_path=story_path,
             action="skip_merged",

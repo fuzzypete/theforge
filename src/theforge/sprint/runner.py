@@ -342,7 +342,9 @@ def run_sprint(
     for dep_slug in dependent_slugs - manifest_slugs:
         if dep_slug not in satisfied_slugs:
             branch = config.workspace.branch_pattern.format(slug=dep_slug)
-            if _is_branch_merged(branch, config.workspace.base_branch, config.project_root):
+            if _is_branch_merged(
+                branch, config.workspace.base_branch, config.project_root, slug=dep_slug
+            ):
                 satisfied_slugs.add(dep_slug)
 
     # Build DAG

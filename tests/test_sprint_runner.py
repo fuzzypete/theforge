@@ -6,9 +6,12 @@ main (not present in the current sprint manifest).
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from theforge.sprint.dag import StoryDAG, build_dag
+from theforge.sprint.dag import StoryDAG, _is_branch_merged, build_dag
 from theforge.task import TaskStory
 
 
@@ -136,3 +139,79 @@ def test_story_dag_satisfied_not_in_tasks() -> None:
     dag = StoryDAG(stories, satisfied={"story-a"})
     assert "story-a" not in dag._tasks
     assert "story-b" in dag._tasks
+
+
+# ── _is_branch_merged: fast-forward merge regression ─────────────────
+
+
+def _mock_git_ff(cmd: list[str], **kwargs: object) -> MagicMock:
+    """Mock git: --is-ancestor returns 0, rev-list count returns 0 (same tip = FF)."""
+    m = MagicMock()
+    m.returncode = 0
+    if "rev-list" in cmd and "--count" in cmd:
+        m.stdout = b"0"  # branch and base at same commit after FF
+    else:
+        m.stdout = b""
+    return m
+
+
+def _mock_git_not_ancestor(cmd: list[str], **kwargs: object) -> MagicMock:
+    """Mock git: --is-ancestor returns 1 (branch not ancestor of base)."""
+    m = MagicMock()
+    if "--is-ancestor" in cmd:
+        m.returncode = 1
+    else:
+        m.returncode = 0
+        m.stdout = b""
+    return m
+
+
+def test_is_branch_merged_ff_with_audit_approve(tmp_path: Path) -> None:
+    """After FF merge (branch = base tip), audit trail APPROVE → True."""
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_ff),
+        patch("theforge.sprint.dag.has_review_approve", return_value=True),
+    ):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is True
+
+
+def test_is_branch_merged_ff_no_audit(tmp_path: Path) -> None:
+    """After FF merge (branch = base tip), no audit trail entry → False (fresh branch)."""
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_ff),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is False
+
+
+def test_is_branch_merged_ff_no_slug(tmp_path: Path) -> None:
+    """After FF merge with no slug → False (no audit check possible, conservative)."""
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_ff):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path)
+    assert result is False
+
+
+def test_is_branch_merged_regular_merge(tmp_path: Path) -> None:
+    """Regular merge commit: base has moved ahead of branch → True without audit."""
+
+    def _mock_regular(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 0
+        if "rev-list" in cmd and "--count" in cmd:
+            m.stdout = b"3"  # base is 3 commits ahead of branch
+        else:
+            m.stdout = b""
+        return m
+
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_regular):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is True
+
+
+def test_is_branch_merged_not_ancestor(tmp_path: Path) -> None:
+    """Branch not an ancestor of base → False."""
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is False
