@@ -112,6 +112,29 @@ class TestCircularImportCheck:
         # no crash; bad.py has no imports to form a cycle
         assert not any(v.rule == "no_circular_imports" for v in violations)
 
+    def test_cycle_through_init(self, tmp_path):
+        """Cycle via package __init__.py is detected (init normalised to pkg name)."""
+        pkg = tmp_path / "src" / "theforge"
+        sub = pkg / "sub"
+        sub.mkdir(parents=True)
+        # a.py imports the sub package; sub/__init__.py imports a
+        _write(pkg / "a.py", "from theforge import sub\n")
+        _write(sub / "__init__.py", "from theforge import a\n")
+        violations = _check_circular_imports(tmp_path)
+        assert any(v.rule == "no_circular_imports" for v in violations)
+
+    def test_external_src_package_ignored(self, tmp_path):
+        """Cycles in src/other_pkg are not reported (spec scopes to src/theforge)."""
+        # Create a cycle in an unrelated package under src/
+        other = tmp_path / "src" / "other_pkg"
+        other.mkdir(parents=True)
+        _write(other / "x.py", "from other_pkg import y\n")
+        _write(other / "y.py", "from other_pkg import x\n")
+        # Ensure src/theforge exists but has no cycle
+        (tmp_path / "src" / "theforge").mkdir(parents=True)
+        violations = _check_circular_imports(tmp_path)
+        assert not any(v.rule == "no_circular_imports" for v in violations)
+
 
 # ── Test mirror tests ─────────────────────────────────────────────────
 
@@ -161,6 +184,13 @@ class TestTestMirrorCheck:
         (tmp_path / "tests").mkdir(parents=True)
         violations = _check_test_mirrors(tmp_path)
         assert violations == []
+
+    def test_underscore_module_requires_mirror(self, tmp_path):
+        """src/theforge/_secret.py with no mirror → violation (only __init__.py exempt)."""
+        _write(tmp_path / "src" / "theforge" / "_secret.py", "# private\n")
+        (tmp_path / "tests").mkdir(parents=True)
+        violations = _check_test_mirrors(tmp_path)
+        assert any(v.rule == "test_mirrors_source" and "_secret.py" in v.file for v in violations)
 
     def test_missing_src_or_tests_ok(self, tmp_path):
         """Missing src or tests dir → no crash, no violations."""

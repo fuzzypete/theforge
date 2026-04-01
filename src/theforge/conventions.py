@@ -72,9 +72,15 @@ def _check_line_counts(
 
 
 def _module_name(py_file: Path, src_root: Path) -> str:
-    """Convert a file path to a dotted module name relative to src."""
+    """Convert a file path to a dotted module name relative to src.
+
+    __init__.py is normalized to its package name:
+    theforge/pkg/__init__.py → theforge.pkg
+    """
     rel = py_file.relative_to(src_root)
     parts = list(rel.with_suffix("").parts)
+    if parts and parts[-1] == "__init__":
+        parts = parts[:-1]
     return ".".join(parts)
 
 
@@ -120,15 +126,17 @@ def _collect_imports(py_file: Path, src_root: Path) -> list[str]:
 
 
 def _check_circular_imports(project_root: Path) -> list[ConventionViolation]:
+    # Spec scopes this check to src/theforge only
+    theforge_src = project_root / "src" / "theforge"
     src_root = project_root / "src"
-    if not src_root.exists():
+    if not theforge_src.exists():
         return []
 
     # Build adjacency: module → set of imported modules
     adjacency: dict[str, list[str]] = {}
     file_map: dict[str, Path] = {}
 
-    for py_file in sorted(src_root.rglob("*.py")):
+    for py_file in sorted(theforge_src.rglob("*.py")):
         mod = _module_name(py_file, src_root)
         imports = _collect_imports(py_file, src_root)
         adjacency[mod] = imports
@@ -210,7 +218,7 @@ def _check_test_mirrors(project_root: Path) -> list[ConventionViolation]:
     violations: list[ConventionViolation] = []
 
     for item in sorted(src_pkg.iterdir()):
-        if item.name.startswith("_") or item.name == "__pycache__":
+        if item.name == "__init__.py" or item.name == "__pycache__":
             continue
 
         if item.is_file() and item.suffix == ".py":
