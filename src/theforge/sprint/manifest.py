@@ -135,6 +135,8 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         depends_on = [str(d) for d in raw_deps]
     else:
         depends_on = []
+    raw_issue = fm.get("github_issue")
+    github_issue = int(raw_issue) if raw_issue is not None else None
     return TaskStory(
         name=name,
         story_path=story_path,
@@ -142,4 +144,5 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         pytest_target=fm.get("pytest_target"),
         gate_override=fm.get("gate"),
         depends_on=depends_on,
+        github_issue=github_issue,
     )

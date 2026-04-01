@@ -96,6 +96,7 @@ def _create_pr(
     else:
         findings_md = "_No findings._"
 
+    closes_line = f"\n\nCloses #{task.github_issue}" if task.github_issue else ""
     pr_body = (
         f"## Summary\n\n"
         f"{parsed_review.summary}\n\n"
@@ -111,6 +112,7 @@ def _create_pr(
         f"{task.name} (`{task.story_path}`)\n\n"
         f"---\n"
         f"*Created automatically by [TheForge](https://github.com/fuzzypete/theforge)*"
+        f"{closes_line}"
     )
 
     pr_title = f"{task.name}"
