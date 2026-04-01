@@ -112,7 +112,7 @@ class TestTriageSpec:
                 m.returncode = 0  # is ancestor
             elif "rev-list" in cmd and "--count" in cmd:
                 m.returncode = 0
-                m.stdout = b"3"  # 3 commits ahead — truly merged, not just at base
+                m.stdout = b"3"  # base is 3 commits ahead of branch — truly merged
             else:
                 m.returncode = 0
                 m.stdout = b""
@@ -135,7 +135,7 @@ class TestTriageSpec:
                 m.returncode = 0  # is ancestor (trivially — same commit)
             elif "rev-list" in cmd and "--count" in cmd:
                 m.returncode = 0
-                m.stdout = b"0"  # 0 commits ahead — just created at base HEAD
+                m.stdout = b"0"  # base not ahead of branch — created at base HEAD, not merged
             else:
                 m.returncode = 0
                 m.stdout = b""
