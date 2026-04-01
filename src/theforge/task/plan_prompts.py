@@ -86,6 +86,18 @@ def build_preflight_prompt(
 
         When verdict is ALREADY_DONE or BLOCKED, set complexity to "small" as a placeholder.
 
+        ## Work-Type Classification
+
+        When verdict is PROCEED, also classify the work type from the story text alone:
+
+        - **feature**: New capability or user-facing change — behavior that does not exist yet
+        - **refactor**: Structural reorganization with no behavior change — moves, renames,
+          extractions
+        - **mechanical**: Rename, format, split, merge — zero judgment calls required
+        - **bug**: Fix broken behavior or regression — restoring expected behavior
+
+        When verdict is ALREADY_DONE or BLOCKED, set work_type to "feature" as a placeholder.
+
         ## Spec Sufficiency Classification
 
         When verdict is PROCEED, also assess whether this spec is
@@ -117,6 +129,7 @@ def build_preflight_prompt(
         ```yaml
         verdict: PROCEED | ALREADY_DONE | BLOCKED
         complexity: small | medium | large
+        work_type: feature | refactor | mechanical | bug
         reason: "<1-2 sentence explanation of your classification>"
         sufficiency: implementation_ready | needs_planning
         sufficiency_reason: "<1-2 sentence explanation of the sufficiency classification>"
@@ -307,7 +320,10 @@ def build_plan_prompt(
     *,
     story_content: str,
     preflight_output: str | None = None,
+
     conventions: list[str] | None = None,
+
+    work_type: str | None = None,
 ) -> str:
     """Build the planning agent prompt.
 
@@ -327,6 +343,17 @@ def build_plan_prompt(
             {preflight_output}
         """)
 
+    work_type_instruction = ""
+    if work_type in ("refactor", "mechanical"):
+        work_type_instruction = dedent("""\
+
+            ## Plan Depth Constraint
+
+            This story is classified as a **{work_type}** task. Produce a high-level file
+            mapping only — do not specify implementation steps, import fixes, or line-level
+            changes. The dev agent will discover those empirically.
+        """).format(work_type=work_type)
+
     return dedent(f"""\
         You are a planning agent for **{task.name}**.
 
@@ -339,7 +366,7 @@ def build_plan_prompt(
         ## Spec
 
         {story_content}
-        {preflight_section}
+        {preflight_section}{work_type_instruction}
         ## Output Format
 
         You MUST output ONLY a YAML block. No prose before or after.

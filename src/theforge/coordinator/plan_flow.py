@@ -216,7 +216,10 @@ def _run_plan_phase(
         preflight_output=(
             preflight_result.output if preflight_result and preflight_result.success else None
         ),
+
         conventions=config.conventions_soft,
+
+        work_type=state.preflight_work_type,
     )
 
     _plan_start = time.monotonic()
@@ -249,7 +252,12 @@ def _run_plan_phase(
             duration_s=round(_plan_elapsed, 2),
         )
 
-        if config.plan_agent_review.enabled:
+        _work_type = state.preflight_work_type or "feature"
+
+        if _work_type == "mechanical":
+            # Skip plan review entirely for mechanical tasks
+            _log("  ↩ PLAN_REVIEW   skipped (mechanical work type)")
+        elif config.plan_agent_review.enabled:
             result = _run_plan_agent_review(
                 state=state,
                 config=config,
@@ -261,11 +269,12 @@ def _run_plan_phase(
                 preflight_result=preflight_result,
                 notify=notify,
                 logger=logger,
+                advisory=(_work_type == "refactor"),
             )
             if result is not None:
                 return result
 
-        elif config.plan_review.enabled:
+        elif config.plan_review.enabled and _work_type != "refactor":
             result = _run_human_plan_review(
                 state=state,
                 config=config,
@@ -280,6 +289,8 @@ def _run_plan_phase(
             )
             if result is not None:
                 return result
+        elif config.plan_review.enabled and _work_type == "refactor":
+            _log("  ↩ PLAN_REVIEW   advisory only (refactor work type — human review skipped)")
 
     else:
         state.phase = Phase.ESCALATE
@@ -336,10 +347,14 @@ def _run_plan_agent_review(
     preflight_result: "AgentResult | None",
     notify: bool,
     logger: "StructuredLogger | None",
+    advisory: bool = False,
 ) -> CoordinatorResult | None:
     """Run agent-based plan review pool with regen loop.
 
     Returns None to continue to DEV, or CoordinatorResult to stop early.
+
+    When advisory=True (refactor work type), findings are logged but the review
+    never rejects the plan — always continues to DEV regardless of verdict.
     """
     state.phase = Phase.PLAN_REVIEW
     state.plan_review_mode = "agent"
@@ -537,6 +552,25 @@ def _run_plan_agent_review(
                 _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
             _write_log_artifact(state.log_dir, "plan.md", plan_text)
             return None  # continue to DEV
+
+        # Advisory mode (refactor work type): log findings but never reject
+        if advisory:
+            findings_text = plan_review_findings_to_text(merged_pr)
+            state.plan_agent_review_findings = findings_text
+            _log(
+                f"  ⚠ PLAN_REVIEW   advisory findings (refactor — not blocking)  "
+                f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
+            )
+            _log(f"  Advisory findings (logged, not blocking):\n{findings_text}")
+            logger._safe_emit(
+                "phase_end",
+                phase="PLAN_REVIEW",
+                outcome="advisory",
+                cost_usd=round(_total_pr_cost, 6),
+                duration_s=round(_pr_elapsed, 2),
+            )
+            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+            return None  # continue to DEV regardless of verdict
 
         # REJECT path
         findings_text = plan_review_findings_to_text(merged_pr)

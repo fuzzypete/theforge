@@ -351,6 +351,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             {
                 "verdict": state.preflight_verdict,
                 "reason": state.preflight_reason,
+                "work_type": state.preflight_work_type,
                 "cost_usd": state.preflight_result.cost_usd if state.preflight_result else 0.0,
             }
             if state.preflight_verdict is not None
