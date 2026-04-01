@@ -336,6 +336,24 @@ def _check_behind_origin(config: ForgeConfig) -> None:
         _cu._log(f"ℹ WORKSPACE  {base_branch} is {count} commit(s) behind origin/{base_branch}")
 
 
+_FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml")
+
+
+def _deindex_forge_artifacts(workspace_path: Path) -> None:
+    """Remove .forge/handoff.yaml and .forge/trajectory.yaml from the git index.
+
+    Uses -f so removal succeeds even when the index entry has staged content that
+    differs from both HEAD and the working tree (the agent-misbehavior state described
+    in the story).  Uses --ignore-unmatch so the call is a no-op when files are not
+    tracked.  This prevents merge conflicts and dirty-worktree noise from gitignored
+    files that were previously committed or accidentally staged.
+    """
+    files_arg = " ".join(_FORGE_ARTIFACTS)
+    ok, out = _cu._run_shell(f"git rm -f --cached --ignore-unmatch {files_arg}", workspace_path)
+    if not ok:
+        _cu._log(f"⚠ WORKSPACE  git rm --cached failed: {out.strip()}")
+
+
 def _create_workspace(
     config: ForgeConfig, task: TaskStory, *, no_pull: bool = False
 ) -> tuple[Path | None, str | None, str | None]:
@@ -357,6 +375,7 @@ def _create_workspace(
             _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
             if not no_pull:
                 _check_behind_origin(config)
+            _deindex_forge_artifacts(workspace_path)
             return workspace_path, branch_name, None
 
     if not no_pull:
@@ -405,6 +424,7 @@ def _create_workspace(
                     ok_s, out_s = _run_setup_split(config.workspace.setup_command, existing_wt)
                     if not ok_s:
                         return None, None, f"Workspace setup command failed: {out_s}"
+                _deindex_forge_artifacts(existing_wt)
                 return existing_wt, branch_name, None
             else:
                 _cu._log("⚠ WORKSPACE  linked worktree directory missing — pruning")
@@ -431,6 +451,7 @@ def _create_workspace(
                 ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
+            _deindex_forge_artifacts(workspace_path)
             return workspace_path, branch_name, None
         else:
             _cu._log(
@@ -457,4 +478,5 @@ def _create_workspace(
         if not ok:
             return None, None, f"Workspace setup command failed: {output}"
 
+    _deindex_forge_artifacts(workspace_path)
     return workspace_path, branch_name, None
