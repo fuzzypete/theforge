@@ -523,6 +523,7 @@ def _run_plan_agent_review(
         # distinguish genuinely recurring findings from revived-from-fixed ones.
         _prior_dispositions: dict[int, str] = {
             i: rec.disposition for i, rec in enumerate(_prior_registry_snapshot)
+        }
         # Build downgrade lookup for original_severity audit trail.
         _downgrade_descs: dict[str, str] = {
             d.description: d.original_severity for d in _corroboration_downgrades
