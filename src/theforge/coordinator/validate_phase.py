@@ -8,7 +8,7 @@ from enum import Enum, auto
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.conventions import check_hard_conventions
+from theforge.conventions import check_hard_conventions, new_hard_convention_violations_since_ref
 from theforge.task import TaskStory
 
 from . import util as _cu
@@ -211,7 +211,14 @@ def _run_validate_phase(
 
     # Hard convention checks (post-gate, only on PASS path)
     if config.conventions_hard is not None:
-        cv_violations = check_hard_conventions(config.conventions_hard, workspace_path)
+        baseline_ref = _get_convention_baseline_ref(workspace_path, config.workspace.base_branch)
+        if baseline_ref is not None:
+            all_cv_violations, cv_violations = new_hard_convention_violations_since_ref(
+                config.conventions_hard, workspace_path, baseline_ref
+            )
+        else:
+            all_cv_violations = check_hard_conventions(config.conventions_hard, workspace_path)
+            cv_violations = all_cv_violations
         if cv_violations:
             state.convention_violations = [
                 {
@@ -244,8 +251,32 @@ def _run_validate_phase(
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
             return _ValidateOutcome.RETRY_DEV, None
         else:
-            state.convention_violations = []
+            state.convention_violations = [
+                {
+                    "rule": v.rule,
+                    "file": v.file,
+                    "detail": v.detail,
+                    "blocking": False,
+                }
+                for v in all_cv_violations
+            ]
     else:
         state.convention_violations = []
 
     return _ValidateOutcome.PASS, None
+
+
+def _get_convention_baseline_ref(workspace_path: Path, base_branch: str) -> str | None:
+    """Resolve a git ref representing pre-existing convention debt."""
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "HEAD", base_branch],
+            cwd=workspace_path,
+            capture_output=True,
+            timeout=10,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    ref = proc.stdout.decode().strip()
+    return ref or None

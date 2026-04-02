@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from theforge.config.types import HardConventionsConfig
 from theforge.conventions import (
     ConventionViolation,
     _check_circular_imports,
+    _check_hard_conventions_at_git_ref,
     _check_line_counts,
     _check_test_mirrors,
     check_hard_conventions,
+    new_hard_convention_violations_since_ref,
 )
 
 
@@ -267,3 +270,88 @@ class TestCheckHardConventions:
         assert v.file
         assert v.detail
         assert v.blocking is True
+
+
+class TestConventionBaseline:
+    def test_check_hard_conventions_at_git_ref_reads_baseline_tree(self, tmp_path):
+        """Baseline checks run against the requested git snapshot, not the worktree."""
+        _init_git_repo(tmp_path)
+        _write(tmp_path / "src" / "theforge" / "ok.py", "# fine\n")
+        _write(tmp_path / "tests" / "test_ok.py", "# fine\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "baseline")
+        baseline_ref = _git(tmp_path, "rev-parse", "HEAD")
+
+        _write(tmp_path / "src" / "theforge" / "ok.py", "\n" * 501)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        violations = _check_hard_conventions_at_git_ref(cfg, tmp_path, baseline_ref)
+        assert violations == []
+
+    def test_check_hard_conventions_at_git_ref_handles_missing_tests_dir(self, tmp_path):
+        """Baseline archive should not fail when tests/ only exists on the branch."""
+        _init_git_repo(tmp_path)
+        _write(tmp_path / "src" / "theforge" / "ok.py", "# fine\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "baseline without tests")
+        baseline_ref = _git(tmp_path, "rev-parse", "HEAD")
+
+        _write(tmp_path / "tests" / "test_ok.py", "# added later\n")
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        violations = _check_hard_conventions_at_git_ref(cfg, tmp_path, baseline_ref)
+        assert violations == []
+
+    def test_new_hard_convention_violations_since_ref_only_returns_net_new(self, tmp_path):
+        """Pre-existing debt at the branch point should not be treated as blocking."""
+        _init_git_repo(tmp_path)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 501)
+        _write(tmp_path / "tests" / "test_legacy.py", "# mirror\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "baseline debt")
+        baseline_ref = _git(tmp_path, "rev-parse", "HEAD")
+
+        _write(tmp_path / "src" / "theforge" / "new_hotness.py", "\n" * 501)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        assert any("legacy.py" in v.file for v in current)
+        assert any("new_hotness.py" in v.file for v in current)
+        assert not any("legacy.py" in v.file for v in net_new)
+        assert any("new_hotness.py" in v.file for v in net_new)
+
+    def test_worsened_line_count_violation_is_not_treated_as_net_new(self, tmp_path):
+        """A pre-existing line-count violation remains existing debt if it grows."""
+        _init_git_repo(tmp_path)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 501)
+        _write(tmp_path / "tests" / "test_legacy.py", "# mirror\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "baseline debt")
+        baseline_ref = _git(tmp_path, "rev-parse", "HEAD")
+
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 520)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        assert any("legacy.py" in v.file for v in current)
+        assert not any("legacy.py" in v.file for v in net_new)
+
+
+def _git(repo: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _init_git_repo(repo: Path) -> None:
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.name", "Test User")
+    _git(repo, "config", "user.email", "test@example.com")

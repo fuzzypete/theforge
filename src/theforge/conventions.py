@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,6 +30,56 @@ def check_hard_conventions(
     if config.test_mirrors_source:
         violations.extend(_check_test_mirrors(project_root))
     return violations
+
+
+def new_hard_convention_violations_since_ref(
+    config: HardConventionsConfig, project_root: Path, git_ref: str
+) -> tuple[list[ConventionViolation], list[ConventionViolation]]:
+    """Return (current, net-new) hard convention violations since git_ref."""
+    current = check_hard_conventions(config, project_root)
+    baseline = _check_hard_conventions_at_git_ref(config, project_root, git_ref)
+    baseline_keys = {_violation_key(v) for v in baseline}
+    net_new = [v for v in current if _violation_key(v) not in baseline_keys]
+    return current, net_new
+
+
+def _check_hard_conventions_at_git_ref(
+    config: HardConventionsConfig, project_root: Path, git_ref: str
+) -> list[ConventionViolation]:
+    """Run hard convention checks against the repository tree at git_ref."""
+    with tempfile.TemporaryDirectory(prefix="theforge-conventions-") as tmp:
+        tmp_path = Path(tmp)
+        proc = subprocess.run(
+            ["git", "archive", git_ref],
+            cwd=project_root,
+            capture_output=True,
+            timeout=30,
+        )
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace").strip()
+            raise RuntimeError(
+                "Failed to archive "
+                f"{git_ref!r} for convention baseline: {stderr or 'unknown error'}"
+            )
+        extract = subprocess.run(
+            ["tar", "-xf", "-"],
+            cwd=tmp_path,
+            input=proc.stdout,
+            capture_output=True,
+            timeout=30,
+        )
+        if extract.returncode != 0:
+            stderr = extract.stderr.decode(errors="replace").strip()
+            raise RuntimeError(
+                "Failed to extract convention baseline for "
+                f"{git_ref!r}: {stderr or 'unknown error'}"
+            )
+        return check_hard_conventions(config, tmp_path)
+
+
+def _violation_key(violation: ConventionViolation) -> tuple[str, str]:
+    """Stable identity for comparing convention violations across snapshots."""
+    return (violation.rule, violation.file)
 
 
 # ── Line count check ──────────────────────────────────────────────────
