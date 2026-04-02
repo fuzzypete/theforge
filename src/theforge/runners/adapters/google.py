@@ -20,9 +20,23 @@ if TYPE_CHECKING:
     from theforge.config import ModelProfile
 
 
+def _is_stop_finish_reason(finish_reason: Any) -> bool:
+    """Return True if finish_reason represents a normal STOP completion.
+
+    Normalises across string ("STOP"), dotted-enum ("FinishReason.STOP"),
+    and integer ("1") representations emitted by different SDK versions.
+    """
+    if finish_reason is None:
+        return True
+    # Split on "." so "FinishReason.STOP" → "STOP"; plain "STOP" → "STOP"
+    name = str(finish_reason).split(".")[-1]
+    return name in ("", "STOP", "1")
+
+
 def _check_google_response(
     response: Any,
     input_tokens: int,
+    output_tokens: int = 0,
 ) -> str | None:
     """Return an error string if the response is empty/blocked, else None.
 
@@ -35,20 +49,16 @@ def _check_google_response(
     if block_reason:
         return (
             f"Google Gemini API: response blocked "
-            f"(block_reason={block_reason}, input_tokens={input_tokens})"
+            f"(block_reason={block_reason}, "
+            f"input_tokens={input_tokens}, output_tokens={output_tokens})"
         )
 
     for candidate in getattr(response, "candidates", None) or []:
         finish_reason = getattr(candidate, "finish_reason", None)
-        if finish_reason is not None and str(finish_reason) not in (
-            "",
-            "STOP",
-            "FinishReason.STOP",
-            "1",
-        ):
+        if not _is_stop_finish_reason(finish_reason):
             return (
                 f"Google Gemini API: non-STOP finish_reason={finish_reason} "
-                f"(input_tokens={input_tokens})"
+                f"(input_tokens={input_tokens}, output_tokens={output_tokens})"
             )
 
     return None
@@ -93,7 +103,7 @@ def _run_google(
         output_text = response.text
 
         if not output_text:
-            err = _check_google_response(response, input_tokens)
+            err = _check_google_response(response, input_tokens, output_tokens)
             if err:
                 return AgentResult(
                     success=False,
@@ -104,26 +114,27 @@ def _run_google(
                     raw={},
                     profile_name=profile.name,
                 )
-            # Empty but not blocked and finish_reason=STOP — retry once
+            # Empty but not blocked and finish_reason=STOP — retry once.
+            # Accumulate token counts so the returned usage reflects both calls.
             _log_verbose("  ⚠ Gemini empty response (not blocked) — retrying once")
-            response = client.models.generate_content(
+            retry_response = client.models.generate_content(
                 model=profile.model,
                 contents=prompt,
                 config=config,
             )
-            usage = response.usage_metadata
-            input_tokens = usage.prompt_token_count if usage else 0
-            output_tokens = usage.candidates_token_count if usage else 0
-            output_text = response.text
+            retry_usage = retry_response.usage_metadata
+            input_tokens += retry_usage.prompt_token_count if retry_usage else 0
+            output_tokens += retry_usage.candidates_token_count if retry_usage else 0
+            output_text = retry_response.text
 
             if not output_text:
-                err = _check_google_response(response, input_tokens)
+                err = _check_google_response(retry_response, input_tokens, output_tokens)
                 return AgentResult(
                     success=False,
                     output=err
                     or (
                         f"Google Gemini API: empty response after retry "
-                        f"(input_tokens={input_tokens})"
+                        f"(input_tokens={input_tokens}, output_tokens={output_tokens})"
                     ),
                     session_id=None,
                     cost_usd=None,
@@ -356,11 +367,20 @@ def _make_google_adapter(
                     text_parts.append(part.text)
 
         if not tool_calls and not text_parts:
+            # Log diagnostics but do NOT inject synthetic text — the loop manager
+            # treats any non-empty text_output as a successful completion.  An empty
+            # LoopTurn (no tool_calls, no text_output) triggers the correct failure
+            # path ("Agent finished without calling submit tool and produced no output").
             feedback = getattr(response, "prompt_feedback", None)
-            if feedback:
-                block_reason = getattr(feedback, "block_reason", None)
-                if block_reason:
-                    text_parts.append(f"[Blocked: {block_reason}]")
+            block_reason = getattr(feedback, "block_reason", None) if feedback else None
+            if block_reason:
+                _log_verbose(f"  ⚠ Gemini adapter: response blocked (block_reason={block_reason})")
+            else:
+                for candidate in response.candidates or []:
+                    fr = getattr(candidate, "finish_reason", None)
+                    if not _is_stop_finish_reason(fr):
+                        _log_verbose(f"  ⚠ Gemini adapter: empty response with finish_reason={fr}")
+                        break
 
         usage_meta = response.usage_metadata
         usage: ModelUsage | None = None
