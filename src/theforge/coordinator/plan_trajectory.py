@@ -12,9 +12,10 @@ from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from theforge.plan_finding_classifier import MatchResult
     from theforge.review import PlanReviewFinding
 
-    from .state import CoordinatorState
+    from .state import CoordinatorState, PlanFindingRecord
 
 
 # ── Regex patterns for structural anchors ─────────────────────────────
@@ -272,6 +273,7 @@ def build_disposition_context(state: "CoordinatorState") -> str:
 
     # patch: trajectory table + guidance
     guidance = "Prior themes were resolved. Focus on the new findings only."
+    # (dominant theme callout for backtrack is handled in build_filtered_regen_findings)
 
     # Build table — show surviving themes for each attempt
     header = "| Attempt | Files Touched | P1 | P2 | Surviving Themes |"
@@ -295,3 +297,181 @@ def build_disposition_context(state: "CoordinatorState") -> str:
     table = "\n".join([header, separator] + rows)
 
     return f"## Trajectory Analysis\n\nDisposition: **{disposition}**\n\n{table}\n\n{guidance}"
+
+
+def consecutive_streak_dominant_theme(
+    registry: "list[PlanFindingRecord]",
+    current_attempt: int,
+    prior_dispositions: "dict[int, str] | None" = None,
+) -> str:
+    """Return description of the P1 finding with the longest consecutive unresolved streak.
+
+    Streak = current_attempt - cycle_first_seen + 1 for unresolved P1 findings that
+    appeared before the current attempt (i.e., cycle_first_seen < current_attempt).
+    Only P0/P1 severity, non-fixed, genuinely recurring findings are considered.
+
+    Args:
+        prior_dispositions: Map of registry index → disposition value captured BEFORE
+            the registry update for this attempt.  When provided, only findings that
+            were "fixed" before this attempt are excluded — "new" and "unresolved"
+            prior dispositions both indicate genuine recurrence.  A "fixed" prior
+            disposition means the finding was resolved and then reappeared; it should
+            not be counted as an uninterrupted streak.
+
+    Returns empty string if no qualifying finding exists.
+    Alphabetically smallest description breaks ties for determinism.
+    """
+    best_desc = ""
+    best_streak = 0
+    for rec_idx, rec in enumerate(registry):
+        if rec.severity not in ("P0", "P1"):
+            continue
+        if rec.disposition == "fixed":
+            continue
+        if rec.cycle_first_seen >= current_attempt:
+            continue  # new this attempt, not a recurring finding
+        # Exclude only findings that were "fixed" before this attempt.
+        # "new" is the initial disposition on first insertion; a finding
+        # with prior_disposition="new" that reappears is genuinely recurring.
+        if prior_dispositions is not None and prior_dispositions.get(rec_idx) == "fixed":
+            continue
+        streak = current_attempt - rec.cycle_first_seen + 1
+        if streak > best_streak or (streak == best_streak and rec.description < best_desc):
+            best_streak = streak
+            best_desc = rec.description
+    return best_desc
+
+
+def build_filtered_regen_findings(
+    current_findings: "list[PlanReviewFinding]",
+    match_results: "list[MatchResult]",
+    attempt: int,
+    registry: "list[PlanFindingRecord]",
+    prior_dispositions: "dict[int, str] | None" = None,
+) -> "tuple[str, dict]":
+    """Build filtered findings text and an audit record for a regen prompt.
+
+    Filtering rules:
+    - On attempt 0: all findings are new by definition; return unfiltered.
+    - When no recurring P1s exist: return all findings unfiltered (no behavior change).
+    - When recurring P1s exist:
+        - Recurring P1s are listed first under "Recurring findings".
+        - New P1s are listed under "New findings (lower priority)".
+        - All P2 findings are omitted with a count notice.
+        - The dominant recurring theme is called out explicitly.
+
+    Args:
+        prior_dispositions: Map of prior-registry-index → disposition value captured
+            BEFORE the registry update for this attempt.  Required to correctly
+            distinguish genuinely recurring findings from findings that were "fixed"
+            in the prior attempt and then reappeared (revived-from-fixed).  When None,
+            any matched prior record is treated as recurring (backward-compatible).
+
+    Returns:
+        (filtered_text, audit_dict) where filtered_text is the replacement for
+        the ## Reviewer Findings prompt section, and audit_dict records what was
+        filtered and what was highlighted.
+    """
+
+    def _fmt_finding(f: "PlanReviewFinding") -> list[str]:
+        lines = [f"- [{f.severity}] {f.description}"]
+        if f.suggestion:
+            lines.append(f"  Suggestion: {f.suggestion}")
+        return lines
+
+    def _unfiltered_text(findings: "list[PlanReviewFinding]") -> str:
+        if not findings:
+            return "No specific findings provided."
+        lines: list[str] = []
+        for f in findings:
+            lines.extend(_fmt_finding(f))
+        return "\n".join(lines)
+
+    # Guard: first review attempt — all findings are new, no filtering needed.
+    if attempt == 0:
+        return _unfiltered_text(current_findings), {
+            "attempt": attempt,
+            "filtering_applied": False,
+            "reason": "first_attempt",
+            "highlighted": [],
+            "filtered_out": [],
+            "dominant_theme": None,
+        }
+
+    # Classify findings as recurring or new.
+    # A finding is "recurring" if it matched a prior record whose disposition was
+    # NOT "fixed" before this attempt.  "new" (first insertion) and "unresolved"
+    # (survived a prior attempt) are both eligible.  Only "fixed" records indicate
+    # a revived-from-fixed finding that should be treated as new for filtering.
+    recurring: list["PlanReviewFinding"] = []
+    new: list["PlanReviewFinding"] = []
+    for i, finding in enumerate(current_findings):
+        mr = match_results[i]
+        is_genuinely_recurring = mr.prior_index is not None and (
+            prior_dispositions is None or prior_dispositions.get(mr.prior_index) != "fixed"
+        )
+        if is_genuinely_recurring:
+            recurring.append(finding)
+        else:
+            new.append(finding)
+
+    recurring_p1s = [f for f in recurring if f.severity in ("P0", "P1")]
+
+    # When no recurring P1s exist: no filtering, return all findings unchanged.
+    if not recurring_p1s:
+        return _unfiltered_text(current_findings), {
+            "attempt": attempt,
+            "filtering_applied": False,
+            "reason": "no_recurring_p1s",
+            "highlighted": [],
+            "filtered_out": [],
+            "dominant_theme": None,
+        }
+
+    # Recurring P1s exist: filter out P2s, prioritize recurring.
+    new_p1s = [f for f in new if f.severity in ("P0", "P1")]
+    all_p2s = [f for f in current_findings if f.severity == "P2"]
+
+    dom_theme = consecutive_streak_dominant_theme(registry, attempt, prior_dispositions)
+
+    lines: list[str] = []
+
+    lines.append("### Recurring findings (address first — survived previous attempts)")
+    for f in recurring_p1s:
+        lines.extend(_fmt_finding(f))
+
+    if new_p1s:
+        lines.append("")
+        lines.append("### New findings (address after recurring P1s are resolved)")
+        for f in new_p1s:
+            lines.extend(_fmt_finding(f))
+
+    if all_p2s:
+        lines.append("")
+        lines.append(
+            f"*{len(all_p2s)} P2 finding(s) omitted — resolve the recurring P1s above first.*"
+        )
+
+    if dom_theme:
+        streak = 0
+        for rec_idx, rec in enumerate(registry):
+            if rec.description == dom_theme and rec.disposition != "fixed":
+                if prior_dispositions is None or prior_dispositions.get(rec_idx) != "fixed":
+                    streak = attempt - rec.cycle_first_seen + 1
+                    break
+        lines.append("")
+        lines.append("### Dominant recurring theme")
+        lines.append(f"The most persistent unresolved issue ({streak} consecutive attempt(s)):")
+        lines.append(f"> {dom_theme}")
+
+    return "\n".join(lines), {
+        "attempt": attempt,
+        "filtering_applied": True,
+        "reason": "recurring_p1s_present",
+        "recurring_p1_count": len(recurring_p1s),
+        "new_p1_count": len(new_p1s),
+        "p2_omitted_count": len(all_p2s),
+        "dominant_theme": dom_theme or None,
+        "highlighted": [f.description for f in recurring_p1s],
+        "filtered_out": [f.description for f in all_p2s],
+    }

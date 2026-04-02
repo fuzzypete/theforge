@@ -233,6 +233,11 @@ class CoordinatorState:
     # Stable identity records for plan review findings across regen cycles,
     # populated by plan_finding_classifier.match_plan_findings() in plan_flow.py.
     plan_match_provenance: list[str] = field(default_factory=list)
+    plan_regen_filter_audit: list[dict] = field(default_factory=list)
+    # Per-attempt audit of which findings were filtered and which were highlighted
+    # by build_filtered_regen_findings() in plan_trajectory.py. One entry per regen
+    # attempt (index 0 = first review, before any regen). Not populated for attempt 0
+    # since no filtering occurs on the first rejection.
     # Human-readable log of match/abstain decisions, one entry per plan review
     # attempt (index 0 = first attempt).  Accumulated across regen cycles so
     # the full decision history is available for post-hoc audit inspection.
