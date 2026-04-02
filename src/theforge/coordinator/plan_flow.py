@@ -49,7 +49,11 @@ from .notify import (
     _plan_review_interactive,
 )
 from .pending_hitl import _pending_plan_review
-from .plan_trajectory import build_disposition_context, record_plan_attempt
+from .plan_trajectory import (
+    build_disposition_context,
+    build_filtered_regen_findings,
+    record_plan_attempt,
+)
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .remote_gates import _plan_review_remote
 from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
@@ -528,6 +532,15 @@ def _run_plan_agent_review(
                 _rec.disposition = "fixed"
         # ─────────────────────────────────────────────────────────────────
 
+        # Build filtered findings for the regen prompt (if rejection follows).
+        # Registry is now fully updated for this attempt; use it for streak computation.
+        _filtered_regen_text, _filter_audit = build_filtered_regen_findings(
+            list(merged_pr.findings),
+            _match_results,
+            _attempt,
+            state.plan_finding_registry,
+        )
+
         record_plan_attempt(state, merged_pr.findings)
 
         if merged_pr.verdict == "APPROVE":
@@ -593,10 +606,19 @@ def _run_plan_agent_review(
         # REJECT path
         findings_text = plan_review_findings_to_text(merged_pr)
         state.plan_agent_review_findings = findings_text
+        # Store per-attempt filter audit (even when filtering_applied=False).
+        state.plan_regen_filter_audit.append(_filter_audit)
         _log(
             f"  ✗ PLAN_REVIEW   reject (merged)  "
             f"{_fmt_cost(_total_pr_cost)}  {_fmt_duration(_pr_elapsed)}"
         )
+        if _filter_audit.get("filtering_applied"):
+            _p2_omit = _filter_audit.get("p2_omitted_count", 0)
+            _rec_p1 = _filter_audit.get("recurring_p1_count", 0)
+            _log(
+                f"  ↳ regen filter: {_rec_p1} recurring P1(s) highlighted"
+                + (f", {_p2_omit} P2(s) omitted" if _p2_omit else "")
+            )
         logger._safe_emit(
             "phase_end",
             phase="PLAN_REVIEW",
@@ -725,11 +747,18 @@ def _run_plan_agent_review(
 
                 ## Reviewer Findings
 
-                {findings_text}
+                {_filtered_regen_text}
             """)
             regen_prompt += f"\n\n{disposition_ctx}\n"
         else:
             # patch (default): targeted edits, preserve working parts
+            _patch_instructions = (
+                "1. Read each finding against your plan above.\n"
+                "2. Fix every P1 (must fix) and P2 (improvement).\n"
+                "3. Output the complete updated plan in the same YAML schema.\n"
+                "4. Do NOT discard working parts of your plan. Only change what\n"
+                "   the findings call out."
+            )
             regen_prompt = dedent(f"""\
                 You are a planning agent for **{task.name}**.
 
@@ -749,15 +778,11 @@ def _run_plan_agent_review(
 
                 ## Reviewer Findings
 
-                {findings_text}
+                {_filtered_regen_text}
 
                 ## Instructions
 
-                1. Read each finding against your plan above.
-                2. Fix every P1 (must fix) and P2 (improvement).
-                3. Output the complete updated plan in the same YAML schema.
-                4. Do NOT discard working parts of your plan. Only change what
-                   the findings call out.
+                {_patch_instructions}
             """)
 
             disposition_ctx = build_disposition_context(state)

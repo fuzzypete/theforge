@@ -402,6 +402,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 ],
                 "plan_match_provenance": state.plan_match_provenance,
                 **(
+                    {"regen_filter_audit": state.plan_regen_filter_audit}
+                    if state.plan_regen_filter_audit
+                    else {}
+                ),
+                **(
                     {"reviewer_failures": state.plan_review_failures}
                     if state.plan_review_failures
                     else {}
