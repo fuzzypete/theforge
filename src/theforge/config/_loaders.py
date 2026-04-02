@@ -33,11 +33,13 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
             "on_approve: merge-pr requires auto_push: true — PR creation needs a remote branch"
         )
     merge_strategy = str(ws_data.get("merge_strategy", DEFAULT_WORKSPACE.merge_strategy))
-    _valid_strategies = {"merge", "squash", "rebase"}
-    if merge_strategy not in _valid_strategies:
-        raise ValueError(
-            f"merge_strategy must be one of {sorted(_valid_strategies)}, got {merge_strategy!r}"
-        )
+    if on_approve == "merge-pr":
+        _valid_strategies = {"merge", "squash", "rebase"}
+        if merge_strategy not in _valid_strategies:
+            raise ValueError(
+                "merge_strategy must be one of "
+                f"{sorted(_valid_strategies)}, got {merge_strategy!r}"
+            )
     return WorkspaceConfig(
         create_command=ws_data.get("create_command", DEFAULT_WORKSPACE.create_command),
         path_pattern=ws_data.get("path_pattern", DEFAULT_WORKSPACE.path_pattern),

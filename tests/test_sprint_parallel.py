@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -19,6 +20,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, build_dag
 from theforge.sprint.runner import _classify_and_record
@@ -819,3 +821,147 @@ class TestParallelMergeOrderingParallelMode:
         assert sprint.specs_succeeded == 2
         # A must be merged before B (dependency order)
         assert merge_calls.index("story-a") < merge_calls.index("story-b")
+
+    def test_merge_pr_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
+        """Deferred merge-pr failures must update the final per-story audit."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        (tmp_path / "story-a").mkdir()
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/273",
+                    "merged": False,
+                    "success": False,
+                    "error": "gh pr merge failed: branch protection",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert audit["outcome"]["success"] is False
+        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert audit["merge"]["action"] == "merge-pr"
+        assert audit["merge"]["merged"] is False
+        assert audit["error"] == "gh pr merge failed: branch protection"
+
+    def test_merge_pr_success_writes_final_merge_metadata_to_audit(self, tmp_path: Path) -> None:
+        """Deferred merge-pr success must write the final merge metadata to audit."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        (tmp_path / "story-a").mkdir()
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/273",
+                    "merged": True,
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+        assert audit["outcome"]["success"] is True
+        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["merge"]["action"] == "merge-pr"
+        assert audit["merge"]["merged"] is True
+        assert audit["merge"]["pr_url"] == "https://github.com/fuzzypete/theforge/pull/273"

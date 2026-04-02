@@ -924,6 +924,14 @@ class TestMergeStrategyValidation:
             )
             assert result.merge_strategy == strategy
 
+    def test_non_merge_pr_modes_ignore_merge_strategy(self) -> None:
+        from theforge.config._loaders import _parse_workspace
+
+        for on_approve in ("merge", "pr", "none"):
+            result = _parse_workspace({"on_approve": on_approve, "merge_strategy": "fast-forward"})
+            assert result.on_approve == on_approve
+            assert result.merge_strategy == "fast-forward"
+
 
 # ── Fast-forward step called after successful merge ───────────────
 

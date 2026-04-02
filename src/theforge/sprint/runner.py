@@ -51,6 +51,17 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
         return 0.0
 
 
+def _is_deferred_merge_pr(
+    config: ForgeConfig,
+    manifest_max_parallel: int,
+    result: CoordinatorResult,
+) -> bool:
+    """Return True when a successful story's final outcome is deferred to merge-pr flush."""
+    return (
+        manifest_max_parallel > 1 and config.workspace.on_approve == "merge-pr" and result.success
+    )
+
+
 def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
     """Extract story slugs from a sprint manifest without full validation.
 
@@ -742,7 +753,8 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                _write_story_audit(config, task, result)
+                if not _is_deferred_merge_pr(config, manifest.max_parallel, result):
+                    _write_story_audit(config, task, result)
 
                 spec_cost = result.state.total_cost
                 icon = "✓" if result.success else "✗"
@@ -809,6 +821,7 @@ def run_sprint(
                                         _parsed_review,
                                         result.state,
                                     )
+                                    result.merge = merge_info
                                     if merge_info.get("merged"):
                                         merged_slugs.add(slug)
                                         dag.mark_complete(slug)
@@ -828,8 +841,10 @@ def run_sprint(
                                             f"✗ {slug}: deferred merge-pr failed:"
                                             f" {merge_info.get('error')}"
                                         )
+                                    _write_story_audit(config, task, result)
                                 else:
                                     _log(f"WARN: no review result for {slug} — skipping merge-pr")
+                                    _write_story_audit(config, task, result)
                             else:
                                 merge_info = _merge_branch(
                                     config.project_root,
