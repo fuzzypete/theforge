@@ -19,7 +19,7 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
-from ..coordinator.workspace import _merge_branch
+from ..coordinator.workspace import _merge_branch, pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .dag import StoryDAG, StoryTriage, _is_branch_merged, _triage_spec, build_dag
@@ -434,6 +434,15 @@ def run_sprint(
     manifest = load_sprint_manifest(manifest_path)
     if manifest.max_parallel is None:
         manifest.max_parallel = config.sprint.max_parallel
+
+    # Pull base branch once here, before any parallel workspace creation.
+    # Each worker would otherwise race to update the same git ref simultaneously,
+    # causing "incorrect old value provided" failures and leaving all worktrees
+    # on a stale base. Workers always receive no_pull=True after this point.
+    if not no_pull:
+        pull_base_branch(config)
+    no_pull = True  # workers never pull independently
+
     # Validate file-based story paths (issue entries validated at fetch time)
     _validate_story_paths(manifest, config.project_root)
     # Build unified context mapping: (task, source, canonical_ref) per entry

@@ -354,6 +354,32 @@ def _deindex_forge_artifacts(workspace_path: Path) -> None:
         _cu._log(f"⚠ WORKSPACE  git rm --cached failed: {out.strip()}")
 
 
+def pull_base_branch(config: ForgeConfig) -> bool:
+    """Pull the base branch in the project root. Returns True on success.
+
+    Safe to call once before parallel workspace creation to avoid the race
+    condition where concurrent workers each try to update the same git ref.
+
+    - If base_branch is checked out: git pull --ff-only (updates working tree)
+    - If base_branch is not checked out: git fetch origin base:base (updates ref)
+    """
+    base_branch = config.workspace.base_branch
+    _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
+    if current_branch.strip() == base_branch:
+        ok_pull, pull_out = _cu._run_shell(
+            f"git pull --ff-only origin {base_branch}", config.project_root
+        )
+    else:
+        ok_pull, pull_out = _cu._run_shell(
+            f"git fetch origin {base_branch}:{base_branch}", config.project_root
+        )
+    if ok_pull:
+        _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
+    else:
+        _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
+    return ok_pull
+
+
 def _create_workspace(
     config: ForgeConfig, task: TaskStory, *, no_pull: bool = False
 ) -> tuple[Path | None, str | None, str | None]:
@@ -379,27 +405,7 @@ def _create_workspace(
             return workspace_path, branch_name, None
 
     if not no_pull:
-        base_branch = config.workspace.base_branch
-        # Determine whether the project root currently has base_branch checked out.
-        # - If yes: `git fetch origin base:base` is rejected by git ("branch currently
-        #   checked out"), so fall back to `git pull --ff-only` which advances the
-        #   current (base) branch directly.
-        # - If no:  `git pull --ff-only` would fast-forward the *current* branch, not
-        #   base_branch — leaving local base stale.  Use `git fetch origin base:base`
-        #   to advance the local ref without a checkout.
-        _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
-        if current_branch.strip() == base_branch:
-            ok_pull, pull_out = _cu._run_shell(
-                f"git pull --ff-only origin {base_branch}", config.project_root
-            )
-        else:
-            ok_pull, pull_out = _cu._run_shell(
-                f"git fetch origin {base_branch}:{base_branch}", config.project_root
-            )
-        if ok_pull:
-            _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
-        else:
-            _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
+        pull_base_branch(config)
 
     _cu._log(f"Creating workspace: {cmd}")
     ok, output = _cu._run_shell(cmd, config.project_root)
