@@ -413,11 +413,11 @@ class TestOnApproveAliases:
         result = _parse_workspace({"on_approve": "ask"})
         assert result.on_approve == "pr"
 
-    def test_merge_pr_normalized_to_pr(self) -> None:
+    def test_merge_pr_passthrough(self) -> None:
         from theforge.config._loaders import _parse_workspace
 
-        result = _parse_workspace({"on_approve": "merge-pr"})
-        assert result.on_approve == "pr"
+        result = _parse_workspace({"on_approve": "merge-pr", "auto_push": True})
+        assert result.on_approve == "merge-pr"
 
     def test_merge_unchanged(self) -> None:
         from theforge.config._loaders import _parse_workspace

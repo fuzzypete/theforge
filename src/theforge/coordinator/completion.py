@@ -196,6 +196,161 @@ def _create_pr(
         return {"action": "pr", "pr_url": None, "success": False, "error": str(exc)}
 
 
+def _merge_pr(
+    config: ForgeConfig,
+    task: TaskStory,
+    branch_name: str,
+    parsed_review: ReviewResult,
+    state: CoordinatorState,
+) -> dict:
+    """Create a PR and immediately merge it via gh pr merge.
+
+    Sequence:
+    1. Fetch + rebase onto latest origin/{base_branch} (escalate on conflict).
+    2. Force-push rebased branch so _create_pr's push is a fast-forward.
+    3. Call _create_pr() to archive story, push, and open the PR.
+    4. Merge via `gh pr merge --{strategy} --delete-branch`.
+    5. Fast-forward local base_branch to include the merged commit.
+
+    Returns a result dict with keys: action, pr_url, merged, success, error.
+    Never raises.
+    """
+    base_branch = config.workspace.base_branch
+    merge_strategy = config.workspace.merge_strategy
+    worktree_dir = config.workspace.path_pattern.format(slug=task.slug)
+    worktree_path = config.project_root / worktree_dir
+    push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
+
+    def _fail(error: str, *, merged: bool = False) -> dict:
+        return {
+            "action": "merge-pr",
+            "pr_url": None,
+            "merged": merged,
+            "success": False,
+            "error": error,
+        }
+
+    # Step 1: fetch + rebase onto latest base_branch
+    try:
+        fetch_proc = subprocess.run(
+            ["git", "fetch", "origin", base_branch],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=60,
+        )
+        if fetch_proc.returncode != 0:
+            err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
+            _pr_log.warning("git fetch failed (exit %d): %s", fetch_proc.returncode, err)
+            return _fail(f"git fetch failed: {err}")
+
+        rebase_proc = subprocess.run(
+            ["git", "rebase", f"origin/{base_branch}"],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=120,
+        )
+        if rebase_proc.returncode != 0:
+            err = rebase_proc.stderr.strip() or rebase_proc.stdout.strip()
+            _pr_log.warning("git rebase failed (exit %d): %s", rebase_proc.returncode, err)
+            subprocess.run(
+                ["git", "rebase", "--abort"],
+                capture_output=True,
+                cwd=str(push_cwd),
+                timeout=30,
+            )
+            return _fail(f"rebase onto {base_branch} failed — escalating: {err}")
+    except Exception as exc:
+        _pr_log.warning("rebase step failed: %s", exc)
+        return _fail(f"rebase step failed: {exc}")
+
+    # Step 2: force-push the rebased branch so _create_pr's push is a fast-forward
+    try:
+        push_proc = subprocess.run(
+            ["git", "push", "-f", "origin", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=60,
+        )
+        if push_proc.returncode != 0:
+            err = push_proc.stderr.strip() or push_proc.stdout.strip()
+            _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
+            return _fail(f"force-push after rebase failed: {err}")
+    except Exception as exc:
+        _pr_log.warning("force-push failed: %s", exc)
+        return _fail(f"force-push after rebase failed: {exc}")
+
+    # Step 3: create the PR (also archives story + pushes archive commit)
+    pr_result = _create_pr(config, task, branch_name, parsed_review, state)
+    if not pr_result.get("success"):
+        return {
+            "action": "merge-pr",
+            "pr_url": pr_result.get("pr_url"),
+            "merged": False,
+            "success": False,
+            "error": pr_result.get("error") or "PR creation failed",
+        }
+    pr_url = pr_result["pr_url"]
+
+    # Step 4: merge the PR
+    try:
+        merge_proc = subprocess.run(
+            ["gh", "pr", "merge", pr_url, f"--{merge_strategy}", "--delete-branch"],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=120,
+        )
+        if merge_proc.returncode != 0:
+            err = merge_proc.stderr.strip() or merge_proc.stdout.strip()
+            _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
+            return {
+                "action": "merge-pr",
+                "pr_url": pr_url,
+                "merged": False,
+                "success": False,
+                "error": f"gh pr merge failed: {err}",
+            }
+    except Exception as exc:
+        _pr_log.warning("gh pr merge failed: %s", exc)
+        return {
+            "action": "merge-pr",
+            "pr_url": pr_url,
+            "merged": False,
+            "success": False,
+            "error": f"gh pr merge failed: {exc}",
+        }
+
+    _log(f"  ✓ PR merged: {pr_url}")
+
+    # Step 5: fast-forward local base_branch to include the merged commit
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            capture_output=True,
+            cwd=str(config.project_root),
+            timeout=60,
+        )
+        subprocess.run(
+            ["git", "merge", "--ff-only", f"origin/{base_branch}"],
+            capture_output=True,
+            cwd=str(config.project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
+
+    return {
+        "action": "merge-pr",
+        "pr_url": pr_url,
+        "merged": True,
+        "success": True,
+        "error": None,
+    }
+
+
 def _append_cycle_history(state: CoordinatorState, parsed_review: ReviewResult) -> None:
     """Append a CycleHistory entry for this completed review cycle (capped at 3)."""
     state.cycle_history_total += 1
@@ -262,6 +417,33 @@ def _finalize_approve(
                 "merge_result",
                 success=merge_info["merged"],
                 branch=branch_name,
+                error=merge_info.get("error"),
+            )
+        if merge_info["merged"] and config.hooks and config.hooks.post_merge:
+            from .hooks import build_post_merge_payload
+            from .hooks import run_hook as _run_hook
+
+            _pm_payload = build_post_merge_payload(task.slug, branch_name, run_id, config)
+            _run_hook(
+                config.hooks.post_merge,
+                _pm_payload,
+                config.hooks.timeout_seconds,
+                "post_merge",
+                logger,
+                secrets=config.secrets,
+            )
+    elif effective_on_approve == "merge-pr":
+        merge_info = _merge_pr(config, task, branch_name, parsed_review, state)
+        if merge_info["merged"]:
+            merge_suffix = f" PR merged: {merge_info['pr_url']}"
+        else:
+            merge_suffix = f" merge-pr failed: {merge_info['error']}"
+        if logger:
+            logger._safe_emit(
+                "merge_result",
+                success=merge_info["merged"],
+                branch=branch_name,
+                pr_url=merge_info.get("pr_url"),
                 error=merge_info.get("error"),
             )
         if merge_info["merged"] and config.hooks and config.hooks.post_merge:
