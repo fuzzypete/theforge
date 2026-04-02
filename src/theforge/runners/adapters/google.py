@@ -20,6 +20,40 @@ if TYPE_CHECKING:
     from theforge.config import ModelProfile
 
 
+def _check_google_response(
+    response: Any,
+    input_tokens: int,
+) -> str | None:
+    """Return an error string if the response is empty/blocked, else None.
+
+    Checks prompt_feedback.block_reason and candidates[].finish_reason so
+    failures surface a diagnostic message instead of a TypeError from
+    json.loads(None).
+    """
+    feedback = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(feedback, "block_reason", None) if feedback else None
+    if block_reason:
+        return (
+            f"Google Gemini API: response blocked "
+            f"(block_reason={block_reason}, input_tokens={input_tokens})"
+        )
+
+    for candidate in getattr(response, "candidates", None) or []:
+        finish_reason = getattr(candidate, "finish_reason", None)
+        if finish_reason is not None and str(finish_reason) not in (
+            "",
+            "STOP",
+            "FinishReason.STOP",
+            "1",
+        ):
+            return (
+                f"Google Gemini API: non-STOP finish_reason={finish_reason} "
+                f"(input_tokens={input_tokens})"
+            )
+
+    return None
+
+
 def _run_google(
     prompt: str,
     profile: "ModelProfile",
@@ -38,30 +72,69 @@ def _run_google(
 
     try:
         if plain_text:
-            response = client.models.generate_content(
-                model=profile.model,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0),
-            )
-            output_text = response.text
-            structured_data = None
+            config = genai_types.GenerateContentConfig(temperature=0)
         else:
             schema = _sanitize_schema_for_google(review_json_schema())
-            response = client.models.generate_content(
-                model=profile.model,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=schema,
-                    temperature=0,
-                ),
+            config = genai_types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=0,
             )
-            output_text = response.text
-            structured_data = json.loads(output_text)
+
+        response = client.models.generate_content(
+            model=profile.model,
+            contents=prompt,
+            config=config,
+        )
 
         usage = response.usage_metadata
         input_tokens = usage.prompt_token_count if usage else 0
         output_tokens = usage.candidates_token_count if usage else 0
+        output_text = response.text
+
+        if not output_text:
+            err = _check_google_response(response, input_tokens)
+            if err:
+                return AgentResult(
+                    success=False,
+                    output=err,
+                    session_id=None,
+                    cost_usd=None,
+                    exit_code=1,
+                    raw={},
+                    profile_name=profile.name,
+                )
+            # Empty but not blocked and finish_reason=STOP — retry once
+            _log_verbose("  ⚠ Gemini empty response (not blocked) — retrying once")
+            response = client.models.generate_content(
+                model=profile.model,
+                contents=prompt,
+                config=config,
+            )
+            usage = response.usage_metadata
+            input_tokens = usage.prompt_token_count if usage else 0
+            output_tokens = usage.candidates_token_count if usage else 0
+            output_text = response.text
+
+            if not output_text:
+                err = _check_google_response(response, input_tokens)
+                return AgentResult(
+                    success=False,
+                    output=err
+                    or (
+                        f"Google Gemini API: empty response after retry "
+                        f"(input_tokens={input_tokens})"
+                    ),
+                    session_id=None,
+                    cost_usd=None,
+                    exit_code=1,
+                    raw={},
+                    profile_name=profile.name,
+                )
+
+        structured_data = None
+        if not plain_text:
+            structured_data = json.loads(output_text)
 
         cost = _estimate_cost("google", profile.model, input_tokens, output_tokens)
         model_usage: ModelUsage | None = None
@@ -112,7 +185,10 @@ def _translate_messages_google(messages: list[dict]) -> list[dict]:
             if text:
                 parts.append({"text": text})
             for c in calls:
-                parts.append({"function_call": {"name": c.name, "args": c.arguments}})
+                fc_part: dict = {"name": c.name, "args": c.arguments}
+                if c.thought_signature:
+                    fc_part["thought_signature"] = c.thought_signature
+                parts.append({"function_call": fc_part})
             result.append({"role": "model", "parts": parts or [{"text": ""}]})
         elif role == "tool_results":
             parts = [
@@ -251,18 +327,29 @@ def _make_google_adapter(
 
         for candidate in response.candidates or []:
             parts = (candidate.content.parts if candidate.content else None) or []
+            last_thought_signature: str | None = None
             for part in parts:
+                # Track the thought_signature from thought blocks so we can
+                # attach it to subsequent function calls (-customtools variants).
+                if getattr(part, "thought", False):
+                    sig = getattr(part, "thought_signature", None)
+                    if sig:
+                        last_thought_signature = sig
                 if hasattr(part, "function_call") and part.function_call:
                     fc = part.function_call
                     try:
                         args = dict(fc.args) if fc.args is not None else {}
                     except (TypeError, AttributeError):
                         args = {}
+                    # Prefer thought_signature already on the fc part; fall back
+                    # to the one extracted from the preceding thought block.
+                    sig = getattr(fc, "thought_signature", None) or last_thought_signature
                     tool_calls.append(
                         ToolCallRequest(
                             id=f"call_{len(tool_calls)}",
                             name=fc.name,
                             arguments=args,
+                            thought_signature=sig,
                         )
                     )
                 elif hasattr(part, "text") and part.text:
