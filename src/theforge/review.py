@@ -322,8 +322,11 @@ def parse_plan_review_output(agent_output: str) -> PlanReviewResult:
 
 
 def merge_plan_review_results(
-    results: list[PlanReviewResult], names: list[str]
-) -> PlanReviewResult:
+    results: list[PlanReviewResult],
+    names: list[str],
+    prior_registry: list | None = None,
+    current_attempt: int = 0,
+) -> tuple[PlanReviewResult, list[CorroborationDowngrade]]:
     """Merge multiple PlanReviewResults into one without an LLM call.
 
     Rules:
@@ -334,6 +337,10 @@ def merge_plan_review_results(
       - Any P1 finding → REJECT (real gap that must be addressed before dev)
       - Only P2s remain → APPROVE (pass P2s to dev as context)
     - All findings are prefixed with ``[name]`` for attribution.
+    - When ``prior_registry`` is provided, single-reviewer first-occurrence P1s
+      are downgraded to P1-impl (advisory) via corroboration check.
+
+    Returns ``(merged_result, corroboration_downgrades)``.
     """
     import logging as _logging
 
@@ -357,7 +364,7 @@ def merge_plan_review_results(
             findings=[],
             parse_errors=parse_error_parts
             or ["All plan reviewers failed or produced parse errors"],
-        )
+        ), []
 
     all_findings: list[PlanReviewFinding] = []
     for name, r in valid:
@@ -370,14 +377,168 @@ def merge_plan_review_results(
                 )
             )
 
-    has_p0_or_p1 = any(f.severity in ("P0", "P1") for f in all_findings)
+    # Apply corroboration: downgrade single-reviewer first-occurrence P1s.
+    corroborated_findings, downgrades = apply_plan_corroboration(
+        all_findings,
+        prior_registry=prior_registry,
+        current_attempt=current_attempt,
+    )
+
+    has_p0_or_p1 = any(f.severity in ("P0", "P1") for f in corroborated_findings)
     verdict = "REJECT" if has_p0_or_p1 else "APPROVE"
 
     return PlanReviewResult(
         verdict=verdict,
-        findings=all_findings,
+        findings=corroborated_findings,
         parse_errors=[],
-    )
+    ), downgrades
+
+
+# ── Plan review corroboration ─────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class CorroborationDowngrade:
+    """Audit record for a P1→P1-impl downgrade."""
+
+    original_severity: str
+    effective_severity: str
+    description: str
+
+
+def _extract_reviewer_name(description: str) -> str | None:
+    """Extract reviewer name from ``[name] description`` prefix.
+
+    Returns the name string, or None if no prefix found.
+    """
+    m = re.match(r"^\[([^\]]+)\]\s*", description)
+    return m.group(1) if m else None
+
+
+def apply_plan_corroboration(
+    findings: list[PlanReviewFinding],
+    prior_registry: list | None = None,
+    current_attempt: int = 0,
+) -> tuple[list[PlanReviewFinding], list[CorroborationDowngrade]]:
+    """Classify P1 findings as corroborated or advisory.
+
+    A P1 is corroborated (stays P1) if:
+    - 2+ distinct reviewers raised anchor-overlapping findings, OR
+    - the finding matches a prior registry entry from an earlier attempt
+      (recurrence).
+
+    Uncorroborated P1s are downgraded to P1-impl.
+    P0s are never downgraded.
+
+    Returns (rewritten_findings, downgrade_log).
+    """
+    from .plan_finding_classifier import extract_anchors, strip_reviewer_prefix
+
+    if prior_registry is None:
+        prior_registry = []
+
+    # Identify P1 finding indices.
+    p1_indices = [i for i, f in enumerate(findings) if f.severity == "P1"]
+    if not p1_indices:
+        return findings, []
+
+    # Extract anchors and reviewer names for each P1 finding.
+    p1_anchors: dict[int, frozenset] = {}
+    p1_reviewers: dict[int, str | None] = {}
+    for i in p1_indices:
+        stripped = strip_reviewer_prefix(findings[i].description)
+        p1_anchors[i] = extract_anchors(stripped)
+        p1_reviewers[i] = _extract_reviewer_name(findings[i].description)
+
+    # Group P1 findings by anchor overlap (connected components).
+    # Two findings are in the same group if they share ≥1 non-file anchor.
+    groups: dict[int, int] = {}  # finding_index → group_id
+    next_group = 0
+    for i in p1_indices:
+        merged_into: int | None = None
+        for j in p1_indices:
+            if j >= i:
+                break
+            if j not in groups:
+                continue
+            shared = p1_anchors[i] & p1_anchors[j]
+            non_file_shared = frozenset(a for a in shared if a.kind != "file_path")
+            if non_file_shared:
+                if merged_into is None:
+                    groups[i] = groups[j]
+                    merged_into = groups[j]
+                elif groups[j] != merged_into:
+                    # Merge two groups.
+                    old_group = groups[j]
+                    for k in list(groups):
+                        if groups[k] == old_group:
+                            groups[k] = merged_into
+        if merged_into is None:
+            groups[i] = next_group
+            next_group += 1
+
+    # Count distinct reviewers per group.
+    group_reviewers: dict[int, set[str]] = {}
+    for i in p1_indices:
+        gid = groups[i]
+        if gid not in group_reviewers:
+            group_reviewers[gid] = set()
+        reviewer = p1_reviewers[i]
+        if reviewer is not None:
+            group_reviewers[gid].add(reviewer)
+
+    # Check recurrence against prior registry.
+    recurring_indices: set[int] = set()
+    if prior_registry and current_attempt > 0:
+        prior_clean = [strip_reviewer_prefix(r.description) for r in prior_registry]
+        prior_anchor_sets = [extract_anchors(d) for d in prior_clean]
+
+        # Check which prior entries are from earlier attempts.
+        prior_from_earlier = []
+        for pi, rec in enumerate(prior_registry):
+            if hasattr(rec, "cycle_first_seen") and rec.cycle_first_seen < current_attempt:
+                prior_from_earlier.append(pi)
+
+        for i in p1_indices:
+            for pi in prior_from_earlier:
+                shared = p1_anchors[i] & prior_anchor_sets[pi]
+                non_file_shared = frozenset(a for a in shared if a.kind != "file_path")
+                if non_file_shared:
+                    recurring_indices.add(i)
+                    break
+
+    # Determine which P1s to downgrade.
+    downgrade_indices: set[int] = set()
+    for i in p1_indices:
+        gid = groups[i]
+        multi_reviewer = len(group_reviewers.get(gid, set())) >= 2
+        is_recurring = i in recurring_indices
+        if not multi_reviewer and not is_recurring:
+            downgrade_indices.add(i)
+
+    # Build rewritten findings list (PlanReviewFinding is frozen).
+    downgrades: list[CorroborationDowngrade] = []
+    rewritten: list[PlanReviewFinding] = []
+    for i, f in enumerate(findings):
+        if i in downgrade_indices:
+            rewritten.append(
+                PlanReviewFinding(
+                    severity="P1-impl",
+                    description=f.description,
+                    suggestion=f.suggestion,
+                )
+            )
+            downgrades.append(
+                CorroborationDowngrade(
+                    original_severity="P1",
+                    effective_severity="P1-impl",
+                    description=f.description,
+                )
+            )
+        else:
+            rewritten.append(f)
+
+    return rewritten, downgrades
 
 
 def plan_review_findings_to_text(result: PlanReviewResult) -> str:
