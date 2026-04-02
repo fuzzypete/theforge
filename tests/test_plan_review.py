@@ -445,14 +445,24 @@ def test_audit_includes_original_and_effective_severity():
 
 
 def test_corroboration_dotted_reviewer_names_corroborate():
-    """Dotted reviewer names (e.g. gpt-5.4-a) must be parsed correctly.
-
-    Regression: _extract_reviewer_name previously used [\\w-]+ which excluded
-    dots, causing dotted names to return None and preventing corroboration.
-    """
+    """Dotted reviewer names (e.g. gpt-5.4-a) must be parsed correctly."""
     r_a = _result(_finding("P1", "validate_plan missing error handling"))
     r_b = _result(_finding("P1", "validate_plan does not handle errors"))
     merged, downgrades = merge_plan_review_results([r_a, r_b], ["gpt-5.4-a", "gpt-5.4-b"])
+    assert merged.verdict == "REJECT"
+    assert len(downgrades) == 0
+    assert all(f.severity == "P1" for f in merged.findings)
+
+
+def test_corroboration_exotic_reviewer_names_corroborate():
+    """Reviewer names with spaces, slashes, or other chars must corroborate.
+
+    ModelProfile.name is unconstrained — the prefix parser must accept any
+    characters between the brackets emitted by merge_plan_review_results.
+    """
+    r_a = _result(_finding("P1", "validate_plan missing error handling"))
+    r_b = _result(_finding("P1", "validate_plan does not handle errors"))
+    merged, downgrades = merge_plan_review_results([r_a, r_b], ["reviewer/a", "reviewer b"])
     assert merged.verdict == "REJECT"
     assert len(downgrades) == 0
     assert all(f.severity == "P1" for f in merged.findings)
