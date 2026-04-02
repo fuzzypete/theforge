@@ -35,22 +35,17 @@ retry:
 # Explicit profiles until adaptive assignment is stable
 profiles:
   dev:
-    cli: claude
-    model: sonnet
+    provider: deepseek
+    model: deepseek-reasoner
     budget_usd: 50.00
     timeout_seconds: 600
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
   preflight:
-    cli: claude
-    model: sonnet
+    provider: deepseek
+    model: deepseek-reasoner
     budget_usd: 1.00
     timeout_seconds: 300
-  synthesis:
-    cli: claude
-    model: opus
-    budget_usd: 5.00
-    timeout_seconds: 600
   review_pool:
     - name: codex-reviewer
       cli: codex
@@ -63,24 +58,16 @@ profiles:
     - name: gemini-reviewer
       provider: google
       model: gemini-2.5-flash
-      # API mode — uses GOOGLE_API_KEY, not the gemini CLI
       review_role: edge-cases
       budget_usd: 2.00
       timeout_seconds: 300
       max_iterations: 30
-    - name: deepseek-reviewer
-      provider: deepseek
-      model: deepseek-reasoner
-      review_role: patterns
-      budget_usd: 2.00
-      timeout_seconds: 300
-      max_iterations: 30
 
-# Plan uses opus — deliberate choice
+# Plan uses Codex for this experiment
 plan:
   enabled: true
-  cli: claude
-  model: opus
+  cli: codex
+  model: gpt-5.4
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
@@ -89,13 +76,12 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: codex-plan-reviewer
-      cli: codex
-      model: gpt-5.4
-      budget_usd: 2.00
-      timeout_seconds: 600
-      reasoning_effort: high
-      max_iterations: 20
+    - name: gemini-plan-reviewer
+      provider: google
+      model: gemini-2.5-flash
+      budget_usd: 0.50
+      timeout_seconds: 300
+      max_iterations: 30
     - name: deepseek-plan-reviewer
       provider: deepseek
       model: deepseek-reasoner
@@ -104,9 +90,9 @@ plan_agent_review:
       max_iterations: 30
 
 smart_config_models:
-  - claude/sonnet
+  - deepseek/deepseek-reasoner
   - openai/gpt-5.4
-  - claude/opus
+  - google/gemini-2.5-flash
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh
