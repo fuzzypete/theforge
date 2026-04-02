@@ -232,7 +232,7 @@ def build_post_run_payload(
 
     # Extract pr_number from merge payload if available
     pr_number = None
-    if result.merge and result.merge.get("action") == "pr":
+    if result.merge and result.merge.get("action") in ("pr", "merge-pr"):
         pr_url = result.merge.get("pr_url")
         if pr_url:
             m = re.search(r"/pull/(\d+)", pr_url)

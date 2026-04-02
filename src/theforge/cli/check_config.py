@@ -189,6 +189,8 @@ def _format_config(
 
     lines.append(f"  max_parallel:  {config.sprint.max_parallel}")
     lines.append(f"  on_approve:    {config.workspace.on_approve}")
+    if config.workspace.on_approve == "merge-pr":
+        lines.append(f"  merge_strategy: {config.workspace.merge_strategy}")
 
     exit_code = 1 if warnings_list else 0
     return "\n".join(lines), exit_code
