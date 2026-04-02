@@ -1,8 +1,0 @@
-name: "Plan review hardening"
-budget_usd: 60
-
-# Land these two first. Once merged, retry on-approve-merge-pr separately.
-
-stories:
-  - stories/backlog/plan-review-corroboration.md
-  - stories/backlog/plan-regen-trajectory-focus.md

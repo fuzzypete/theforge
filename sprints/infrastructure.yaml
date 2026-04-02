@@ -1,5 +1,0 @@
-name: "TheForge infrastructure sprint"
-budget_usd: 100.00
-stories:
-  - specs/gate-override.md
-  - specs/smart-model-config.md

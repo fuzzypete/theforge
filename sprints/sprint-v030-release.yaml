@@ -1,8 +1,0 @@
-name: "v0.3.0 release — soft conventions, work-type classification, handoff hygiene"
-budget_usd: 50
-max_parallel: 3
-auto_merge: true
-stories:
-  - stories/backlog/soft-conventions.md
-  - stories/backlog/work-type-classification.md
-  - stories/backlog/forge-handoff-git-hygiene.md

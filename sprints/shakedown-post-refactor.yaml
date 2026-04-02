@@ -1,4 +1,0 @@
-name: "Post-refactor shakedown"
-budget_usd: 25.00
-stories:
-  - stories/active/version-dev-suffix.md

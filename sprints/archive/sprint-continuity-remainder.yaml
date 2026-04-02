@@ -1,6 +1,0 @@
-name: "Forge Continuity Sprint — Remainder"
-budget_usd: 15
-auto_merge: true
-specs:
-  - specs/persistent-logging.md
-  - specs/session-resume.md

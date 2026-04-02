@@ -1,5 +1,0 @@
-name: "v0.2.1 wave 2 — check-config + merge-pr"
-budget_usd: 30
-stories:
-  - stories/backlog/forge-check-config.md
-  - stories/backlog/on-approve-merge-pr.md

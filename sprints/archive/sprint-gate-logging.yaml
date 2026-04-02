@@ -1,6 +1,0 @@
-name: Gate Output and Logging Sprint
-description: Fix gate output truncation and add persistent structured logging
-budget_usd: 20
-specs:
-  - specs/gate-output-tail.md
-  - specs/persistent-logging.md

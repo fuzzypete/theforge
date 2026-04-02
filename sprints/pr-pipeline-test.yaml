@@ -1,4 +1,0 @@
-name: "PR pipeline end-to-end test"
-budget_usd: 20
-stories:
-  - specs/backlog/p1-line-enforcement.md

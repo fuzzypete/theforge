@@ -1,7 +1,0 @@
-name: "M3 — daemon, pipeline control, and parallel execution"
-budget_usd: 60
-stories:
-  - stories/backlog/workspace-branch-collision.md
-  - stories/backlog/stage-aware-pipeline.md
-  - stories/backlog/forge-daemon.md
-  - stories/backlog/parallel-sprint-execution.md

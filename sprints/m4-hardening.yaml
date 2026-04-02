@@ -1,7 +1,0 @@
-name: "M4 hardening — wiring, config, and integrity"
-budget_usd: 40
-max_parallel: 3
-stories:
-  - stories/backlog/stage-aware-coordinator-wiring.md
-  - stories/backlog/sprint-default-parallel.md
-  - stories/backlog/handoff-integrity.md

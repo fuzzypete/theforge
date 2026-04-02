@@ -1,9 +1,0 @@
-name: "Forge Continuity Sprint"
-budget_usd: 30
-auto_merge: true
-specs:
-  - specs/richer-handoffs.md
-  - specs/persistent-p1-detection.md
-  - specs/persistent-logging.md
-  - specs/session-resume.md
-  - specs/targeted-fix-prompt.md
