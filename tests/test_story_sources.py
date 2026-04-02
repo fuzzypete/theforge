@@ -332,6 +332,28 @@ class TestManifestParsing:
         assert isinstance(source, GitHubIssueSource)
         assert canonical == "issue:42"
 
+    def test_build_tasks_skips_closed_manifest_issue_with_warning(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Closed issues in a manifest are skipped with a warning, not a crash.
+
+        Regression: before the fix, IssueClosedError propagated out of
+        build_tasks_from_manifest(), breaking any sprint manifest that
+        referenced a previously-completed issue.
+        """
+
+        closed_json = json.dumps({"title": "Done", "body": "shipped", "state": "CLOSED"})
+        manifest = SprintManifest(name="test", budget_usd=10.0, stories=[{"issue": 99}])
+        with patch("subprocess.run") as mock_run:
+            # gh issue view returns CLOSED state
+            mock_run.return_value = MagicMock(returncode=0, stdout=closed_json, stderr="")
+            entries = build_tasks_from_manifest(manifest, tmp_path)
+
+        assert entries == []
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.err
+        assert "99" in captured.err
+
     def test_build_tasks_applies_overrides(self, tmp_path: Path) -> None:
         issue_data = json.dumps({"title": "Fix bug", "body": "Fix the thing"})
         manifest = SprintManifest(

@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+class IssueClosedError(RuntimeError):
+    """Raised by ``GitHubIssueSource.fetch()`` when the issue is already closed.
+
+    Distinct from generic ``RuntimeError`` so callers can selectively skip
+    closed issues while still propagating transient auth/network failures.
+    """
+
+
 @runtime_checkable
 class StorySource(Protocol):
     """Protocol for fetching story specs and handling lifecycle callbacks."""
@@ -100,7 +108,7 @@ class GitHubIssueSource:
 
         state = data.get("state", "OPEN")
         if state.upper() != "OPEN":
-            raise RuntimeError(f"issue #{number} is already {state.lower()}")
+            raise IssueClosedError(f"issue #{number} is already {state.lower()}")
 
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")

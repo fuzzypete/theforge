@@ -217,12 +217,18 @@ def build_tasks_from_manifest(
     For issue entries, fetches the issue via gh CLI and applies overrides
     (depends_on, slug) from the manifest dict.
     """
-    from .sources import resolve  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from .sources import IssueClosedError, resolve  # noqa: PLC0415
 
     results: list[tuple[TaskStory, StorySource, str]] = []
     for entry in manifest.stories:
         source, ref, canonical_ref = resolve(entry, project_root)
-        task = source.fetch(ref, project_root)
+        try:
+            task = source.fetch(ref, project_root)
+        except IssueClosedError as exc:
+            print(f"[sprint] WARNING: skipping {canonical_ref} — {exc}", file=sys.stderr)
+            continue
 
         # Apply overrides from dict entries
         if isinstance(entry, dict):
