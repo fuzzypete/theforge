@@ -52,6 +52,24 @@ class TestStripReviewerPrefix:
     def test_prefix_only(self):
         assert strip_reviewer_prefix("[reviewer] ") == ""
 
+    def test_strips_dotted_name(self):
+        """Dotted profile names like gpt-5.4-a must be stripped correctly."""
+        assert strip_reviewer_prefix("[gpt-5.4-a] load_config is missing") == (
+            "load_config is missing"
+        )
+
+    def test_strips_name_with_spaces(self):
+        """Profile names with spaces must be stripped correctly."""
+        assert strip_reviewer_prefix("[reviewer b] load_config is missing") == (
+            "load_config is missing"
+        )
+
+    def test_strips_name_with_slashes(self):
+        """Profile names with slashes must be stripped correctly."""
+        assert strip_reviewer_prefix("[reviewer/a] load_config is missing") == (
+            "load_config is missing"
+        )
+
 
 # ── extract_anchors ────────────────────────────────────────────────────────────
 

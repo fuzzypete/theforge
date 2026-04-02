@@ -11,9 +11,11 @@ Covers:
 
 from textwrap import dedent
 
+from theforge.coordinator.state import PlanFindingRecord
 from theforge.review import (
     PlanReviewFinding,
     PlanReviewResult,
+    apply_plan_corroboration,
     merge_plan_review_results,
     parse_plan_review_output,
     plan_review_findings_to_text,
@@ -36,32 +38,38 @@ def _result(*findings: PlanReviewFinding) -> PlanReviewResult:
 def test_merge_p1_impl_only_approves():
     """P1-impl findings alone must not block — verdict is APPROVE."""
     r = _result(_finding("P1-impl", "edge case handling"), _finding("P1-impl", "key collision"))
-    merged = merge_plan_review_results([r], ["reviewer-a"])
+    merged, downgrades = merge_plan_review_results([r], ["reviewer-a"])
     assert merged.verdict == "APPROVE"
+    assert downgrades == []
 
 
 def test_merge_p0_rejects():
     """A single P0 finding forces REJECT."""
     r = _result(_finding("P0", "impossible constraint"))
-    merged = merge_plan_review_results([r], ["reviewer-a"])
+    merged, _ = merge_plan_review_results([r], ["reviewer-a"])
     assert merged.verdict == "REJECT"
 
 
-def test_merge_p1_rejects():
-    """A single P1 (architectural) finding forces REJECT."""
+def test_merge_single_reviewer_p1_downgraded():
+    """A single P1 from one reviewer is downgraded to P1-impl (advisory) via corroboration."""
     r = _result(_finding("P1", "wrong API used"))
-    merged = merge_plan_review_results([r], ["reviewer-a"])
-    assert merged.verdict == "REJECT"
+    merged, downgrades = merge_plan_review_results([r], ["reviewer-a"])
+    assert merged.verdict == "APPROVE"
+    assert len(downgrades) == 1
+    assert downgrades[0].original_severity == "P1"
+    assert downgrades[0].effective_severity == "P1-impl"
+    assert merged.findings[0].severity == "P1-impl"
 
 
-def test_merge_mixed_p1_and_p1_impl_rejects():
-    """P1 presence forces REJECT even when P1-impl findings are also present."""
+def test_merge_mixed_single_reviewer_p1_and_p1_impl_approves():
+    """Single-reviewer P1 is downgraded; combined with P1-impl → APPROVE."""
     r = _result(
         _finding("P1", "structural flaw"),
         _finding("P1-impl", "edge case to handle"),
     )
-    merged = merge_plan_review_results([r], ["reviewer-a"])
-    assert merged.verdict == "REJECT"
+    merged, downgrades = merge_plan_review_results([r], ["reviewer-a"])
+    assert merged.verdict == "APPROVE"
+    assert len(downgrades) == 1
 
 
 def test_merge_p1_impl_and_p2_approves():
@@ -70,21 +78,21 @@ def test_merge_p1_impl_and_p2_approves():
         _finding("P1-impl", "implementation detail"),
         _finding("P2", "style suggestion"),
     )
-    merged = merge_plan_review_results([r], ["reviewer-a"])
+    merged, _ = merge_plan_review_results([r], ["reviewer-a"])
     assert merged.verdict == "APPROVE"
 
 
 def test_merge_p2_only_approves():
     """P2-only findings approve (existing behavior preserved)."""
     r = _result(_finding("P2", "improvement idea"))
-    merged = merge_plan_review_results([r], ["reviewer-a"])
+    merged, _ = merge_plan_review_results([r], ["reviewer-a"])
     assert merged.verdict == "APPROVE"
 
 
 def test_merge_no_findings_approves():
     """No findings → APPROVE."""
     r = _result()
-    merged = merge_plan_review_results([r], ["reviewer-a"])
+    merged, _ = merge_plan_review_results([r], ["reviewer-a"])
     assert merged.verdict == "APPROVE"
 
 
@@ -130,7 +138,7 @@ def test_approved_plan_with_p1_impl_populates_state_advisory():
 
     # Step 1: merge produces APPROVE with P1-impl findings
     r = _result(_finding("P1-impl", "watch key collision handling"))
-    merged = merge_plan_review_results([r], ["reviewer-a"])
+    merged, _ = merge_plan_review_results([r], ["reviewer-a"])
     assert merged.verdict == "APPROVE"
 
     # Step 2: serialize findings to advisory text
@@ -314,3 +322,147 @@ def test_api_schema_includes_p1_impl():
     assert "P1-impl" in severity_enum
     assert "P1" in severity_enum
     assert "P2" in severity_enum
+
+
+# ── Corroboration logic ──────────────────────────────────────────────────────
+
+
+def test_corroboration_single_reviewer_p1_downgraded():
+    """Single-reviewer P1 on first occurrence → P1-impl, verdict APPROVE."""
+    r_a = _result(_finding("P1", "missing error handling in validate_plan"))
+    merged, downgrades = merge_plan_review_results([r_a], ["reviewer-a"])
+    assert merged.verdict == "APPROVE"
+    assert len(downgrades) == 1
+    assert downgrades[0].original_severity == "P1"
+    assert downgrades[0].effective_severity == "P1-impl"
+    assert merged.findings[0].severity == "P1-impl"
+
+
+def test_corroboration_two_reviewers_same_issue_stays_p1():
+    """Same P1 from 2 reviewers (shared anchors) → stays P1, verdict REJECT."""
+    r_a = _result(_finding("P1", "validate_plan missing error handling"))
+    r_b = _result(_finding("P1", "validate_plan does not handle errors"))
+    merged, downgrades = merge_plan_review_results([r_a, r_b], ["reviewer-a", "reviewer-b"])
+    assert merged.verdict == "REJECT"
+    assert len(downgrades) == 0
+    assert all(f.severity == "P1" for f in merged.findings)
+
+
+def test_corroboration_recurring_p1_stays_p1():
+    """Single-reviewer P1 that matches prior registry entry → stays P1, REJECT."""
+    prior = [
+        PlanFindingRecord(
+            description="validate_plan missing error handling",
+            severity="P1",
+            cycle_first_seen=0,
+            cycle_last_seen=0,
+            disposition="unresolved",
+        )
+    ]
+    r_a = _result(_finding("P1", "validate_plan missing error handling"))
+    merged, downgrades = merge_plan_review_results(
+        [r_a], ["reviewer-a"], prior_registry=prior, current_attempt=1
+    )
+    assert merged.verdict == "REJECT"
+    assert len(downgrades) == 0
+    assert merged.findings[0].severity == "P1"
+
+
+def test_corroboration_p0_always_blocks():
+    """P0 always blocks regardless of reviewer count or recurrence."""
+    r_a = _result(_finding("P0", "impossible to implement given constraints"))
+    merged, downgrades = merge_plan_review_results([r_a], ["reviewer-a"])
+    assert merged.verdict == "REJECT"
+    assert len(downgrades) == 0
+    assert merged.findings[0].severity == "P0"
+
+
+def test_corroboration_mixed_corroborated_and_uncorroborated():
+    """Mixed: corroborated P1 stays, uncorroborated P1 downgraded."""
+    # reviewer-a raises two P1s; reviewer-b raises the same first P1 (shared anchor)
+    r_a = _result(
+        _finding("P1", "validate_plan missing error handling"),
+        _finding("P1", "unrelated naming convention issue"),
+    )
+    r_b = _result(
+        _finding("P1", "validate_plan does not handle errors"),
+    )
+    merged, downgrades = merge_plan_review_results([r_a, r_b], ["reviewer-a", "reviewer-b"])
+    # The validate_plan findings are corroborated (2 reviewers), naming is not
+    assert merged.verdict == "REJECT"
+    severities = [f.severity for f in merged.findings]
+    assert "P1" in severities  # corroborated one stays
+    assert "P1-impl" in severities  # uncorroborated one downgraded
+    assert len(downgrades) == 1
+
+
+def test_corroboration_two_reviewers_no_shared_anchors_downgraded():
+    """Two reviewers raising different P1s (no shared anchors) → both downgraded."""
+    r_a = _result(_finding("P1", "validate_plan is missing checks"))
+    r_b = _result(_finding("P1", "run_agent timeout is too short"))
+    merged, downgrades = merge_plan_review_results([r_a, r_b], ["reviewer-a", "reviewer-b"])
+    assert merged.verdict == "APPROVE"
+    assert len(downgrades) == 2
+    assert all(f.severity == "P1-impl" for f in merged.findings)
+
+
+def test_apply_corroboration_no_p1_passthrough():
+    """apply_plan_corroboration with no P1s returns findings unchanged."""
+    findings = [
+        _finding("P1-impl", "edge case"),
+        _finding("P2", "style issue"),
+    ]
+    result, downgrades = apply_plan_corroboration(findings)
+    assert result == findings
+    assert downgrades == []
+
+
+def test_audit_includes_original_and_effective_severity():
+    """PlanFindingRecord with original_severity serializes both fields in audit."""
+    from theforge.coordinator.state import PlanFindingRecord
+
+    rec = PlanFindingRecord(
+        description="validate_plan missing checks",
+        severity="P1-impl",
+        cycle_first_seen=0,
+        cycle_last_seen=0,
+        disposition="new",
+        original_severity="P1",
+    )
+    # Simulate the audit serialization
+    audit_entry = {
+        "description": rec.description,
+        "severity": rec.severity,
+        "original_severity": rec.original_severity,
+        "effective_severity": rec.severity,
+        "cycle_first_seen": rec.cycle_first_seen,
+        "cycle_last_seen": rec.cycle_last_seen,
+        "disposition": rec.disposition,
+    }
+    assert audit_entry["original_severity"] == "P1"
+    assert audit_entry["effective_severity"] == "P1-impl"
+    assert audit_entry["severity"] == "P1-impl"
+
+
+def test_corroboration_dotted_reviewer_names_corroborate():
+    """Dotted reviewer names (e.g. gpt-5.4-a) must be parsed correctly."""
+    r_a = _result(_finding("P1", "validate_plan missing error handling"))
+    r_b = _result(_finding("P1", "validate_plan does not handle errors"))
+    merged, downgrades = merge_plan_review_results([r_a, r_b], ["gpt-5.4-a", "gpt-5.4-b"])
+    assert merged.verdict == "REJECT"
+    assert len(downgrades) == 0
+    assert all(f.severity == "P1" for f in merged.findings)
+
+
+def test_corroboration_exotic_reviewer_names_corroborate():
+    """Reviewer names with spaces, slashes, or other chars must corroborate.
+
+    ModelProfile.name is unconstrained — the prefix parser must accept any
+    characters between the brackets emitted by merge_plan_review_results.
+    """
+    r_a = _result(_finding("P1", "validate_plan missing error handling"))
+    r_b = _result(_finding("P1", "validate_plan does not handle errors"))
+    merged, downgrades = merge_plan_review_results([r_a, r_b], ["reviewer/a", "reviewer b"])
+    assert merged.verdict == "REJECT"
+    assert len(downgrades) == 0
+    assert all(f.severity == "P1" for f in merged.findings)
