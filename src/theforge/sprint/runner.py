@@ -27,9 +27,6 @@ from .manifest import (
     ResolvedSprint,
     SprintResult,
     _build_task_from_story,
-    _validate_story_paths,
-    build_tasks_from_manifest,
-    load_sprint_manifest,
     resolve_from_manifest,
 )
 from .sources import StorySource
@@ -433,9 +430,7 @@ def run_sprint(
         resolved = resolve_from_manifest(sprint, config.project_root)
 
     max_parallel = (
-        resolved.max_parallel
-        if resolved.max_parallel is not None
-        else config.sprint.max_parallel
+        resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
     )
 
     # Build unified context mapping: (task, source, canonical_ref) per entry
@@ -601,9 +596,7 @@ def run_sprint(
 
                 # Eager merge for sequential mode; disabled in parallel mode
                 effective_am = (
-                    False
-                    if max_parallel > 1
-                    else (auto_merge or task.slug in dependent_slugs)
+                    False if max_parallel > 1 else (auto_merge or task.slug in dependent_slugs)
                 )
 
                 spec_str = slug_to_spec[task.slug]

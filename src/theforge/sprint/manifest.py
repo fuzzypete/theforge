@@ -26,7 +26,7 @@ class ResolvedSprint:
 
     name: str
     budget_usd: float
-    stories: list[tuple]  # list of (TaskStory, StorySource, str canonical_ref)
+    stories: list[tuple[TaskStory, StorySource, str]]  # (task, source, canonical_ref)
     max_parallel: int | None = None
 
 
@@ -217,7 +217,7 @@ def build_tasks_from_manifest(
     For issue entries, fetches the issue via gh CLI and applies overrides
     (depends_on, slug) from the manifest dict.
     """
-    from .sources import StorySource, resolve  # noqa: PLC0415
+    from .sources import resolve  # noqa: PLC0415
 
     results: list[tuple[TaskStory, StorySource, str]] = []
     for entry in manifest.stories:

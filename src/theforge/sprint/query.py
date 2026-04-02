@@ -11,6 +11,10 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .manifest import ResolvedSprint
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,7 @@ def fetch_issues_for_milestone(
         "--json",
         "number,title",
         "--limit",
-        "500",
+        "9999",
     ]
     result = subprocess.run(
         cmd,
@@ -75,7 +79,7 @@ def fetch_issues_for_label(
         "--json",
         "number,title",
         "--limit",
-        "500",
+        "9999",
     ]
     result = subprocess.run(
         cmd,
@@ -84,9 +88,7 @@ def fetch_issues_for_label(
         cwd=str(project_root) if project_root else None,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"gh issue list --label {label!r} failed: {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"gh issue list --label {label!r} failed: {result.stderr.strip()}")
     issues: list[dict] = json.loads(result.stdout) or []
     return sorted(issues, key=lambda x: x["number"])
 
@@ -97,7 +99,7 @@ def build_resolved_sprint(
     budget_usd: float,
     max_parallel: int | None,
     project_root: Path,
-) -> "ResolvedSprint":  # noqa: F821
+) -> ResolvedSprint:
     """Build a ResolvedSprint from a list of ``{"number", "title"}`` issue dicts.
 
     Fetches the full issue body for each issue via ``GitHubIssueSource``.
@@ -113,17 +115,18 @@ def build_resolved_sprint(
     Returns:
         A fully populated ``ResolvedSprint`` ready for ``run_sprint()``.
     """
+    from ..task import TaskStory  # noqa: PLC0415
     from .manifest import ResolvedSprint  # noqa: PLC0415
-    from .sources import GitHubIssueSource  # noqa: PLC0415
+    from .sources import GitHubIssueSource, StorySource  # noqa: PLC0415
 
     source = GitHubIssueSource()
-    stories: list[tuple] = []
+    stories: list[tuple[TaskStory, StorySource, str]] = []
     for issue in issues:
         number = issue["number"]
         try:
             task = source.fetch(str(number), project_root)
         except RuntimeError as exc:
-            _log(f"WARNING: skipping issue #{number} — fetch failed: {exc}")
+            _log(f"WARNING: skipping issue #{number} — {exc}")
             continue
         canonical_ref = f"issue:{number}"
         stories.append((task, source, canonical_ref))
