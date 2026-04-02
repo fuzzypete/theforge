@@ -27,7 +27,9 @@ from .manifest import (
     ResolvedSprint,
     SprintResult,
     _build_task_from_story,
-    resolve_from_manifest,
+    _validate_story_paths,
+    build_tasks_from_manifest,
+    load_sprint_manifest,
 )
 from .sources import StorySource
 
@@ -426,8 +428,17 @@ def run_sprint(
     if isinstance(sprint, ResolvedSprint):
         resolved = sprint
     else:
-        # Backward-compat: Path was passed — load, validate, and resolve
-        resolved = resolve_from_manifest(sprint, config.project_root)
+        # Backward-compat: Path was passed — load, validate, and resolve inline
+        # so that individual steps remain patchable by tests.
+        _manifest = load_sprint_manifest(sprint)
+        _validate_story_paths(_manifest, config.project_root)
+        _task_entries = build_tasks_from_manifest(_manifest, config.project_root)
+        resolved = ResolvedSprint(
+            name=_manifest.name,
+            budget_usd=_manifest.budget_usd,
+            stories=_task_entries,
+            max_parallel=_manifest.max_parallel,
+        )
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
