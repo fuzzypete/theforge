@@ -108,7 +108,10 @@ smart_config_models:
   - claude/opus
 
 hooks:
+  pre_run: .forge/hooks/pre_run.sh
   post_run: .forge/hooks/post_run.sh
+  post_merge: .forge/hooks/post_merge.sh
+  post_sprint: .forge/hooks/post_sprint.sh
   timeout_seconds: 30
 
 notifications:
