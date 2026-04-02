@@ -221,10 +221,10 @@ def _merge_pr(
     worktree_path = config.project_root / worktree_dir
     push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
 
-    def _fail(error: str, *, merged: bool = False) -> dict:
+    def _fail(error: str, *, pr_url: str | None = None, merged: bool = False) -> dict:
         return {
             "action": "merge-pr",
-            "pr_url": None,
+            "pr_url": pr_url,
             "merged": merged,
             "success": False,
             "error": error,
@@ -285,13 +285,10 @@ def _merge_pr(
     # Step 3: create the PR (also archives story + pushes archive commit)
     pr_result = _create_pr(config, task, branch_name, parsed_review, state)
     if not pr_result.get("success"):
-        return {
-            "action": "merge-pr",
-            "pr_url": pr_result.get("pr_url"),
-            "merged": False,
-            "success": False,
-            "error": pr_result.get("error") or "PR creation failed",
-        }
+        return _fail(
+            pr_result.get("error") or "PR creation failed",
+            pr_url=pr_result.get("pr_url"),
+        )
     pr_url = pr_result["pr_url"]
 
     # Step 4: merge the PR
@@ -306,22 +303,10 @@ def _merge_pr(
         if merge_proc.returncode != 0:
             err = merge_proc.stderr.strip() or merge_proc.stdout.strip()
             _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
-            return {
-                "action": "merge-pr",
-                "pr_url": pr_url,
-                "merged": False,
-                "success": False,
-                "error": f"gh pr merge failed: {err}",
-            }
+            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
     except Exception as exc:
         _pr_log.warning("gh pr merge failed: %s", exc)
-        return {
-            "action": "merge-pr",
-            "pr_url": pr_url,
-            "merged": False,
-            "success": False,
-            "error": f"gh pr merge failed: {exc}",
-        }
+        return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
 
     _log(f"  ✓ PR merged: {pr_url}")
 
