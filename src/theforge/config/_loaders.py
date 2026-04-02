@@ -23,6 +23,23 @@ log = logging.getLogger("theforge.config")
 
 def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
     """Parse workspace section from raw YAML dict."""
+    on_approve = {"ask": "pr"}.get(
+        str(ws_data.get("on_approve", "none")),
+        str(ws_data.get("on_approve", "none")),
+    )
+    auto_push = bool(ws_data.get("auto_push", DEFAULT_WORKSPACE.auto_push))
+    if on_approve == "merge-pr" and not auto_push:
+        raise ValueError(
+            "on_approve: merge-pr requires auto_push: true — PR creation needs a remote branch"
+        )
+    merge_strategy = str(ws_data.get("merge_strategy", DEFAULT_WORKSPACE.merge_strategy))
+    if on_approve == "merge-pr":
+        _valid_strategies = {"merge", "squash", "rebase"}
+        if merge_strategy not in _valid_strategies:
+            raise ValueError(
+                "merge_strategy must be one of "
+                f"{sorted(_valid_strategies)}, got {merge_strategy!r}"
+            )
     return WorkspaceConfig(
         create_command=ws_data.get("create_command", DEFAULT_WORKSPACE.create_command),
         path_pattern=ws_data.get("path_pattern", DEFAULT_WORKSPACE.path_pattern),
@@ -31,12 +48,10 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
         stale_worktree_days=ws_data.get(
             "stale_worktree_days", DEFAULT_WORKSPACE.stale_worktree_days
         ),
-        auto_push=bool(ws_data.get("auto_push", DEFAULT_WORKSPACE.auto_push)),
+        auto_push=auto_push,
         setup_command=ws_data.get("setup_command", DEFAULT_WORKSPACE.setup_command),
-        on_approve={"merge-pr": "pr", "ask": "pr"}.get(
-            str(ws_data.get("on_approve", "none")),
-            str(ws_data.get("on_approve", "none")),
-        ),
+        on_approve=on_approve,
+        merge_strategy=merge_strategy,
         pr_labels=tuple(ws_data.get("pr_labels", [])),
         pr_draft=bool(ws_data.get("pr_draft", False)),
     )

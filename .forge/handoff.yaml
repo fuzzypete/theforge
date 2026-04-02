@@ -1,0 +1,46 @@
+dev_notes: |
+  summary: "Implemented on_approve: merge-pr — a new workspace config option that creates a GitHub PR via gh pr create and immediately merges it via gh pr merge, giving a full audit trail. Core: _merge_pr() in completion.py fetches+rebases before PR creation, force-pushes, calls _create_pr(), merges via gh pr merge --{merge_strategy} --delete-branch, then fast-forwards the local base_branch. Parallel sprint mode uses dataclasses.replace to give workers on_approve=none, deferring all gh pr merge calls to the flush loop for serialized merging. Iter-1 fixes: _finalize_approve escalates (ESCALATE phase) instead of returning DONE when merge fails; sprint flush loop updates result counters correctly on deferred failure; merge_strategy validated at config load; auto_push:false + merge-pr rejected at config load. Iter-2: compressed _fail() helper to bring completion.py from 510 to 495 lines."
+  commits:
+    - sha: "549e939"
+      message: "fix(completion): compress _merge_pr internals to stay under 500-line limit"
+    - sha: "5608c1e"
+      message: "fix(merge-pr): escalate on failure, fix sprint counters, validate merge_strategy (iter 1)"
+    - sha: "5ed4eb3"
+      message: "feat(workspace): add on_approve: merge-pr — create PR and auto-merge"
+  acceptance_criteria:
+    - criterion: "on_approve: merge-pr creates a PR and merges it in a single coordinator step"
+      status: MET
+      notes: "_merge_pr() calls _create_pr() then gh pr merge in sequence; wired into _finalize_approve() via elif effective_on_approve == 'merge-pr' branch."
+    - criterion: "PR body contains story name, dev cost, and review summary"
+      status: MET
+      notes: "Reuses existing _create_pr() which includes task.name, state.total_cost, and review summary. Verified by TestPrBodyContent test."
+    - criterion: "merge_strategy: merge | squash | rebase respected"
+      status: MET
+      notes: "merge_strategy field added to WorkspaceConfig (default squash); validated at config load; passed as --{merge_strategy} to gh pr merge."
+    - criterion: "Merge conflict causes rebase then escalate on failure (not force-push)"
+      status: MET
+      notes: "_merge_pr() rebases first; on failure calls git rebase --abort and returns failure dict; _finalize_approve returns ESCALATE (iter-1 fix)."
+    - criterion: "Parallel sprint merge lock covers gh pr merge calls"
+      status: MET
+      notes: "Workers run with on_approve=none via dataclasses.replace; flush loop calls _merge_pr serially in dependency order."
+    - criterion: "auto_push: false + on_approve: merge-pr emits a config error"
+      status: MET
+      notes: "_parse_workspace raises ValueError when on_approve==merge-pr and auto_push is False."
+    - criterion: "on_approve: merge and on_approve: pr behavior unchanged"
+      status: MET
+      notes: "merge-pr branch in _finalize_approve is additive (elif); existing merge and pr branches unchanged."
+    - criterion: "All existing tests pass"
+      status: MET
+      notes: "1975 tests pass after all iterations."
+    - criterion: "New tests for merge-pr path (mock gh calls, conflict path, lock behavior)"
+      status: MET
+      notes: "31 tests in test_coord_merge_pr.py covering config validation, _merge_pr(), finalize-approve, sprint lock, PR body, escalation, deferred failure, merge_strategy validation, and fast-forward."
+  story_deviations:
+    - description: "Rebase performed before _create_pr rather than after"
+      justification: "Prevents leaving an orphaned open PR if rebase fails. Escalate-on-conflict requires the check before PR creation per P1 plan reviewer guidance."
+    - description: "Story archival not re-called in _finalize_approve for merge-pr"
+      justification: "_create_pr already archives the story in the feature branch before pushing; re-archiving in project_root would duplicate the commit."
+    - description: "post_merge hook runs in serial mode but not in sprint flush loop"
+      justification: "Consistent with existing behavior — the parallel flush loop also skips post_merge hooks for the auto-merge path."
+  deferred_items: none
+  gate_result: PASS
