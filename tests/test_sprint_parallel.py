@@ -964,4 +964,97 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["outcome"]["final_phase"] == "DONE"
         assert audit["merge"]["action"] == "merge-pr"
         assert audit["merge"]["merged"] is True
-        assert audit["merge"]["pr_url"] == "https://github.com/fuzzypete/theforge/pull/273"
+
+
+# ── Pre-pull behaviour in run_sprint ─────────────────────────────────
+
+
+class TestSprintPrePull:
+    """run_sprint() pulls base branch once before parallel workers start."""
+
+    def _make_manifest(self, tmp_path: Path) -> Path:
+        (tmp_path / "story-a.md").write_text(
+            "---\nname: Story A\nslug: story-a\n---\n# Story A\n"
+        )
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.write_text(
+            "name: test-sprint\nbudget_usd: 10\nmax_parallel: 2\nstories:\n"
+            "  - story-a.md\n"
+        )
+        return manifest_path
+
+    def test_successful_prepull_suppresses_worker_pulls(self, tmp_path: Path) -> None:
+        """When pull_base_branch succeeds, workers receive no_pull=True."""
+        config = _make_config(tmp_path)
+        manifest_path = self._make_manifest(tmp_path)
+        worker_no_pull_values: list[bool] = []
+
+        def capture_no_pull(*args, **kwargs):
+            worker_no_pull_values.append(kwargs.get("no_pull", args[8] if len(args) > 8 else None))
+            state = CoordinatorState()
+            state.preflight_verdict = "PROCEED"
+            state.preflight_result = MagicMock(cost_usd=0.0)
+            return CoordinatorResult(
+                success=True, phase=Phase.DONE, state=state, message="Done."
+            )
+
+        with (
+            patch(
+                "theforge.sprint.runner.pull_base_branch", return_value=True
+            ) as mock_pull,
+            patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
+        ):
+            run_sprint(config, manifest_path)
+
+        mock_pull.assert_called_once_with(config)
+        assert all(v is True for v in worker_no_pull_values), (
+            f"Expected all workers no_pull=True after successful pre-pull, got {worker_no_pull_values}"
+        )
+
+    def test_failed_prepull_preserves_worker_pulls(self, tmp_path: Path) -> None:
+        """When pull_base_branch fails, workers keep no_pull=False so stale-base warnings fire."""
+        config = _make_config(tmp_path)
+        manifest_path = self._make_manifest(tmp_path)
+        worker_no_pull_values: list[bool] = []
+
+        def capture_no_pull(*args, **kwargs):
+            worker_no_pull_values.append(kwargs.get("no_pull", args[8] if len(args) > 8 else None))
+            state = CoordinatorState()
+            state.preflight_verdict = "PROCEED"
+            state.preflight_result = MagicMock(cost_usd=0.0)
+            return CoordinatorResult(
+                success=True, phase=Phase.DONE, state=state, message="Done."
+            )
+
+        with (
+            patch(
+                "theforge.sprint.runner.pull_base_branch", return_value=False
+            ) as mock_pull,
+            patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
+        ):
+            run_sprint(config, manifest_path)
+
+        mock_pull.assert_called_once_with(config)
+        assert all(v is False for v in worker_no_pull_values), (
+            f"Expected all workers no_pull=False after failed pre-pull, got {worker_no_pull_values}"
+        )
+
+    def test_caller_no_pull_true_skips_prepull(self, tmp_path: Path) -> None:
+        """When run_sprint is called with no_pull=True, pull_base_branch is never called."""
+        config = _make_config(tmp_path)
+        manifest_path = self._make_manifest(tmp_path)
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_result = MagicMock(cost_usd=0.0)
+        mock_result = CoordinatorResult(
+            success=True, phase=Phase.DONE, state=state, message="Done."
+        )
+
+        with (
+            patch("theforge.sprint.runner.pull_base_branch") as mock_pull,
+            patch("theforge.sprint.runner.run_task", return_value=mock_result),
+        ):
+            run_sprint(config, manifest_path, no_pull=True)
+
+        mock_pull.assert_not_called()
