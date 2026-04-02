@@ -508,6 +508,14 @@ def _run_plan_agent_review(
         _match_results = match_plan_findings(list(merged_pr.findings), _prior_as_findings)
         state.plan_match_provenance.append(format_provenance(_match_results))
 
+        # Capture pre-update dispositions NOW, before the loop mutates the records.
+        # _prior_registry_snapshot is a shallow copy — modifying .disposition modifies
+        # the same objects.  We need the original "fixed"/"new"/"unresolved" values to
+        # distinguish genuinely recurring findings from revived-from-fixed ones.
+        _prior_dispositions: dict[int, str] = {
+            i: rec.disposition for i, rec in enumerate(_prior_registry_snapshot)
+        }
+
         _matched_prior_indices: set[int] = set()
         for _mr in _match_results:
             if _mr.prior_index is not None:
@@ -533,12 +541,14 @@ def _run_plan_agent_review(
         # ─────────────────────────────────────────────────────────────────
 
         # Build filtered findings for the regen prompt (if rejection follows).
-        # Registry is now fully updated for this attempt; use it for streak computation.
+        # Registry is now fully updated for this attempt; pass _prior_dispositions so
+        # the filter can distinguish genuinely recurring findings from revived-from-fixed ones.
         _filtered_regen_text, _filter_audit = build_filtered_regen_findings(
             list(merged_pr.findings),
             _match_results,
             _attempt,
             state.plan_finding_registry,
+            _prior_dispositions,
         )
 
         record_plan_attempt(state, merged_pr.findings)

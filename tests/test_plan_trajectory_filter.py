@@ -219,3 +219,100 @@ class TestBuildFilteredRegenFindings:
         text, audit = build_filtered_regen_findings(findings, matches, 1, registry)
         assert "P2" in text
         assert "omitted" in text.lower()
+
+
+# ── Regression: revived-from-fixed findings ────────────────────────────────────
+
+
+class TestRevivedFromFixedFindings:
+    """A P1 that was fixed in one attempt and reappears in a later attempt must NOT
+    be treated as a genuinely recurring finding for filtering purposes.
+
+    Without prior_dispositions, the registry update in plan_flow.py revives the
+    old record by setting disposition="unresolved".  build_filtered_regen_findings
+    must use prior_dispositions to detect this and classify the finding as 'new'.
+    """
+
+    def test_revived_p1_treated_as_new_not_recurring(self):
+        """Finding A: first seen at attempt 0, fixed at attempt 1, reappears at attempt 2."""
+        # The registry record was marked "fixed" before attempt 2
+        findings = [_finding("auth_flow broken", "P1")]
+        matches = [_match(0, 0)]  # matches prior record at index 0
+        registry = [_record("auth_flow broken", cycle_first_seen=0, cycle_last_seen=2)]
+        # Prior disposition at attempt 2: was "fixed" (fixed at attempt 1)
+        prior_dispositions = {0: "fixed"}
+        text, audit = build_filtered_regen_findings(
+            findings, matches, 2, registry, prior_dispositions
+        )
+        # No genuinely recurring P1s → no filtering
+        assert audit["filtering_applied"] is False
+        assert audit["reason"] == "no_recurring_p1s"
+        assert "auth_flow broken" in text
+
+    def test_revived_p1_with_prior_dispositions_none_still_filters(self):
+        """Without prior_dispositions, matched findings are treated as recurring."""
+        findings = [_finding("auth_flow broken", "P1")]
+        matches = [_match(0, 0)]
+        registry = [_record("auth_flow broken", cycle_first_seen=0)]
+        # prior_dispositions=None → treat all matched as recurring (no check)
+        text, audit = build_filtered_regen_findings(findings, matches, 1, registry, None)
+        assert audit["filtering_applied"] is True
+
+    def test_consecutive_streak_excludes_revived_finding(self):
+        """consecutive_streak_dominant_theme ignores findings that were 'fixed' before current."""
+        registry = [
+            _record("auth_flow broken", cycle_first_seen=0, cycle_last_seen=2),  # revived
+            _record("new_real recurring", cycle_first_seen=1, cycle_last_seen=2),  # genuine
+        ]
+        prior_dispositions = {0: "fixed", 1: "unresolved"}
+        result = consecutive_streak_dominant_theme(registry, 2, prior_dispositions)
+        # auth_flow_broken was "fixed" before attempt 2, so excluded
+        assert result == "new_real recurring"
+
+    def test_consecutive_streak_without_prior_dispositions_includes_revived(self):
+        """Without prior_dispositions, revived findings are still counted (backward compat)."""
+        registry = [
+            _record("auth_flow broken", cycle_first_seen=0, cycle_last_seen=2),
+        ]
+        # No prior_dispositions → revived finding included
+        result = consecutive_streak_dominant_theme(registry, 2, None)
+        assert result == "auth_flow broken"
+
+    def test_p2_revived_finding_still_excluded_from_filtering(self):
+        """A P2 revived finding matched to a prior P2 should not trigger filtering."""
+        findings = [
+            _finding("style_issue rename", "P2"),  # revived P2
+        ]
+        matches = [_match(0, 0)]
+        registry = [_record("style_issue rename", severity="P2", cycle_first_seen=0)]
+        prior_dispositions = {0: "fixed"}
+        text, audit = build_filtered_regen_findings(
+            findings, matches, 2, registry, prior_dispositions
+        )
+        # P2 revived, classified as new → no recurring P1s → no filtering
+        assert audit["filtering_applied"] is False
+        assert "style_issue rename" in text
+
+    def test_mixed_revived_and_genuine_recurring_p1(self):
+        """One revived P1 and one genuinely recurring P1: only the genuine one triggers filter."""
+        findings = [
+            _finding("revived_auth broken", "P1"),  # revived (was fixed)
+            _finding("persistent_core issue", "P1"),  # genuinely recurring
+        ]
+        matches = [_match(0, 0), _match(1, 1)]
+        registry = [
+            _record("revived_auth broken", cycle_first_seen=0),
+            _record("persistent_core issue", cycle_first_seen=0),
+        ]
+        prior_dispositions = {0: "fixed", 1: "unresolved"}
+        text, audit = build_filtered_regen_findings(
+            findings, matches, 2, registry, prior_dispositions
+        )
+        assert audit["filtering_applied"] is True
+        assert audit["recurring_p1_count"] == 1
+        # Only persistent_core in recurring; revived_auth classified as new
+        assert "Recurring findings" in text
+        assert "persistent_core issue" in text
+        # revived_auth should appear under new findings
+        assert "New findings" in text
+        assert "revived_auth broken" in text
