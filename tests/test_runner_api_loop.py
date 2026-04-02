@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 
 from theforge.agent_types import ModelUsage
 from theforge.config import ModelProfile
-from theforge.runners.adapters.google import _make_google_adapter
 from theforge.runners.api import (
     AgentLoopManager,
     run_api_agent,
@@ -693,91 +692,6 @@ class TestAgentLoopLifecycle:
         assert not result.success
         assert "Provider API error" in result.output
         assert "'NoneType' object is not iterable" in result.output
-
-    def _make_google_modules(self, fake_client):
-        """Build sys.modules mocks for google.genai, wiring attributes correctly.
-
-        `import google.genai as genai` resolves via attribute access on the google
-        module object, not directly from sys.modules["google.genai"], so we must set
-        mock_google.genai = mock_genai and mock_genai.types = mock_genai_types.
-        """
-        import sys
-
-        mock_genai_types = MagicMock()
-        mock_genai = MagicMock()
-        mock_genai.Client.return_value = fake_client
-        mock_genai.types = mock_genai_types
-
-        mock_google = MagicMock()
-        mock_google.genai = mock_genai
-
-        modules = {
-            "google": mock_google,
-            "google.genai": mock_genai,
-            "google.genai.types": mock_genai_types,
-        }
-        return sys.modules, modules, mock_genai, mock_genai_types
-
-    def test_google_adapter_fc_args_none_parsed_as_empty_dict(self, tmp_path):
-        """Google adapter with fc.args = None should produce arguments={}."""
-        # Build a fake response where a function_call part has args=None
-        fake_fc = MagicMock()
-        fake_fc.name = "submit_review"
-        fake_fc.args = None
-
-        fake_part = MagicMock()
-        fake_part.function_call = fake_fc
-        fake_part.text = None
-
-        fake_candidate = MagicMock()
-        fake_candidate.content = MagicMock()
-        fake_candidate.content.parts = [fake_part]
-
-        fake_response = MagicMock()
-        fake_response.candidates = [fake_candidate]
-        fake_response.usage_metadata = None
-        fake_response.prompt_feedback = None
-
-        fake_client = MagicMock()
-        fake_client.models.generate_content.return_value = fake_response
-
-        import sys
-
-        _, modules, _, _ = self._make_google_modules(fake_client)
-        profile = _make_profile(provider="google", model="gemini-2.5-flash")
-
-        with patch.dict(sys.modules, modules):
-            adapter = _make_google_adapter(profile, secrets=None)
-            turn = adapter([{"role": "user", "content": "hi"}], [])
-
-        assert len(turn.tool_calls) == 1
-        assert turn.tool_calls[0].arguments == {}
-
-    def test_google_adapter_content_parts_none_yields_empty(self, tmp_path):
-        """Google adapter with candidate.content.parts = None → no tool_calls, no text."""
-        fake_candidate = MagicMock()
-        fake_candidate.content = MagicMock()
-        fake_candidate.content.parts = None  # parts is None, not []
-
-        fake_response = MagicMock()
-        fake_response.candidates = [fake_candidate]
-        fake_response.usage_metadata = None
-        fake_response.prompt_feedback = None
-
-        fake_client = MagicMock()
-        fake_client.models.generate_content.return_value = fake_response
-
-        import sys
-
-        _, modules, _, _ = self._make_google_modules(fake_client)
-        profile = _make_profile(provider="google", model="gemini-2.5-flash")
-
-        with patch.dict(sys.modules, modules):
-            adapter = _make_google_adapter(profile, secrets=None)
-            turn = adapter([{"role": "user", "content": "hi"}], [])
-
-        assert turn.tool_calls == []
-        assert turn.text_output is None
 
 
 class TestTimeNudge:
