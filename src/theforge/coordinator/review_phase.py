@@ -534,6 +534,26 @@ def _run_review_phase(
     if state.review_cycle >= 2:
         _blocking_p1 = _fc.has_blocking_p1(_classified)
         _nonblocking_p1s = _fc.net_new_p1s(_classified)
+        # AC-violation override: a net-new P1 from a reviewer who also flagged
+        # matches_spec=false is not speculative — it asserts the story was not completed
+        # correctly and must block regardless of its disposition classification.
+        # Conservative rule: if *any* reviewer in the pool returned matches_spec=false,
+        # all net-new P1s from that reviewer are treated as AC-blocking.
+        _ac_failing_reporters = {
+            name for name, rr in state.last_cycle_reviewer_results if not rr.story_matches
+        }
+        if _ac_failing_reporters:
+            _ac_blocking_p1s = [r for r in _nonblocking_p1s if r.reporter in _ac_failing_reporters]
+            _nonblocking_p1s = [
+                r for r in _nonblocking_p1s if r.reporter not in _ac_failing_reporters
+            ]
+            if _ac_blocking_p1s:
+                _blocking_p1 = True
+                _ac_descs = "; ".join(r.description[:80] for r in _ac_blocking_p1s)
+                _log(
+                    f"  ✗ {len(_ac_blocking_p1s)} net-new P1(s) blocked"
+                    f" (AC-blocking: reviewer indicated matches_spec=false): {_ac_descs}"
+                )
         # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
         # P1 injection when all reviewers failed to produce parseable output), block
         # traditionally to avoid silently passing an unknown failure.
