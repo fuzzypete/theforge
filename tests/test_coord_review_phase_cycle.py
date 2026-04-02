@@ -986,3 +986,63 @@ class TestNetNewAcBlocking:
         assert result.success is True
         assert result.phase == Phase.DONE
         assert result.state.review_cycle == 2
+
+    @patch("theforge.finding_classifier._get_changed_files")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_ac_blocking_finding_transitions_to_fixed(
+        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
+    ):
+        """AC-blocking finding that disappears in a later cycle transitions to fixed."""
+        # 3 cycles: cycle 1 (P1 blocks) → cycle 2 (AC-blocking net-new) → cycle 3 (APPROVE)
+        # Use a $2.00 reviewer budget so 3 × $0.50 cycles don't exceed the limit.
+        base = _make_config(tmp_path)
+        config = dataclasses.replace(
+            base,
+            retry=dataclasses.replace(base.retry, max_review_cycles=3),
+            review_pool=[_make_review_profile("review", budget_usd=2.0)],
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_changed_files.return_value = frozenset(["src/changed.py"])
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        call_n = {"n": 0}
+
+        def three_cycle_pool(**kwargs):
+            call_n["n"] += 1
+            if call_n["n"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=_CYCLE1_P1_REQUEST_CHANGES, profile_name="review"
+                    )
+                ]
+            if call_n["n"] == 2:
+                return [
+                    _make_agent_result(
+                        success=True, output=_CYCLE2_AC_BLOCKING, profile_name="review"
+                    )
+                ]
+            # Cycle 3: clean APPROVE — AC-blocking finding is gone
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = three_cycle_pool
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.review_cycle == 3
+
+        # The AC-blocking record must be marked fixed, not ac_blocking
+        ac_records = [
+            r for r in result.state.finding_registry if "Merge strategy" in r.description
+        ]
+        assert len(ac_records) == 1
+        assert ac_records[0].disposition == "fixed"

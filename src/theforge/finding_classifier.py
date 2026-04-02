@@ -212,6 +212,7 @@ def update_finding_registry(
                 "net_new",
                 "corroborated_new",
                 "regression",
+                "ac_blocking",
             ):
                 disposition = "unresolved"
             elif prior_match.disposition == "fixed":
@@ -250,7 +251,13 @@ def update_finding_registry(
     # Mark any prior P1 findings NOT seen this cycle as fixed
     for record in state.finding_registry:
         if record.cycle_last_seen < cycle_num and record.severity == "P1":
-            if record.disposition in ("unresolved", "net_new", "corroborated_new", "regression"):
+            if record.disposition in (
+                "unresolved",
+                "net_new",
+                "corroborated_new",
+                "regression",
+                "ac_blocking",
+            ):
                 record.disposition = "fixed"  # type: ignore[assignment]
 
     return classified_this_cycle
