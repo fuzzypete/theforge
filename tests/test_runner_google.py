@@ -321,6 +321,37 @@ class TestGoogleAdapter:
         assert turn.tool_calls == []
         assert turn.text_output is None
 
+    def test_non_stop_finish_reason_yields_empty_loop_turn(self):
+        """Non-STOP finish_reason with no output → empty LoopTurn, not synthetic text.
+
+        The loop manager treats any non-empty text_output as a successful completion,
+        so injecting diagnostic strings would silently pass a blocked review.
+        """
+        fake_candidate = MagicMock()
+        fake_candidate.content = MagicMock()
+        fake_candidate.content.parts = []
+        fake_candidate.finish_reason = "SAFETY"
+
+        fake_response = MagicMock()
+        fake_response.candidates = [fake_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = MagicMock()
+        fake_response.prompt_feedback.block_reason = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile()
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "hi"}], [])
+
+        # Must be empty — the loop manager will fail it as "no output"
+        assert turn.tool_calls == []
+        assert not turn.text_output  # None or ""
+
 
 class TestTranslateMessagesGoogle:
     """Tests for _translate_messages_google message format conversion."""

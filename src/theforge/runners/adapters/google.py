@@ -367,15 +367,19 @@ def _make_google_adapter(
                     text_parts.append(part.text)
 
         if not tool_calls and not text_parts:
+            # Log diagnostics but do NOT inject synthetic text — the loop manager
+            # treats any non-empty text_output as a successful completion.  An empty
+            # LoopTurn (no tool_calls, no text_output) triggers the correct failure
+            # path ("Agent finished without calling submit tool and produced no output").
             feedback = getattr(response, "prompt_feedback", None)
             block_reason = getattr(feedback, "block_reason", None) if feedback else None
             if block_reason:
-                text_parts.append(f"[Blocked: {block_reason}]")
+                _log_verbose(f"  ⚠ Gemini adapter: response blocked (block_reason={block_reason})")
             else:
                 for candidate in response.candidates or []:
                     fr = getattr(candidate, "finish_reason", None)
                     if not _is_stop_finish_reason(fr):
-                        text_parts.append(f"[Non-STOP finish_reason: {fr}]")
+                        _log_verbose(f"  ⚠ Gemini adapter: empty response with finish_reason={fr}")
                         break
 
         usage_meta = response.usage_metadata
