@@ -28,7 +28,7 @@ _ABBREVIATION_ROOTS: frozenset[str] = frozenset({"e.g", "i.e", "etc", "vs"})
 _PLAN_STEP_RE = re.compile(r"\b(?:Step|Phase)\s+\d+\b", re.IGNORECASE)
 
 # Reviewer attribution prefix added by merge_plan_review_results (review.py).
-_REVIEWER_PREFIX_RE = re.compile(r"^\[[\w-]+\]\s*")
+_REVIEWER_PREFIX_RE = re.compile(r"^\[[\w.-]+\]\s*")
 
 # ── Known file extensions ─────────────────────────────────────────────────────
 

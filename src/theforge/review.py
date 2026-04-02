@@ -411,7 +411,7 @@ def _extract_reviewer_name(description: str) -> str | None:
 
     Returns the name string, or None if no prefix found.
     """
-    m = re.match(r"^\[([\w-]+)\]\s*", description)
+    m = re.match(r"^\[([\w.-]+)\]\s*", description)
     return m.group(1) if m else None
 
 
