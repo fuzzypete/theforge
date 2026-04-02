@@ -28,8 +28,11 @@ The resolver picks the backend based on ref format. Local files work exactly as 
 
 - `forge sprint` accepts a manifest with `issue: <number>` entries and executes them
 - GitHub issue body is used as the story spec (passed to preflight, plan, dev, review)
-- Issue is closed automatically when the story completes with APPROVE
-- Issue receives a comment when the story escalates (with escalation reason)
+- Issue closing is mode-dependent:
+  - `on_approve: merge-pr` or `on_approve: pr` — PR body includes `Closes #N`; GitHub closes the issue when the PR merges. Coordinator does not call `gh issue close`.
+  - `on_approve: merge` — no PR exists, so the coordinator calls `gh issue close` with a run-summary comment
+  - `on_approve: ask` — same as `pr`; human merges, GitHub closes via keyword
+- Issue receives a comment when the story escalates (with escalation reason), regardless of mode
 - Local file stories continue to work unchanged — no regression
 - `depends_on` in sprint manifest entries is respected for sequencing, consistent with existing DAG behavior
 - Stories with overlapping file footprints (detected via preflight or plan output) emit a warning and run sequentially by default
@@ -43,6 +46,7 @@ The resolver picks the backend based on ref format. Local files work exactly as 
 ## Notes
 
 - The abstraction point is a `StorySource` protocol with at minimum `fetch(ref) -> TaskStory` and `on_complete(ref, result)` / `on_escalate(ref, result)` callbacks. Keep the protocol minimal — don't over-engineer for backends that don't exist yet.
+- `on_complete` is a no-op for PR-based modes (GitHub handles closing via the keyword). For `on_approve: merge` it calls `gh issue close` with a summary comment. The branching lives in the callback, not the coordinator.
 - `GitHubIssueSource` uses `gh` CLI (already a hard dependency) to fetch issue body and post comments. No new auth surface.
 - The `github_issue` field already exists on `TaskStory` — populate it from the issue number so PR creation gets `Closes #N` for free.
 - Sprint manifest parsing lives in `src/theforge/sprint/manifest.py`. The resolver logic (file vs issue ref) belongs there or in a new `src/theforge/sprint/sources.py`.

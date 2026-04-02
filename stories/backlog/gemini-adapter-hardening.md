@@ -1,6 +1,7 @@
 ---
 name: "Harden Gemini adapter against silent empty responses"
 slug: gemini-adapter-hardening
+github_issue: 251
 pytest_target: tests/
 ---
 

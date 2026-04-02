@@ -1,0 +1,12 @@
+name: "GH and Gemini integration"
+budget_usd: 90
+
+# Prereqs: story-source-abstraction merged, on_approve: merge-pr wired in forge.yaml
+# Run after plan-review-hardening sprint lands.
+
+stories:
+  - stories/backlog/sprint-from-github-query.md
+  - stories/backlog/gemini-adapter-hardening.md
+  - story: stories/backlog/gemini-thinking-mode.md
+    depends_on:
+      - gemini-adapter-hardening

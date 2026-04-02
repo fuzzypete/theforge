@@ -10,10 +10,8 @@ lint:
 	ruff check src/ tests/
 	ruff format --check src/ tests/
 
-# Tests (serial — safe under sprint concurrency where forge may run this
-# across multiple parallel stories at once via max_parallel)
 test:
-	PYTHONPATH=src python -m pytest tests/ -v
+	PYTHONPATH=src python -m pytest tests/ -v -n auto --dist worksteal
 
 # Opt-in parallel run: useful for local iteration when not running a sprint.
 # Uses worksteal for even distribution — tests are fully parallel-safe.

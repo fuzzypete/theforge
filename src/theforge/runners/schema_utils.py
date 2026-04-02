@@ -94,7 +94,9 @@ _REASONING_MODEL_RE = re.compile(r"^o\d")
 
 def _is_reasoning_model(model: str) -> bool:
     """Return True for reasoning models that do not support temperature=0."""
-    return bool(_REASONING_MODEL_RE.match(model)) or model.startswith("deepseek-r1")
+    return bool(_REASONING_MODEL_RE.match(model)) or model.startswith(
+        ("deepseek-r1", "deepseek-reasoner")
+    )
 
 
 # Submit tool names — loop-internal, not in TOOL_REGISTRY

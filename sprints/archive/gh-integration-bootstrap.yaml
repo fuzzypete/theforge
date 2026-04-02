@@ -1,0 +1,9 @@
+name: "GH integration bootstrap — merge-pr foundation"
+budget_usd: 30
+
+# Run this sprint first. Merge the resulting PRs manually, then flip
+# forge.yaml to `on_approve: merge-pr`. Then run gh-integration-main.yaml.
+
+stories:
+  - stories/backlog/on-approve-merge-pr.md
+  - stories/backlog/story-source-abstraction.md
