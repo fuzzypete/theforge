@@ -312,9 +312,11 @@ def consecutive_streak_dominant_theme(
 
     Args:
         prior_dispositions: Map of registry index → disposition value captured BEFORE
-            the registry update for this attempt.  When provided, findings that were
-            "fixed" or "new" before this attempt are excluded — they represent a
-            revived-from-fixed record, not an uninterrupted unresolved streak.
+            the registry update for this attempt.  When provided, only findings that
+            were "fixed" before this attempt are excluded — "new" and "unresolved"
+            prior dispositions both indicate genuine recurrence.  A "fixed" prior
+            disposition means the finding was resolved and then reappeared; it should
+            not be counted as an uninterrupted streak.
 
     Returns empty string if no qualifying finding exists.
     Alphabetically smallest description breaks ties for determinism.
@@ -328,9 +330,10 @@ def consecutive_streak_dominant_theme(
             continue
         if rec.cycle_first_seen >= current_attempt:
             continue  # new this attempt, not a recurring finding
-        # Exclude findings that were fixed or new before this attempt — they
-        # were revived, not continuously unresolved.
-        if prior_dispositions is not None and prior_dispositions.get(rec_idx) != "unresolved":
+        # Exclude only findings that were "fixed" before this attempt.
+        # "new" is the initial disposition on first insertion; a finding
+        # with prior_disposition="new" that reappears is genuinely recurring.
+        if prior_dispositions is not None and prior_dispositions.get(rec_idx) == "fixed":
             continue
         streak = current_attempt - rec.cycle_first_seen + 1
         if streak > best_streak or (streak == best_streak and rec.description < best_desc):
@@ -396,15 +399,16 @@ def build_filtered_regen_findings(
         }
 
     # Classify findings as recurring or new.
-    # A finding is "recurring" only if it matched a prior record that was actively
-    # unresolved at the time of matching — not one that was "fixed" or "new" in the
-    # prior attempt and then reappeared (revived-from-fixed).
+    # A finding is "recurring" if it matched a prior record whose disposition was
+    # NOT "fixed" before this attempt.  "new" (first insertion) and "unresolved"
+    # (survived a prior attempt) are both eligible.  Only "fixed" records indicate
+    # a revived-from-fixed finding that should be treated as new for filtering.
     recurring: list["PlanReviewFinding"] = []
     new: list["PlanReviewFinding"] = []
     for i, finding in enumerate(current_findings):
         mr = match_results[i]
         is_genuinely_recurring = mr.prior_index is not None and (
-            prior_dispositions is None or prior_dispositions.get(mr.prior_index) == "unresolved"
+            prior_dispositions is None or prior_dispositions.get(mr.prior_index) != "fixed"
         )
         if is_genuinely_recurring:
             recurring.append(finding)
@@ -452,7 +456,7 @@ def build_filtered_regen_findings(
         streak = 0
         for rec_idx, rec in enumerate(registry):
             if rec.description == dom_theme and rec.disposition != "fixed":
-                if prior_dispositions is None or prior_dispositions.get(rec_idx) == "unresolved":
+                if prior_dispositions is None or prior_dispositions.get(rec_idx) != "fixed":
                     streak = attempt - rec.cycle_first_seen + 1
                     break
         lines.append("")

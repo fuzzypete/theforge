@@ -316,3 +316,37 @@ class TestRevivedFromFixedFindings:
         # revived_auth should appear under new findings
         assert "New findings" in text
         assert "revived_auth broken" in text
+
+    def test_first_recurrence_with_prior_disposition_new(self):
+        """Finding first seen at attempt 0 (disposition='new') that survives to attempt 1.
+
+        This is the normal first-backtrack case.  prior_dispositions[0]='new' because
+        the finding was inserted with disposition='new' on attempt 0 and the
+        prior_dispositions snapshot is captured before the loop that changes it to
+        'unresolved'.  The finding must be treated as genuinely recurring.
+        """
+        findings = [
+            _finding("approval_path broken", "P1"),
+            _finding("rename_test thing", "P2"),
+        ]
+        matches = [_match(0, 0), _match(1, None)]
+        # Record was inserted at attempt 0 with disposition="new"
+        registry = [_record("approval_path broken", cycle_first_seen=0, disposition="new")]
+        # Simulate what plan_flow.py captures before the update loop:
+        # the record still has disposition="new" (not yet changed to "unresolved")
+        prior_dispositions = {0: "new"}
+        text, audit = build_filtered_regen_findings(
+            findings, matches, 1, registry, prior_dispositions
+        )
+        # Prior disposition="new" is NOT "fixed" → should be treated as recurring
+        assert audit["filtering_applied"] is True
+        assert "approval_path broken" in text
+        assert "rename_test thing" not in text  # P2 omitted
+        assert audit["p2_omitted_count"] == 1
+
+    def test_consecutive_streak_with_prior_disposition_new(self):
+        """A finding with prior_disposition='new' qualifies for dominant-theme streak."""
+        registry = [_record("approval_path broken", cycle_first_seen=0, disposition="new")]
+        prior_dispositions = {0: "new"}
+        result = consecutive_streak_dominant_theme(registry, 1, prior_dispositions)
+        assert result == "approval_path broken"
