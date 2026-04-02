@@ -622,7 +622,8 @@ def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
             "theforge.coordinator.plan_flow.parse_plan_review_output", return_value=review_result
         ),
         patch(
-            "theforge.coordinator.plan_flow.merge_plan_review_results", return_value=review_result
+            "theforge.coordinator.plan_flow.merge_plan_review_results",
+            return_value=(review_result, []),
         ),
         patch("theforge.coordinator.plan_flow.match_plan_findings", return_value=[]),
         patch("theforge.coordinator.plan_flow.format_provenance", return_value=""),

@@ -394,6 +394,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                     {
                         "description": r.description,
                         "severity": r.severity,
+                        "original_severity": r.original_severity,
+                        "effective_severity": r.severity,
                         "cycle_first_seen": r.cycle_first_seen,
                         "cycle_last_seen": r.cycle_last_seen,
                         "disposition": r.disposition,

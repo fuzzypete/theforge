@@ -495,12 +495,21 @@ def _run_plan_agent_review(
                 message=state.error,
             )
 
-        merged_pr = merge_plan_review_results(_parsed_prs, _pool_names)
         _total_pr_cost = sum(r.cost_usd or 0.0 for r in pr_results)
 
         # ── Plan finding identity tracking ────────────────────────────────
         # Snapshot registry before this cycle so new inserts don't interfere.
         _prior_registry_snapshot = list(state.plan_finding_registry)
+
+        # Merge with corroboration: pass registry so single-reviewer
+        # first-occurrence P1s can be downgraded to P1-impl.
+        merged_pr, _corroboration_downgrades = merge_plan_review_results(
+            _parsed_prs,
+            _pool_names,
+            prior_registry=_prior_registry_snapshot,
+            current_attempt=_attempt,
+        )
+
         _prior_as_findings = [
             PlanReviewFinding(severity=r.severity, description=r.description, suggestion=None)
             for r in _prior_registry_snapshot
@@ -514,6 +523,9 @@ def _run_plan_agent_review(
         # distinguish genuinely recurring findings from revived-from-fixed ones.
         _prior_dispositions: dict[int, str] = {
             i: rec.disposition for i, rec in enumerate(_prior_registry_snapshot)
+        # Build downgrade lookup for original_severity audit trail.
+        _downgrade_descs: dict[str, str] = {
+            d.description: d.original_severity for d in _corroboration_downgrades
         }
 
         _matched_prior_indices: set[int] = set()
@@ -521,9 +533,13 @@ def _run_plan_agent_review(
             if _mr.prior_index is not None:
                 _prior_registry_snapshot[_mr.prior_index].cycle_last_seen = _attempt
                 _prior_registry_snapshot[_mr.prior_index].disposition = "unresolved"
+                # Update effective severity from current corroborated finding.
+                _cf = merged_pr.findings[_mr.current_index]
+                _prior_registry_snapshot[_mr.prior_index].severity = _cf.severity
                 _matched_prior_indices.add(_mr.prior_index)
             else:
                 _cf = merged_pr.findings[_mr.current_index]
+                _orig_sev = _downgrade_descs.get(_cf.description)
                 state.plan_finding_registry.append(
                     PlanFindingRecord(
                         description=strip_reviewer_prefix(_cf.description),
@@ -531,6 +547,7 @@ def _run_plan_agent_review(
                         cycle_first_seen=_attempt,
                         cycle_last_seen=_attempt,
                         disposition="new",
+                        original_severity=_orig_sev,
                     )
                 )
 
