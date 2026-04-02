@@ -64,8 +64,32 @@ findings:
 """
 
 
-def _make_plan_agent_review_config(tmp_path: Path) -> ForgeConfig:
-    """Create a test config with PLAN and plan_agent_review enabled."""
+def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = False) -> ForgeConfig:
+    """Create a test config with PLAN and plan_agent_review enabled.
+
+    When ``dual_reviewer=True``, configures two plan review profiles so that
+    corroboration can detect cross-reviewer agreement on the same P1.
+    """
+    if dual_reviewer:
+        _plan_review_a = ModelProfile(
+            name="plan-review-a",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+        )
+        _plan_review_b = ModelProfile(
+            name="plan-review-b",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+        )
+        par_config = PlanAgentReviewConfig(enabled=True, pool=[_plan_review_a, _plan_review_b])
+    else:
+        par_config = PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet")
     return ForgeConfig(
         project="test",
         project_root=tmp_path,
@@ -81,7 +105,7 @@ def _make_plan_agent_review_config(tmp_path: Path) -> ForgeConfig:
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
         plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
-        plan_agent_review=PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet"),
+        plan_agent_review=par_config,
         log=LogConfig(enabled=False),
     )
 
@@ -164,8 +188,8 @@ class TestPlanAgentReview:
         mock_code_pool,
         tmp_path,
     ):
-        """P1 findings block — plan regenerated, second review APPROVE."""
-        config = _make_plan_agent_review_config(tmp_path)
+        """Corroborated P1 (2 reviewers) blocks — plan regenerated, second review APPROVE."""
+        config = _make_plan_agent_review_config(tmp_path, dual_reviewer=True)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -181,22 +205,35 @@ class TestPlanAgentReview:
             _make_agent_result(success=True, output="Implemented."),
         ]
         # engine.run_agent_pool: plan review calls (reject then approve)
+        # Two reviewers raise same P1 → corroborated, so it blocks.
         mock_plan_pool.side_effect = [
             [
                 _make_agent_result(
                     success=True,
                     output=PLAN_AGENT_REJECT_P1,
                     cost_usd=0.08,
-                    profile_name="plan-review",
-                )
+                    profile_name="plan-review-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_REJECT_P1,
+                    cost_usd=0.08,
+                    profile_name="plan-review-b",
+                ),
             ],
             [
                 _make_agent_result(
                     success=True,
                     output=PLAN_AGENT_APPROVE,
                     cost_usd=0.06,
-                    profile_name="plan-review",
-                )
+                    profile_name="plan-review-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.06,
+                    profile_name="plan-review-b",
+                ),
             ],
         ]
         # review_pool.run_agent_pool: code review
@@ -207,7 +244,7 @@ class TestPlanAgentReview:
         result = run_task(config, task, interactive=True)
 
         assert result.success is True
-        assert result.state.plan_regen_count > 0  # regen triggered by P1
+        assert result.state.plan_regen_count > 0  # regen triggered by corroborated P1
         assert result.state.plan_review_decision == "approve"
         assert result.state.plan_output == "# Plan\n\nFixed plan."
         assert len(result.state.plan_results) == 2  # two plan attempts
@@ -297,13 +334,13 @@ class TestPlanAgentReview:
         mock_code_pool,
         tmp_path,
     ):
-        """APPROVE verdict carrying a P1 finding must trigger regen.
+        """Corroborated P1 (2 reviewers) triggers regen despite APPROVE verdict.
 
         Findings drive the verdict, not the reviewer's stated verdict.
-        A reviewer saying APPROVE with a P1 must still block — this was
-        the core bug where the advisory-downgrade hack allowed P1s through.
+        When 2 reviewers raise the same P1, corroboration keeps it as P1
+        and the plan is rejected for regen.
         """
-        config = _make_plan_agent_review_config(tmp_path)
+        config = _make_plan_agent_review_config(tmp_path, dual_reviewer=True)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -313,8 +350,17 @@ class TestPlanAgentReview:
 verdict: APPROVE
 findings:
   - severity: P1
-    description: "startup validation runs before CLI overrides are applied"
+    description: "run_startup_checks runs before _apply_dev_model_override is applied"
     suggestion: "Move run_startup_checks() to after _apply_dev_model_override()"
+```
+"""
+        reject_with_p1 = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P1
+    description: "run_startup_checks called before _apply_dev_model_override"
+    suggestion: "Reorder to apply overrides first"
 ```
 """
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
@@ -327,9 +373,36 @@ findings:
             _make_agent_result(success=True, output="# Plan\n\nFixed plan.", cost_usd=0.12),
             _make_agent_result(success=True, output="Implemented."),
         ]
+        # Two reviewers both raise P1 about same issue → corroborated
         mock_plan_pool.side_effect = [
-            [_make_agent_result(success=True, output=approve_with_p1, cost_usd=0.08)],
-            [_make_agent_result(success=True, output=PLAN_AGENT_APPROVE, cost_usd=0.06)],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=approve_with_p1,
+                    cost_usd=0.08,
+                    profile_name="plan-review-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=reject_with_p1,
+                    cost_usd=0.08,
+                    profile_name="plan-review-b",
+                ),
+            ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.06,
+                    profile_name="plan-review-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    cost_usd=0.06,
+                    profile_name="plan-review-b",
+                ),
+            ],
         ]
         mock_code_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
@@ -338,7 +411,7 @@ findings:
         result = run_task(config=config, task=task, interactive=True)
 
         assert result.success is True
-        assert result.state.plan_regen_count == 1  # regen triggered despite APPROVE verdict
+        assert result.state.plan_regen_count == 1  # regen triggered by corroborated P1
         assert result.state.plan_output == "# Plan\n\nFixed plan."
         assert len(result.state.plan_results) == 2
 

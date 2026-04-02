@@ -105,10 +105,11 @@ class PlanFindingRecord:
     """
 
     description: str  # stripped of reviewer attribution prefix
-    severity: str  # "P1" | "P2"
+    severity: str  # "P1" | "P1-impl" | "P2"
     cycle_first_seen: int  # plan regen attempt index when first observed
     cycle_last_seen: int  # plan regen attempt index when last observed
     disposition: Literal["unresolved", "fixed", "new"]
+    original_severity: str | None = None  # pre-corroboration severity; None = no downgrade
 
 
 @dataclass

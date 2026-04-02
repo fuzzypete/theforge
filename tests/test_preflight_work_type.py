@@ -19,6 +19,7 @@ from theforge.config import (
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
     ForgeConfig,
+    ModelProfile,
     PlanAgentReviewConfig,
     PlanConfig,
     PlanReviewConfig,
@@ -34,8 +35,32 @@ from theforge.task import TaskStory, build_plan_prompt, build_preflight_prompt
 # ── Shared fixtures ───────────────────────────────────────────────────
 
 
-def _make_plan_agent_review_config(tmp_path: Path) -> ForgeConfig:
-    """Test config with plan + plan_agent_review enabled."""
+def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = False) -> ForgeConfig:
+    """Test config with plan + plan_agent_review enabled.
+
+    When ``dual_reviewer=True``, configures two plan review profiles so that
+    corroboration can detect cross-reviewer agreement.
+    """
+    if dual_reviewer:
+        _pr_a = ModelProfile(
+            name="plan-review-a",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+        )
+        _pr_b = ModelProfile(
+            name="plan-review-b",
+            cli="claude",
+            model="sonnet",
+            budget_usd=0.50,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+        )
+        par_config = PlanAgentReviewConfig(enabled=True, pool=[_pr_a, _pr_b])
+    else:
+        par_config = PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet")
     return ForgeConfig(
         project="test",
         project_root=tmp_path,
@@ -51,7 +76,7 @@ def _make_plan_agent_review_config(tmp_path: Path) -> ForgeConfig:
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
         plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
-        plan_agent_review=PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet"),
+        plan_agent_review=par_config,
     )
 
 
@@ -480,8 +505,8 @@ class TestFeatureBugFullPlanReview:
         mock_plan_review_pool,
         tmp_path,
     ):
-        """For feature work type, a REJECT from reviewer triggers plan regeneration."""
-        config = _make_plan_agent_review_config(tmp_path)
+        """Corroborated REJECT (2 reviewers) triggers plan regeneration."""
+        config = _make_plan_agent_review_config(tmp_path, dual_reviewer=True)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -500,15 +525,29 @@ class TestFeatureBugFullPlanReview:
         mock_plan_agent.return_value = plan_result
         mock_dev_agent.return_value = dev_result
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # First review: REJECT; second review: APPROVE
+        # First review: two reviewers raise same P1 (corroborated → REJECT); second: APPROVE
         mock_plan_review_pool.side_effect = [
-            [_make_agent_result(success=True, output=PLAN_AGENT_REJECT, profile_name="reviewer")],
-            [_make_agent_result(success=True, output=PLAN_AGENT_APPROVE, profile_name="reviewer")],
+            [
+                _make_agent_result(
+                    success=True, output=PLAN_AGENT_REJECT, profile_name="plan-review-a"
+                ),
+                _make_agent_result(
+                    success=True, output=PLAN_AGENT_REJECT, profile_name="plan-review-b"
+                ),
+            ],
+            [
+                _make_agent_result(
+                    success=True, output=PLAN_AGENT_APPROVE, profile_name="plan-review-a"
+                ),
+                _make_agent_result(
+                    success=True, output=PLAN_AGENT_APPROVE, profile_name="plan-review-b"
+                ),
+            ],
         ]
 
         result = run_task(config, task)
 
-        # Plan review pool was called twice (reject → regen → approve)
+        # Plan review pool was called twice (corroborated reject → regen → approve)
         assert mock_plan_review_pool.call_count == 2
         # Plan was regenerated once
         assert result.state.plan_regen_count == 1
