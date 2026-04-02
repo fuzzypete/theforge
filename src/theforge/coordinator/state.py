@@ -68,7 +68,13 @@ def parse_phase_name(name: str) -> Phase:
 
 
 Disposition = Literal[
-    "unresolved", "fixed", "regression", "net_new", "corroborated_new", "downgraded"
+    "unresolved",
+    "fixed",
+    "regression",
+    "net_new",
+    "corroborated_new",
+    "downgraded",
+    "ac_blocking",
 ]
 
 

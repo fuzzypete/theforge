@@ -929,6 +929,41 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_ac_blocking_audit_records_disposition(
+        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
+    ):
+        """Audit trail records AC-blocking findings with disposition ac_blocking, not net_new."""
+        config = _make_config(tmp_path)  # max_review_cycles=2
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_changed_files.return_value = frozenset(["src/changed.py"])
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_AC_BLOCKING)
+
+        result = run_from_review(config, task, workspace)
+
+        audit = generate_audit_log(config, task, result)
+
+        # The cycle-2 P1 must appear in finding_registry with disposition ac_blocking
+        registry = audit["finding_registry"]
+        ac_blocking = [r for r in registry if r["disposition"] == "ac_blocking"]
+        assert len(ac_blocking) == 1
+        assert "Merge strategy" in ac_blocking[0]["description"]
+
+        # It must NOT appear in non_blocking_p1s (which only lists disposition: net_new)
+        non_blocking = audit["non_blocking_p1s"]
+        non_blocking_ids = {r["finding_id"] for r in non_blocking}
+        assert ac_blocking[0]["finding_id"] not in non_blocking_ids
+
+    @patch("theforge.finding_classifier._get_changed_files")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_net_new_p1_with_matches_spec_true_does_not_block(
         self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
     ):

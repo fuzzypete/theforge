@@ -259,10 +259,10 @@ def update_finding_registry(
 def has_blocking_p1(classified: list[FindingRecord]) -> bool:
     """Return True if any P1 finding has a blocking disposition.
 
-    Blocking dispositions: unresolved, regression, corroborated_new.
+    Blocking dispositions: unresolved, regression, corroborated_new, ac_blocking.
     Non-blocking: net_new (single reviewer, latent, not in changed files).
     """
-    blocking = {"unresolved", "regression", "corroborated_new"}
+    blocking = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
     return any(r.severity == "P1" and r.disposition in blocking for r in classified)
 
 

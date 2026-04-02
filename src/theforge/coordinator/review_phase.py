@@ -549,6 +549,10 @@ def _run_review_phase(
             ]
             if _ac_blocking_p1s:
                 _blocking_p1 = True
+                # Persist the AC-blocking classification so the audit trail records
+                # these findings as ac_blocking rather than net_new.
+                for _rec in _ac_blocking_p1s:
+                    _rec.disposition = "ac_blocking"  # type: ignore[assignment]
                 _ac_descs = "; ".join(r.description[:80] for r in _ac_blocking_p1s)
                 _log(
                     f"  ✗ {len(_ac_blocking_p1s)} net-new P1(s) blocked"
