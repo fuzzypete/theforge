@@ -1,12 +1,11 @@
-name: "GH and Gemini integration"
-budget_usd: 90
-
-# Prereqs: story-source-abstraction merged, on_approve: merge-pr wired in forge.yaml
-# Run after plan-review-hardening sprint lands.
+name: "v0.4.0 — GitHub workflow, Gemini reasoning, paperless sprints"
+budget_usd: 110
+max_parallel: 3
 
 stories:
+  - stories/backlog/net-new-ac-violation-blocks.md
   - stories/backlog/sprint-from-github-query.md
   - stories/backlog/gemini-adapter-hardening.md
-  - story: stories/backlog/gemini-thinking-mode.md
+  - issue: 252
     depends_on:
       - gemini-adapter-hardening

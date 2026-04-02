@@ -26,6 +26,14 @@ The progression:
 - [x] `dev-model-escalation` — persistent P1 triggers model promotion
 - [x] `phase-telemetry` — per-phase cost/timing tracking
 
+### Phase 1a: Dogfood hardening *(next)*
+- [ ] `adaptive-assignment-runtime-integration` — prove coordinator runtime
+      wiring, override preservation, and history writes end to end
+- [ ] `adaptive-assignment-audit-trail` — expose assignment choices,
+      overrides, rationale, and promotion in the audit log
+- [ ] `assignment-history-end-to-end` — prove the escalation-memory learning
+      loop with a small fixture
+
 ### Phase 2: Domain + config (v0.2.1) *(in flight)*
 - [ ] `config-normalization` — unify model spec, loud validation on load
 - [ ] `domain-aware-routing` — 1-10 complexity, domain tags, strengths matching
@@ -52,7 +60,10 @@ domain-aware-routing
         └── progress-aware-timeouts (composes: ceiling + early exit)
 
 adaptive-model-assignment (shipped)
-  └── escalation-learning
+  ├── adaptive-assignment-runtime-integration
+  ├── adaptive-assignment-audit-trail
+  └── assignment-history-end-to-end
+        └── escalation-learning
 ```
 
 ## Key Design Constraints

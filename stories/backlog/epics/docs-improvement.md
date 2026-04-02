@@ -28,6 +28,7 @@ Priority order (highest impact first, but all are independent):
 9. [docs-provider-setup-chooser](../docs-provider-setup-chooser.md) — Provider setup decision guide
 10. [docs-diagrams](../docs-diagrams.md) — Lifecycle, control boundaries, failure recovery diagrams
 11. [docs-cross-linking](../docs-cross-linking.md) — Tighten navigation between all docs
+12. [adaptive-assignment-docs-alignment](../adaptive-assignment-docs-alignment.md) — Reconcile shipped status and add a "how it works today" block
 
 ## If you only do five things
 
