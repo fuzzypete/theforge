@@ -438,10 +438,12 @@ def run_sprint(
     # Pull base branch once here, before any parallel workspace creation.
     # Each worker would otherwise race to update the same git ref simultaneously,
     # causing "incorrect old value provided" failures and leaving all worktrees
-    # on a stale base. Workers always receive no_pull=True after this point.
+    # on a stale base. Only suppress per-worker pulls when the shared sync
+    # succeeded — if it failed, workers retain their normal pull/behind-origin
+    # check so stale-base warnings still fire.
     if not no_pull:
-        pull_base_branch(config)
-    no_pull = True  # workers never pull independently
+        if pull_base_branch(config):
+            no_pull = True  # workers skip pull; base is already current
 
     # Validate file-based story paths (issue entries validated at fetch time)
     _validate_story_paths(manifest, config.project_root)
