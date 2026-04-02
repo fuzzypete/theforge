@@ -212,6 +212,7 @@ def update_finding_registry(
                 "net_new",
                 "corroborated_new",
                 "regression",
+                "ac_blocking",
             ):
                 disposition = "unresolved"
             elif prior_match.disposition == "fixed":
@@ -250,7 +251,13 @@ def update_finding_registry(
     # Mark any prior P1 findings NOT seen this cycle as fixed
     for record in state.finding_registry:
         if record.cycle_last_seen < cycle_num and record.severity == "P1":
-            if record.disposition in ("unresolved", "net_new", "corroborated_new", "regression"):
+            if record.disposition in (
+                "unresolved",
+                "net_new",
+                "corroborated_new",
+                "regression",
+                "ac_blocking",
+            ):
                 record.disposition = "fixed"  # type: ignore[assignment]
 
     return classified_this_cycle
@@ -259,10 +266,10 @@ def update_finding_registry(
 def has_blocking_p1(classified: list[FindingRecord]) -> bool:
     """Return True if any P1 finding has a blocking disposition.
 
-    Blocking dispositions: unresolved, regression, corroborated_new.
+    Blocking dispositions: unresolved, regression, corroborated_new, ac_blocking.
     Non-blocking: net_new (single reviewer, latent, not in changed files).
     """
-    blocking = {"unresolved", "regression", "corroborated_new"}
+    blocking = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
     return any(r.severity == "P1" and r.disposition in blocking for r in classified)
 
 

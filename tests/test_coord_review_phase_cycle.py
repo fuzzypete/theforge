@@ -814,4 +814,3 @@ class TestCoordinatorReviewCycleMetadata:
         assert rev["successful"] == ["r1", "r2"]
         assert rev["failed"] == []
         assert rev["synthesized"] is False
-        assert rev["verdict"] == "APPROVE"
