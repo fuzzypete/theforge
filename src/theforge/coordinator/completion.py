@@ -459,6 +459,25 @@ def _finalize_approve(
                 logger,
                 secrets=config.secrets,
             )
+        if not merge_info["merged"]:
+            # PR merge failed (rebase conflict, gh error, etc.) — escalate rather than DONE.
+            state.phase = Phase.ESCALATE
+            state.error = merge_info.get("error") or "merge-pr failed"
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="REVIEW",
+                    outcome="escalate",
+                    cost_usd=round(review_cost, 6),
+                    duration_s=round(review_elapsed, 2),
+                )
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=f"{message}Branch: {branch_name}{merge_suffix}",
+                merge=merge_info,
+            )
     elif effective_on_approve == "pr":
         merge_info = _create_pr(config, task, branch_name, parsed_review, state)
         if merge_info["success"]:

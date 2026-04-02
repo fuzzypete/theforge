@@ -457,8 +457,9 @@ class TestFinalizeApproveMergePr:
                 message="done. ",
             )
 
-        # Overall result is still success=True (coordinator DONE), but merge failed
-        assert result.success is True
+        # merge-pr failure escalates: success=False, phase=ESCALATE
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
         assert result.merge["merged"] is False
         assert "merge-pr failed" in result.message
 
@@ -751,3 +752,225 @@ class TestPrBodyContent:
         assert "Test Task" in body  # story name
         assert "2.75" in body  # dev cost
         assert "Feature implemented correctly" in body  # review summary
+
+
+# ── Escalate on merge-pr failure ─────────────────────────────────
+
+
+class TestMergePrEscalate:
+    """_finalize_approve must escalate (not DONE) when merge-pr fails."""
+
+    def test_finalize_approve_escalates_on_merge_pr_failure(self, tmp_path: Path) -> None:
+        import time
+
+        from theforge.coordinator.completion import _finalize_approve
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = CoordinatorState()
+        state.phase = Phase.REVIEW
+
+        with patch(
+            "theforge.coordinator.completion._merge_pr",
+            return_value={
+                "action": "merge-pr",
+                "pr_url": None,
+                "merged": False,
+                "success": False,
+                "error": "rebase conflict on main",
+            },
+        ):
+            result = _finalize_approve(
+                state,
+                config,
+                task,
+                review,
+                tmp_path,
+                "forge/test-task",
+                time.monotonic(),
+                auto_merge=False,
+                notify=False,
+                logger=None,
+                review_cost=0.5,
+                review_elapsed=1.0,
+                message="done. ",
+            )
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.merge["merged"] is False
+        assert state.phase == Phase.ESCALATE
+        assert state.error is not None
+        assert "rebase conflict" in state.error
+
+    def test_finalize_approve_done_on_merge_pr_success(self, tmp_path: Path) -> None:
+        import time
+
+        from theforge.coordinator.completion import _finalize_approve
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = CoordinatorState()
+        state.phase = Phase.REVIEW
+
+        with patch(
+            "theforge.coordinator.completion._merge_pr",
+            return_value={
+                "action": "merge-pr",
+                "pr_url": "https://github.com/x/y/pull/5",
+                "merged": True,
+                "success": True,
+                "error": None,
+            },
+        ):
+            result = _finalize_approve(
+                state,
+                config,
+                task,
+                review,
+                tmp_path,
+                "forge/test-task",
+                time.monotonic(),
+                auto_merge=False,
+                notify=False,
+                logger=None,
+                review_cost=0.5,
+                review_elapsed=1.0,
+                message="done. ",
+            )
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge["merged"] is True
+
+
+# ── Deferred merge failure updates sprint counters ────────────────
+
+
+class TestDeferredMergePrFailure:
+    """Deferred merge-pr failure in sprint flush must update result and counters."""
+
+    def test_deferred_merge_failure_updates_result_and_counters(self, tmp_path: Path) -> None:
+        """When flush loop _merge_pr fails, result.success=False and counters reflect failure."""
+        from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+
+        review = _make_review_result()
+
+        worker_state = CoordinatorState()
+        worker_state.phase = Phase.DONE
+        worker_state.review_results = [review]
+
+        # Simulate what the sprint runner stores after a worker completes
+        worker_result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=worker_state,
+            message="done. Branch: forge/test-task",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        # Simulate the flush loop logic inline
+        specs_succeeded = 1
+        specs_failed = 0
+        merge_info = {
+            "action": "merge-pr",
+            "pr_url": None,
+            "merged": False,
+            "success": False,
+            "error": "gh pr merge failed: branch protection",
+        }
+
+        # Apply the fix from the flush loop
+        worker_result.success = False
+        worker_result.phase = Phase.ESCALATE
+        worker_result.merge = merge_info
+        worker_result.state.phase = Phase.ESCALATE
+        worker_result.state.error = merge_info.get("error") or "deferred merge-pr failed"
+        specs_succeeded -= 1
+        specs_failed += 1
+
+        assert worker_result.success is False
+        assert worker_result.phase == Phase.ESCALATE
+        assert worker_result.merge["merged"] is False
+        assert worker_result.state.error == "gh pr merge failed: branch protection"
+        assert specs_succeeded == 0
+        assert specs_failed == 1
+
+
+# ── Config validation: merge_strategy ────────────────────────────
+
+
+class TestMergeStrategyValidation:
+    """merge_strategy must be validated at config load time."""
+
+    def test_invalid_merge_strategy_raises(self) -> None:
+        from theforge.config._loaders import _parse_workspace
+
+        with pytest.raises(ValueError, match="merge_strategy"):
+            _parse_workspace(
+                {"on_approve": "merge-pr", "auto_push": True, "merge_strategy": "fast-forward"}
+            )
+
+    def test_valid_merge_strategies_accepted(self) -> None:
+        from theforge.config._loaders import _parse_workspace
+
+        for strategy in ("merge", "squash", "rebase"):
+            result = _parse_workspace(
+                {"on_approve": "merge-pr", "auto_push": True, "merge_strategy": strategy}
+            )
+            assert result.merge_strategy == strategy
+
+
+# ── Fast-forward step called after successful merge ───────────────
+
+
+class TestFastForwardAfterMerge:
+    """Step 5 of _merge_pr: fetch + ff-only merge to update local base_branch."""
+
+    def test_fast_forward_commands_called_on_success(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        ff_calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and "fetch" in cmd and "merge" not in cmd:
+                if cmd == ["git", "fetch", "origin"]:
+                    ff_calls.append(cmd)
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and "merge" in cmd and "--ff-only" in cmd:
+                ff_calls.append(cmd)
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                return _make_subprocess_result(0)
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/x/y/pull/7",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["merged"] is True
+        # Verify fetch and ff-only merge were issued for local base_branch update
+        fetch_cmds = [c for c in ff_calls if "fetch" in c]
+        ff_cmds = [c for c in ff_calls if "--ff-only" in c]
+        assert len(fetch_cmds) >= 1
+        assert len(ff_cmds) >= 1

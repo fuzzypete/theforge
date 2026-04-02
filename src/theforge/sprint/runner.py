@@ -812,6 +812,22 @@ def run_sprint(
                                     if merge_info.get("merged"):
                                         merged_slugs.add(slug)
                                         dag.mark_complete(slug)
+                                    else:
+                                        # Deferred merge failed — update the stored result
+                                        # and fix sprint counters so the failure is surfaced.
+                                        result.success = False
+                                        result.phase = Phase.ESCALATE
+                                        result.merge = merge_info
+                                        result.state.phase = Phase.ESCALATE
+                                        result.state.error = (
+                                            merge_info.get("error") or "deferred merge-pr failed"
+                                        )
+                                        specs_succeeded -= 1
+                                        specs_failed += 1
+                                        _log(
+                                            f"✗ {slug}: deferred merge-pr failed:"
+                                            f" {merge_info.get('error')}"
+                                        )
                                 else:
                                     _log(f"WARN: no review result for {slug} — skipping merge-pr")
                             else:
