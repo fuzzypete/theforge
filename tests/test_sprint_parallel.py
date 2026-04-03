@@ -1022,13 +1022,10 @@ class TestSprintPrePull:
     """run_sprint() pulls base branch once before parallel workers start."""
 
     def _make_manifest(self, tmp_path: Path) -> Path:
-        (tmp_path / "story-a.md").write_text(
-            "---\nname: Story A\nslug: story-a\n---\n# Story A\n"
-        )
+        (tmp_path / "story-a.md").write_text("---\nname: Story A\nslug: story-a\n---\n# Story A\n")
         manifest_path = tmp_path / "sprint.yaml"
         manifest_path.write_text(
-            "name: test-sprint\nbudget_usd: 10\nmax_parallel: 2\nstories:\n"
-            "  - story-a.md\n"
+            "name: test-sprint\nbudget_usd: 10\nmax_parallel: 2\nstories:\n  - story-a.md\n"
         )
         return manifest_path
 
@@ -1043,14 +1040,10 @@ class TestSprintPrePull:
             state = CoordinatorState()
             state.preflight_verdict = "PROCEED"
             state.preflight_result = MagicMock(cost_usd=0.0)
-            return CoordinatorResult(
-                success=True, phase=Phase.DONE, state=state, message="Done."
-            )
+            return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with (
-            patch(
-                "theforge.sprint.runner.pull_base_branch", return_value=True
-            ) as mock_pull,
+            patch("theforge.sprint.runner.pull_base_branch", return_value=True) as mock_pull,
             patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
         ):
             run_sprint(config, manifest_path)
@@ -1072,14 +1065,10 @@ class TestSprintPrePull:
             state = CoordinatorState()
             state.preflight_verdict = "PROCEED"
             state.preflight_result = MagicMock(cost_usd=0.0)
-            return CoordinatorResult(
-                success=True, phase=Phase.DONE, state=state, message="Done."
-            )
+            return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with (
-            patch(
-                "theforge.sprint.runner.pull_base_branch", return_value=False
-            ) as mock_pull,
+            patch("theforge.sprint.runner.pull_base_branch", return_value=False) as mock_pull,
             patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
         ):
             run_sprint(config, manifest_path)
