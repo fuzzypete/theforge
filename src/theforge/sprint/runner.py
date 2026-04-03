@@ -853,11 +853,25 @@ def run_sprint(
                                     config=config,
                                     task_name=task.name,
                                 )
+                                result.merge = merge_info
                                 if merge_info.get("merged"):
-                                    result.merge = merge_info
                                     merged_slugs.add(slug)
                                     # Re-classify in DAG since we now know it merged
                                     dag.mark_complete(slug)
+                                else:
+                                    result.success = False
+                                    result.phase = Phase.ESCALATE
+                                    result.state.phase = Phase.ESCALATE
+                                    result.state.error = (
+                                        merge_info.get("error") or "deferred merge failed"
+                                    )
+                                    specs_succeeded -= 1
+                                    specs_failed += 1
+                                    _log(
+                                        f"✗ {slug}: deferred merge failed:"
+                                        f" {merge_info.get('error')}"
+                                    )
+                                    _write_story_audit(config, task, result)
                             del pending_merges[slug]
                             changed = True
 

@@ -965,6 +965,55 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["merge"]["action"] == "merge-pr"
         assert audit["merge"]["merged"] is True
 
+    def test_deferred_local_merge_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
+        """Deferred local merge failures must update the final per-story audit."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        (tmp_path / "story-a").mkdir()
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.sprint.runner._merge_branch",
+                return_value={
+                    "action": "merge",
+                    "merged": False,
+                    "success": False,
+                    "error": "git merge failed: conflict in src/foo.py",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert audit["outcome"]["success"] is False
+        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert audit["merge"]["action"] == "merge"
+        assert audit["merge"]["merged"] is False
+        assert audit["error"] == "git merge failed: conflict in src/foo.py"
+
 
 # ── Pre-pull behaviour in run_sprint ─────────────────────────────────
 
