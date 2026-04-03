@@ -1057,7 +1057,8 @@ class TestSprintPrePull:
 
         mock_pull.assert_called_once_with(config)
         assert all(v is True for v in worker_no_pull_values), (
-            f"Expected all workers no_pull=True after successful pre-pull, got {worker_no_pull_values}"
+            "Expected all workers no_pull=True after successful pre-pull, "
+            f"got {worker_no_pull_values}"
         )
 
     def test_failed_prepull_preserves_worker_pulls(self, tmp_path: Path) -> None:
@@ -1085,7 +1086,8 @@ class TestSprintPrePull:
 
         mock_pull.assert_called_once_with(config)
         assert all(v is False for v in worker_no_pull_values), (
-            f"Expected all workers no_pull=False after failed pre-pull, got {worker_no_pull_values}"
+            "Expected all workers no_pull=False after failed pre-pull, "
+            f"got {worker_no_pull_values}"
         )
 
     def test_caller_no_pull_true_skips_prepull(self, tmp_path: Path) -> None:

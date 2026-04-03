@@ -19,7 +19,7 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
-from ..coordinator.workspace import _merge_branch
+from ..coordinator.workspace import _merge_branch, pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .dag import StoryDAG, StoryTriage, _is_branch_merged, _triage_spec, build_dag
@@ -444,6 +444,16 @@ def run_sprint(
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
     )
+
+    # Pull base branch once here, before any parallel workspace creation.
+    # Each worker would otherwise race to update the same git ref simultaneously,
+    # causing "incorrect old value provided" failures and leaving all worktrees
+    # on a stale base. Only suppress per-worker pulls when the shared sync
+    # succeeded — if it failed, workers retain their normal pull/behind-origin
+    # check so stale-base warnings still fire.
+    if not no_pull:
+        if pull_base_branch(config):
+            no_pull = True  # workers skip pull; base is already current
 
     # Build unified context mapping: (task, source, canonical_ref) per entry
     task_entries = resolved.stories
