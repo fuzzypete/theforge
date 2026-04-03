@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import sys
 import threading
@@ -626,6 +627,11 @@ def run_sprint(
                     gate = threading.Event()
                     plan_gates[task.slug] = gate
 
+                worker_config = config
+                if max_parallel > 1 and config.workspace.on_approve == "merge-pr":
+                    deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
+                    worker_config = dataclasses.replace(config, workspace=deferred_ws)
+
                 state_fn = _make_worker_phase_fn(
                     task.slug,
                     worker_phases,
@@ -635,7 +641,7 @@ def run_sprint(
                 )
                 fut = pool.submit(
                     _run_single_story,
-                    config,
+                    worker_config,
                     task,
                     triage,
                     _sprint_run_id,
@@ -778,8 +784,9 @@ def run_sprint(
                         except Exception as exc:
                             _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
-                # Parallel merge ordering: queue successful stories for dependency-ordered merge
-                if max_parallel > 1 and auto_merge and result.success:
+                # In parallel mode, merge actions are serialized in the main thread.
+                needs_deferred_merge = auto_merge or config.workspace.on_approve == "merge-pr"
+                if max_parallel > 1 and needs_deferred_merge and result.success:
                     pending_merges[slug] = (task, result)
 
                 _print_worker_status(active, worker_phases, dag, total)
@@ -789,7 +796,8 @@ def run_sprint(
                 _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
 
             # Flush pending merges in dependency order (parallel mode only)
-            if max_parallel > 1 and auto_merge and pending_merges:
+            needs_flush = auto_merge or config.workspace.on_approve == "merge-pr"
+            if max_parallel > 1 and needs_flush and pending_merges:
                 changed = True
                 while changed:
                     changed = False
@@ -799,19 +807,57 @@ def run_sprint(
                             wt = config.project_root / config.workspace.path_pattern.format(
                                 slug=slug
                             )
-                            merge_info = _merge_branch(
-                                config.project_root,
-                                config.workspace.base_branch,
-                                branch,
-                                slug,
-                                wt,
-                                config=config,
-                                task_name=task.name,
-                            )
-                            if merge_info.get("merged"):
-                                merged_slugs.add(slug)
-                                # Re-classify in DAG since we now know it merged
-                                dag.mark_complete(slug)
+                            if config.workspace.on_approve == "merge-pr":
+                                from ..coordinator.completion import _merge_pr  # noqa: PLC0415
+
+                                parsed_review = (
+                                    result.state.review_results[-1]
+                                    if result.state.review_results
+                                    else None
+                                )
+                                if parsed_review is not None:
+                                    merge_info = _merge_pr(
+                                        config,
+                                        task,
+                                        branch,
+                                        parsed_review,
+                                        result.state,
+                                    )
+                                    result.merge = merge_info
+                                    if merge_info.get("merged"):
+                                        merged_slugs.add(slug)
+                                        dag.mark_complete(slug)
+                                    else:
+                                        result.success = False
+                                        result.phase = Phase.ESCALATE
+                                        result.state.phase = Phase.ESCALATE
+                                        result.state.error = (
+                                            merge_info.get("error") or "deferred merge-pr failed"
+                                        )
+                                        specs_succeeded -= 1
+                                        specs_failed += 1
+                                        _log(
+                                            f"✗ {slug}: deferred merge-pr failed:"
+                                            f" {merge_info.get('error')}"
+                                        )
+                                    _write_story_audit(config, task, result)
+                                else:
+                                    _log(f"WARN: no review result for {slug} — skipping merge-pr")
+                            else:
+                                merge_info = _merge_branch(
+                                    config.project_root,
+                                    config.workspace.base_branch,
+                                    branch,
+                                    slug,
+                                    wt,
+                                    config=config,
+                                    task_name=task.name,
+                                )
+                                if merge_info.get("merged"):
+                                    result.merge = merge_info
+                                    merged_slugs.add(slug)
+                                    # Re-classify in DAG since we now know it merged
+                                    dag.mark_complete(slug)
                             del pending_merges[slug]
                             changed = True
 
