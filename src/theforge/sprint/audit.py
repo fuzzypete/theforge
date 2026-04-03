@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from .manifest import SprintManifest, SprintResult
+from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
 if TYPE_CHECKING:
     from ..config import ForgeConfig
@@ -23,7 +23,7 @@ def _log(msg: str) -> None:
 
 
 def _write_sprint_audit(
-    manifest: SprintManifest,
+    manifest: SprintManifest | ResolvedSprint,
     result: SprintResult,
     canonical_refs: list[str],
     started_at: datetime.datetime,
@@ -138,7 +138,7 @@ def _write_sprint_audit(
 
 
 def _write_sprint_summary(
-    manifest: SprintManifest,
+    manifest: SprintManifest | ResolvedSprint,
     result: SprintResult,
     canonical_refs: list[str],
     started_at: datetime.datetime,
