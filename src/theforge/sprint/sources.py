@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+class IssueClosedError(RuntimeError):
+    """Raised by ``GitHubIssueSource.fetch()`` when the issue is already closed.
+
+    Distinct from generic ``RuntimeError`` so callers can selectively skip
+    closed issues while still propagating transient auth/network failures.
+    """
+
+
 @runtime_checkable
 class StorySource(Protocol):
     """Protocol for fetching story specs and handling lifecycle callbacks."""
@@ -80,7 +88,7 @@ class GitHubIssueSource:
         number = int(ref)
         try:
             proc = subprocess.run(
-                ["gh", "issue", "view", str(number), "--json", "title,body"],
+                ["gh", "issue", "view", str(number), "--json", "title,body,state"],
                 capture_output=True,
                 text=True,
                 cwd=str(project_root),
@@ -97,6 +105,11 @@ class GitHubIssueSource:
             data = json.loads(proc.stdout)
         except json.JSONDecodeError as exc:
             raise RuntimeError(f"gh issue view #{number} returned malformed JSON: {exc}") from exc
+
+        state = data.get("state", "OPEN")
+        if state.upper() != "OPEN":
+            raise IssueClosedError(f"issue #{number} is already {state.lower()}")
+
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")
 

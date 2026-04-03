@@ -25,6 +25,7 @@ from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audi
 from .dag import StoryDAG, StoryTriage, _is_branch_merged, _triage_spec, build_dag
 from .display import _print_worker_status, _story_header
 from .manifest import (
+    ResolvedSprint,
     SprintResult,
     _build_task_from_story,
     _validate_story_paths,
@@ -49,17 +50,6 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
         return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
     except (OSError, ValueError, TypeError):
         return 0.0
-
-
-def _is_deferred_merge_pr(
-    config: ForgeConfig,
-    manifest_max_parallel: int,
-    result: CoordinatorResult,
-) -> bool:
-    """Return True when a successful story's final outcome is deferred to merge-pr flush."""
-    return (
-        manifest_max_parallel > 1 and config.workspace.on_approve == "merge-pr" and result.success
-    )
 
 
 def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
@@ -402,7 +392,7 @@ def _classify_and_record(
 
 def run_sprint(
     config: ForgeConfig,
-    manifest_path: Path,
+    sprint: "Path | ResolvedSprint",
     *,
     auto_merge: bool = False,
     interactive: bool = False,
@@ -411,7 +401,12 @@ def run_sprint(
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
 ) -> SprintResult:
-    """Run all stories in a sprint manifest with optional concurrency.
+    """Run all stories in a sprint with optional concurrency.
+
+    Accepts either a ``Path`` to a sprint.yaml manifest (backward-compatible)
+    or a pre-built ``ResolvedSprint`` object (produced by query mode or
+    ``resolve_from_manifest``).  The function body has no path-shaped
+    assumptions — it operates entirely on the resolved object.
 
     When max_parallel > 1, stories with no unmet dependencies are launched
     concurrently up to max_parallel. Budget is pooled across all workers.
@@ -422,7 +417,7 @@ def run_sprint(
 
     Args:
         config: Loaded ForgeConfig for the project.
-        manifest_path: Path to the sprint.yaml manifest.
+        sprint: Either a Path to sprint.yaml or a pre-built ResolvedSprint.
         auto_merge: If True, merge each story's branch after APPROVE.
         interactive: If True, pause for human review at each story.
         resume: If True, triage each story to find the optimal re-entry point
@@ -431,9 +426,24 @@ def run_sprint(
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
     """
-    manifest = load_sprint_manifest(manifest_path)
-    if manifest.max_parallel is None:
-        manifest.max_parallel = config.sprint.max_parallel
+    if isinstance(sprint, ResolvedSprint):
+        resolved = sprint
+    else:
+        # Backward-compat: Path was passed — load, validate, and resolve inline
+        # so that individual steps remain patchable by tests.
+        _manifest = load_sprint_manifest(sprint)
+        _validate_story_paths(_manifest, config.project_root)
+        _task_entries = build_tasks_from_manifest(_manifest, config.project_root)
+        resolved = ResolvedSprint(
+            name=_manifest.name,
+            budget_usd=_manifest.budget_usd,
+            stories=_task_entries,
+            max_parallel=_manifest.max_parallel,
+        )
+
+    max_parallel = (
+        resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
+    )
 
     # Pull base branch once here, before any parallel workspace creation.
     # Each worker would otherwise race to update the same git ref simultaneously,
@@ -445,10 +455,8 @@ def run_sprint(
         if pull_base_branch(config):
             no_pull = True  # workers skip pull; base is already current
 
-    # Validate file-based story paths (issue entries validated at fetch time)
-    _validate_story_paths(manifest, config.project_root)
     # Build unified context mapping: (task, source, canonical_ref) per entry
-    task_entries = build_tasks_from_manifest(manifest, config.project_root)
+    task_entries = resolved.stories
     slug_to_context: dict[str, tuple[TaskStory, StorySource, str]] = {
         task.slug: (task, source, canonical_ref) for task, source, canonical_ref in task_entries
     }
@@ -456,8 +464,8 @@ def run_sprint(
     total = len(task_entries)
     noun = "stories" if total != 1 else "story"
     print(
-        f'[sprint] "{manifest.name}"  {total} {noun}  budget=${manifest.budget_usd:.2f}'
-        f"  parallel={manifest.max_parallel}",
+        f'[sprint] "{resolved.name}"  {total} {noun}  budget=${resolved.budget_usd:.2f}'
+        f"  parallel={max_parallel}",
         file=sys.stderr,
         flush=True,
     )
@@ -468,21 +476,21 @@ def run_sprint(
     _sprint_logger = StructuredLogger(
         run_id=_sprint_run_id,
         project=config.project,
-        task=manifest.name,
+        task=resolved.name,
         log_file=config.log.log_file,
         enabled=config.log.enabled,
         project_root=config.project_root,
     )
     _sprint_logger.emit(
         "run_start",
-        stories=manifest.stories,
-        budget_usd=manifest.budget_usd,
-        max_parallel=manifest.max_parallel,
+        stories=[ref for _, _, ref in task_entries],
+        budget_usd=resolved.budget_usd,
+        max_parallel=max_parallel,
         resume=resume,
     )
 
     # Create sprint-level log directory
-    _sprint_log_dir = config.project_root / ".forge" / "logs" / manifest.name
+    _sprint_log_dir = config.project_root / ".forge" / "logs" / resolved.name
     try:
         _sprint_log_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
@@ -497,8 +505,8 @@ def run_sprint(
 
         send_notifications(
             config,
-            f'TheForge: sprint started \u2014 "{manifest.name}"',
-            f"{total} stories \u00b7 budget ${manifest.budget_usd:.2f}",
+            f'TheForge: sprint started \u2014 "{resolved.name}"',
+            f"{total} stories \u00b7 budget ${resolved.budget_usd:.2f}",
         )
     specs_succeeded = 0
     specs_failed = 0
@@ -575,34 +583,34 @@ def run_sprint(
     file_footprints: dict[str, set[str]] = {}  # slug -> files from plan
     plan_gates: dict[str, threading.Event] = {}  # slug -> gate for PLAN→DEV pause
     plan_done: dict[str, str] = {}  # slug -> workspace_path (set by phase callback)
-    use_plan_gates = manifest.max_parallel > 1  # only for parallel mode
+    use_plan_gates = max_parallel > 1  # only for parallel mode
 
-    with ThreadPoolExecutor(max_workers=manifest.max_parallel) as pool:
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
         while not dag.is_done():
             _log(f"[debug] loop: active={list(active.keys())} fin={dag._finished}")
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
                 # Cap concurrent submissions at max_parallel
-                if len(active) >= manifest.max_parallel:
+                if len(active) >= max_parallel:
                     break
 
                 with cost_lock:
                     cumulative = prior_cost + accumulated_cost
-                if cumulative >= manifest.budget_usd:
+                if cumulative >= resolved.budget_usd:
                     dag.mark_skipped(task.slug)
                     specs_skipped += 1
                     if stopped_reason is None:
                         stopped_reason = (
-                            f"Budget exhausted (${cumulative:.2f} >= ${manifest.budget_usd:.2f})"
+                            f"Budget exhausted (${cumulative:.2f} >= ${resolved.budget_usd:.2f})"
                         )
                         if notify and config.notifications.backend not in ("ntfy", "none"):
                             from ..notify_backends import send_notifications
 
                             send_notifications(
                                 config,
-                                f'TheForge: budget exceeded \u2014 "{manifest.name}"',
-                                f"${cumulative:.2f} >= ${manifest.budget_usd:.2f}"
+                                f'TheForge: budget exceeded \u2014 "{resolved.name}"',
+                                f"${cumulative:.2f} >= ${resolved.budget_usd:.2f}"
                                 " \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} (budget exhausted)")
@@ -610,9 +618,7 @@ def run_sprint(
 
                 # Eager merge for sequential mode; disabled in parallel mode
                 effective_am = (
-                    False
-                    if manifest.max_parallel > 1
-                    else (auto_merge or task.slug in dependent_slugs)
+                    False if max_parallel > 1 else (auto_merge or task.slug in dependent_slugs)
                 )
 
                 spec_str = slug_to_spec[task.slug]
@@ -631,13 +637,10 @@ def run_sprint(
                     gate = threading.Event()
                     plan_gates[task.slug] = gate
 
-                # In parallel mode, workers defer merge-pr to the flush loop
-                # so that gh pr merge calls are serialized in dependency order.
-                if manifest.max_parallel > 1 and config.workspace.on_approve == "merge-pr":
-                    _deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
-                    worker_config = dataclasses.replace(config, workspace=_deferred_ws)
-                else:
-                    worker_config = config
+                worker_config = config
+                if max_parallel > 1 and config.workspace.on_approve == "merge-pr":
+                    deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
+                    worker_config = dataclasses.replace(config, workspace=deferred_ws)
 
                 state_fn = _make_worker_phase_fn(
                     task.slug,
@@ -652,7 +655,7 @@ def run_sprint(
                     task,
                     triage,
                     _sprint_run_id,
-                    manifest.name,
+                    resolved.name,
                     interactive,
                     notify,
                     resume,
@@ -764,8 +767,7 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                if not _is_deferred_merge_pr(config, manifest.max_parallel, result):
-                    _write_story_audit(config, task, result)
+                _write_story_audit(config, task, result)
 
                 spec_cost = result.state.total_cost
                 icon = "✓" if result.success else "✗"
@@ -792,10 +794,9 @@ def run_sprint(
                         except Exception as exc:
                             _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
-                # Parallel merge ordering: queue successful stories for dependency-ordered merge.
-                # merge-pr is always deferred to the flush loop for serialized gh pr merge calls.
-                _needs_deferred = auto_merge or config.workspace.on_approve == "merge-pr"
-                if manifest.max_parallel > 1 and _needs_deferred and result.success:
+                # In parallel mode, merge actions are serialized in the main thread.
+                needs_deferred_merge = auto_merge or config.workspace.on_approve == "merge-pr"
+                if max_parallel > 1 and needs_deferred_merge and result.success:
                     pending_merges[slug] = (task, result)
 
                 _print_worker_status(active, worker_phases, dag, total)
@@ -805,8 +806,8 @@ def run_sprint(
                 _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
 
             # Flush pending merges in dependency order (parallel mode only)
-            _needs_flush = auto_merge or config.workspace.on_approve == "merge-pr"
-            if manifest.max_parallel > 1 and _needs_flush and pending_merges:
+            needs_flush = auto_merge or config.workspace.on_approve == "merge-pr"
+            if max_parallel > 1 and needs_flush and pending_merges:
                 changed = True
                 while changed:
                     changed = False
@@ -817,19 +818,19 @@ def run_sprint(
                                 slug=slug
                             )
                             if config.workspace.on_approve == "merge-pr":
-                                from ..coordinator.completion import _merge_pr
+                                from ..coordinator.completion import _merge_pr  # noqa: PLC0415
 
-                                _parsed_review = (
+                                parsed_review = (
                                     result.state.review_results[-1]
                                     if result.state.review_results
                                     else None
                                 )
-                                if _parsed_review is not None:
+                                if parsed_review is not None:
                                     merge_info = _merge_pr(
                                         config,
                                         task,
                                         branch,
-                                        _parsed_review,
+                                        parsed_review,
                                         result.state,
                                     )
                                     result.merge = merge_info
@@ -837,11 +838,8 @@ def run_sprint(
                                         merged_slugs.add(slug)
                                         dag.mark_complete(slug)
                                     else:
-                                        # Deferred merge failed — update the stored result
-                                        # and fix sprint counters so the failure is surfaced.
                                         result.success = False
                                         result.phase = Phase.ESCALATE
-                                        result.merge = merge_info
                                         result.state.phase = Phase.ESCALATE
                                         result.state.error = (
                                             merge_info.get("error") or "deferred merge-pr failed"
@@ -855,7 +853,6 @@ def run_sprint(
                                     _write_story_audit(config, task, result)
                                 else:
                                     _log(f"WARN: no review result for {slug} — skipping merge-pr")
-                                    _write_story_audit(config, task, result)
                             else:
                                 merge_info = _merge_branch(
                                     config.project_root,
@@ -866,10 +863,25 @@ def run_sprint(
                                     config=config,
                                     task_name=task.name,
                                 )
+                                result.merge = merge_info
                                 if merge_info.get("merged"):
                                     merged_slugs.add(slug)
                                     # Re-classify in DAG since we now know it merged
                                     dag.mark_complete(slug)
+                                else:
+                                    result.success = False
+                                    result.phase = Phase.ESCALATE
+                                    result.state.phase = Phase.ESCALATE
+                                    result.state.error = (
+                                        merge_info.get("error") or "deferred merge failed"
+                                    )
+                                    specs_succeeded -= 1
+                                    specs_failed += 1
+                                    _log(
+                                        f"✗ {slug}: deferred merge failed:"
+                                        f" {merge_info.get('error')}"
+                                    )
+                                    _write_story_audit(config, task, result)
                             del pending_merges[slug]
                             changed = True
 
@@ -878,13 +890,13 @@ def run_sprint(
 
     final_cost = accumulated_cost + prior_cost
     sprint_result = SprintResult(
-        name=manifest.name,
+        name=resolved.name,
         specs_total=total,
         specs_succeeded=specs_succeeded,
         specs_failed=specs_failed,
         specs_skipped=specs_skipped,
         total_cost_usd=final_cost,
-        budget_usd=manifest.budget_usd,
+        budget_usd=resolved.budget_usd,
         results=results,
         stopped_reason=stopped_reason,
     )
@@ -905,11 +917,11 @@ def run_sprint(
     if notify:
         if config.notifications.backend != "none":
             _notify(
-                f"TheForge: {manifest.name}",
+                f"TheForge: {resolved.name}",
                 f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed",
             )
         if config.notifications.ntfy is not None:
-            _ntfy_title = f'TheForge: sprint done \u2014 "{manifest.name}"'
+            _ntfy_title = f'TheForge: sprint done \u2014 "{resolved.name}"'
             _ntfy_body_lines = [
                 f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
                 f"Total cost: ${final_cost:.2f}   Duration: {_sprint_dur}",
@@ -925,7 +937,7 @@ def run_sprint(
         if config.notifications.backend not in ("ntfy", "none"):
             from ..notify_backends import send_notifications
 
-            _sc_title = f'TheForge sprint complete \u2014 "{manifest.name}"'
+            _sc_title = f'TheForge sprint complete \u2014 "{resolved.name}"'
             _sc_body_lines = [
                 f"{total} specs: {specs_succeeded} succeeded \u00b7 {specs_failed} failed",
                 f"Total cost: ${final_cost:.2f}   Duration: {_fmt_duration(_sprint_elapsed)}",
@@ -940,7 +952,7 @@ def run_sprint(
 
     # Write sprint-audit.yaml (existing format; kept for backward compatibility)
     _write_sprint_audit(
-        manifest=manifest,
+        manifest=resolved,
         result=sprint_result,
         canonical_refs=canonical_refs,
         started_at=started_at,
@@ -955,7 +967,7 @@ def run_sprint(
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
     if _sprint_log_dir is not None:
         _write_sprint_summary(
-            manifest=manifest,
+            manifest=resolved,
             result=sprint_result,
             canonical_refs=canonical_refs,
             started_at=started_at,
@@ -994,7 +1006,7 @@ def run_sprint(
                 }
             )
         _ps_payload = build_post_sprint_payload(
-            sprint_name=manifest.name,
+            sprint_name=resolved.name,
             stories=_stories,
             run_id=_sprint_run_id,
             config=config,

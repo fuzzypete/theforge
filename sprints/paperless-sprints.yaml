@@ -1,0 +1,6 @@
+name: "Paperless sprints"
+budget_usd: 40
+stories:
+  - issue: 253
+    slug: sprint-from-github-query
+    pytest_target: tests/

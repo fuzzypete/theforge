@@ -1,5 +1,0 @@
-name: m2-next
-stories:
-  - specs/backlog/dev-model-escalation.md
-  - specs/active/spec-validation.md
-budget_usd: 50.00

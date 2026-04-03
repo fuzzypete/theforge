@@ -114,9 +114,11 @@ class TestRunGoogle:
         assert "TypeError" not in result.output
         assert "empty" in result.output.lower() or "retry" in result.output.lower()
 
-    def test_blocked_response_surfaces_block_reason(self):
-        """Block reason is included in the error message."""
-        fake_response = _make_response(text=None, block_reason="SAFETY", input_tokens=500)
+    def test_blocked_response_surfaces_block_reason_and_tokens(self):
+        """Block reason and both token counts are included in the error message."""
+        fake_response = _make_response(
+            text=None, block_reason="SAFETY", input_tokens=500, output_tokens=10
+        )
         fake_client = MagicMock()
         fake_client.models.generate_content.return_value = fake_response
 
@@ -130,6 +132,7 @@ class TestRunGoogle:
         assert "SAFETY" in result.output
         assert "block_reason" in result.output
         assert "500" in result.output  # input token count
+        assert "output_tokens" in result.output
 
     def test_non_stop_finish_reason_in_error(self):
         """Non-STOP finish_reason (SAFETY, RECITATION, MAX_TOKENS) is logged explicitly."""
@@ -149,6 +152,7 @@ class TestRunGoogle:
             assert not result.success, f"Expected failure for finish_reason={finish_reason}"
             assert finish_reason in result.output, f"Expected {finish_reason} in output"
             assert "200" in result.output  # input token count
+            assert "output_tokens" in result.output
 
     def test_empty_unblocked_response_retries_once(self):
         """Empty unblocked response (STOP) triggers one retry before giving up."""
@@ -166,15 +170,19 @@ class TestRunGoogle:
         assert fake_client.models.generate_content.call_count == 2
         assert not result.success
 
-    def test_retry_succeeds_on_second_attempt(self):
-        """If retry returns valid text, the result is successful."""
+    def test_retry_accumulates_token_counts(self):
+        """Successful retry reports combined token usage from both API calls."""
         valid_json = (
             '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
             ' "story_compliance": {"matches_spec": true, "mismatches": []},'
             ' "test_coverage": {"adequate": true, "gaps": []}}'
         )
-        empty_response = _make_response(text=None, finish_reason="STOP")
-        good_response = _make_response(text=valid_json)
+        # First call: 300 input, 0 output (empty response)
+        empty_response = _make_response(
+            text=None, finish_reason="STOP", input_tokens=300, output_tokens=0
+        )
+        # Second call: 310 input, 80 output (includes cached context)
+        good_response = _make_response(text=valid_json, input_tokens=310, output_tokens=80)
         fake_client = MagicMock()
         fake_client.models.generate_content.side_effect = [empty_response, good_response]
 
@@ -186,7 +194,28 @@ class TestRunGoogle:
 
         assert fake_client.models.generate_content.call_count == 2
         assert result.success
-        assert result.structured_data is not None
+        assert result.model_usage
+        usage = result.model_usage[0]
+        # Tokens from both calls must be summed
+        assert usage.input_tokens == 300 + 310
+        assert usage.output_tokens == 0 + 80
+
+    def test_retry_fails_includes_accumulated_tokens_in_error(self):
+        """When retry also fails, error message reflects combined token counts."""
+        empty1 = _make_response(text=None, finish_reason="STOP", input_tokens=400, output_tokens=5)
+        empty2 = _make_response(text=None, finish_reason="STOP", input_tokens=410, output_tokens=0)
+        fake_client = MagicMock()
+        fake_client.models.generate_content.side_effect = [empty1, empty2]
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile()
+
+        with patch.dict(sys.modules, modules):
+            result = _run_google("test prompt", profile)
+
+        assert not result.success
+        # Combined input = 400 + 410 = 810
+        assert "810" in result.output
 
 
 class TestGoogleAdapter:
@@ -272,6 +301,7 @@ class TestGoogleAdapter:
         fake_candidate = MagicMock()
         fake_candidate.content = MagicMock()
         fake_candidate.content.parts = None  # parts is None, not []
+        fake_candidate.finish_reason = "STOP"
 
         fake_response = MagicMock()
         fake_response.candidates = [fake_candidate]
@@ -290,6 +320,37 @@ class TestGoogleAdapter:
 
         assert turn.tool_calls == []
         assert turn.text_output is None
+
+    def test_non_stop_finish_reason_yields_empty_loop_turn(self):
+        """Non-STOP finish_reason with no output → empty LoopTurn, not synthetic text.
+
+        The loop manager treats any non-empty text_output as a successful completion,
+        so injecting diagnostic strings would silently pass a blocked review.
+        """
+        fake_candidate = MagicMock()
+        fake_candidate.content = MagicMock()
+        fake_candidate.content.parts = []
+        fake_candidate.finish_reason = "SAFETY"
+
+        fake_response = MagicMock()
+        fake_response.candidates = [fake_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = MagicMock()
+        fake_response.prompt_feedback.block_reason = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile()
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "hi"}], [])
+
+        # Must be empty — the loop manager will fail it as "no output"
+        assert turn.tool_calls == []
+        assert not turn.text_output  # None or ""
 
 
 class TestTranslateMessagesGoogle:

@@ -1,5 +1,0 @@
-name: m2-foundations
-stories:
-  - specs/backlog/structured-plan-output.md
-  - specs/backlog/phase-telemetry.md
-budget_usd: 50.00

@@ -16,8 +16,8 @@ gh project item-list 1 --owner fuzzypete       # full project board
 
 Project board: https://github.com/users/fuzzypete/projects/1
 
-Stories live in `specs/backlog/` (not started) and `specs/done/` (shipped).
-The GH milestones + issues are the source of truth for priorities, not the story files.
+Stories are GitHub issues — there are no local story files. GH milestones + issues
+are the single source of truth for priorities, status, and story content.
 
 ---
 

@@ -1,6 +1,0 @@
-name: "Hardening final — bug bundle + notification reliability"
-budget_usd: 60
-max_parallel: 2
-stories:
-  - stories/backlog/hardening-bug-bundle.md
-  - stories/backlog/notification-reliability.md

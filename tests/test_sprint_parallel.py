@@ -965,6 +965,55 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["merge"]["action"] == "merge-pr"
         assert audit["merge"]["merged"] is True
 
+    def test_deferred_local_merge_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
+        """Deferred local merge failures must update the final per-story audit."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        (tmp_path / "story-a").mkdir()
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.sprint.runner._merge_branch",
+                return_value={
+                    "action": "merge",
+                    "merged": False,
+                    "success": False,
+                    "error": "git merge failed: conflict in src/foo.py",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert audit["outcome"]["success"] is False
+        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert audit["merge"]["action"] == "merge"
+        assert audit["merge"]["merged"] is False
+        assert audit["error"] == "git merge failed: conflict in src/foo.py"
+
 
 # ── Pre-pull behaviour in run_sprint ─────────────────────────────────
 
@@ -973,13 +1022,10 @@ class TestSprintPrePull:
     """run_sprint() pulls base branch once before parallel workers start."""
 
     def _make_manifest(self, tmp_path: Path) -> Path:
-        (tmp_path / "story-a.md").write_text(
-            "---\nname: Story A\nslug: story-a\n---\n# Story A\n"
-        )
+        (tmp_path / "story-a.md").write_text("---\nname: Story A\nslug: story-a\n---\n# Story A\n")
         manifest_path = tmp_path / "sprint.yaml"
         manifest_path.write_text(
-            "name: test-sprint\nbudget_usd: 10\nmax_parallel: 2\nstories:\n"
-            "  - story-a.md\n"
+            "name: test-sprint\nbudget_usd: 10\nmax_parallel: 2\nstories:\n  - story-a.md\n"
         )
         return manifest_path
 
@@ -994,21 +1040,18 @@ class TestSprintPrePull:
             state = CoordinatorState()
             state.preflight_verdict = "PROCEED"
             state.preflight_result = MagicMock(cost_usd=0.0)
-            return CoordinatorResult(
-                success=True, phase=Phase.DONE, state=state, message="Done."
-            )
+            return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with (
-            patch(
-                "theforge.sprint.runner.pull_base_branch", return_value=True
-            ) as mock_pull,
+            patch("theforge.sprint.runner.pull_base_branch", return_value=True) as mock_pull,
             patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
         ):
             run_sprint(config, manifest_path)
 
         mock_pull.assert_called_once_with(config)
         assert all(v is True for v in worker_no_pull_values), (
-            f"Expected all workers no_pull=True after successful pre-pull, got {worker_no_pull_values}"
+            "Expected all workers no_pull=True after successful pre-pull, "
+            f"got {worker_no_pull_values}"
         )
 
     def test_failed_prepull_preserves_worker_pulls(self, tmp_path: Path) -> None:
@@ -1022,21 +1065,18 @@ class TestSprintPrePull:
             state = CoordinatorState()
             state.preflight_verdict = "PROCEED"
             state.preflight_result = MagicMock(cost_usd=0.0)
-            return CoordinatorResult(
-                success=True, phase=Phase.DONE, state=state, message="Done."
-            )
+            return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with (
-            patch(
-                "theforge.sprint.runner.pull_base_branch", return_value=False
-            ) as mock_pull,
+            patch("theforge.sprint.runner.pull_base_branch", return_value=False) as mock_pull,
             patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
         ):
             run_sprint(config, manifest_path)
 
         mock_pull.assert_called_once_with(config)
         assert all(v is False for v in worker_no_pull_values), (
-            f"Expected all workers no_pull=False after failed pre-pull, got {worker_no_pull_values}"
+            "Expected all workers no_pull=False after failed pre-pull, "
+            f"got {worker_no_pull_values}"
         )
 
     def test_caller_no_pull_true_skips_prepull(self, tmp_path: Path) -> None:

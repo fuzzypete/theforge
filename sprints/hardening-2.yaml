@@ -1,5 +1,0 @@
-name: "Hardening Sprint 2 — Review resilience, then PR workflow + project-local logs"
-budget_usd: 30
-auto_merge: true
-stories:
-  - specs/backlog/review-pool-resilience.md

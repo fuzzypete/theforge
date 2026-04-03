@@ -1,7 +1,0 @@
-name: "Plan regen: finding identity + trajectory tracking + backtrack prompt"
-budget_usd: 20
-auto_merge: true
-specs:
-  - stories/backlog/plan-finding-identity.md
-  - stories/backlog/plan-regen-trajectory-tracking.md
-  - stories/backlog/plan-regen-backtrack-prompt.md

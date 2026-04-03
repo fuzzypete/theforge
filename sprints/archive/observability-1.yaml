@@ -1,4 +1,0 @@
-name: "observability-1"
-budget_usd: 30.00
-stories:
-  - specs/agent-trace-artifacts.md

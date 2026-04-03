@@ -1,7 +1,0 @@
-name: "M3a wave 5 — soft conventions, sprint DAG fix"
-budget_usd: 40
-max_parallel: 3
-auto_merge: true
-stories:
-  - stories/backlog/soft-conventions.md
-  - stories/backlog/sprint-dag-satisfied-deps.md
