@@ -519,21 +519,31 @@ class TestTranslateMessagesGoogle:
     """Tests for _translate_messages_google message format conversion."""
 
     def test_includes_thought_signature(self):
-        """_translate_messages_google embeds thought_signature in function_call parts."""
+        """thought_signature is emitted as a separate thought Part before the function_call.
+
+        The -customtools API rejects thought_signature embedded inside the function_call
+        dict with 400 INVALID_ARGUMENT: Function call is missing a thought_signature.
+        The correct format is a thought Part preceding the function_call Part.
+        """
         from theforge.runners.adapters.google import _translate_messages_google
 
         tc = ToolCallRequest(
             id="call_0",
             name="submit_review",
             arguments={"verdict": "APPROVE"},
-            thought_signature="sig-xyz",
+            thought_signature=b"sig-xyz",
         )
         messages = [{"role": "assistant", "tool_calls": [tc], "content": None}]
         result = _translate_messages_google(messages)
 
         assert len(result) == 1
-        fc_part = result[0]["parts"][0]["function_call"]
-        assert fc_part["thought_signature"] == "sig-xyz"
+        parts = result[0]["parts"]
+        # First part: thought block with the signature
+        assert parts[0] == {"thought": True, "thought_signature": b"sig-xyz"}
+        # Second part: function_call without thought_signature embedded
+        fc_part = parts[1]["function_call"]
+        assert fc_part["name"] == "submit_review"
+        assert "thought_signature" not in fc_part
 
     def test_omits_thought_signature_when_absent(self):
         """_translate_messages_google omits thought_signature when None."""
@@ -550,3 +560,27 @@ class TestTranslateMessagesGoogle:
 
         fc_part = result[0]["parts"][0]["function_call"]
         assert "thought_signature" not in fc_part
+
+    def test_multiple_tool_calls_distinct_signatures(self):
+        """Each tool call gets its own thought Part immediately before it.
+
+        When an assistant turn carries multiple tool calls with distinct
+        thought_signatures, collapsing to one thought Part would send the
+        wrong signature for subsequent calls. Each call must have its own
+        thought Part directly preceding it.
+        """
+        from theforge.runners.adapters.google import _translate_messages_google
+
+        tc0 = ToolCallRequest(id="c0", name="bash", arguments={"command": "ls"}, thought_signature=b"sig-A")
+        tc1 = ToolCallRequest(id="c1", name="read_file", arguments={"path": "x.py"}, thought_signature=b"sig-B")
+        messages = [{"role": "assistant", "tool_calls": [tc0, tc1], "content": None}]
+        result = _translate_messages_google(messages)
+
+        parts = result[0]["parts"]
+        assert len(parts) == 4  # thought-A, fc0, thought-B, fc1
+        assert parts[0] == {"thought": True, "thought_signature": b"sig-A"}
+        assert parts[1]["function_call"]["name"] == "bash"
+        assert parts[2] == {"thought": True, "thought_signature": b"sig-B"}
+        assert parts[3]["function_call"]["name"] == "read_file"
+        assert "thought_signature" not in parts[1]["function_call"]
+        assert "thought_signature" not in parts[3]["function_call"]
