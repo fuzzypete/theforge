@@ -319,6 +319,28 @@ class TestAssignDependencyBatches:
         assert batches["issue-3"] == 0
         assert batches["issue-2"] == 1
 
+    def test_external_blocker_is_treated_as_satisfied(self) -> None:
+        tasks = [
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batches = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batches["issue-2"] == 0
+        assert batches["issue-3"] == 0
+
+    def test_independent_tasks_share_frontier_when_max_parallel_is_smaller(self) -> None:
+        tasks = [
+            TaskStory(name="A", slug="issue-1"),
+            TaskStory(name="B", slug="issue-2"),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batches = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batches == {"issue-1": 0, "issue-2": 0, "issue-3": 0}
+
 
 # ── run_sprint accepts ResolvedSprint ─────────────────────────────────────────
 

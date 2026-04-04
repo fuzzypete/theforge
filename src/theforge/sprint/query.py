@@ -146,16 +146,19 @@ def assign_dependency_batches(
     from .dag import build_dag  # noqa: PLC0415
 
     batch_assignments: dict[str, int] = {}
-    dag = build_dag(tasks)
+    known_slugs = {task.slug for task in tasks}
+    satisfied = {
+        dep_slug for task in tasks for dep_slug in task.depends_on if dep_slug not in known_slugs
+    }
+    dag = build_dag(tasks, satisfied=satisfied)
     active_batch = 0
-    width = max_parallel or len(tasks) or 1
+    _ = max_parallel  # width is enforced at runtime; dry-run batches reflect dependency frontiers
 
     while not dag.is_done():
         ready = [task for task in dag.ready() if task.slug not in batch_assignments]
         if not ready:
             break
-        current = ready[:width]
-        for task in current:
+        for task in ready:
             batch_assignments[task.slug] = active_batch
             dag.mark_complete(task.slug)
         active_batch += 1
