@@ -58,6 +58,13 @@ def _plan_transport_label(plan: PlanConfig) -> str:
     return f"{transport} / {plan.model}"
 
 
+def _thinking_budget_label(profile: ModelProfile) -> str:
+    """Return display suffix for Gemini thinking budget when explicitly configured."""
+    if profile.thinking_budget is None:
+        return ""
+    return f"  thinking_budget={profile.thinking_budget}"
+
+
 def _format_config(
     config: ForgeConfig,
     auth_results: AuthResults,
@@ -87,7 +94,7 @@ def _format_config(
         auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {label:<12}{transport:<30}  timeout={profile.timeout_seconds}s"
-            f"  budget=${profile.budget_usd:.2f}{auth_str}"
+            f"  budget=${profile.budget_usd:.2f}{_thinking_budget_label(profile)}{auth_str}"
         )
         if not ready:
             warnings_list.append(f"{label}: {reason}")
@@ -113,7 +120,7 @@ def _format_config(
         role_str = f"  role={profile.review_role}" if profile.review_role else ""
         lines.append(
             f"  {profile.name:<22}{transport:<30}{role_str}  budget=${profile.budget_usd:.2f}"
-            f"  {auth_str}"
+            f"{_thinking_budget_label(profile)}  {auth_str}"
         )
         if not ready:
             warnings_list.append(f"{profile.name}: {reason} — will be skipped at runtime")
@@ -125,7 +132,7 @@ def _format_config(
         auth_str = "✓ auth" if ready else f"✗ {reason}"
         lines.append(
             f"  {profile.name:<22}{transport:<30}  (synthesis)  budget=${profile.budget_usd:.2f}"
-            f"  {auth_str}"
+            f"{_thinking_budget_label(profile)}  {auth_str}"
         )
         if not ready:
             warnings_list.append(f"{profile.name}: {reason} — will be skipped at runtime")
@@ -140,7 +147,7 @@ def _format_config(
             auth_str = "✓ auth" if ready else f"✗ {reason}"
             lines.append(
                 f"  {profile.name:<22}{transport:<30}  budget=${profile.budget_usd:.2f}"
-                f"  {auth_str}"
+                f"{_thinking_budget_label(profile)}  {auth_str}"
             )
             if not ready:
                 warnings_list.append(f"{profile.name}: {reason} — will be skipped at runtime")

@@ -79,6 +79,7 @@ class _UsageAccumulator:
 
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
 
@@ -87,11 +88,18 @@ class _UsageAccumulator:
             return
         self.input_tokens += usage.input_tokens
         self.output_tokens += usage.output_tokens
+        self.thinking_tokens += usage.thinking_tokens
         self.cache_read_tokens += usage.cache_read_tokens
         self.cache_creation_tokens += usage.cache_creation_tokens
 
     def to_model_usage(self, model: str, provider: str) -> ModelUsage:
-        cost = _estimate_cost(provider, model, self.input_tokens, self.output_tokens)
+        cost = _estimate_cost(
+            provider,
+            model,
+            self.input_tokens,
+            self.output_tokens,
+            thinking_tokens=self.thinking_tokens,
+        )
         return ModelUsage(
             model=model,
             input_tokens=self.input_tokens,
@@ -99,6 +107,7 @@ class _UsageAccumulator:
             cache_read_tokens=self.cache_read_tokens,
             cache_creation_tokens=self.cache_creation_tokens,
             cost_usd=cost,
+            thinking_tokens=self.thinking_tokens,
         )
 
 

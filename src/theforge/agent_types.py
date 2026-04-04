@@ -16,6 +16,7 @@ class ModelUsage:
     cache_read_tokens: int
     cache_creation_tokens: int
     cost_usd: float | None
+    thinking_tokens: int = 0
 
 
 @dataclass(frozen=True)

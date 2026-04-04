@@ -89,6 +89,7 @@ class ModelProfile:
     timeout_medium_seconds: int | None = None  # override for medium complexity
     timeout_large_seconds: int | None = None  # override for large complexity
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
+    thinking_budget: int | None = None  # Google Gemini ThinkingConfig token budget
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
     base_url: str | None = None  # overrides provider's default API endpoint (Ollama etc.)
     max_tool_output_bytes: int = 51200  # cap for tool output (50KB default)

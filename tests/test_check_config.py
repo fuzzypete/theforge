@@ -176,6 +176,31 @@ class TestCheckConfigHappyPath:
         out = capsys.readouterr().out
         assert "openai / gpt-4" in out
 
+    def test_explicit_thinking_budget_is_rendered(self, tmp_path: Path, capsys) -> None:
+        review_pool = [
+            ModelProfile(
+                name="gemini-reviewer",
+                provider="google",
+                model="gemini-2.5-pro",
+                budget_usd=1.0,
+                timeout_seconds=120,
+                allowed_tools=("Read", "Grep"),
+                thinking_budget=2048,
+            )
+        ]
+        config = _make_forge_config(tmp_path, review_pool=review_pool)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                return_value=(True, ""),
+            ),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "thinking_budget=2048" in out
+
 
 class TestCheckConfigWarnings:
     def test_exit_1_auth_failure(self, tmp_path: Path, capsys) -> None:

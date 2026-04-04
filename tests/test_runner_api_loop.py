@@ -230,6 +230,43 @@ class TestAgentLoopLifecycle:
         assert usage.cache_read_tokens == 30
         assert usage.cache_creation_tokens == 20
 
+    def test_google_loop_cost_includes_thinking_tokens(self, tmp_path):
+        """Usage accumulator includes Gemini thinking tokens in final cost."""
+
+        def adapter(messages, tools):
+            return LoopTurn(
+                tool_calls=[],
+                text_output="done",
+                structured_data=None,
+                usage=ModelUsage(
+                    model="gemini-2.5-flash",
+                    input_tokens=1_000_000,
+                    output_tokens=500_000,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=None,
+                    thinking_tokens=250_000,
+                ),
+            )
+
+        profile = _make_profile(provider="google", model="gemini-2.5-flash")
+        manager = AgentLoopManager(
+            profile=profile,
+            provider="google",
+            working_dir=tmp_path,
+            tools=[],
+            provider_adapter=adapter,
+        )
+
+        result = manager.run(
+            initial_messages=[{"role": "user", "content": "go"}],
+            tool_schemas=[],
+        )
+
+        assert result.success
+        assert result.model_usage[0].thinking_tokens == 250_000
+        assert result.cost_usd == 0.30 + (0.75 * 2.50)
+
     def test_max_iterations_terminates_loop_with_accumulated_cost(self, tmp_path):
         """Loop terminates after max_iterations, still reports cost."""
         call_count = [0]
