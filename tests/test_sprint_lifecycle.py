@@ -179,6 +179,21 @@ class TestLoadManifest:
 
 
 class TestRunSprint:
+    def test_root_forge_artifacts_deindexed_before_sprint(self, tmp_path: Path) -> None:
+        """run_sprint scrubs tracked .forge artifacts from the project root index first."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+
+        with (
+            patch("theforge.sprint.runner._scrub_root_forge_artifacts") as mock_scrub,
+            patch("theforge.sprint.runner.run_task", return_value=result_a),
+        ):
+            run_sprint(config, manifest_path)
+
+        mock_scrub.assert_called_once_with(config)
+
     def test_success_path(self, tmp_path: Path) -> None:
         """Two specs both succeed, costs accumulate, audit written."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
