@@ -115,9 +115,6 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
 
 class TestPlanAgentReview:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -173,6 +170,7 @@ class TestPlanAgentReview:
         assert audit["plan_review"]["decision"] == "approve"
         assert audit["plan_review"]["cost_usd"] == pytest.approx(0.08)
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
