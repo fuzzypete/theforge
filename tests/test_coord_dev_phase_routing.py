@@ -199,6 +199,7 @@ test_coverage:
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
     @patch("theforge.coordinator.review_phase._human_review")
+    @patch("theforge.coordinator.review_pool.run_agent")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
@@ -209,6 +210,7 @@ test_coverage:
         mock_agent,
         mock_preflight,
         mock_pool,
+        mock_review_agent,
         mock_human_review,
         mock_dev_prompt,
         mock_fix_prompt,
@@ -248,7 +250,10 @@ test_coverage:
         mock_dev_prompt.return_value = "full dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
 
-        # REQUEST_CHANGES with empty findings list
+        # First pooled response is malformed (no P1), which should trigger the
+        # per-reviewer retry path. That retry returns a valid REQUEST_CHANGES
+        # review so the exhausted-cycle extend still exercises fix-prompt routing.
+        # This keeps the test hermetic across both review entry points.
         empty_findings_rc = """\
 ```yaml
 verdict: REQUEST_CHANGES
@@ -273,6 +278,9 @@ test_coverage:
             return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
 
         mock_pool.side_effect = pool_side_effect
+        mock_review_agent.return_value = _make_agent_result(
+            success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review"
+        )
 
         # First call: human extends (cycles exhausted); second call: human approves
         human_call = {"n": 0}

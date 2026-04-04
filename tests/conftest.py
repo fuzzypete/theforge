@@ -97,3 +97,34 @@ def _block_real_notifications():
         patch("theforge.notify_backends._send_slack"),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _block_real_review_runners():
+    """Require coordinator tests to stub review runner entry points explicitly.
+
+    Accidental fallthrough into the real review pool is both slow and misleading:
+    it can spawn actual runner processes and watchdog threads from tests that only
+    intended to exercise coordinator control flow.
+
+    Tests that genuinely need to exercise these boundaries should patch
+    ``theforge.coordinator.review_pool.run_agent_pool`` and/or
+    ``theforge.coordinator.review_pool.run_agent`` explicitly.
+    """
+    with (
+        patch(
+            "theforge.coordinator.review_pool.run_agent_pool",
+            side_effect=AssertionError(
+                "Test hit real review_pool.run_agent_pool; patch "
+                "theforge.coordinator.review_pool.run_agent_pool explicitly."
+            ),
+        ),
+        patch(
+            "theforge.coordinator.review_pool.run_agent",
+            side_effect=AssertionError(
+                "Test hit real review_pool.run_agent; patch "
+                "theforge.coordinator.review_pool.run_agent explicitly."
+            ),
+        ),
+    ):
+        yield
