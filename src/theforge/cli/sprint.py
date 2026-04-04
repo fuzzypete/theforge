@@ -194,7 +194,9 @@ def _run_query_mode(
     _generate_run_id: object,
 ) -> int:
     """Handle --milestone / --label query mode."""
+    from theforge.sprint.dag import resolve_satisfied_dependencies
     from theforge.sprint.query import (
+        assign_dependency_batches_with_satisfied,
         build_resolved_sprint,
         fetch_issues_for_label,
         fetch_issues_for_milestone,
@@ -233,13 +235,6 @@ def _run_query_mode(
 
     sprint_name: str = getattr(args, "name", None) or milestone or label
 
-    # ── Dry-run: print table and exit before fetching issue bodies ───────
-    if dry_run:
-        print(f"[dry-run] {query_desc}  {len(issues)} issue(s)  sprint='{sprint_name}'")
-        for issue in issues:
-            print(f"  #{issue['number']:>5}  {issue['title']}")
-        return 0
-
     # Build full ResolvedSprint (fetches individual issue bodies via gh)
     try:
         resolved = build_resolved_sprint(
@@ -258,6 +253,32 @@ def _run_query_mode(
             f"[forge] No stories could be fetched for {query_desc} — nothing to run.",
             file=sys.stderr,
         )
+        return 0
+
+    if dry_run:
+        tasks = [task for task, _src, _ref in resolved.stories]
+        satisfied = resolve_satisfied_dependencies(
+            tasks,
+            project_root=config.project_root,
+            base_branch=config.workspace.base_branch,
+            branch_pattern=config.workspace.branch_pattern,
+        )
+        batch_plan = assign_dependency_batches_with_satisfied(
+            tasks,
+            effective_max_parallel,
+            satisfied=satisfied,
+        )
+        print(f"[dry-run] {query_desc}  {len(tasks)} issue(s)  sprint='{sprint_name}'")
+        for task, _src, _ref in resolved.stories:
+            deps = ", ".join(task.depends_on) if task.depends_on else "-"
+            if task.slug in batch_plan.blocked:
+                status = f"blocked=[{', '.join(batch_plan.blocked[task.slug])}]"
+            else:
+                batch = batch_plan.assignments.get(task.slug)
+                status = "stalled" if batch is None else f"batch={batch}"
+            print(
+                f"  {status}  #{task.github_issue:>5}  {task.slug:<12} deps=[{deps}]  {task.name}"
+            )
         return 0
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──

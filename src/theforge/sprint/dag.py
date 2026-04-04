@@ -186,6 +186,34 @@ def build_dag(tasks: list[TaskStory], satisfied: set[str] | None = None) -> Stor
     return StoryDAG(tasks, satisfied=_satisfied)
 
 
+def resolve_satisfied_dependencies(
+    tasks: list[TaskStory],
+    *,
+    project_root: Path,
+    base_branch: str,
+    branch_pattern: str,
+    pre_satisfied: set[str] | None = None,
+) -> set[str]:
+    """Return external dependency slugs already satisfied outside this manifest.
+
+    Only dependencies absent from ``tasks`` are candidates here. They count as
+    satisfied when explicitly pre-marked (resume-mode skip state) or when their
+    corresponding branch is already merged into the base branch.
+    """
+    manifest_slugs = {task.slug for task in tasks}
+    dependent_slugs = {dep for task in tasks for dep in task.depends_on}
+    satisfied_slugs = set(pre_satisfied or set())
+
+    for dep_slug in dependent_slugs - manifest_slugs:
+        if dep_slug in satisfied_slugs:
+            continue
+        branch = branch_pattern.format(slug=dep_slug)
+        if _is_branch_merged(branch, base_branch, project_root, slug=dep_slug):
+            satisfied_slugs.add(dep_slug)
+
+    return satisfied_slugs
+
+
 def _triage_spec(
     story_path: str,
     config: ForgeConfig,

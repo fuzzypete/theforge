@@ -9,9 +9,7 @@ import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from theforge.cli import (
-    cmd_run,
-)
+from theforge.cli import cmd_run
 from theforge.config import (
     DEFAULT_VALIDATION,
     ForgeConfig,
@@ -203,6 +201,8 @@ class TestCmdRunUntilFlag:
         call_kwargs = mock_run.call_args.kwargs
         assert call_kwargs.get("stop_phase") == Phase.PLAN
 
+
+class TestCmdRunPhaseValidation:
     def test_until_unknown_phase_returns_1(self, tmp_path):
         """--until with invalid phase name returns exit code 1."""
         config = _make_forge_config(tmp_path)

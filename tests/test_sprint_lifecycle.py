@@ -394,6 +394,49 @@ class TestRunSprint:
 
         assert audit["specs"][0]["merge"] is False
 
+    def test_audit_records_manifest_vs_inferred_dependencies(self, tmp_path: Path) -> None:
+        """Sprint audit captures dependency provenance for each story."""
+        from theforge.sprint.manifest import ResolvedSprint
+        from theforge.sprint.sources import GitHubIssueSource
+        from theforge.task import TaskStory
+
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        resolved = ResolvedSprint(
+            name="Test Sprint",
+            budget_usd=10.0,
+            stories=[
+                (
+                    TaskStory(name="Issue A", slug="issue-9", github_issue=9),
+                    GitHubIssueSource(),
+                    "issue:9",
+                ),
+                (
+                    TaskStory(
+                        name="Issue B",
+                        slug="issue-2",
+                        github_issue=2,
+                        depends_on=["issue-9"],
+                        inferred_dependencies=["issue-9"],
+                    ),
+                    GitHubIssueSource(),
+                    "issue:2",
+                ),
+            ],
+            max_parallel=2,
+        )
+
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
+            run_sprint(config, resolved)
+
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        assert audit["specs"][1]["depends_on"] == ["issue-9"]
+        assert audit["specs"][1]["inferred_dependencies"] == {
+            "manifest": [],
+            "github_blockers": ["issue-9"],
+        }
+
 
 # ── Notification tests ────────────────────────────────────────────────
 

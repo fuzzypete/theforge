@@ -10,11 +10,13 @@ import json
 import logging
 import subprocess
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 if TYPE_CHECKING:
+    from ..task import TaskStory
     from .manifest import ResolvedSprint
 
 logger = logging.getLogger(__name__)
@@ -22,6 +24,22 @@ logger = logging.getLogger(__name__)
 
 class MilestoneNotFoundError(RuntimeError):
     """Raised when a milestone title is absent from the repository."""
+
+
+@dataclass(frozen=True)
+class DependencyBatchPlan:
+    """Dry-run dependency analysis for a sprint query."""
+
+    assignments: dict[str, int]
+    blocked: dict[str, list[str]]
+
+
+@dataclass(frozen=True)
+class NormalizedDependencyPlan:
+    """Normalized task graph plus explicit blocked stories."""
+
+    tasks: list["TaskStory"]
+    blocked: dict[str, list[str]]
 
 
 def _log(msg: str) -> None:
@@ -137,6 +155,88 @@ def fetch_issues_for_label(
     return sorted(issues, key=lambda x: x["number"])
 
 
+def assign_dependency_batches(
+    tasks: list["TaskStory"],
+    max_parallel: int | None,
+) -> DependencyBatchPlan:
+    """Return dry-run dependency batches and unresolved external blockers."""
+    return assign_dependency_batches_with_satisfied(tasks, max_parallel, satisfied=set())
+
+
+def assign_dependency_batches_with_satisfied(
+    tasks: list["TaskStory"],
+    max_parallel: int | None,
+    *,
+    satisfied: set[str],
+) -> DependencyBatchPlan:
+    """Return dry-run batches while preserving unresolved external blockers."""
+    from .dag import build_dag  # noqa: PLC0415
+
+    batch_assignments: dict[str, int] = {}
+    normalized = normalize_dependency_plan(tasks, satisfied=satisfied)
+    blocked = dict(normalized.blocked)
+    dag = build_dag(normalized.tasks, satisfied=satisfied)
+    active_batch = 0
+    _ = max_parallel  # width is enforced at runtime; dry-run batches reflect dependency frontiers
+
+    while not dag.is_done():
+        ready = [
+            task
+            for task in dag.ready()
+            if task.slug not in batch_assignments and task.slug not in blocked
+        ]
+        if not ready:
+            for task in dag.remaining():
+                if task.slug in blocked:
+                    continue
+                unmet = sorted(dag.unmet_deps(task.slug))
+                if unmet:
+                    blocked[task.slug] = unmet
+            break
+        for task in ready:
+            batch_assignments[task.slug] = active_batch
+            dag.mark_complete(task.slug)
+        active_batch += 1
+
+    return DependencyBatchPlan(assignments=batch_assignments, blocked=blocked)
+
+
+def normalize_dependency_plan(
+    tasks: list["TaskStory"],
+    *,
+    satisfied: set[str],
+) -> NormalizedDependencyPlan:
+    """Normalize external dependencies and classify stories blocked before scheduling.
+
+    External dependencies already listed in ``satisfied`` are removed from the
+    DAG inputs. Unresolved external dependencies are preserved in ``blocked`` so
+    callers can keep the affected stories out of the runnable graph while still
+    reporting the blocker chain explicitly.
+    """
+    known_slugs = {task.slug for task in tasks}
+    blocked = {
+        task.slug: sorted(
+            dep_slug
+            for dep_slug in task.depends_on
+            if dep_slug not in known_slugs and dep_slug not in satisfied
+        )
+        for task in tasks
+    }
+    blocked = {slug: dep_slugs for slug, dep_slugs in blocked.items() if dep_slugs}
+    normalized_tasks = [
+        replace(
+            task,
+            depends_on=[
+                dep_slug
+                for dep_slug in task.depends_on
+                if dep_slug in known_slugs or dep_slug in satisfied
+            ],
+        )
+        for task in tasks
+    ]
+    return NormalizedDependencyPlan(tasks=normalized_tasks, blocked=blocked)
+
+
 def build_resolved_sprint(
     issues: list[dict],
     name: str,
@@ -160,7 +260,6 @@ def build_resolved_sprint(
     Returns:
         A fully populated ``ResolvedSprint`` ready for ``run_sprint()``.
     """
-    from ..task import TaskStory  # noqa: PLC0415
     from .manifest import ResolvedSprint  # noqa: PLC0415
     from .sources import GitHubIssueSource, IssueClosedError, StorySource  # noqa: PLC0415
 

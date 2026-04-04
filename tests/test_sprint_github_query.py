@@ -11,11 +11,14 @@ import pytest
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.query import (
     _gh_api_paginate_issues,
+    assign_dependency_batches,
+    assign_dependency_batches_with_satisfied,
     build_resolved_sprint,
     fetch_issues_for_label,
     fetch_issues_for_milestone,
 )
 from theforge.sprint.sources import IssueClosedError
+from theforge.task import TaskStory
 
 # ── _gh_api_paginate_issues ───────────────────────────────────────────────────
 
@@ -203,7 +206,9 @@ class TestBuildResolvedSprint:
         issues = [{"number": 1, "title": "First"}, {"number": 2, "title": "Second"}]
         side_effects = [
             MagicMock(returncode=0, stdout=self._open_issue_json(1, "First"), stderr=""),
+            MagicMock(returncode=0, stdout="[]", stderr=""),
             MagicMock(returncode=0, stdout=self._open_issue_json(2, "Second"), stderr=""),
+            MagicMock(returncode=0, stdout="[]", stderr=""),
         ]
         with patch("subprocess.run", side_effect=side_effects):
             resolved = build_resolved_sprint(
@@ -221,11 +226,36 @@ class TestBuildResolvedSprint:
         task0, _src0, ref0 = resolved.stories[0]
         assert task0.github_issue == 1
         assert ref0 == "issue:1"
+        assert task0.inferred_dependencies == []
+
+    def test_builds_resolved_sprint_with_inferred_blockers(self, tmp_path: Path) -> None:
+        issues = [{"number": 2, "title": "Second"}]
+        side_effects = [
+            MagicMock(returncode=0, stdout=self._open_issue_json(2, "Second"), stderr=""),
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps([{"event": "blocked_by", "blocking_issue": {"number": 1}}]),
+                stderr="",
+            ),
+        ]
+        with patch("subprocess.run", side_effect=side_effects):
+            resolved = build_resolved_sprint(
+                issues=issues,
+                name="Test Sprint",
+                budget_usd=10.0,
+                max_parallel=2,
+                project_root=tmp_path,
+            )
+
+        task, _src, _ref = resolved.stories[0]
+        assert task.depends_on == ["issue-1"]
+        assert task.inferred_dependencies == ["issue-1"]
 
     def test_skips_closed_issues_with_warning(self, tmp_path: Path, capsys) -> None:
         issues = [{"number": 1, "title": "Open"}, {"number": 2, "title": "Closed"}]
         side_effects = [
             MagicMock(returncode=0, stdout=self._open_issue_json(1, "Open"), stderr=""),
+            MagicMock(returncode=0, stdout="[]", stderr=""),
             MagicMock(
                 returncode=0,
                 stdout=json.dumps({"title": "Closed", "body": "", "state": "CLOSED"}),
@@ -274,6 +304,76 @@ class TestBuildResolvedSprint:
         )
         assert resolved.stories == []
         assert resolved.name == "Empty Sprint"
+
+
+class TestAssignDependencyBatches:
+    def test_dependency_batches_reflect_blockers(self) -> None:
+        tasks = [
+            TaskStory(name="A", slug="issue-1"),
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batch_plan.assignments["issue-1"] == 0
+        assert batch_plan.assignments["issue-3"] == 0
+        assert batch_plan.assignments["issue-2"] == 1
+        assert batch_plan.blocked == {}
+
+    def test_assign_dependency_batches_blocks_unresolved_external_dependency(self) -> None:
+        tasks = [
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batch_plan.assignments == {"issue-3": 0}
+        assert batch_plan.blocked == {"issue-2": ["issue-1"]}
+
+    def test_external_blocker_is_treated_as_satisfied_when_explicitly_provided(self) -> None:
+        tasks = [
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches_with_satisfied(
+            tasks,
+            max_parallel=2,
+            satisfied={"issue-1"},
+        )
+
+        assert batch_plan.assignments["issue-2"] == 0
+        assert batch_plan.assignments["issue-3"] == 0
+        assert batch_plan.blocked == {}
+
+    def test_blockage_propagates_to_downstream_in_sprint_dependencies(self) -> None:
+        tasks = [
+            TaskStory(name="A", slug="issue-1", depends_on=["issue-9"]),
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batch_plan.assignments == {"issue-3": 0}
+        assert batch_plan.blocked == {
+            "issue-1": ["issue-9"],
+            "issue-2": ["issue-1"],
+        }
+
+    def test_independent_tasks_share_frontier_when_max_parallel_is_smaller(self) -> None:
+        tasks = [
+            TaskStory(name="A", slug="issue-1"),
+            TaskStory(name="B", slug="issue-2"),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batch_plan.assignments == {"issue-1": 0, "issue-2": 0, "issue-3": 0}
+        assert batch_plan.blocked == {}
 
 
 # ── run_sprint accepts ResolvedSprint ─────────────────────────────────────────
@@ -378,6 +478,39 @@ class TestRunSprintAcceptsResolvedSprint:
 
         assert result.specs_total == 1
         assert result.name == "GitHub Sprint"
+
+    def test_unresolved_external_blocker_is_skipped_at_runtime(self, tmp_path: Path) -> None:
+        from theforge.sprint.manifest import ResolvedSprint
+        from theforge.sprint.runner import run_sprint
+        from theforge.sprint.sources import GitHubIssueSource
+
+        blocked = TaskStory(name="Blocked", slug="issue-2", github_issue=2, depends_on=["issue-1"])
+        ready = TaskStory(name="Ready", slug="issue-3", github_issue=3)
+        resolved = ResolvedSprint(
+            name="GitHub Sprint",
+            budget_usd=5.0,
+            stories=[
+                (blocked, GitHubIssueSource(), "issue:2"),
+                (ready, GitHubIssueSource(), "issue:3"),
+            ],
+            max_parallel=1,
+        )
+        config = self._make_config(tmp_path)
+
+        with (
+            patch("theforge.sprint.dag._is_branch_merged", return_value=False),
+            patch(
+                "theforge.sprint.runner.run_task",
+                return_value=self._make_coordinator_result(),
+            ) as mock_run_task,
+        ):
+            result = run_sprint(config, resolved)
+
+        assert result.specs_total == 2
+        assert result.specs_succeeded == 1
+        assert result.specs_skipped == 1
+        assert mock_run_task.call_count == 1
+        assert mock_run_task.call_args[0][1].slug == "issue-3"
 
 
 # ── IssueClosedError is only what's skipped ──────────────────────────────────

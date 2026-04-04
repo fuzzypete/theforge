@@ -17,6 +17,7 @@ class TaskStory:
     pytest_target: str | None = None  # specific test target, or None for all
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
+    inferred_dependencies: list[str] = field(default_factory=list)  # inferred from GH blockers
     github_issue: int | None = None  # GH issue number; PR will include "Closes #N"
 
 
