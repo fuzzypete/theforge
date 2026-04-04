@@ -64,7 +64,7 @@ profiles:
       max_iterations: 10
     - name: gemini-reviewer
       provider: google
-      model: gemini-2.5-pro
+      model: gemini-3.1-pro-preview-customtools
       review_role: architecture
       budget_usd: 2.00
       timeout_seconds: 300
@@ -86,14 +86,14 @@ plan_agent_review:
   pool:
     - name: gemini-plan-reviewer-solo
       provider: google
-      model: gemini-2.5-pro
+      model: gemini-3.1-pro-preview-customtools
       budget_usd: 0.50
       timeout_seconds: 300
       thinking_budget: 4096
       max_iterations: 10
     - name: gemini-plan-reviewer
       provider: google
-      model: gemini-2.5-pro
+      model: gemini-3.1-pro-preview-customtools
       budget_usd: 0.50
       timeout_seconds: 300
       thinking_budget: 4096
@@ -102,7 +102,7 @@ plan_agent_review:
 smart_config_models:
   - deepseek/deepseek-reasoner
   - openai/gpt-5.4
-  - google/gemini-2.5-pro
+  - google/gemini-3.1-pro-preview-customtools
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh
