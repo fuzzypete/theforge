@@ -560,3 +560,27 @@ class TestTranslateMessagesGoogle:
 
         fc_part = result[0]["parts"][0]["function_call"]
         assert "thought_signature" not in fc_part
+
+    def test_multiple_tool_calls_distinct_signatures(self):
+        """Each tool call gets its own thought Part immediately before it.
+
+        When an assistant turn carries multiple tool calls with distinct
+        thought_signatures, collapsing to one thought Part would send the
+        wrong signature for subsequent calls. Each call must have its own
+        thought Part directly preceding it.
+        """
+        from theforge.runners.adapters.google import _translate_messages_google
+
+        tc0 = ToolCallRequest(id="c0", name="bash", arguments={"command": "ls"}, thought_signature=b"sig-A")
+        tc1 = ToolCallRequest(id="c1", name="read_file", arguments={"path": "x.py"}, thought_signature=b"sig-B")
+        messages = [{"role": "assistant", "tool_calls": [tc0, tc1], "content": None}]
+        result = _translate_messages_google(messages)
+
+        parts = result[0]["parts"]
+        assert len(parts) == 4  # thought-A, fc0, thought-B, fc1
+        assert parts[0] == {"thought": True, "thought_signature": b"sig-A"}
+        assert parts[1]["function_call"]["name"] == "bash"
+        assert parts[2] == {"thought": True, "thought_signature": b"sig-B"}
+        assert parts[3]["function_call"]["name"] == "read_file"
+        assert "thought_signature" not in parts[1]["function_call"]
+        assert "thought_signature" not in parts[3]["function_call"]
