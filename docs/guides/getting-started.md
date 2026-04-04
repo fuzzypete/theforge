@@ -193,12 +193,14 @@ git merge forge/add-health-check
 
 ## 10. Run multiple stories as a sprint
 
-Create a sprint manifest (`sprints/my-sprint.yaml`):
+### Option A: manifest file
+
+Create `sprints/my-sprint.yaml`:
 
 ```yaml
 name: "My First Sprint"
 budget_usd: 20
-specs:
+stories:
   - stories/add-health-check.md
   - stories/add-logging.md
   - stories/fix-auth-bug.md
@@ -209,6 +211,17 @@ Run it:
 ```bash
 forge sprint sprints/my-sprint.yaml --verbose --auto-merge
 ```
+
+### Option B: paperless sprint from GitHub
+
+If your stories are GitHub issues, skip the manifest entirely:
+
+```bash
+forge sprint --milestone "v1.0" --budget 50 --verbose --auto-merge
+forge sprint --label "sprint-1" --budget 20 --verbose
+```
+
+TheForge fetches open issues from the milestone or label and runs them in order.
 
 Stories run sequentially. Each one goes through the full pipeline. Failed stories
 don't block the rest.

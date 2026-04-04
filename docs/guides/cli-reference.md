@@ -105,13 +105,16 @@ run review without re-running PLAN/DEV.
 
 ## `forge sprint`
 
-Run multiple stories from a sprint manifest.
+Run multiple stories from a sprint manifest or directly from a GitHub milestone or label.
 
 ```bash
-forge sprint <manifest.yaml> [flags]
+forge sprint [manifest.yaml] [flags]
+forge sprint --milestone "v0.4.0" --budget 50 [flags]
+forge sprint --label "sprint-1" --budget 20 [flags]
 ```
 
-**Use this when:** You want batch execution with shared budget and story ordering.
+**Use this when:** You want batch execution with shared budget and story ordering. The
+manifest argument is optional when using `--milestone` or `--label`.
 
 **Flags:**
 
@@ -121,6 +124,10 @@ forge sprint <manifest.yaml> [flags]
 | `--auto-merge` | Auto-merge each approved story |
 | `--interactive` | Pause at each APPROVE |
 | `--resume` | Auto-triage each story and resume from the correct phase |
+| `--milestone <name>` | Run all open issues in a GitHub milestone (requires `--budget`) |
+| `--label <name>` | Run all open issues with a GitHub label (requires `--budget`) |
+| `--budget <usd>` | Budget ceiling in USD — required when using `--milestone` or `--label` |
+| `--name <name>` | Override the sprint name (default: milestone or label value) |
 | `--config <path>` | Path to `forge.yaml` |
 | `--no-notify` | Suppress notifications |
 | `--detach` | Queue the sprint on a running daemon and return immediately |
@@ -133,11 +140,14 @@ forge sprint <manifest.yaml> [flags]
 name: "Sprint Name"
 budget_usd: 50
 auto_merge: true
-specs:
+stories:
   - stories/story-one.md
   - stories/story-two.md
-  - stories/story-three.md
+  - {issue: 123}             # source from GitHub issue #123
+  - {issue: 124, slug: my-slug, depends_on: [my-slug]}
 ```
+
+> **Note:** `specs:` is a deprecated alias for `stories:` and still works.
 
 ---
 
