@@ -1,0 +1,28 @@
+dev_notes: |
+  summary: "Implemented GitHub blocker inference for sprint query mode by extending issue-backed TaskStory objects with inferred dependency provenance, fetching blocker relationships from the GitHub timeline with a blocked-by body-pattern fallback, merging inferred blockers with any manifest overrides, surfacing dependency-aware dry-run batches, and recording dependency provenance in sprint audit YAML. Added regression coverage for issue fetch inference, dependency batch planning, audit provenance, and query-mode dry-run output; verified with make fmt, make lint, and the full pytest gate."
+  commits:
+    - sha: "13a54bc"
+      message: "summary: \"Implemented GitHub blocker inference for sprint query mode by"
+  acceptance_criteria:
+    - criterion: "When issue B is 'blocked by' issue A in GitHub, `forge sprint --milestone` treats B as `depends_on: [issue-A]`"
+      status: MET
+      notes: "GitHubIssueSource now infers blocker slugs as `issue-NNN` from timeline metadata with a blocked-by body fallback, and build_resolved_sprint carries those into query-mode stories."
+    - criterion: "With `--parallel N`, A and B never run concurrently; B starts only after A completes and merges"
+      status: MET
+      notes: "No scheduler changes were needed; inferred `depends_on` now feeds the existing DAG, and tests cover dependency batch planning plus dependency-gated sprint execution."
+    - criterion: "Stories with no blocker relationships are treated as independent (no change to current behavior)"
+      status: MET
+      notes: "Issues without inferred blockers keep empty dependency lists, and existing independent-story behavior remains unchanged."
+    - criterion: "`--dry-run` output reflects the dependency-aware ordering"
+      status: MET
+      notes: "Query-mode dry-run now resolves issue bodies, computes deterministic dependency-aware batches, and prints each issue with its batch and resolved deps."
+    - criterion: "Sprint audit YAML includes `inferred_dependencies` showing which depends_on came from GH blockers vs manifest"
+      status: MET
+      notes: "Sprint audit entries now include `depends_on` plus `inferred_dependencies.manifest` and `inferred_dependencies.github_blockers` derived from each TaskStory."
+    - criterion: "No change to behavior when `--parallel` is not set (sequential is already correct)"
+      status: MET
+      notes: "Sequential behavior is preserved; query mode still defaults to sequential unless `--parallel` is explicitly set."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
+gate_decision: PASS
