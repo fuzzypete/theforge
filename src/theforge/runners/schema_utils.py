@@ -139,7 +139,8 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: dict
-    thought_signature: bytes | str | None = None  # Google Gemini: required for -customtools variants
+    # Google Gemini: required for -customtools variants.
+    thought_signature: bytes | str | None = None
 
 
 @dataclass
