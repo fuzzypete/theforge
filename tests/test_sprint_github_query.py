@@ -12,6 +12,7 @@ from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.query import (
     _gh_api_paginate_issues,
     assign_dependency_batches,
+    assign_dependency_batches_with_satisfied,
     build_resolved_sprint,
     fetch_issues_for_label,
     fetch_issues_for_milestone,
@@ -313,22 +314,39 @@ class TestAssignDependencyBatches:
             TaskStory(name="C", slug="issue-3"),
         ]
 
-        batches = assign_dependency_batches(tasks, max_parallel=2)
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
 
-        assert batches["issue-1"] == 0
-        assert batches["issue-3"] == 0
-        assert batches["issue-2"] == 1
+        assert batch_plan.assignments["issue-1"] == 0
+        assert batch_plan.assignments["issue-3"] == 0
+        assert batch_plan.assignments["issue-2"] == 1
+        assert batch_plan.blocked == {}
 
-    def test_external_blocker_is_treated_as_satisfied(self) -> None:
+    def test_assign_dependency_batches_blocks_unresolved_external_dependency(self) -> None:
         tasks = [
             TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
             TaskStory(name="C", slug="issue-3"),
         ]
 
-        batches = assign_dependency_batches(tasks, max_parallel=2)
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
 
-        assert batches["issue-2"] == 0
-        assert batches["issue-3"] == 0
+        assert batch_plan.assignments == {"issue-3": 0}
+        assert batch_plan.blocked == {"issue-2": ["issue-1"]}
+
+    def test_external_blocker_is_treated_as_satisfied_when_explicitly_provided(self) -> None:
+        tasks = [
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches_with_satisfied(
+            tasks,
+            max_parallel=2,
+            satisfied={"issue-1"},
+        )
+
+        assert batch_plan.assignments["issue-2"] == 0
+        assert batch_plan.assignments["issue-3"] == 0
+        assert batch_plan.blocked == {}
 
     def test_independent_tasks_share_frontier_when_max_parallel_is_smaller(self) -> None:
         tasks = [
@@ -337,9 +355,10 @@ class TestAssignDependencyBatches:
             TaskStory(name="C", slug="issue-3"),
         ]
 
-        batches = assign_dependency_batches(tasks, max_parallel=2)
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
 
-        assert batches == {"issue-1": 0, "issue-2": 0, "issue-3": 0}
+        assert batch_plan.assignments == {"issue-1": 0, "issue-2": 0, "issue-3": 0}
+        assert batch_plan.blocked == {}
 
 
 # ── run_sprint accepts ResolvedSprint ─────────────────────────────────────────

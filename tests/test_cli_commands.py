@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 from theforge.cli import (
     cmd_run,
+    cmd_sprint,
 )
 from theforge.config import (
     DEFAULT_VALIDATION,
@@ -262,6 +263,71 @@ class TestCmdSprintDryRunQuery:
         assert "batch=0" in out
         assert "batch=1" in out
         assert "deps=[issue-1]" in out
+
+    def test_query_mode_dry_run_marks_unresolved_external_blocker_as_blocked(
+        self, tmp_path, capsys
+    ):
+        """Dry-run query mode reports unresolved out-of-sprint blockers as blocked."""
+        from theforge.sprint.manifest import ResolvedSprint
+        from theforge.sprint.sources import GitHubIssueSource
+        from theforge.task import TaskStory
+
+        config = _make_forge_config(tmp_path)
+        config_path = tmp_path / "forge.yaml"
+        config_path.write_text("project: test\n", encoding="utf-8")
+        args = argparse.Namespace(
+            config=None,
+            milestone="v0.5.0",
+            label=None,
+            name=None,
+            budget="10",
+            auto_merge=False,
+            interactive=False,
+            no_notify=True,
+            resume=False,
+            no_pull=False,
+            fg=True,
+            detach=False,
+            parallel=2,
+        )
+        args.manifest = None
+        args.dry_run = True
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=10.0,
+            stories=[
+                (
+                    TaskStory(
+                        name="B",
+                        slug="issue-2",
+                        github_issue=2,
+                        depends_on=["issue-1"],
+                        inferred_dependencies=["issue-1"],
+                    ),
+                    GitHubIssueSource(),
+                    "issue:2",
+                ),
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=config_path),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 2, "title": "B"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch("theforge.sprint.dag._is_branch_merged", return_value=False),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "blocked=[issue-1]" in out
+        assert "batch=" not in out
 
     def test_until_unknown_phase_returns_1(self, tmp_path):
         """--until with invalid phase name returns exit code 1."""

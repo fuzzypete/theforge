@@ -22,7 +22,13 @@ from ..coordinator.util import _fmt_duration, _generate_run_id
 from ..coordinator.workspace import _merge_branch, pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
-from .dag import StoryDAG, StoryTriage, _is_branch_merged, _triage_spec, build_dag
+from .dag import (
+    StoryDAG,
+    StoryTriage,
+    _triage_spec,
+    build_dag,
+    resolve_satisfied_dependencies,
+)
 from .display import _print_worker_status, _story_header
 from .manifest import (
     ResolvedSprint,
@@ -460,6 +466,7 @@ def run_sprint(
     slug_to_context: dict[str, tuple[TaskStory, StorySource, str]] = {
         task.slug: (task, source, canonical_ref) for task, source, canonical_ref in task_entries
     }
+    dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
 
     total = len(task_entries)
     noun = "stories" if total != 1 else "story"
@@ -517,10 +524,6 @@ def run_sprint(
     # Derive slug_to_spec from unified context mapping
     slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
 
-    dependent_slugs: set[str] = set()
-    for task, _src, _ref in task_entries:
-        dependent_slugs.update(task.depends_on)
-
     # Resume mode: triage all stories and carry forward prior costs
     triages: dict[str, StoryTriage] = {}
     if resume:
@@ -534,27 +537,23 @@ def run_sprint(
             action_label = triage.action.upper().replace("_", " ")
             _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
 
-    # Build satisfied set: slugs already merged to main that are not in this manifest.
-    # Includes triage skip_merged/skip results (resume mode) and any cross-sprint
+    # Build satisfied set: resume-mode skip states plus any cross-sprint
     # depends_on slugs whose branch is already merged to the base branch.
-    manifest_slugs = set(slug_to_context.keys())
-    satisfied_slugs: set[str] = set()
-
+    pre_satisfied: set[str] = set()
     if resume:
         for triage in triages.values():
             if triage.action in ("skip_merged", "skip"):
-                satisfied_slugs.add(triage.slug)
-
-    for dep_slug in dependent_slugs - manifest_slugs:
-        if dep_slug not in satisfied_slugs:
-            branch = config.workspace.branch_pattern.format(slug=dep_slug)
-            if _is_branch_merged(
-                branch, config.workspace.base_branch, config.project_root, slug=dep_slug
-            ):
-                satisfied_slugs.add(dep_slug)
+                pre_satisfied.add(triage.slug)
 
     # Build DAG
     all_tasks = [ctx[0] for ctx in slug_to_context.values()]
+    satisfied_slugs = resolve_satisfied_dependencies(
+        all_tasks,
+        project_root=config.project_root,
+        base_branch=config.workspace.base_branch,
+        branch_pattern=config.workspace.branch_pattern,
+        pre_satisfied=pre_satisfied,
+    )
     dag = build_dag(all_tasks, satisfied=satisfied_slugs)
 
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
