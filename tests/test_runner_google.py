@@ -571,8 +571,18 @@ class TestTranslateMessagesGoogle:
         """
         from theforge.runners.adapters.google import _translate_messages_google
 
-        tc0 = ToolCallRequest(id="c0", name="bash", arguments={"command": "ls"}, thought_signature=b"sig-A")
-        tc1 = ToolCallRequest(id="c1", name="read_file", arguments={"path": "x.py"}, thought_signature=b"sig-B")
+        tc0 = ToolCallRequest(
+            id="c0",
+            name="bash",
+            arguments={"command": "ls"},
+            thought_signature=b"sig-A",
+        )
+        tc1 = ToolCallRequest(
+            id="c1",
+            name="read_file",
+            arguments={"path": "x.py"},
+            thought_signature=b"sig-B",
+        )
         messages = [{"role": "assistant", "tool_calls": [tc0, tc1], "content": None}]
         result = _translate_messages_google(messages)
 

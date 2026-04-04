@@ -491,6 +491,7 @@ class TestRefactorAdvisoryPlanReview:
 
 
 class TestFeatureBugFullPlanReview:
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -503,6 +504,7 @@ class TestFeatureBugFullPlanReview:
         mock_preflight,
         mock_plan_agent,
         mock_plan_review_pool,
+        mock_review_pool,
         tmp_path,
     ):
         """Corroborated REJECT (2 reviewers) triggers plan regeneration."""
@@ -543,6 +545,9 @@ class TestFeatureBugFullPlanReview:
                     success=True, output=PLAN_AGENT_APPROVE, profile_name="plan-review-b"
                 ),
             ],
+        ]
+        mock_review_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task)

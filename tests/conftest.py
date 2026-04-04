@@ -97,3 +97,47 @@ def _block_real_notifications():
         patch("theforge.notify_backends._send_slack"),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _block_real_coordinator_runners():
+    """Require tests to stub coordinator runner entry points explicitly.
+
+    Accidental fallthrough into any coordinator runner path is both slow and
+    misleading: it can spawn actual runner processes and watchdog threads from
+    tests that only intended to exercise coordinator control flow.
+
+    Tests that genuinely need one of these boundaries should patch that symbol
+    explicitly in the test body or decorator stack.
+    """
+
+    def _unexpected_call(symbol: str) -> AssertionError:
+        return AssertionError(f"Test hit real {symbol}; patch {symbol} explicitly.")
+
+    with (
+        patch(
+            "theforge.coordinator.review_pool.run_agent_pool",
+            side_effect=_unexpected_call("theforge.coordinator.review_pool.run_agent_pool"),
+        ),
+        patch(
+            "theforge.coordinator.review_pool.run_agent",
+            side_effect=_unexpected_call("theforge.coordinator.review_pool.run_agent"),
+        ),
+        patch(
+            "theforge.coordinator.plan_flow.run_agent_pool",
+            side_effect=_unexpected_call("theforge.coordinator.plan_flow.run_agent_pool"),
+        ),
+        patch(
+            "theforge.coordinator.plan_flow.run_agent",
+            side_effect=_unexpected_call("theforge.coordinator.plan_flow.run_agent"),
+        ),
+        patch(
+            "theforge.coordinator.preflight_flow.run_agent",
+            side_effect=_unexpected_call("theforge.coordinator.preflight_flow.run_agent"),
+        ),
+        patch(
+            "theforge.coordinator.dev_phase.run_agent",
+            side_effect=_unexpected_call("theforge.coordinator.dev_phase.run_agent"),
+        ),
+    ):
+        yield

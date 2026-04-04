@@ -701,6 +701,7 @@ findings:
         assert result.state.plan_review_decision == "reject"
         assert len(result.state.plan_review_failures) == 1
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -715,6 +716,7 @@ findings:
         mock_plan_agent,
         mock_pool,
         mock_human_review,
+        mock_code_review_pool,
         tmp_path,
     ):
         """Plan review cost appears in audit log."""
@@ -741,7 +743,9 @@ findings:
                     profile_name="plan-review",
                 )
             ],
-            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")],
+        ]
+        mock_code_review_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
         result = run_task(config, task, interactive=True)
