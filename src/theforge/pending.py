@@ -19,6 +19,19 @@ import yaml
 from .coordinator import util as _cu
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """Return True when *pid* refers to a running process."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
 def _pending_dir(project_root: Path | None = None) -> Path:
     """Return .forge/pending/ relative to project root or cwd."""
     base = project_root or Path.cwd()
@@ -68,7 +81,25 @@ def read_pending(run_id: str, project_root: Path | None = None) -> dict[str, Any
         return None
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+
+        pid = data.get("pid")
+        if pid is None:
+            cleanup_pending(run_id, project_root)
+            return None
+
+        try:
+            owner_pid = int(pid)
+        except (TypeError, ValueError):
+            cleanup_pending(run_id, project_root)
+            return None
+
+        if not _is_pid_alive(owner_pid):
+            cleanup_pending(run_id, project_root)
+            return None
+
+        return data
     except Exception:
         return None
 
@@ -83,20 +114,16 @@ def poll_pending(
 
     Returns (decision, decided_at) or ("timeout", None) on expiry.
     """
-    path = _pending_dir(project_root) / f"{run_id}.yaml"
     deadline = time.monotonic() + timeout_seconds
     last_log = time.monotonic()
 
     while time.monotonic() < deadline:
-        try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and data.get("decision"):
-                decision = str(data["decision"]).strip()
-                decided_at = data.get("decided_at")
-                _cu._log(f"  Pending decision received: {decision!r}")
-                return decision, decided_at
-        except Exception:
-            pass
+        data = read_pending(run_id, project_root)
+        if isinstance(data, dict) and data.get("decision"):
+            decision = str(data["decision"]).strip()
+            decided_at = data.get("decided_at")
+            _cu._log(f"  Pending decision received: {decision!r}")
+            return decision, decided_at
 
         now = time.monotonic()
         if now - last_log >= 60:
@@ -200,17 +227,14 @@ def cleanup_stale(project_root: Path | None = None) -> int:
         pid = entry.get("pid")
         if pid is not None:
             try:
-                os.kill(int(pid), 0)
-            except (ProcessLookupError, PermissionError):
-                # ProcessLookupError: no such process
-                # PermissionError: process exists but we can't signal it
-                # Only remove on ProcessLookupError
-                pass
-            except OSError as exc:
-                import errno
+                owner_pid = int(pid)
+            except (TypeError, ValueError):
+                cleanup_pending(run_id, project_root)
+                removed += 1
+                continue
 
-                if exc.errno == errno.ESRCH:
-                    cleanup_pending(run_id, project_root)
-                    removed += 1
+            if not _is_pid_alive(owner_pid):
+                cleanup_pending(run_id, project_root)
+                removed += 1
 
     return removed
