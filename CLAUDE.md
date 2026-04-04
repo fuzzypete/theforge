@@ -21,6 +21,40 @@ are the single source of truth for priorities, status, and story content.
 
 ---
 
+## Interactive Development Workflow
+
+All interactive dev work — whether by a human or Claude in an interactive session —
+**must follow this sequence without exception:**
+
+1. **Create a GitHub issue** describing the change (story format: WHAT + WHY, not HOW).
+   ```bash
+   gh issue create --title "..." --body "..."
+   ```
+
+2. **Create a worktree and branch** tied to that issue number.
+   ```bash
+   git worktree add .forge/worktrees/issue-<N> -b feat/issue-<N>
+   cd .forge/worktrees/issue-<N>
+   ```
+
+3. **Commit changes referencing the issue** so the audit trail is complete.
+   ```bash
+   git commit -m "fix: description (#<N>)"
+   ```
+   Every commit must reference the issue number. Do not commit directly to main.
+
+4. **Produce a handoff for Review** — run `make gate` and print the handoff here
+   in the CLI session (do not write it to a file unless explicitly asked).
+   ```bash
+   make gate   # runs tests + writes .forge/handoff.yaml
+   ```
+   The handoff is the exit artifact. Work is not done until it exists and tests pass.
+
+**None of these steps are optional.** Starting to code before the issue exists, or
+closing the session without a handoff, leaves work unreviewed and untracked.
+
+---
+
 ## Architecture
 
 **The coordinator (not an LLM) makes all process decisions.** Every state transition
