@@ -112,13 +112,21 @@ _DEFAULT_MAX_ITERATIONS = 50
 
 
 def _estimate_cost(
-    provider: str, model: str, input_tokens: int, output_tokens: int
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    *,
+    thinking_tokens: int = 0,
 ) -> float | None:
     """Estimate cost from pricing table; returns None if model unknown."""
     price = PRICING_TABLE.get((provider, model))
     if price is None:
         return None
-    return ((input_tokens / 1_000_000) * price[0]) + ((output_tokens / 1_000_000) * price[1])
+    billable_output_tokens = output_tokens + thinking_tokens
+    return ((input_tokens / 1_000_000) * price[0]) + (
+        (billable_output_tokens / 1_000_000) * price[1]
+    )
 
 
 # ── Provider-agnostic intermediate types ──────────────────────────────

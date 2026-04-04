@@ -14,6 +14,7 @@ def _make_profile(
     name: str = "test-reviewer",
     provider: str = "google",
     model: str = "gemini-2.5-flash",
+    thinking_budget: int | None = None,
 ) -> ModelProfile:
     return ModelProfile(
         name=name,
@@ -24,6 +25,7 @@ def _make_profile(
         timeout_seconds=300,
         allowed_tools=(),
         max_tool_output_bytes=51200,
+        thinking_budget=thinking_budget,
     )
 
 
@@ -51,11 +53,13 @@ def _make_response(
     finish_reason="STOP",
     input_tokens=100,
     output_tokens=50,
+    thinking_tokens=0,
 ):
     """Build a minimal fake Gemini response object."""
     usage = MagicMock()
     usage.prompt_token_count = input_tokens
     usage.candidates_token_count = output_tokens
+    usage.thoughts_token_count = thinking_tokens
 
     candidate = MagicMock()
     candidate.finish_reason = finish_reason
@@ -95,6 +99,76 @@ class TestRunGoogle:
         assert result.exit_code == 0
         assert result.output == valid_json
         assert result.structured_data is not None
+
+    def test_thinking_budget_applied_to_single_shot_config(self):
+        """Configured thinking_budget is forwarded to GenerateContentConfig."""
+        valid_json = (
+            '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
+            ' "story_compliance": {"matches_spec": true, "mismatches": []},'
+            ' "test_coverage": {"adequate": true, "gaps": []}}'
+        )
+        fake_response = _make_response(text=valid_json)
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(thinking_budget=2048)
+
+        with patch.dict(sys.modules, modules):
+            result = _run_google("test prompt", profile)
+
+        assert result.success
+        modules["google.genai.types"].ThinkingConfig.assert_called_once_with(thinking_budget=2048)
+        assert (
+            modules["google.genai.types"].GenerateContentConfig.call_args.kwargs["thinking_config"]
+            is modules["google.genai.types"].ThinkingConfig.return_value
+        )
+
+    def test_thinking_budget_zero_explicitly_disables_thinking(self):
+        """thinking_budget=0 is passed through instead of being treated as unset."""
+        valid_json = (
+            '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
+            ' "story_compliance": {"matches_spec": true, "mismatches": []},'
+            ' "test_coverage": {"adequate": true, "gaps": []}}'
+        )
+        fake_response = _make_response(text=valid_json)
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(thinking_budget=0)
+
+        with patch.dict(sys.modules, modules):
+            result = _run_google("test prompt", profile)
+
+        assert result.success
+        modules["google.genai.types"].ThinkingConfig.assert_called_once_with(thinking_budget=0)
+
+    def test_thinking_tokens_counted_in_cost_estimate(self):
+        """Gemini thinking tokens are billed at the output rate."""
+        valid_json = (
+            '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
+            ' "story_compliance": {"matches_spec": true, "mismatches": []},'
+            ' "test_coverage": {"adequate": true, "gaps": []}}'
+        )
+        fake_response = _make_response(
+            text=valid_json,
+            input_tokens=1_000_000,
+            output_tokens=500_000,
+            thinking_tokens=250_000,
+        )
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(model="gemini-2.5-flash")
+
+        with patch.dict(sys.modules, modules):
+            result = _run_google("test prompt", profile)
+
+        assert result.success
+        assert result.cost_usd == 0.30 + (0.75 * 2.50)
+        assert result.model_usage[0].thinking_tokens == 250_000
 
     def test_none_response_text_returns_clear_error(self):
         """response.text is None → clear error, not TypeError."""
@@ -262,6 +336,45 @@ class TestGoogleAdapter:
         assert len(turn.tool_calls) == 1
         assert turn.tool_calls[0].thought_signature == "sig-abc"
 
+    def test_thinking_budget_applied_to_tool_loop_config(self):
+        """Tool-use loop calls include ThinkingConfig when explicitly configured."""
+        fake_fc = MagicMock()
+        fake_fc.name = "submit_review"
+        fake_fc.args = {"verdict": "APPROVE"}
+        fake_fc.thought_signature = None
+
+        fake_part = MagicMock()
+        fake_part.thought = False
+        fake_part.function_call = fake_fc
+        fake_part.text = None
+
+        fake_candidate = MagicMock()
+        fake_candidate.content = MagicMock()
+        fake_candidate.content.parts = [fake_part]
+        fake_candidate.finish_reason = "STOP"
+
+        fake_response = MagicMock()
+        fake_response.candidates = [fake_candidate]
+        fake_response.usage_metadata = _make_response().usage_metadata
+        fake_response.prompt_feedback = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(thinking_budget=1024)
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "review please"}], [])
+
+        assert len(turn.tool_calls) == 1
+        modules["google.genai.types"].ThinkingConfig.assert_called_once_with(thinking_budget=1024)
+        assert (
+            modules["google.genai.types"].GenerateContentConfig.call_args.kwargs["thinking_config"]
+            is modules["google.genai.types"].ThinkingConfig.return_value
+        )
+
     def test_fc_args_none_parsed_as_empty_dict(self):
         """Google adapter with fc.args = None should produce arguments={}."""
         fake_fc = MagicMock()
@@ -295,6 +408,55 @@ class TestGoogleAdapter:
 
         assert len(turn.tool_calls) == 1
         assert turn.tool_calls[0].arguments == {}
+
+    def test_finalization_accumulates_usage_from_both_calls(self):
+        """Finalization branch preserves first-call Gemini usage in returned LoopTurn."""
+        prose_candidate = MagicMock()
+        prose_candidate.finish_reason = "STOP"
+        prose_candidate.content = MagicMock()
+        prose_part = MagicMock()
+        prose_part.text = "Here is my review in prose"
+        prose_part.function_call = None
+        prose_candidate.content.parts = [prose_part]
+
+        first_response = MagicMock()
+        first_response.candidates = [prose_candidate]
+        first_response.usage_metadata = _make_response(
+            input_tokens=300,
+            output_tokens=40,
+            thinking_tokens=20,
+        ).usage_metadata
+        first_response.prompt_feedback = None
+
+        final_json = (
+            '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
+            ' "story_compliance": {"matches_spec": true, "mismatches": []},'
+            ' "test_coverage": {"adequate": true, "gaps": []}}'
+        )
+        second_response = _make_response(
+            text=final_json,
+            input_tokens=310,
+            output_tokens=50,
+            thinking_tokens=30,
+        )
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.side_effect = [first_response, second_response]
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(model="gemini-2.5-flash")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "review please"}], [])
+
+        assert fake_client.models.generate_content.call_count == 2
+        assert turn.structured_data is not None
+        assert turn.usage is not None
+        assert turn.usage.input_tokens == 300 + 310
+        assert turn.usage.output_tokens == 40 + 50
+        assert turn.usage.thinking_tokens == 20 + 30
+        assert turn.usage.cost_usd == (610 / 1_000_000 * 0.30) + (140 / 1_000_000 * 2.50)
 
     def test_content_parts_none_yields_empty(self):
         """Google adapter with candidate.content.parts = None → no tool_calls, no text."""

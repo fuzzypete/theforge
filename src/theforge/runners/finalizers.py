@@ -281,7 +281,11 @@ def _make_google_finalizer(
     import google.genai as genai
     import google.genai.types as genai_types
 
-    from theforge.runners.adapters.google import _translate_messages_google
+    from theforge.runners.adapters.google import (
+        _make_google_generate_config,
+        _make_google_usage,
+        _translate_messages_google,
+    )
     from theforge.schemas import review_json_schema
 
     merged = {**os.environ, **(secrets or {})}
@@ -304,7 +308,9 @@ def _make_google_finalizer(
                 ],
             }
         )
-        config = genai_types.GenerateContentConfig(
+        config = _make_google_generate_config(
+            genai_types,
+            profile,
             temperature=0,
             response_mime_type="application/json",
             response_schema=finalize_schema,
@@ -322,17 +328,7 @@ def _make_google_finalizer(
             except json.JSONDecodeError:
                 pass
 
-        usage_meta = response.usage_metadata
-        usage: ModelUsage | None = None
-        if usage_meta:
-            usage = ModelUsage(
-                model=profile.model,
-                input_tokens=usage_meta.prompt_token_count or 0,
-                output_tokens=usage_meta.candidates_token_count or 0,
-                cache_read_tokens=getattr(usage_meta, "cached_content_token_count", 0) or 0,
-                cache_creation_tokens=0,
-                cost_usd=None,
-            )
+        usage = _make_google_usage(profile, response.usage_metadata)
 
         return LoopTurn(
             tool_calls=[],

@@ -49,6 +49,9 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
             else (API_PROVIDER_DEFAULT_TOOLS if effective_provider else base.allowed_tools)
         ),
         reasoning_effort=reasoning_effort,
+        thinking_budget=int(thinking_budget_raw)
+        if (thinking_budget_raw := data.get("thinking_budget", base.thinking_budget)) is not None
+        else None,
         base_url=data.get("base_url", base.base_url),
         max_iterations=int(max_iter_raw)
         if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
@@ -241,6 +244,9 @@ def _parse_profile(
         timeout_large_seconds=int(timeout_large_raw) if timeout_large_raw is not None else None,
         allowed_tools=allowed_tools_tuple,
         reasoning_effort=reasoning_effort,
+        thinking_budget=int(thinking_budget_raw)
+        if (thinking_budget_raw := data.get("thinking_budget")) is not None
+        else None,
         review_role=data.get("review_role"),
         base_url=data.get("base_url"),
         max_iterations=int(max_iter_raw)

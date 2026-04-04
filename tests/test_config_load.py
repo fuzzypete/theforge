@@ -926,6 +926,38 @@ class TestAllowedToolsConfig:
         assert overridden.provider is None
         assert overridden.allowed_tools == DEFAULT_REVIEW_PROFILE.allowed_tools
 
+    def test_parse_profile_reads_thinking_budget(self):
+        with (
+            patch.dict("os.environ", {"GOOGLE_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            profile = _parse_profile(
+                "gemini-reviewer",
+                {
+                    "provider": "google",
+                    "model": "gemini-2.5-pro",
+                    "thinking_budget": 2048,
+                },
+                role="review",
+            )
+
+        assert profile.thinking_budget == 2048
+
+    def test_apply_profile_overrides_preserves_explicit_zero_thinking_budget(self):
+        base = ModelProfile(
+            name="gemini-reviewer",
+            cli=None,
+            provider="google",
+            model="gemini-2.5-pro",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=API_PROVIDER_DEFAULT_TOOLS,
+        )
+
+        overridden = _apply_profile_overrides(base, {"thinking_budget": 0})
+
+        assert overridden.thinking_budget == 0
+
 
 class TestPlanModelNameDeprecation:
     def test_model_name_mapped_to_model(self, tmp_path):

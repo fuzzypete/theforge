@@ -64,6 +64,83 @@ def _check_google_response(
     return None
 
 
+def _make_google_generate_config(
+    genai_types: Any,
+    profile: "ModelProfile",
+    **kwargs: Any,
+) -> Any:
+    """Build GenerateContentConfig with optional ThinkingConfig."""
+    config_kwargs = dict(kwargs)
+    if profile.thinking_budget is not None:
+        config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
+            thinking_budget=profile.thinking_budget
+        )
+    return genai_types.GenerateContentConfig(**config_kwargs)
+
+
+def _google_thinking_tokens(usage: Any) -> int:
+    """Return Gemini thinking token usage when present."""
+    return getattr(usage, "thoughts_token_count", 0) or 0
+
+
+def _make_google_usage(profile: "ModelProfile", usage: Any) -> ModelUsage | None:
+    """Convert Gemini usage metadata to ModelUsage with thinking cost included."""
+    if not usage:
+        return None
+
+    input_tokens = usage.prompt_token_count or 0
+    output_tokens = usage.candidates_token_count or 0
+    thinking_tokens = _google_thinking_tokens(usage)
+    return ModelUsage(
+        model=profile.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=getattr(usage, "cached_content_token_count", 0) or 0,
+        cache_creation_tokens=0,
+        cost_usd=_estimate_cost(
+            "google",
+            profile.model,
+            input_tokens,
+            output_tokens,
+            thinking_tokens=thinking_tokens,
+        ),
+        thinking_tokens=thinking_tokens,
+    )
+
+
+def _merge_google_usage(
+    profile: "ModelProfile",
+    first: ModelUsage | None,
+    second: ModelUsage | None,
+) -> ModelUsage | None:
+    """Combine usage across multiple Gemini calls into one ModelUsage."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+
+    input_tokens = first.input_tokens + second.input_tokens
+    output_tokens = first.output_tokens + second.output_tokens
+    cache_read_tokens = first.cache_read_tokens + second.cache_read_tokens
+    cache_creation_tokens = first.cache_creation_tokens + second.cache_creation_tokens
+    thinking_tokens = first.thinking_tokens + second.thinking_tokens
+    return ModelUsage(
+        model=profile.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cost_usd=_estimate_cost(
+            "google",
+            profile.model,
+            input_tokens,
+            output_tokens,
+            thinking_tokens=thinking_tokens,
+        ),
+        thinking_tokens=thinking_tokens,
+    )
+
+
 def _run_google(
     prompt: str,
     profile: "ModelProfile",
@@ -82,10 +159,12 @@ def _run_google(
 
     try:
         if plain_text:
-            config = genai_types.GenerateContentConfig(temperature=0)
+            config = _make_google_generate_config(genai_types, profile, temperature=0)
         else:
             schema = _sanitize_schema_for_google(review_json_schema())
-            config = genai_types.GenerateContentConfig(
+            config = _make_google_generate_config(
+                genai_types,
+                profile,
                 response_mime_type="application/json",
                 response_schema=schema,
                 temperature=0,
@@ -100,6 +179,7 @@ def _run_google(
         usage = response.usage_metadata
         input_tokens = usage.prompt_token_count if usage else 0
         output_tokens = usage.candidates_token_count if usage else 0
+        thinking_tokens = _google_thinking_tokens(usage)
         output_text = response.text
 
         if not output_text:
@@ -125,6 +205,7 @@ def _run_google(
             retry_usage = retry_response.usage_metadata
             input_tokens += retry_usage.prompt_token_count if retry_usage else 0
             output_tokens += retry_usage.candidates_token_count if retry_usage else 0
+            thinking_tokens += _google_thinking_tokens(retry_usage)
             output_text = retry_response.text
 
             if not output_text:
@@ -147,9 +228,15 @@ def _run_google(
         if not plain_text:
             structured_data = json.loads(output_text)
 
-        cost = _estimate_cost("google", profile.model, input_tokens, output_tokens)
+        cost = _estimate_cost(
+            "google",
+            profile.model,
+            input_tokens,
+            output_tokens,
+            thinking_tokens=thinking_tokens,
+        )
         model_usage: ModelUsage | None = None
-        if input_tokens or output_tokens:
+        if input_tokens or output_tokens or thinking_tokens:
             model_usage = ModelUsage(
                 model=profile.model,
                 input_tokens=input_tokens,
@@ -157,6 +244,7 @@ def _run_google(
                 cache_read_tokens=0,
                 cache_creation_tokens=0,
                 cost_usd=cost,
+                thinking_tokens=thinking_tokens,
             )
 
         return AgentResult(
@@ -274,7 +362,9 @@ def _make_google_adapter(
                 ],
             }
         )
-        config = genai_types.GenerateContentConfig(
+        config = _make_google_generate_config(
+            genai_types,
+            profile,
             temperature=0,
             response_mime_type="application/json",
             response_schema=_finalize_schema,
@@ -292,17 +382,11 @@ def _make_google_adapter(
             except json.JSONDecodeError:
                 pass
 
-        usage_meta = response.usage_metadata
-        usage: ModelUsage | None = None
-        if usage_meta:
-            usage = ModelUsage(
-                model=profile.model,
-                input_tokens=usage_meta.prompt_token_count or 0,
-                output_tokens=usage_meta.candidates_token_count or 0,
-                cache_read_tokens=getattr(usage_meta, "cached_content_token_count", 0) or 0,
-                cache_creation_tokens=0,
-                cost_usd=None,
-            )
+        usage = _merge_google_usage(
+            profile,
+            usage_so_far,
+            _make_google_usage(profile, response.usage_metadata),
+        )
 
         return LoopTurn(
             tool_calls=[],
@@ -317,7 +401,9 @@ def _make_google_adapter(
         if tools:
             google_tools = [genai_types.Tool(function_declarations=tools)]
 
-        config = genai_types.GenerateContentConfig(
+        config = _make_google_generate_config(
+            genai_types,
+            profile,
             temperature=0,
             tools=google_tools,
         )
@@ -331,7 +417,7 @@ def _make_google_adapter(
         # If so, make a finalization call with response_schema to force
         # valid structured output.
         if _needs_finalization(response):
-            return _finalize(contents, None)
+            return _finalize(contents, _make_google_usage(profile, response.usage_metadata))
 
         tool_calls: list[ToolCallRequest] = []
         text_parts: list[str] = []
@@ -382,17 +468,7 @@ def _make_google_adapter(
                         _log_verbose(f"  ⚠ Gemini adapter: empty response with finish_reason={fr}")
                         break
 
-        usage_meta = response.usage_metadata
-        usage: ModelUsage | None = None
-        if usage_meta:
-            usage = ModelUsage(
-                model=profile.model,
-                input_tokens=usage_meta.prompt_token_count or 0,
-                output_tokens=usage_meta.candidates_token_count or 0,
-                cache_read_tokens=getattr(usage_meta, "cached_content_token_count", 0) or 0,
-                cache_creation_tokens=0,
-                cost_usd=None,
-            )
+        usage = _make_google_usage(profile, response.usage_metadata)
 
         text = "\n".join(text_parts) or None
         return LoopTurn(
