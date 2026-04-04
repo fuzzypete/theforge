@@ -133,6 +133,16 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - New runner behaviour → `tests/test_runner_*.py`
 - Mock subprocess; never invoke real agent CLIs in tests
 
+## Cutting a Release
+
+The full release process is documented in [`RELEASING.md`](RELEASING.md). Do not
+cut a release without reading it. Key points:
+
+- Update `CHANGELOG.md` (`[Unreleased]` → `[X.Y.Z] — date`)
+- Bump `pyproject.toml` version to match the tag
+- Tag and push **before** bumping back to `X.Y.Z+1.dev0`
+- Hotfixes branch from `release/vX.Y`, not `main`
+
 ## What NOT to do
 
 - Do NOT have the coordinator call an LLM for routing decisions
