@@ -3,7 +3,7 @@
 [![CI](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml/badge.svg)](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.3.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-orange)](CHANGELOG.md)
 
 **Deterministic multi-LLM development orchestrator.**
 
@@ -16,6 +16,14 @@ and isolated in a git worktree until you decide to merge.
 - Validation and review act as mechanical gates
 - Work happens on feature branches in managed worktrees
 - Logs, audits, and review output make every run inspectable
+
+## What's new in v0.4.0
+
+- **Gemini thinking mode** — set `thinking_budget` on a Gemini API profile to enable extended reasoning
+- **Paperless sprints** — `forge sprint --milestone "v0.4.0" --budget 50` pulls stories directly from GitHub; no local manifest required
+- **`on_approve: merge-pr`** — auto-merges approved branches via PR with a full audit trail
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ## Why TheForge
 

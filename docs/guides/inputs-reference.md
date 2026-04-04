@@ -66,7 +66,9 @@ background, not as requirements.
 
 ## Sprint manifest (`sprints/*.yaml`)
 
-Bundles multiple stories into a sequential run with shared budget.
+Bundles multiple stories into a sequential run with shared budget. You can also
+run sprints without a manifest using `forge sprint --milestone` or `--label`
+(see [CLI Reference](cli-reference.md#forge-sprint)).
 
 ### Template
 
@@ -74,11 +76,14 @@ Bundles multiple stories into a sequential run with shared budget.
 name: "Sprint Name — brief description"
 budget_usd: 50
 auto_merge: true    # optional: merge each APPROVED story automatically
-specs:
-  - stories/story-one.md
+stories:
+  - stories/story-one.md           # local story file
   - stories/story-two.md
-  - stories/story-three.md
+  - {issue: 123}                   # pull from GitHub issue #123
+  - {issue: 124, slug: my-feature, depends_on: [story-one]}
 ```
+
+> **Note:** `specs:` is a deprecated alias for `stories:` and still works.
 
 ### Fields
 
@@ -87,7 +92,17 @@ specs:
 | `name` | Yes | — | Human-readable sprint name |
 | `budget_usd` | Yes | — | Total budget ceiling across all stories |
 | `auto_merge` | No | `false` | Auto-merge approved stories to main |
-| `specs` | Yes | — | Ordered list of spec file paths (relative to project root) |
+| `stories` | Yes | — | Ordered list of stories — local file paths or `{issue: N}` dicts |
+
+### Story entry formats
+
+| Format | Description |
+|--------|-------------|
+| `stories/my-feature.md` | Local story file (path relative to project root) |
+| `{issue: 123}` | Pull story body from GitHub issue #123 |
+| `{issue: 123, slug: my-slug}` | Override the slug derived from the issue title |
+| `{issue: 123, depends_on: [other-slug]}` | Declare a dependency on another story in the sprint |
+| `{issue: 123, pytest_target: tests/test_foo.py}` | Override the pytest target for this story |
 
 ### Behavior
 
@@ -149,6 +164,10 @@ workspace:
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "forge/{slug}"
   base_branch: "main"                 # default: "main"
+  on_approve: "none"                  # "none" | "merge" | "pr" | "merge-pr"
+  merge_strategy: "squash"            # "squash" | "merge" | "rebase" (used by merge-pr)
+  pr_labels: []                       # labels applied when on_approve is "pr" or "merge-pr"
+  pr_draft: false                     # create PR as draft when on_approve is "pr"
 
 # ── Validation gate ────────────────────────────────────────
 validation:
@@ -212,6 +231,14 @@ profiles:
       timeout_seconds: 300
       max_iterations: 50
       allowed_tools: [Read, Bash, Glob, Grep]
+
+    - name: gemini-reviewer      # Gemini with extended thinking enabled
+      provider: google
+      model: gemini-2.5-flash
+      review_role: edge-cases
+      thinking_budget: 2048      # optional: enables Gemini thinking mode (token budget)
+      budget_usd: 1.00
+      timeout_seconds: 300
 
     - name: local-reviewer       # Local model via Ollama/vLLM/LM Studio
       provider: openai

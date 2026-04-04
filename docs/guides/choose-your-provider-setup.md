@@ -127,6 +127,7 @@ profiles:
       provider: google              # API mode
       model: gemini-2.5-flash
       review_role: edge-cases       # edge cases, error handling
+      thinking_budget: 2048         # optional: enables Gemini extended reasoning
       budget_usd: 1.00
       timeout_seconds: 300
 ```
