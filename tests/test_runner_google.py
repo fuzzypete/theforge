@@ -409,6 +409,55 @@ class TestGoogleAdapter:
         assert len(turn.tool_calls) == 1
         assert turn.tool_calls[0].arguments == {}
 
+    def test_finalization_accumulates_usage_from_both_calls(self):
+        """Finalization branch preserves first-call Gemini usage in returned LoopTurn."""
+        prose_candidate = MagicMock()
+        prose_candidate.finish_reason = "STOP"
+        prose_candidate.content = MagicMock()
+        prose_part = MagicMock()
+        prose_part.text = "Here is my review in prose"
+        prose_part.function_call = None
+        prose_candidate.content.parts = [prose_part]
+
+        first_response = MagicMock()
+        first_response.candidates = [prose_candidate]
+        first_response.usage_metadata = _make_response(
+            input_tokens=300,
+            output_tokens=40,
+            thinking_tokens=20,
+        ).usage_metadata
+        first_response.prompt_feedback = None
+
+        final_json = (
+            '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
+            ' "story_compliance": {"matches_spec": true, "mismatches": []},'
+            ' "test_coverage": {"adequate": true, "gaps": []}}'
+        )
+        second_response = _make_response(
+            text=final_json,
+            input_tokens=310,
+            output_tokens=50,
+            thinking_tokens=30,
+        )
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.side_effect = [first_response, second_response]
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(model="gemini-2.5-flash")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "review please"}], [])
+
+        assert fake_client.models.generate_content.call_count == 2
+        assert turn.structured_data is not None
+        assert turn.usage is not None
+        assert turn.usage.input_tokens == 300 + 310
+        assert turn.usage.output_tokens == 40 + 50
+        assert turn.usage.thinking_tokens == 20 + 30
+        assert turn.usage.cost_usd == (610 / 1_000_000 * 0.30) + (140 / 1_000_000 * 2.50)
+
     def test_content_parts_none_yields_empty(self):
         """Google adapter with candidate.content.parts = None → no tool_calls, no text."""
         fake_candidate = MagicMock()

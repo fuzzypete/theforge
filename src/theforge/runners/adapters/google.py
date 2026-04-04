@@ -108,6 +108,39 @@ def _make_google_usage(profile: "ModelProfile", usage: Any) -> ModelUsage | None
     )
 
 
+def _merge_google_usage(
+    profile: "ModelProfile",
+    first: ModelUsage | None,
+    second: ModelUsage | None,
+) -> ModelUsage | None:
+    """Combine usage across multiple Gemini calls into one ModelUsage."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+
+    input_tokens = first.input_tokens + second.input_tokens
+    output_tokens = first.output_tokens + second.output_tokens
+    cache_read_tokens = first.cache_read_tokens + second.cache_read_tokens
+    cache_creation_tokens = first.cache_creation_tokens + second.cache_creation_tokens
+    thinking_tokens = first.thinking_tokens + second.thinking_tokens
+    return ModelUsage(
+        model=profile.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cost_usd=_estimate_cost(
+            "google",
+            profile.model,
+            input_tokens,
+            output_tokens,
+            thinking_tokens=thinking_tokens,
+        ),
+        thinking_tokens=thinking_tokens,
+    )
+
+
 def _run_google(
     prompt: str,
     profile: "ModelProfile",
@@ -349,7 +382,11 @@ def _make_google_adapter(
             except json.JSONDecodeError:
                 pass
 
-        usage = _make_google_usage(profile, response.usage_metadata)
+        usage = _merge_google_usage(
+            profile,
+            usage_so_far,
+            _make_google_usage(profile, response.usage_metadata),
+        )
 
         return LoopTurn(
             tool_calls=[],
@@ -380,7 +417,7 @@ def _make_google_adapter(
         # If so, make a finalization call with response_schema to force
         # valid structured output.
         if _needs_finalization(response):
-            return _finalize(contents, None)
+            return _finalize(contents, _make_google_usage(profile, response.usage_metadata))
 
         tool_calls: list[ToolCallRequest] = []
         text_parts: list[str] = []
