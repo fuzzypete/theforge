@@ -5,6 +5,33 @@ All notable changes to TheForge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Paperless sprints:** `forge sprint` pulls stories directly from GitHub
+  issues via milestone or label query — no local manifest files required (#253)
+- **Sprint query mode:** deferred merge behavior for GH-sourced sprints (#364)
+- **on_approve: merge-pr:** auto-merge approved branches with PR audit trail (#159)
+- **Story source abstraction:** specs from GitHub issues, local files, or
+  external trackers (#165)
+
+### Changed
+
+- **Plan review corroboration:** single-reviewer P1 findings downgraded to
+  reduce false-positive churn (#249)
+- **Plan regen trajectory focus:** dominant theme filtering for more coherent
+  plan regeneration (#250)
+
+### Fixed
+
+- **Gemini adapter hardening:** handle empty responses, thought_signature
+  errors, and blocked content gracefully (#251)
+- **AC-violation gate:** net_new_pass no longer overrides P1s that violate
+  acceptance criteria (#278)
+- **Sprint pre-pull race:** pull base branch once before parallel workers to
+  avoid ref contention (#470)
+
 ## [0.3.0] — 2026-04-01
 
 ### Added
