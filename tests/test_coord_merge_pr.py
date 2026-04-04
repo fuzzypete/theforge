@@ -309,8 +309,8 @@ class TestMergePrFunction:
 
         assert any("--rebase" in c for c in gh_calls)
 
-    def test_delete_branch_always_passed(self, tmp_path: Path) -> None:
-        """gh pr merge always includes --delete-branch."""
+    def test_delete_branch_not_passed_to_gh(self, tmp_path: Path) -> None:
+        """gh pr merge avoids local cleanup flags that trip worktree constraints."""
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
@@ -341,7 +341,41 @@ class TestMergePrFunction:
         ):
             _merge_pr(config, task, "forge/test-task", review, state)
 
-        assert any("--delete-branch" in c for c in gh_calls)
+        assert gh_calls
+        assert all("--delete-branch" not in c for c in gh_calls)
+
+    def test_gh_merge_runs_from_project_root_not_worktree(self, tmp_path: Path) -> None:
+        """gh pr merge should run from repo root so it avoids worktree checkout conflicts."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        merge_cwds: list[Path] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                merge_cwds.append(Path(kwargs["cwd"]))
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/4",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert merge_cwds == [tmp_path]
 
     def test_rebase_abort_called_on_conflict(self, tmp_path: Path) -> None:
         """When rebase fails, git rebase --abort is called."""
@@ -982,3 +1016,42 @@ class TestFastForwardAfterMerge:
         ff_cmds = [c for c in ff_calls if "--ff-only" in c]
         assert len(fetch_cmds) >= 1
         assert len(ff_cmds) >= 1
+
+    def test_cleanup_commands_called_after_successful_merge(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        cleanup_calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and (
+                cmd[:4] == ["git", "worktree", "remove", "--force"]
+                or cmd[:3] == ["git", "branch", "-D"]
+                or cmd[:4] == ["git", "push", "origin", "--delete"]
+            ):
+                cleanup_calls.append(cmd)
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/x/y/pull/8",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["merged"] is True
+        assert any(cmd[:4] == ["git", "worktree", "remove", "--force"] for cmd in cleanup_calls)
+        assert any(cmd[:3] == ["git", "branch", "-D"] for cmd in cleanup_calls)
+        assert any(cmd[:4] == ["git", "push", "origin", "--delete"] for cmd in cleanup_calls)

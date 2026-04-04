@@ -209,8 +209,9 @@ def _merge_pr(
     1. Fetch + rebase onto latest origin/{base_branch} (escalate on conflict).
     2. Force-push rebased branch so _create_pr's push is a fast-forward.
     3. Call _create_pr() to archive story, push, and open the PR.
-    4. Merge via `gh pr merge --{strategy} --delete-branch`.
-    5. Fast-forward local base_branch to include the merged commit.
+    4. Merge via `gh pr merge --{strategy}` from the project root.
+    5. Best-effort local cleanup: fast-forward local base_branch, remove the
+       feature worktree, and delete the feature branch locally and remotely.
 
     Returns a result dict with keys: action, pr_url, merged, success, error.
     Never raises.
@@ -229,6 +230,59 @@ def _merge_pr(
             "success": False,
             "error": error,
         }
+
+    def _cleanup_after_merge() -> None:
+        """Best-effort local cleanup after a successful remote PR merge."""
+        try:
+            subprocess.run(
+                ["git", "fetch", "origin"],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=60,
+            )
+            subprocess.run(
+                ["git", "merge", "--ff-only", f"origin/{base_branch}"],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=30,
+            )
+        except Exception as exc:
+            _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
+
+        try:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree_path)],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=30,
+            )
+        except Exception as exc:
+            _pr_log.warning("worktree cleanup failed (non-fatal): %s", exc)
+
+        try:
+            subprocess.run(
+                ["git", "branch", "-D", branch_name],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=30,
+            )
+        except Exception as exc:
+            _pr_log.warning("local branch cleanup failed (non-fatal): %s", exc)
+
+        try:
+            subprocess.run(
+                ["git", "push", "origin", "--delete", branch_name],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=60,
+            )
+        except Exception as exc:
+            _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
 
     # Step 1: fetch + rebase onto latest base_branch
     try:
@@ -291,13 +345,14 @@ def _merge_pr(
         )
     pr_url = pr_result["pr_url"]
 
-    # Step 4: merge the PR
+    # Step 4: merge the PR remotely from the repo root. Running gh from the
+    # feature worktree can trip worktree branch checkout constraints.
     try:
         merge_proc = subprocess.run(
-            ["gh", "pr", "merge", pr_url, f"--{merge_strategy}", "--delete-branch"],
+            ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
             capture_output=True,
             text=True,
-            cwd=str(push_cwd),
+            cwd=str(config.project_root),
             timeout=120,
         )
         if merge_proc.returncode != 0:
@@ -310,22 +365,8 @@ def _merge_pr(
 
     _log(f"  ✓ PR merged: {pr_url}")
 
-    # Step 5: fast-forward local base_branch to include the merged commit
-    try:
-        subprocess.run(
-            ["git", "fetch", "origin"],
-            capture_output=True,
-            cwd=str(config.project_root),
-            timeout=60,
-        )
-        subprocess.run(
-            ["git", "merge", "--ff-only", f"origin/{base_branch}"],
-            capture_output=True,
-            cwd=str(config.project_root),
-            timeout=30,
-        )
-    except Exception as exc:
-        _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
+    # Step 5: sync local state and clean up the merged feature worktree/branch.
+    _cleanup_after_merge()
 
     return {
         "action": "merge-pr",
