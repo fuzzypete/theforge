@@ -9,8 +9,8 @@ conventions for any Claude agent working in this codebase.
 
 To understand what's in progress and what's next, run:
 ```bash
-gh milestone list                              # see milestones M1-M4
-gh issue list --milestone "M1: Stop bleeding money"  # current priority
+gh milestone list                              # see milestones
+gh issue list --milestone "v0.5.0"             # current priority
 gh project item-list 1 --owner fuzzypete       # full project board
 ```
 
@@ -30,13 +30,15 @@ validates boundaries mechanically.
 State machine: `INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
 
 Key modules:
-- `src/theforge/coordinator.py` — state machine, the heart of the system
-- `src/theforge/runner.py` — subprocess invocation of agent CLIs
-- `src/theforge/config.py` — forge.yaml parsing and model profiles
-- `src/theforge/task.py` — prompt builders (dev + review)
-- `src/theforge/review.py` — YAML review output parsing
+- `src/theforge/coordinator/engine.py` — state machine, the heart of the system
+- `src/theforge/coordinator/` — all coordinator phases (dev_phase, review_phase, validate_phase, plan_flow, preflight_flow, workspace, etc.)
+- `src/theforge/runners/` — API and CLI agent runners; adapters per provider
+- `src/theforge/config/` — forge.yaml parsing and model profiles
+- `src/theforge/task/` — prompt builders (dev, review, plan, preflight)
+- `src/theforge/review.py` — review output parsing
 - `src/theforge/schemas.py` — review schema validation
-- `src/theforge/cli.py` — `forge` CLI entry point
+- `src/theforge/cli/main.py` — `forge` CLI entry point
+- `src/theforge/sprint/` — sprint lifecycle, DAG scheduler, GitHub query
 
 ## Key Commands
 
@@ -46,6 +48,29 @@ make lint       # ruff check + ruff format --check (no auto-fix)
 make test       # pytest tests/ -v
 make gate       # run tests + write handoff.yaml
 ```
+
+## Pipeline Phases
+
+### Preflight is a reasoning task, not a cheap classifier
+
+Preflight looks like a classifier (structured YAML output, one-shot call) but the
+work is heavy. It must:
+
+1. **Read the codebase** and verify every acceptance criterion against actual code
+   to determine PROCEED / ALREADY_DONE / BLOCKED
+2. **Assess complexity** (small/medium/large) — this drives adaptive model selection
+   for all downstream phases
+3. **Classify sufficiency** (implementation_ready/needs_planning) — controls whether
+   the plan phase runs at all
+4. **Classify work type** (feature/refactor/mechanical/bug) — feeds prompt construction
+5. **Drive adaptive assignment** — complexity feeds `assign_models()` which picks
+   agent tiers, escalation history, reviewer pool selection
+
+A wrong ALREADY_DONE wastes a correct implementation. A wrong PROCEED on finished
+work burns $20+ on dev+review for nothing. A wrong complexity classification puts
+the wrong model on the job. **Do not suggest replacing preflight with a cheap/fast
+model.** The current DeepSeek-reasoner config is intentional — $0.30 for a careful
+classification that controls $20-50 of downstream spend is correct.
 
 ## Conventions
 
@@ -101,8 +126,8 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 ## Testing
 
 - All tests must pass before committing
-- New coordinator behaviour → test in `tests/test_coordinator.py`
-- New runner behaviour → test in `tests/test_runner.py`
+- New coordinator behaviour → add a `tests/test_coord_*.py` file matching the phase
+- New runner behaviour → `tests/test_runner_*.py`
 - Mock subprocess; never invoke real agent CLIs in tests
 
 ## What NOT to do
@@ -111,3 +136,4 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - Do NOT merge to main without a PASS gate + review APPROVE
 - Do NOT skip `make fmt` before committing
 - Do NOT relax schema validation to make tests pass
+- Do NOT suggest replacing preflight with a cheap/fast model — it is load-bearing

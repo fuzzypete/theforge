@@ -33,6 +33,29 @@ make test       # pytest tests/ -v
 make gate       # run tests + write handoff.yaml
 ```
 
+## Pipeline Phases
+
+### Preflight is a reasoning task, not a cheap classifier
+
+Preflight looks like a classifier (structured YAML output, one-shot call) but the
+work is heavy. It must:
+
+1. **Read the codebase** and verify every acceptance criterion against actual code
+   to determine PROCEED / ALREADY_DONE / BLOCKED
+2. **Assess complexity** (small/medium/large) — this drives adaptive model selection
+   for all downstream phases
+3. **Classify sufficiency** (implementation_ready/needs_planning) — controls whether
+   the plan phase runs at all
+4. **Classify work type** (feature/refactor/mechanical/bug) — feeds prompt construction
+5. **Drive adaptive assignment** — complexity feeds `assign_models()` which picks
+   agent tiers, escalation history, reviewer pool selection
+
+A wrong ALREADY_DONE wastes a correct implementation. A wrong PROCEED on finished
+work burns $20+ on dev+review for nothing. A wrong complexity classification puts
+the wrong model on the job. **Do not suggest replacing preflight with a cheap/fast
+model.** The current DeepSeek-reasoner config is intentional — $0.30 for a careful
+classification that controls $20-50 of downstream spend is correct.
+
 ## Conventions
 
 ### No LLM in the loop for process decisions
@@ -83,3 +106,4 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - Do NOT merge to main without a PASS gate + review APPROVE
 - Do NOT skip `make fmt` before committing
 - Do NOT relax schema validation to make tests pass
+- Do NOT suggest replacing preflight with a cheap/fast model — it is load-bearing
