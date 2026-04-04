@@ -137,3 +137,4 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - Do NOT skip `make fmt` before committing
 - Do NOT relax schema validation to make tests pass
 - Do NOT suggest replacing preflight with a cheap/fast model — it is load-bearing
+- Do NOT modify CLAUDE.md or AGENTS.md unless the story explicitly requires it
