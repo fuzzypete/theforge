@@ -84,20 +84,19 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: gemini-plan-reviewer-solo
-      provider: google
-      model: gemini-3.1-pro-preview
+    - name: deepseek-plan-reviewer
+      provider: deepseek
+      model: deepseek-reasoner
       budget_usd: 0.50
       timeout_seconds: 300
-      thinking_budget: 4096
-      max_iterations: 10
+      max_iterations: 30
     - name: gemini-plan-reviewer
       provider: google
       model: gemini-3.1-pro-preview
       budget_usd: 0.50
       timeout_seconds: 300
       thinking_budget: 4096
-      max_iterations: 10
+      max_iterations: 20
 
 smart_config_models:
   - deepseek/deepseek-reasoner
