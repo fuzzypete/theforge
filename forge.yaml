@@ -52,7 +52,7 @@ profiles:
       model: gpt-5.4
       review_role: correctness
       budget_usd: 5.00
-      timeout_seconds: 300
+      timeout_seconds: 600
       reasoning_effort: high
       max_iterations: 20
     - name: claude-reviewer
