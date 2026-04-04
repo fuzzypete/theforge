@@ -18,6 +18,7 @@ from .notify import _escalate_notify
 from .review_context import _get_handoff_content, _get_raw_dev_notes
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _log, _log_phase, _log_verbose
+from .workspace import _deindex_forge_artifacts
 
 
 class _ValidateOutcome(Enum):
@@ -118,6 +119,9 @@ def _run_validate_phase(
                 _log(f"  ⚠ Pre-validate command failed (non-fatal): {pv_out[:200]}")
             else:
                 _log_verbose(f"Pre-validate output: {pv_out[:200]}")
+        # Defensive scrub: if an agent force-added .forge artifacts, remove them
+        # from the index before dirty-worktree detection and any auto-commit.
+        _deindex_forge_artifacts(workspace_path)
         dirty_ok, dirty_out = _cu._run_shell("git status --porcelain", workspace_path)
         if dirty_ok and dirty_out.strip():
             handoff_file = config.validation.handoff_file

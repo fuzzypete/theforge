@@ -39,6 +39,13 @@ def _log(msg: str) -> None:
     print(f"[sprint] {msg}", file=sys.stderr, flush=True)
 
 
+def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
+    """Best-effort: remove tracked .forge artifacts from the project-root index."""
+    from ..coordinator.workspace import _deindex_forge_artifacts  # noqa: PLC0415
+
+    _deindex_forge_artifacts(config.project_root)
+
+
 def _read_prior_sprint_cost(project_root: Path) -> float:
     """Read total_cost_usd from the prior sprint-audit.yaml, if it exists."""
     audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
@@ -440,6 +447,9 @@ def run_sprint(
             stories=_task_entries,
             max_parallel=_manifest.max_parallel,
         )
+
+    # Defensive scrub for the root checkout used by sprint commands.
+    _scrub_root_forge_artifacts(config)
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
