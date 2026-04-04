@@ -283,15 +283,11 @@ def _translate_messages_google(messages: list[dict]) -> list[dict]:
             text = msg.get("content")
             if text:
                 parts.append({"text": text})
-            # -customtools models require the thought Part (with thought_signature)
-            # to be re-emitted as a separate Part immediately before each function_call
-            # that carries one. Embedding thought_signature inside the function_call
-            # dict is rejected with 400 INVALID_ARGUMENT. Each call may have its own
-            # distinct signature, so emit per-call rather than once for the whole turn.
             for c in calls:
+                fc_part: dict = {"name": c.name, "args": c.arguments}
                 if c.thought_signature:
-                    parts.append({"thought": True, "thought_signature": c.thought_signature})
-                parts.append({"function_call": {"name": c.name, "args": c.arguments}})
+                    fc_part["thought_signature"] = c.thought_signature
+                parts.append({"function_call": fc_part})
             result.append({"role": "model", "parts": parts or [{"text": ""}]})
         elif role == "tool_results":
             parts = [
