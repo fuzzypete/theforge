@@ -178,7 +178,11 @@ def assign_dependency_batches_with_satisfied(
     normalized_tasks = [
         replace(
             task,
-            depends_on=[dep_slug for dep_slug in task.depends_on if dep_slug in known_slugs],
+            depends_on=[
+                dep_slug
+                for dep_slug in task.depends_on
+                if dep_slug in known_slugs or dep_slug in satisfied
+            ],
         )
         for task in tasks
     ]
