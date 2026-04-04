@@ -1,28 +1,34 @@
-dev_notes: |
-  summary: "Implemented GitHub blocker inference for sprint query mode by extending issue-backed TaskStory objects with inferred dependency provenance, fetching blocker relationships from the GitHub timeline with a blocked-by body-pattern fallback, merging inferred blockers with any manifest overrides, surfacing dependency-aware dry-run batches, and recording dependency provenance in sprint audit YAML. Added regression coverage for issue fetch inference, dependency batch planning, audit provenance, and query-mode dry-run output; verified with make fmt, make lint, and the full pytest gate."
-  commits:
-    - sha: "13a54bc"
-      message: "summary: \"Implemented GitHub blocker inference for sprint query mode by"
-  acceptance_criteria:
-    - criterion: "When issue B is 'blocked by' issue A in GitHub, `forge sprint --milestone` treats B as `depends_on: [issue-A]`"
-      status: MET
-      notes: "GitHubIssueSource now infers blocker slugs as `issue-NNN` from timeline metadata with a blocked-by body fallback, and build_resolved_sprint carries those into query-mode stories."
-    - criterion: "With `--parallel N`, A and B never run concurrently; B starts only after A completes and merges"
-      status: MET
-      notes: "No scheduler changes were needed; inferred `depends_on` now feeds the existing DAG, and tests cover dependency batch planning plus dependency-gated sprint execution."
-    - criterion: "Stories with no blocker relationships are treated as independent (no change to current behavior)"
-      status: MET
-      notes: "Issues without inferred blockers keep empty dependency lists, and existing independent-story behavior remains unchanged."
-    - criterion: "`--dry-run` output reflects the dependency-aware ordering"
-      status: MET
-      notes: "Query-mode dry-run now resolves issue bodies, computes deterministic dependency-aware batches, and prints each issue with its batch and resolved deps."
-    - criterion: "Sprint audit YAML includes `inferred_dependencies` showing which depends_on came from GH blockers vs manifest"
-      status: MET
-      notes: "Sprint audit entries now include `depends_on` plus `inferred_dependencies.manifest` and `inferred_dependencies.github_blockers` derived from each TaskStory."
-    - criterion: "No change to behavior when `--parallel` is not set (sequential is already correct)"
-      status: MET
-      notes: "Sequential behavior is preserved; query mode still defaults to sequential unless `--parallel` is explicitly set."
-  story_deviations: none
-  deferred_items: none
-  gate_result: PASS
+dev_notes: "summary: \"Aligned sprint query dry-run dependency analysis with runtime\
+  \ semantics by preserving unresolved out-of-sprint blockers as blocked and only\
+  \ treating external slugs as satisfied when they are explicitly satisfied or already\
+  \ merged. Added dedicated CLI dry-run regression coverage for unresolved external\
+  \ blockers, and moved those tests out of the oversized CLI test module to restore\
+  \ the file-size convention.\"\ncommits:\n  - sha: \"13a54bc\"\n    message: \"summary:\
+  \ \\\"Implemented GitHub blocker inference for sprint query mode by\"\n  - sha:\
+  \ \"66b3ef1\"\n    message: \"fix(issue-294): rewrite dev handoff to match schema\"\
+  \n  - sha: \"adc63c0\"\n    message: \"fix(sprint): address review findings (iter\
+  \ 1)\"\n  - sha: \"b339ca2\"\n    message: \"fix(sprint): address review findings\
+  \ (iter 1)\"\n  - sha: \"36b6f08\"\n    message: \"fix(sprint): align dry-run blocker\
+  \ handling\"\nacceptance_criteria:\n  - criterion: \"When issue B is \\\"blocked\
+  \ by\\\" issue A in GitHub, `forge sprint --milestone` treats B as `depends_on:\
+  \ [issue-A]`\"\n    status: MET\n    notes: \"GitHub blocker inference remains wired\
+  \ through `GitHubIssueSource.fetch()` and produces `issue-NNN` slugs in `TaskStory.depends_on`.\"\
+  \n  - criterion: \"With `--parallel N`, A and B never run concurrently; B starts\
+  \ only after A completes and merges\"\n    status: MET\n    notes: \"Runtime already\
+  \ enforced this through the sprint DAG; the dry-run helper now uses the same satisfied\
+  \ external dependency rule instead of implicitly clearing unresolved out-of-sprint\
+  \ blockers.\"\n  - criterion: \"Stories with no blocker relationships are treated\
+  \ as independent (no change to current behavior)\"\n    status: MET\n    notes:\
+  \ \"Independent stories still batch as before; regression coverage continues to\
+  \ show unaffected parallel frontiers.\"\n  - criterion: \"`--dry-run` output reflects\
+  \ the dependency-aware ordering\"\n    status: MET\n    notes: \"Dry-run now reports\
+  \ unresolved external blockers as `blocked=[...]` instead of assigning them an executable\
+  \ batch, matching runtime constraints.\"\n  - criterion: \"Sprint audit YAML includes\
+  \ `inferred_dependencies` showing which depends_on came from GH blockers vs manifest\"\
+  \n    status: MET\n    notes: \"Audit output remains unchanged and continues to\
+  \ split manifest dependencies from GitHub-inferred blockers.\"\n  - criterion: \"\
+  No change to behavior when `--parallel` is not set (sequential is already correct)\"\
+  \n    status: MET\n    notes: \"Sequential mode behavior is unchanged; the fix only\
+  \ tightens dry-run dependency normalization and associated tests.\"\nstory_deviations:\
+  \ none\ndeferred_items: none\ngate_result: PASS\n"
 gate_decision: PASS
