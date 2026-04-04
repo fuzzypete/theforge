@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import os
 from pathlib import Path
 
 
@@ -12,6 +13,31 @@ class SprintConflictError(Exception):
     def __init__(self, conflicting_slugs: list[str]) -> None:
         self.conflicting_slugs = conflicting_slugs
         super().__init__(f"Stories already running: {', '.join(conflicting_slugs)}")
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Return True when *pid* refers to a running process."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def _read_lock_pid(fd) -> int | None:
+    """Return the lock owner PID from the file, if present and valid."""
+    fd.seek(0)
+    raw_pid = fd.read().strip()
+    if not raw_pid:
+        return None
+    try:
+        return int(raw_pid)
+    except ValueError:
+        return None
 
 
 def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, list[str]]:
@@ -36,12 +62,35 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
 
     for slug in slugs:
         lock_path = lock_dir / f"{slug}.lock"
-        fd = open(lock_path, "w")  # noqa: WPS515,SIM115
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            locked_fds.append(fd)
-        except BlockingIOError:
-            fd.close()
+        acquired_fd = None
+
+        for _attempt in range(3):
+            fd = open(lock_path, "a+")  # noqa: WPS515,SIM115
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fd.truncate(0)
+                fd.seek(0)
+                fd.write(str(os.getpid()))
+                fd.flush()
+                acquired_fd = fd
+                break
+            except BlockingIOError:
+                owner_pid = _read_lock_pid(fd)
+                fd.close()
+                if owner_pid is None or _is_pid_alive(owner_pid):
+                    conflicted.append(slug)
+                    break
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    conflicted.append(slug)
+                    break
+
+        if acquired_fd is not None:
+            locked_fds.append(acquired_fd)
+        elif slug not in conflicted:
             conflicted.append(slug)
 
     if conflicted:

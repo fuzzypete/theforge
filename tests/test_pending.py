@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import threading
 import time
+from unittest.mock import patch
 
 import yaml
 
@@ -68,6 +69,47 @@ def test_read_pending_returns_data(tmp_path):
     data = pending.read_pending("r1", project_root=tmp_path)
     assert data is not None
     assert data["run_id"] == "r1"
+
+
+def test_read_pending_cleans_dead_pid_file(tmp_path):
+    path = pending.write_pending(
+        run_id="dead-pid",
+        story="s",
+        phase="ESCALATE",
+        reason="r",
+        options=["approve"],
+        timeout_seconds=30,
+        project_root=tmp_path,
+    )
+
+    with patch("theforge.pending.os.kill", side_effect=ProcessLookupError):
+        data = pending.read_pending("dead-pid", project_root=tmp_path)
+
+    assert data is None
+    assert not path.exists()
+
+
+def test_read_pending_cleans_legacy_file_without_pid(tmp_path):
+    pending_dir = tmp_path / ".forge" / "pending"
+    pending_dir.mkdir(parents=True)
+    path = pending_dir / "legacy.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "legacy",
+                "story": "s",
+                "phase": "ESCALATE",
+                "reason": "r",
+                "options": ["approve"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    data = pending.read_pending("legacy", project_root=tmp_path)
+
+    assert data is None
+    assert not path.exists()
 
 
 def test_resolve_pending_writes_decision(tmp_path):
@@ -170,6 +212,27 @@ def test_poll_pending_returns_timeout_when_expired(tmp_path):
     )
     assert decision == "timeout"
     assert decided_at is None
+
+
+def test_poll_pending_ignores_stale_dead_pid_file(tmp_path):
+    path = pending.write_pending(
+        run_id="stale-poll",
+        story="s",
+        phase="ESCALATE",
+        reason="r",
+        options=["approve"],
+        timeout_seconds=30,
+        project_root=tmp_path,
+    )
+
+    with patch("theforge.pending.os.kill", side_effect=ProcessLookupError):
+        decision, decided_at = pending.poll_pending(
+            "stale-poll", timeout_seconds=0.05, poll_interval=0.01, project_root=tmp_path
+        )
+
+    assert decision == "timeout"
+    assert decided_at is None
+    assert not path.exists()
 
 
 def test_cleanup_stale_removes_expired_files(tmp_path):

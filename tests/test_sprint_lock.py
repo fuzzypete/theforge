@@ -29,6 +29,8 @@ class TestAcquireStoryLocks:
         try:
             assert conflicted == []
             assert len(fds) == 1
+            lock_path = tmp_path / ".forge" / "locks" / "my-story.lock"
+            assert lock_path.read_text(encoding="utf-8").strip().isdigit()
         finally:
             release_story_locks(fds)
 
@@ -132,6 +134,51 @@ class TestAcquireStoryLocks:
             assert len(fds2) == 1
         finally:
             release_story_locks(fds2)
+
+    def test_stale_pid_lock_is_removed_and_retried(self, tmp_path: Path) -> None:
+        """A conflicting lock with a dead PID is removed and retried."""
+        lock_path = tmp_path / ".forge" / "locks" / "story-z.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242", encoding="utf-8")
+
+        flock_calls = []
+
+        def fake_flock(_fd, _flags):
+            flock_calls.append(1)
+            if len(flock_calls) == 1:
+                raise BlockingIOError
+            return None
+
+        with (
+            patch("theforge.sprint.lock.fcntl.flock", side_effect=fake_flock),
+            patch("theforge.sprint.lock.os.kill", side_effect=ProcessLookupError),
+        ):
+            fds, conflicted = acquire_story_locks(["story-z"], tmp_path)
+
+        try:
+            assert conflicted == []
+            assert len(fds) == 1
+            assert len(flock_calls) == 2
+            assert lock_path.read_text(encoding="utf-8").strip().isdigit()
+        finally:
+            release_story_locks(fds)
+
+    def test_empty_conflicting_lock_is_not_treated_as_stale(self, tmp_path: Path) -> None:
+        """An empty lock file under active contention is reported as a conflict."""
+        lock_path = tmp_path / ".forge" / "locks" / "story-empty.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("", encoding="utf-8")
+
+        with patch("theforge.sprint.lock.fcntl.flock", side_effect=BlockingIOError):
+            fds, conflicted = acquire_story_locks(["story-empty"], tmp_path)
+
+        try:
+            assert fds == []
+            assert conflicted == ["story-empty"]
+            assert lock_path.exists()
+            assert lock_path.read_text(encoding="utf-8") == ""
+        finally:
+            release_story_locks(fds)
 
 
 # ── SprintConflictError ──────────────────────────────────────────────────
