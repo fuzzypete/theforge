@@ -203,6 +203,66 @@ class TestCmdRunUntilFlag:
         call_kwargs = mock_run.call_args.kwargs
         assert call_kwargs.get("stop_phase") == Phase.PLAN
 
+
+class TestCmdSprintDryRunQuery:
+    def test_query_dry_run_prints_dependency_batches(self, tmp_path, capsys):
+        from theforge.cli import cmd_sprint
+        from theforge.sprint.manifest import ResolvedSprint
+        from theforge.sprint.sources import GitHubIssueSource
+        from theforge.task import TaskStory
+
+        config = _make_forge_config(tmp_path)
+        args = _make_sprint_args(
+            tmp_path,
+            manifest=None,
+            milestone="v0.5.0",
+            budget="10",
+            parallel=2,
+        )
+        args.manifest = None
+        args.dry_run = True
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=10.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                ),
+                (
+                    TaskStory(
+                        name="B",
+                        slug="issue-2",
+                        github_issue=2,
+                        depends_on=["issue-1"],
+                        inferred_dependencies=["issue-1"],
+                    ),
+                    GitHubIssueSource(),
+                    "issue:2",
+                ),
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}, {"number": 2, "title": "B"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "batch=0" in out
+        assert "batch=1" in out
+        assert "deps=[issue-1]" in out
+
     def test_until_unknown_phase_returns_1(self, tmp_path):
         """--until with invalid phase name returns exit code 1."""
         config = _make_forge_config(tmp_path)

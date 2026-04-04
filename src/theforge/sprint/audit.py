@@ -33,11 +33,13 @@ def _write_sprint_audit(
     story_times: "dict[str, tuple[datetime.datetime, datetime.datetime]] | None" = None,
     batch_assignments: "dict[str, int] | None" = None,
     slug_map: "dict[str, str] | None" = None,
+    tasks_by_slug: "dict[str, TaskStory] | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
     batch_assignments = batch_assignments or {}
     slug_map = slug_map or {}
+    tasks_by_slug = tasks_by_slug or {}
 
     # Build per-spec entries
     spec_entries = []
@@ -50,6 +52,7 @@ def _write_sprint_audit(
             else canonical_ref
         )
         slug = slug_map.get(canonical_ref, Path(canonical_ref).stem)
+        task = tasks_by_slug.get(slug)
         if canonical_ref in results_by_spec:
             res = results_by_spec[canonical_ref]
             preflight = res.state.preflight_verdict or "PROCEED"
@@ -80,6 +83,15 @@ def _write_sprint_audit(
                 "preflight": preflight,
                 "merge": res.merge is not None and res.merge.get("merged", False),
                 "reviews": reviews_summary,
+                "depends_on": task.depends_on if task else [],
+                "inferred_dependencies": {
+                    "manifest": [
+                        dep
+                        for dep in (task.depends_on if task else [])
+                        if dep not in (task.inferred_dependencies if task else [])
+                    ],
+                    "github_blockers": task.inferred_dependencies if task else [],
+                },
             }
             if slug in story_times:
                 entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -97,6 +109,15 @@ def _write_sprint_audit(
                 "preflight": None,
                 "merge": False,
                 "reviews": [],
+                "depends_on": task.depends_on if task else [],
+                "inferred_dependencies": {
+                    "manifest": [
+                        dep
+                        for dep in (task.depends_on if task else [])
+                        if dep not in (task.inferred_dependencies if task else [])
+                    ],
+                    "github_blockers": task.inferred_dependencies if task else [],
+                },
                 "started_at": None,
                 "finished_at": None,
                 "batch": batch_assignments.get(slug, 0),

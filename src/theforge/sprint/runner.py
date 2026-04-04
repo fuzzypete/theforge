@@ -962,6 +962,7 @@ def run_sprint(
         story_times=story_times,
         batch_assignments=batch_assignments,
         slug_map=slug_map,
+        tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/

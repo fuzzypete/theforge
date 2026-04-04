@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
@@ -16,6 +17,10 @@ if TYPE_CHECKING:
     from ..coordinator.state import CoordinatorResult
 
 _log = logging.getLogger(__name__)
+_BLOCKED_BY_BODY_RE = re.compile(
+    r"blocked by\s+(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/)?#?(?P<number>\d+)",
+    re.IGNORECASE,
+)
 
 
 class IssueClosedError(RuntimeError):
@@ -80,6 +85,66 @@ class FileSource:
 class GitHubIssueSource:
     """Loads story specs from GitHub issues via the gh CLI."""
 
+    def _fetch_issue_blockers(self, number: int, project_root: Path) -> list[int]:
+        """Return issue numbers that block this issue.
+
+        Best-effort: tries GitHub's timeline API first, then falls back to issue-body
+        text patterns. Native relationship payloads have varied over time, so the
+        parser accepts several candidate keys and event names.
+        """
+        blockers = self._fetch_issue_blockers_from_timeline(number, project_root)
+        return sorted(blockers)
+
+    def _fetch_issue_blockers_from_timeline(self, number: int, project_root: Path) -> set[int]:
+        """Return blocker issue numbers from the GitHub issue timeline."""
+        try:
+            proc = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "-H",
+                    "Accept: application/vnd.github+json",
+                    f"repos/{{owner}}/{{repo}}/issues/{number}/timeline?per_page=100",
+                ],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                timeout=30,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return set()
+
+        if proc.returncode != 0:
+            return set()
+
+        try:
+            data = json.loads(proc.stdout)
+        except json.JSONDecodeError:
+            return set()
+
+        if not isinstance(data, list):
+            return set()
+
+        blockers: set[int] = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            event = str(item.get("event", "")).lower()
+            if "blocked" not in event or "by" not in event or "unblock" in event:
+                continue
+            for key in ("blocking_issue", "source", "subject", "issue", "blocker"):
+                candidate = item.get(key)
+                if isinstance(candidate, dict):
+                    blocker_number = candidate.get("number")
+                    if isinstance(blocker_number, int):
+                        blockers.add(blocker_number)
+        return blockers
+
+    def _parse_issue_blockers_from_body(self, body: str) -> list[int]:
+        """Return blocker issue numbers referenced in body text."""
+        blockers = {int(match.group("number")) for match in _BLOCKED_BY_BODY_RE.finditer(body)}
+        return sorted(blockers)
+
     def fetch(self, ref: str, project_root: Path) -> TaskStory:
         """Fetch issue body via `gh issue view` and build a TaskStory.
 
@@ -112,6 +177,10 @@ class GitHubIssueSource:
 
         title = data.get("title", f"Issue #{number}")
         body = data.get("body", "")
+        blockers = self._fetch_issue_blockers(number, project_root)
+        if not blockers:
+            blockers = self._parse_issue_blockers_from_body(body)
+        blocker_slugs = [f"issue-{blocker}" for blocker in blockers]
 
         slug = f"issue-{number}"
         return TaskStory(
@@ -119,6 +188,8 @@ class GitHubIssueSource:
             story_path=None,
             slug=slug,
             story_text=body,
+            depends_on=blocker_slugs,
+            inferred_dependencies=blocker_slugs,
             github_issue=number,
         )
 

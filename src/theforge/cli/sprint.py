@@ -195,6 +195,7 @@ def _run_query_mode(
 ) -> int:
     """Handle --milestone / --label query mode."""
     from theforge.sprint.query import (
+        assign_dependency_batches,
         build_resolved_sprint,
         fetch_issues_for_label,
         fetch_issues_for_milestone,
@@ -233,13 +234,6 @@ def _run_query_mode(
 
     sprint_name: str = getattr(args, "name", None) or milestone or label
 
-    # ── Dry-run: print table and exit before fetching issue bodies ───────
-    if dry_run:
-        print(f"[dry-run] {query_desc}  {len(issues)} issue(s)  sprint='{sprint_name}'")
-        for issue in issues:
-            print(f"  #{issue['number']:>5}  {issue['title']}")
-        return 0
-
     # Build full ResolvedSprint (fetches individual issue bodies via gh)
     try:
         resolved = build_resolved_sprint(
@@ -258,6 +252,18 @@ def _run_query_mode(
             f"[forge] No stories could be fetched for {query_desc} — nothing to run.",
             file=sys.stderr,
         )
+        return 0
+
+    if dry_run:
+        tasks = [task for task, _src, _ref in resolved.stories]
+        batch_assignments = assign_dependency_batches(tasks, effective_max_parallel)
+        print(f"[dry-run] {query_desc}  {len(tasks)} issue(s)  sprint='{sprint_name}'")
+        for task, _src, _ref in resolved.stories:
+            deps = ", ".join(task.depends_on) if task.depends_on else "-"
+            print(
+                f"  batch={batch_assignments.get(task.slug, 0)}"
+                f"  #{task.github_issue:>5}  {task.slug:<12} deps=[{deps}]  {task.name}"
+            )
         return 0
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──

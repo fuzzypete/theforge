@@ -62,7 +62,10 @@ class TestGitHubIssueSource:
     def test_fetch_calls_gh_and_returns_task(self, tmp_path: Path) -> None:
         issue_data = json.dumps({"title": "Fix the bug", "body": "## Details\nFix it."})
         with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout=issue_data, stderr="")
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=0, stdout="[]", stderr=""),
+            ]
             source = GitHubIssueSource()
             task = source.fetch("42", tmp_path)
 
@@ -71,10 +74,43 @@ class TestGitHubIssueSource:
         assert task.story_path is None
         assert task.story_text == "## Details\nFix it."
         assert task.github_issue == 42
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        assert mock_run.call_count == 2
+        cmd = mock_run.call_args_list[0][0][0]
         assert "42" in cmd
         assert "gh" in cmd
+
+    def test_fetch_populates_depends_on_from_github_blockers(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {"title": "Fix the bug", "body": "## Details\nFix it.", "state": "OPEN"}
+        )
+        timeline = json.dumps([{"event": "blocked_by", "blocking_issue": {"number": 12}}])
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=0, stdout=timeline, stderr=""),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert task.depends_on == ["issue-12"]
+        assert task.inferred_dependencies == ["issue-12"]
+
+    def test_fetch_falls_back_to_blocked_by_body_pattern(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": "This work is blocked by #12 and blocked by https://github.com/acme/repo/issues/7",
+                "state": "OPEN",
+            }
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="preview unavailable"),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
+        assert task.depends_on == ["issue-7", "issue-12"]
+        assert task.inferred_dependencies == ["issue-7", "issue-12"]
 
     def test_fetch_raises_on_failure(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:

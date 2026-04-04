@@ -251,6 +251,12 @@ def build_tasks_from_manifest(
             if overrides:
                 from dataclasses import replace
 
+                if "depends_on" in overrides:
+                    combined = list(task.depends_on)
+                    for dep in overrides["depends_on"]:
+                        if dep not in combined:
+                            combined.append(dep)
+                    overrides["depends_on"] = combined
                 task = replace(task, **overrides)
                 # Update canonical_ref if slug was overridden
                 if "slug" in overrides:

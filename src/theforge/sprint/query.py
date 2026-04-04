@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 if TYPE_CHECKING:
+    from ..task import TaskStory
     from .manifest import ResolvedSprint
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,31 @@ def fetch_issues_for_label(
     return sorted(issues, key=lambda x: x["number"])
 
 
+def assign_dependency_batches(
+    tasks: list["TaskStory"],
+    max_parallel: int | None,
+) -> dict[str, int]:
+    """Return deterministic dry-run batch numbers for dependency-aware execution."""
+    from .dag import build_dag  # noqa: PLC0415
+
+    batch_assignments: dict[str, int] = {}
+    dag = build_dag(tasks)
+    active_batch = 0
+    width = max_parallel or len(tasks) or 1
+
+    while not dag.is_done():
+        ready = [task for task in dag.ready() if task.slug not in batch_assignments]
+        if not ready:
+            break
+        current = ready[:width]
+        for task in current:
+            batch_assignments[task.slug] = active_batch
+            dag.mark_complete(task.slug)
+        active_batch += 1
+
+    return batch_assignments
+
+
 def build_resolved_sprint(
     issues: list[dict],
     name: str,
@@ -160,7 +186,6 @@ def build_resolved_sprint(
     Returns:
         A fully populated ``ResolvedSprint`` ready for ``run_sprint()``.
     """
-    from ..task import TaskStory  # noqa: PLC0415
     from .manifest import ResolvedSprint  # noqa: PLC0415
     from .sources import GitHubIssueSource, IssueClosedError, StorySource  # noqa: PLC0415
 
