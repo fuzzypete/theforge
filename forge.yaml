@@ -42,8 +42,8 @@ profiles:
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
   preflight:
-    provider: deepseek
-    model: deepseek-reasoner
+    provider: anthropic
+    model: claude-sonnet-4-6
     budget_usd: 1.00
     timeout_seconds: 300
   review_pool:
@@ -74,8 +74,8 @@ profiles:
 # Plan uses DeepSeek reasoner — good structured thinking, cheap
 plan:
   enabled: true
-  provider: deepseek
-  model: deepseek-reasoner
+  provider: anthropic
+  model: claude-sonnet-4-6
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
@@ -84,9 +84,9 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: deepseek-plan-reviewer
-      provider: deepseek
-      model: deepseek-reasoner
+    - name: claude-plan-reviewer
+      cli: claude
+      model: claude-sonnet-4-6
       budget_usd: 0.50
       timeout_seconds: 300
       max_iterations: 30
