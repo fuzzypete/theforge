@@ -519,21 +519,31 @@ class TestTranslateMessagesGoogle:
     """Tests for _translate_messages_google message format conversion."""
 
     def test_includes_thought_signature(self):
-        """_translate_messages_google embeds thought_signature in function_call parts."""
+        """thought_signature is emitted as a separate thought Part before the function_call.
+
+        The -customtools API rejects thought_signature embedded inside the function_call
+        dict with 400 INVALID_ARGUMENT: Function call is missing a thought_signature.
+        The correct format is a thought Part preceding the function_call Part.
+        """
         from theforge.runners.adapters.google import _translate_messages_google
 
         tc = ToolCallRequest(
             id="call_0",
             name="submit_review",
             arguments={"verdict": "APPROVE"},
-            thought_signature="sig-xyz",
+            thought_signature=b"sig-xyz",
         )
         messages = [{"role": "assistant", "tool_calls": [tc], "content": None}]
         result = _translate_messages_google(messages)
 
         assert len(result) == 1
-        fc_part = result[0]["parts"][0]["function_call"]
-        assert fc_part["thought_signature"] == "sig-xyz"
+        parts = result[0]["parts"]
+        # First part: thought block with the signature
+        assert parts[0] == {"thought": True, "thought_signature": b"sig-xyz"}
+        # Second part: function_call without thought_signature embedded
+        fc_part = parts[1]["function_call"]
+        assert fc_part["name"] == "submit_review"
+        assert "thought_signature" not in fc_part
 
     def test_omits_thought_signature_when_absent(self):
         """_translate_messages_google omits thought_signature when None."""
