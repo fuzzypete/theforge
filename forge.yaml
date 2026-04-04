@@ -55,19 +55,27 @@ profiles:
       timeout_seconds: 300
       reasoning_effort: high
       max_iterations: 20
-    - name: gemini-reviewer
-      provider: google
-      model: gemini-3.1-pro-preview-customtools
+    - name: claude-reviewer
+      provider: anthropic
+      model: claude-sonnet-4-6
       review_role: edge-cases
       budget_usd: 2.00
+      timeout_seconds: 120
+      max_iterations: 5
+    - name: gemini-reviewer
+      provider: google
+      model: gemini-2.5-pro
+      review_role: architecture
+      budget_usd: 2.00
       timeout_seconds: 300
-      max_iterations: 30
+      thinking_budget: 8192
+      max_iterations: 10
 
-# Plan uses Codex for this experiment
+# Plan uses DeepSeek reasoner — good structured thinking, cheap
 plan:
   enabled: true
-  cli: codex
-  model: gpt-5.4
+  provider: deepseek
+  model: deepseek-reasoner
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
@@ -76,23 +84,24 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: gemini-plan-reviewer
-      provider: google
-      model: gemini-3.1-pro-preview-customtools
-      budget_usd: 0.50
-      timeout_seconds: 300
-      max_iterations: 30
     - name: deepseek-plan-reviewer
       provider: deepseek
       model: deepseek-reasoner
       budget_usd: 0.50
       timeout_seconds: 300
       max_iterations: 30
+    - name: gemini-plan-reviewer
+      provider: google
+      model: gemini-2.5-pro
+      budget_usd: 0.50
+      timeout_seconds: 300
+      thinking_budget: 4096
+      max_iterations: 10
 
 smart_config_models:
   - deepseek/deepseek-reasoner
   - openai/gpt-5.4
-  - google/gemini-3.1-pro-preview-customtools
+  - anthropic/claude-sonnet-4-6
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh
