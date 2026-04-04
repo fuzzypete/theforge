@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-parallel gate clean
+.PHONY: fmt lint test test-parallel gate gate-serial clean
 
 # Format
 fmt:
@@ -22,6 +22,18 @@ test-parallel:
 
 # Gate: run tests and write .forge/handoff.yaml
 gate:
+	@mkdir -p .forge && \
+	PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal && \
+	python -c "\
+import yaml, pathlib; \
+pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'PASS', 'scope_completed': [], 'deferred_followups': [], 'next_recommended_step': 'merge'})); \
+print('[gate] PASS')" || \
+	python -c "\
+import yaml, pathlib; \
+pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'FAIL', 'scope_completed': [], 'deferred_followups': ['fix test failures'], 'next_recommended_step': 'fix failing tests'})); \
+print('[gate] FAIL')"
+
+gate-serial:
 	@mkdir -p .forge && \
 	PYTHONPATH=src python -m pytest tests/ -q && \
 	python -c "\
