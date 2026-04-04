@@ -4,11 +4,30 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
 from ..coordinator.state import CoordinatorResult
 from ..task import TaskStory
+
+if TYPE_CHECKING:
+    from .sources import StorySource
+
+
+@dataclass
+class ResolvedSprint:
+    """Common runtime shape produced by both manifest loading and GitHub query mode.
+
+    Both ``resolve_from_manifest`` and GitHub query mode produce this object.
+    The sprint runner (``run_sprint``) operates entirely on ``ResolvedSprint``
+    with no assumptions about a manifest file existing on disk.
+    """
+
+    name: str
+    budget_usd: float
+    stories: list[tuple[TaskStory, StorySource, str]]  # (task, source, canonical_ref)
+    max_parallel: int | None = None
 
 
 @dataclass
@@ -170,6 +189,24 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
     )
 
 
+def resolve_from_manifest(manifest_path: Path, project_root: Path) -> ResolvedSprint:
+    """Load a sprint manifest and resolve all stories into a ResolvedSprint.
+
+    Combines ``load_sprint_manifest``, ``_validate_story_paths``, and
+    ``build_tasks_from_manifest`` into a single call that returns the common
+    runtime object accepted by ``run_sprint``.
+    """
+    manifest = load_sprint_manifest(manifest_path)
+    _validate_story_paths(manifest, project_root)
+    task_entries = build_tasks_from_manifest(manifest, project_root)
+    return ResolvedSprint(
+        name=manifest.name,
+        budget_usd=manifest.budget_usd,
+        stories=task_entries,
+        max_parallel=manifest.max_parallel,
+    )
+
+
 def build_tasks_from_manifest(
     manifest: SprintManifest,
     project_root: Path,
@@ -180,12 +217,18 @@ def build_tasks_from_manifest(
     For issue entries, fetches the issue via gh CLI and applies overrides
     (depends_on, slug) from the manifest dict.
     """
-    from .sources import StorySource, resolve  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+
+    from .sources import IssueClosedError, resolve  # noqa: PLC0415
 
     results: list[tuple[TaskStory, StorySource, str]] = []
     for entry in manifest.stories:
         source, ref, canonical_ref = resolve(entry, project_root)
-        task = source.fetch(ref, project_root)
+        try:
+            task = source.fetch(ref, project_root)
+        except IssueClosedError as exc:
+            print(f"[sprint] WARNING: skipping {canonical_ref} — {exc}", file=sys.stderr)
+            continue
 
         # Apply overrides from dict entries
         if isinstance(entry, dict):

@@ -554,6 +554,29 @@ class TestBuildHandoffFixPrompt:
 # ── Notes section convention tests ──────────────────────────────────────
 
 
+class TestReviewPromptEvidenceRules:
+    """Verify review prompt includes evidence-quality rules added after Gemini audit."""
+
+    def test_verify_before_asserting(self, review_task: TaskStory) -> None:
+        """Prompt requires reviewers to verify assumptions before filing P1."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "Verify before asserting" in prompt
+        assert "unverified assumption" in prompt
+
+    def test_list_all_issues_single_pass(self, review_task: TaskStory) -> None:
+        """Prompt instructs reviewers to list all issues in one pass."""
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "List ALL issues in a single pass" in prompt
+
+    def test_dev_notes_claims_not_evidence(self, review_task: TaskStory) -> None:
+        """Dev notes section frames notes as claims requiring verification."""
+        prompt = build_review_prompt(
+            review_task, **_REVIEW_COMMON_KWARGS, dev_notes="Deviation is justified."
+        )
+        assert "Developer notes are claims, not" in prompt
+        assert "verify technical claims" in prompt
+
+
 class TestNotesConventionInReviewPrompt:
     """Verify review prompt includes Notes guidance."""
 

@@ -208,8 +208,10 @@ def build_review_prompt(
             {dev_notes}
 
             Read this before examining the diff. The developer has flagged intentional
-            decisions and spec deviations here. If a deviation is justified, do NOT
-            flag it as a spec violation — flag only unjustified or incorrect deviations.
+            decisions and spec deviations here. Developer notes are claims, not
+            evidence — verify technical claims against the actual code before
+            accepting them. Flag deviations that are unjustified, incorrect, or
+            whose justification does not hold up on inspection.
         """)
         if dev_notes
         else ""
@@ -303,6 +305,14 @@ def build_review_prompt(
         - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists
         - A P1 must cite a concrete failure: file + line + what breaks. "Could be
           improved" or "might cause issues" is P2, not P1.
+        - **Verify before asserting.** Before filing a P1 about a runtime behavior,
+          confirm the behavior exists in the current code. Check the actual type,
+          call site, mutability, and control flow — do not assume. A P1 based on
+          an unverified assumption is a false positive that blocks the entire
+          pipeline.
+        - **List ALL issues in a single pass.** Multiple findings in one
+          REQUEST_CHANGES is far better than discovering new issues across
+          review cycles.
         - Do NOT invent issues. Only report problems you can find in the source.
         - Do NOT flag the same issue that was already flagged and fixed in a
           previous review cycle.

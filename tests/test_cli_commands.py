@@ -150,22 +150,34 @@ def _make_sprint_args(
     fg: bool = True,
     detach: bool = False,
     resume: bool = False,
+    manifest: str | None = None,
+    milestone: str | None = None,
+    label: str | None = None,
+    budget: str | None = None,
+    parallel: int | None = None,
 ) -> argparse.Namespace:
-    manifest = tmp_path / "sprint.yaml"
-    manifest.write_text("stories: []\n", encoding="utf-8")
+    manifest_path = tmp_path / "sprint.yaml"
+    manifest_path.write_text("stories: []\n", encoding="utf-8")
     forge_yaml = tmp_path / "forge.yaml"
     if not forge_yaml.exists():
         forge_yaml.write_text("project:\n  root: .\n", encoding="utf-8")
     return argparse.Namespace(
-        manifest=str(manifest),
+        manifest=manifest if manifest is not None else str(manifest_path),
         config=str(forge_yaml),
         fg=fg,
         detach=detach,
         resume=resume,
+        milestone=milestone,
+        label=label,
+        budget=budget,
+        parallel=parallel,
+        name=None,
+        dry_run=False,
         auto_merge=False,
         interactive=False,
         verbose=False,
         no_notify=True,
+        no_pull=False,
     )
 
 
@@ -552,6 +564,59 @@ class TestCmdLogs:
         assert call_args[0] == "tail"
         assert call_args[1] == "-f"
         assert str(log_file) in call_args[2]
+
+
+class TestCmdSprintQueryMode:
+    def test_query_mode_defaults_to_sequential_when_parallel_omitted(self, tmp_path):
+        from theforge.cli.sprint import _run_query_mode
+
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(
+            name=None,
+            no_notify=True,
+            fg=True,
+            detach=False,
+        )
+        resolved = MagicMock()
+        task = MagicMock()
+        task.slug = "issue-42"
+        resolved.stories = [(task, MagicMock(), "issue:42")]
+
+        with (
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 42, "title": "Story"}],
+            ),
+            patch(
+                "theforge.sprint.query.build_resolved_sprint", return_value=resolved
+            ) as mock_build,
+            patch("theforge.cli.sprint.acquire_story_locks", return_value=([], [])),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch(
+                "theforge.cli.sprint.run_sprint",
+                return_value=MagicMock(specs_failed=0),
+            ),
+        ):
+            rc = _run_query_mode(
+                args=args,
+                config=config,
+                config_path=tmp_path / "forge.yaml",
+                milestone="v1.0",
+                label=None,
+                budget_str="5",
+                dry_run=False,
+                max_parallel=None,
+                auto_merge=False,
+                interactive=False,
+                resume=False,
+                no_pull=False,
+                _daemon=MagicMock(),
+                _detach=MagicMock(),
+                _generate_run_id=MagicMock(return_value="run-123"),
+            )
+
+        assert rc == 0
+        assert mock_build.call_args.kwargs["max_parallel"] == 1
 
     def test_returns_error_when_no_pid_and_no_log(self, tmp_path):
         """forge logs with unknown run_id returns error."""
