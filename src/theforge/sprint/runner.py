@@ -38,6 +38,7 @@ from .manifest import (
     build_tasks_from_manifest,
     load_sprint_manifest,
 )
+from .query import normalize_dependency_plan
 from .sources import StorySource
 
 
@@ -554,7 +555,9 @@ def run_sprint(
         branch_pattern=config.workspace.branch_pattern,
         pre_satisfied=pre_satisfied,
     )
-    dag = build_dag(all_tasks, satisfied=satisfied_slugs)
+    normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
+    blocked_slugs = dict(normalized.blocked)
+    dag = build_dag(normalized.tasks, satisfied=satisfied_slugs)
 
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
     if resume:
@@ -566,6 +569,12 @@ def run_sprint(
                 specs_succeeded += 1
                 merged_slugs.add(slug)
                 dag.mark_complete(slug)
+
+    # Stories blocked by unresolved external dependencies never enter the DAG.
+    for slug, blocked_by in blocked_slugs.items():
+        _log(f"SKIPPED {slug} (blocked: {', '.join(blocked_by)})")
+        dag.mark_skipped(slug)
+        specs_skipped += 1
 
     # Parallel scheduling state
     active: dict[str, Future[object]] = {}

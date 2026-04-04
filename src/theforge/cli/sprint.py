@@ -274,7 +274,8 @@ def _run_query_mode(
             if task.slug in batch_plan.blocked:
                 status = f"blocked=[{', '.join(batch_plan.blocked[task.slug])}]"
             else:
-                status = f"batch={batch_plan.assignments[task.slug]}"
+                batch = batch_plan.assignments.get(task.slug)
+                status = "stalled" if batch is None else f"batch={batch}"
             print(
                 f"  {status}  #{task.github_issue:>5}  {task.slug:<12} deps=[{deps}]  {task.name}"
             )

@@ -348,6 +348,21 @@ class TestAssignDependencyBatches:
         assert batch_plan.assignments["issue-3"] == 0
         assert batch_plan.blocked == {}
 
+    def test_blockage_propagates_to_downstream_in_sprint_dependencies(self) -> None:
+        tasks = [
+            TaskStory(name="A", slug="issue-1", depends_on=["issue-9"]),
+            TaskStory(name="B", slug="issue-2", depends_on=["issue-1"]),
+            TaskStory(name="C", slug="issue-3"),
+        ]
+
+        batch_plan = assign_dependency_batches(tasks, max_parallel=2)
+
+        assert batch_plan.assignments == {"issue-3": 0}
+        assert batch_plan.blocked == {
+            "issue-1": ["issue-9"],
+            "issue-2": ["issue-1"],
+        }
+
     def test_independent_tasks_share_frontier_when_max_parallel_is_smaller(self) -> None:
         tasks = [
             TaskStory(name="A", slug="issue-1"),
@@ -463,6 +478,39 @@ class TestRunSprintAcceptsResolvedSprint:
 
         assert result.specs_total == 1
         assert result.name == "GitHub Sprint"
+
+    def test_unresolved_external_blocker_is_skipped_at_runtime(self, tmp_path: Path) -> None:
+        from theforge.sprint.manifest import ResolvedSprint
+        from theforge.sprint.runner import run_sprint
+        from theforge.sprint.sources import GitHubIssueSource
+
+        blocked = TaskStory(name="Blocked", slug="issue-2", github_issue=2, depends_on=["issue-1"])
+        ready = TaskStory(name="Ready", slug="issue-3", github_issue=3)
+        resolved = ResolvedSprint(
+            name="GitHub Sprint",
+            budget_usd=5.0,
+            stories=[
+                (blocked, GitHubIssueSource(), "issue:2"),
+                (ready, GitHubIssueSource(), "issue:3"),
+            ],
+            max_parallel=1,
+        )
+        config = self._make_config(tmp_path)
+
+        with (
+            patch("theforge.sprint.dag._is_branch_merged", return_value=False),
+            patch(
+                "theforge.sprint.runner.run_task",
+                return_value=self._make_coordinator_result(),
+            ) as mock_run_task,
+        ):
+            result = run_sprint(config, resolved)
+
+        assert result.specs_total == 2
+        assert result.specs_succeeded == 1
+        assert result.specs_skipped == 1
+        assert mock_run_task.call_count == 1
+        assert mock_run_task.call_args[0][1].slug == "issue-3"
 
 
 # ── IssueClosedError is only what's skipped ──────────────────────────────────

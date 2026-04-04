@@ -34,6 +34,14 @@ class DependencyBatchPlan:
     blocked: dict[str, list[str]]
 
 
+@dataclass(frozen=True)
+class NormalizedDependencyPlan:
+    """Normalized task graph plus explicit blocked stories."""
+
+    tasks: list["TaskStory"]
+    blocked: dict[str, list[str]]
+
+
 def _log(msg: str) -> None:
     print(f"[sprint] {msg}", file=sys.stderr, flush=True)
 
@@ -165,6 +173,46 @@ def assign_dependency_batches_with_satisfied(
     from .dag import build_dag  # noqa: PLC0415
 
     batch_assignments: dict[str, int] = {}
+    normalized = normalize_dependency_plan(tasks, satisfied=satisfied)
+    blocked = dict(normalized.blocked)
+    dag = build_dag(normalized.tasks, satisfied=satisfied)
+    active_batch = 0
+    _ = max_parallel  # width is enforced at runtime; dry-run batches reflect dependency frontiers
+
+    while not dag.is_done():
+        ready = [
+            task
+            for task in dag.ready()
+            if task.slug not in batch_assignments and task.slug not in blocked
+        ]
+        if not ready:
+            for task in dag.remaining():
+                if task.slug in blocked:
+                    continue
+                unmet = sorted(dag.unmet_deps(task.slug))
+                if unmet:
+                    blocked[task.slug] = unmet
+            break
+        for task in ready:
+            batch_assignments[task.slug] = active_batch
+            dag.mark_complete(task.slug)
+        active_batch += 1
+
+    return DependencyBatchPlan(assignments=batch_assignments, blocked=blocked)
+
+
+def normalize_dependency_plan(
+    tasks: list["TaskStory"],
+    *,
+    satisfied: set[str],
+) -> NormalizedDependencyPlan:
+    """Normalize external dependencies and classify stories blocked before scheduling.
+
+    External dependencies already listed in ``satisfied`` are removed from the
+    DAG inputs. Unresolved external dependencies are preserved in ``blocked`` so
+    callers can keep the affected stories out of the runnable graph while still
+    reporting the blocker chain explicitly.
+    """
     known_slugs = {task.slug for task in tasks}
     blocked = {
         task.slug: sorted(
@@ -186,24 +234,7 @@ def assign_dependency_batches_with_satisfied(
         )
         for task in tasks
     ]
-    dag = build_dag(normalized_tasks, satisfied=satisfied)
-    active_batch = 0
-    _ = max_parallel  # width is enforced at runtime; dry-run batches reflect dependency frontiers
-
-    while not dag.is_done():
-        ready = [
-            task
-            for task in dag.ready()
-            if task.slug not in batch_assignments and task.slug not in blocked
-        ]
-        if not ready:
-            break
-        for task in ready:
-            batch_assignments[task.slug] = active_batch
-            dag.mark_complete(task.slug)
-        active_batch += 1
-
-    return DependencyBatchPlan(assignments=batch_assignments, blocked=blocked)
+    return NormalizedDependencyPlan(tasks=normalized_tasks, blocked=blocked)
 
 
 def build_resolved_sprint(

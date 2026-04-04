@@ -179,3 +179,56 @@ class TestCmdSprintDryRunQuery:
         assert rc == 0
         assert "blocked=[issue-1]" in out
         assert "batch=" not in out
+
+    def test_query_mode_dry_run_reports_downstream_blockage(self, tmp_path: Path, capsys) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=10.0,
+            stories=[
+                (
+                    TaskStory(
+                        name="A",
+                        slug="issue-1",
+                        github_issue=1,
+                        depends_on=["issue-9"],
+                        inferred_dependencies=["issue-9"],
+                    ),
+                    GitHubIssueSource(),
+                    "issue:1",
+                ),
+                (
+                    TaskStory(
+                        name="C",
+                        slug="issue-3",
+                        github_issue=3,
+                        depends_on=["issue-1"],
+                        inferred_dependencies=["issue-1"],
+                    ),
+                    GitHubIssueSource(),
+                    "issue:3",
+                ),
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}, {"number": 3, "title": "C"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch("theforge.sprint.dag._is_branch_merged", return_value=False),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "issue-1" in out
+        assert "blocked=[issue-9]" in out
+        assert "issue-3" in out
+        assert "blocked=[issue-1]" in out
