@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-04-04
+
 ### Added
 
+- **Gemini thinking mode:** `thinking_budget` config field on Gemini API
+  profiles enables extended thinking; thinking tokens counted in cost
+  estimation; `forge check-config` reflects the setting (#252)
 - **Paperless sprints:** `forge sprint` pulls stories directly from GitHub
   issues via milestone or label query — no local manifest files required (#253)
 - **Sprint query mode:** deferred merge behavior for GH-sourced sprints (#364)
