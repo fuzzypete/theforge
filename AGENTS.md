@@ -11,16 +11,18 @@ conventions for any Codex agent working in this codebase.
 is deterministic Python code. Agents only write code and write reviews. The coordinator
 validates boundaries mechanically.
 
-State machine: `INIT → WORKSPACE → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
+State machine: `INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
 
 Key modules:
-- `src/theforge/coordinator.py` — state machine, the heart of the system
-- `src/theforge/runner.py` — subprocess invocation of agent CLIs
-- `src/theforge/config.py` — forge.yaml parsing and model profiles
-- `src/theforge/task.py` — prompt builders (dev + review)
-- `src/theforge/review.py` — YAML review output parsing
+- `src/theforge/coordinator/engine.py` — state machine, the heart of the system
+- `src/theforge/coordinator/` — all coordinator phases (dev_phase, review_phase, validate_phase, plan_flow, preflight, workspace, etc.)
+- `src/theforge/runners/` — API and CLI agent runners; adapters per provider
+- `src/theforge/config/` — forge.yaml parsing and model profiles
+- `src/theforge/task/` — prompt builders (dev, review, plan)
+- `src/theforge/review.py` — review output parsing
 - `src/theforge/schemas.py` — review schema validation
-- `src/theforge/cli.py` — `forge` CLI entry point
+- `src/theforge/cli/main.py` — `forge` CLI entry point
+- `src/theforge/sprint/` — sprint lifecycle, DAG scheduler, GitHub query
 
 ## Key Commands
 
@@ -51,7 +53,7 @@ findings:
     line: <number or null>
     description: "<what is wrong>"
     suggestion: "<how to fix>"
-spec_compliance:
+story_compliance:
   matches_spec: true | false
   mismatches: []
 test_coverage:
@@ -59,9 +61,10 @@ test_coverage:
   gaps: []
 ```
 
-### File scope in TaskSpec
-`file_scope` restricts what the dev agent may modify. Empty list = no restriction.
-The dev prompt will say "(no scope restriction — all project files)" when empty.
+### Stories
+Stories are GitHub issues — there are no local story files. The primary term is
+"story" throughout the codebase. `TaskSpec` is a backward-compat alias for
+`TaskStory`; prefer `TaskStory` in new code.
 
 ### Dogfooding config
 `forge.yaml` at the project root configures theforge to develop itself. Worktrees
@@ -70,8 +73,8 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 ## Testing
 
 - All tests must pass before committing
-- New coordinator behaviour → test in `tests/test_coordinator.py`
-- New runner behaviour → test in `tests/test_runner.py`
+- New coordinator behaviour → add a `tests/test_coord_*.py` file matching the phase
+- New runner behaviour → `tests/test_runner_*.py`
 - Mock subprocess; never invoke real agent CLIs in tests
 
 ## What NOT to do
