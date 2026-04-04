@@ -295,8 +295,8 @@ class TestRunGoogle:
 class TestGoogleAdapter:
     """Tests for _make_google_adapter (tool-use loop path)."""
 
-    def test_thought_signature_attached_to_fc(self):
-        """Function calls are tagged with thought_signature from preceding thought part."""
+    def test_thought_signature_from_preceding_thought_part(self):
+        """Customtools models: thought_signature from preceding thought Part is attached to fc."""
         fake_thought_part = MagicMock()
         fake_thought_part.thought = True
         fake_thought_part.thought_signature = "sig-abc"
@@ -311,6 +311,7 @@ class TestGoogleAdapter:
         fake_fc_part = MagicMock()
         fake_fc_part.thought = False
         fake_fc_part.function_call = fake_fc
+        fake_fc_part.thought_signature = None  # not on the Part either
         fake_fc_part.text = None
 
         fake_candidate = MagicMock()
@@ -335,6 +336,46 @@ class TestGoogleAdapter:
 
         assert len(turn.tool_calls) == 1
         assert turn.tool_calls[0].thought_signature == "sig-abc"
+
+    def test_thought_signature_from_part_standard_model(self):
+        """Standard models: thought_signature on the Part itself is captured for the fc.
+
+        For non-customtools Gemini models, thought_signature is a field on the
+        Part (not on the FunctionCall sub-object and not on a preceding thought Part).
+        """
+        fake_fc = MagicMock()
+        fake_fc.name = "bash"
+        fake_fc.args = {"command": "ls"}
+        fake_fc.thought_signature = None  # NOT on the FunctionCall object
+
+        fake_fc_part = MagicMock()
+        fake_fc_part.thought = False
+        fake_fc_part.function_call = fake_fc
+        fake_fc_part.thought_signature = b"sig-standard"  # on the Part
+        fake_fc_part.text = None
+
+        fake_candidate = MagicMock()
+        fake_candidate.content = MagicMock()
+        fake_candidate.content.parts = [fake_fc_part]
+        fake_candidate.finish_reason = "STOP"
+
+        fake_response = MagicMock()
+        fake_response.candidates = [fake_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(model="gemini-3.1-pro-preview")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "review please"}], [])
+
+        assert len(turn.tool_calls) == 1
+        assert turn.tool_calls[0].thought_signature == b"sig-standard"
 
     def test_thinking_budget_applied_to_tool_loop_config(self):
         """Tool-use loop calls include ThinkingConfig when explicitly configured."""
@@ -519,10 +560,10 @@ class TestTranslateMessagesGoogle:
     """Tests for _translate_messages_google message format conversion."""
 
     def test_includes_thought_signature(self):
-        """thought_signature is embedded in the function_call Part.
+        """thought_signature is a sibling of function_call on the Part dict.
 
-        Standard Gemini models (non-customtools) require thought_signature as a
-        field on the function_call dict itself, not as a separate thought Part.
+        Standard Gemini models require thought_signature on the Part, not inside
+        the FunctionCall sub-object (which has no such field in the SDK).
         """
         from theforge.runners.adapters.google import _translate_messages_google
 
@@ -538,9 +579,10 @@ class TestTranslateMessagesGoogle:
         assert len(result) == 1
         parts = result[0]["parts"]
         assert len(parts) == 1
-        fc_part = parts[0]["function_call"]
-        assert fc_part["name"] == "submit_review"
-        assert fc_part["thought_signature"] == b"sig-xyz"
+        part = parts[0]
+        assert part["function_call"]["name"] == "submit_review"
+        assert part["thought_signature"] == b"sig-xyz"
+        assert "thought_signature" not in part["function_call"]
 
     def test_omits_thought_signature_when_absent(self):
         """_translate_messages_google omits thought_signature when None."""
@@ -555,11 +597,12 @@ class TestTranslateMessagesGoogle:
         messages = [{"role": "assistant", "tool_calls": [tc], "content": None}]
         result = _translate_messages_google(messages)
 
-        fc_part = result[0]["parts"][0]["function_call"]
-        assert "thought_signature" not in fc_part
+        part = result[0]["parts"][0]
+        assert "thought_signature" not in part
+        assert "thought_signature" not in part["function_call"]
 
     def test_multiple_tool_calls_distinct_signatures(self):
-        """Each tool call carries its own thought_signature on the function_call dict."""
+        """Each tool call carries its own thought_signature on the Part dict."""
         from theforge.runners.adapters.google import _translate_messages_google
 
         tc0 = ToolCallRequest(
@@ -580,6 +623,6 @@ class TestTranslateMessagesGoogle:
         parts = result[0]["parts"]
         assert len(parts) == 2  # fc0, fc1
         assert parts[0]["function_call"]["name"] == "bash"
-        assert parts[0]["function_call"]["thought_signature"] == b"sig-A"
+        assert parts[0]["thought_signature"] == b"sig-A"
         assert parts[1]["function_call"]["name"] == "read_file"
-        assert parts[1]["function_call"]["thought_signature"] == b"sig-B"
+        assert parts[1]["thought_signature"] == b"sig-B"

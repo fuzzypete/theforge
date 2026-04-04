@@ -284,10 +284,13 @@ def _translate_messages_google(messages: list[dict]) -> list[dict]:
             if text:
                 parts.append({"text": text})
             for c in calls:
-                fc_part: dict = {"name": c.name, "args": c.arguments}
+                # thought_signature lives on the Part (not inside FunctionCall).
+                # Standard models: captured from part.thought_signature on response.
+                # -customtools models: captured from a preceding thought Part.
+                part_dict: dict = {"function_call": {"name": c.name, "args": c.arguments}}
                 if c.thought_signature:
-                    fc_part["thought_signature"] = c.thought_signature
-                parts.append({"function_call": fc_part})
+                    part_dict["thought_signature"] = c.thought_signature
+                parts.append(part_dict)
             result.append({"role": "model", "parts": parts or [{"text": ""}]})
         elif role == "tool_results":
             parts = [
@@ -438,9 +441,15 @@ def _make_google_adapter(
                         args = dict(fc.args) if fc.args is not None else {}
                     except (TypeError, AttributeError):
                         args = {}
-                    # Prefer thought_signature already on the fc part; fall back
-                    # to the one extracted from the preceding thought block.
-                    sig = getattr(fc, "thought_signature", None) or last_thought_signature
+                    # Standard Gemini models embed thought_signature on the Part
+                    # (not on the FunctionCall sub-object, which has no such field).
+                    # -customtools variants put it on a preceding thought Part, which
+                    # was already captured into last_thought_signature above.
+                    sig = (
+                        getattr(part, "thought_signature", None)
+                        or getattr(fc, "thought_signature", None)
+                        or last_thought_signature
+                    )
                     tool_calls.append(
                         ToolCallRequest(
                             id=f"call_{len(tool_calls)}",
