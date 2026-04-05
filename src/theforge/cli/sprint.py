@@ -19,6 +19,50 @@ from theforge.sprint.lock import (
 from theforge.sprint.runner import parse_manifest_slugs
 
 
+def _abort_for_active_worktrees(slugs: list[str]) -> int:
+    print(
+        f"[forge] Stories already have active worktrees: {', '.join(slugs)}. Aborting.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+def _check_active_worktrees_or_continue(
+    *,
+    slugs: list[str],
+    config: object,
+    resume: bool,
+) -> int | None:
+    if resume:
+        return None
+    active_worktrees = check_active_worktrees(
+        slugs,
+        config.workspace.path_pattern,
+        config.workspace.base_branch,
+        config.project_root,
+    )
+    if active_worktrees:
+        return _abort_for_active_worktrees(active_worktrees)
+    return None
+
+
+def _reacquire_story_locks_in_daemon(
+    slugs: list[str],
+    project_root: Path,
+    locked_fds: list,
+) -> list:
+    for fd in locked_fds:
+        fd.close()
+    refreshed_fds, conflicted = acquire_story_locks(slugs, project_root)
+    if conflicted:
+        print(
+            f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return refreshed_fds
+
+
 def cmd_sprint(args: object) -> int:
     """Run multiple stories via a sprint manifest or GitHub query."""
     from theforge import daemon as _daemon
@@ -131,20 +175,13 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     slugs = parse_manifest_slugs(config, manifest_path)
-    if not resume:
-        active_worktrees = check_active_worktrees(
-            slugs,
-            config.workspace.path_pattern,
-            config.workspace.base_branch,
-            config.project_root,
-        )
-        if active_worktrees:
-            print(
-                "[forge] Stories already have active worktrees: "
-                f"{', '.join(active_worktrees)}. Aborting.",
-                file=sys.stderr,
-            )
-            return 1
+    active_worktree_error = _check_active_worktrees_or_continue(
+        slugs=slugs,
+        config=config,
+        resume=resume,
+    )
+    if active_worktree_error is not None:
+        return active_worktree_error
 
     locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
     if conflicted:
@@ -158,16 +195,11 @@ def cmd_sprint(args: object) -> int:
         run_id = _generate_run_id()
         slug = manifest_path.stem
         _detach.daemonize_run(run_id, slug, config.project_root)
-        for fd in locked_fds:
-            fd.close()
-        locked_fds = []
-        locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
-        if conflicted:
-            print(
-                f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        locked_fds = _reacquire_story_locks_in_daemon(
+            slugs,
+            config.project_root,
+            locked_fds,
+        )
         _detach.install_cleanup_handler(run_id, config.project_root)
         print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
     else:
@@ -349,20 +381,13 @@ def _run_query_mode(
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──
     slugs = [task.slug for task, _src, _ref in resolved.stories]
-    if not resume:
-        active_worktrees = check_active_worktrees(
-            slugs,
-            config.workspace.path_pattern,
-            config.workspace.base_branch,
-            config.project_root,
-        )
-        if active_worktrees:
-            print(
-                "[forge] Stories already have active worktrees: "
-                f"{', '.join(active_worktrees)}. Aborting.",
-                file=sys.stderr,
-            )
-            return 1
+    active_worktree_error = _check_active_worktrees_or_continue(
+        slugs=slugs,
+        config=config,
+        resume=resume,
+    )
+    if active_worktree_error is not None:
+        return active_worktree_error
 
     locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
     if conflicted:
@@ -378,16 +403,11 @@ def _run_query_mode(
 
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
         _detach.daemonize_run(run_id, sprint_slug, config.project_root)
-        for fd in locked_fds:
-            fd.close()
-        locked_fds = []
-        locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
-        if conflicted:
-            print(
-                f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+        locked_fds = _reacquire_story_locks_in_daemon(
+            slugs,
+            config.project_root,
+            locked_fds,
+        )
         _detach.install_cleanup_handler(run_id, config.project_root)
         print("[forge] Detached sprint starting", file=sys.stderr, flush=True)
 

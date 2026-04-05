@@ -375,3 +375,33 @@ class TestCmdSprintConflictGuard:
         captured = capsys.readouterr()
         assert "Stories already have active worktrees" in captured.err
         assert "my-feature" in captured.err
+
+    def test_resume_skips_active_worktree_guard(self, tmp_path: Path) -> None:
+        """cmd_sprint allows resume runs even when the worktree is active."""
+        from theforge import cli
+
+        story = self._make_story(tmp_path, "resume-story")
+        manifest = self._make_manifest(tmp_path, story)
+        args = self._make_args(tmp_path, manifest)
+        args.resume = True
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
+
+        worktree = tmp_path / ".forge" / "worktrees" / "resume-story"
+        worktree.mkdir(parents=True)
+
+        mock_result = MagicMock()
+        mock_result.specs_failed = 0
+
+        with patch("theforge.cli.sprint.load_config", return_value=mock_config):
+            with patch("theforge.cli.sprint.run_sprint", return_value=mock_result) as mock_run:
+                with patch("theforge.sprint.lock.subprocess.run") as mock_git:
+                    with patch("theforge.detach.remove_pid"):
+                        rc = cli.cmd_sprint(args)
+
+        assert rc == 0
+        mock_run.assert_called_once()
+        mock_git.assert_not_called()
