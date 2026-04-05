@@ -240,8 +240,46 @@ def _triage_spec(
     branch = config.workspace.branch_pattern.format(slug=slug)
     base_branch = config.workspace.base_branch
     worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
+    commits_ahead: list[str] | None = None
 
-    # 1. Check if already merged to base branch.
+    # 1. A same-tip worktree (0 ahead, 0 behind) is stale/empty, not merged.
+    # This can happen when a prior run created the branch/worktree but never
+    # produced story commits. Treat it as full so WORKSPACE recreates it.
+    if worktree_path.exists():
+        try:
+            log_result = subprocess.run(
+                ["git", "log", f"{base_branch}..{branch}", "--oneline"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
+            )
+            commits_ahead = [
+                ln
+                for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
+                if ln.strip()
+            ]
+            if not commits_ahead:
+                behind_result = subprocess.run(
+                    ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
+                    cwd=str(project_root),
+                    capture_output=True,
+                    timeout=30,
+                )
+                commits_behind = int(
+                    behind_result.stdout.decode("utf-8", errors="replace").strip() or "0"
+                )
+                if commits_behind == 0:
+                    return StoryTriage(
+                        story_path=story_path,
+                        action="full",
+                        reason=f"worktree exists but branch is at {base_branch} HEAD (stale)",
+                        worktree_path=None,
+                        slug=slug,
+                    )
+        except (subprocess.TimeoutExpired, OSError, ValueError):
+            commits_ahead = None
+
+    # 2. Check if already merged to base branch.
     # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
     # for fast-forward merges where branch and base land on the same commit.
     if _is_branch_merged(branch, base_branch, project_root, slug=slug):
@@ -253,7 +291,7 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 2. Check if worktree exists
+    # 3. Check if worktree exists
     if not worktree_path.exists():
         return StoryTriage(
             story_path=story_path,
@@ -263,21 +301,22 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 3. Check commits ahead of base branch
-    try:
-        log_result = subprocess.run(
-            ["git", "log", f"{base_branch}..{branch}", "--oneline"],
-            cwd=str(project_root),
-            capture_output=True,
-            timeout=30,
-        )
-        commits_ahead = [
-            ln
-            for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
-            if ln.strip()
-        ]
-    except (subprocess.TimeoutExpired, OSError):
-        commits_ahead = []
+    # 4. Check commits ahead of base branch
+    if commits_ahead is None:
+        try:
+            log_result = subprocess.run(
+                ["git", "log", f"{base_branch}..{branch}", "--oneline"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
+            )
+            commits_ahead = [
+                ln
+                for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
+                if ln.strip()
+            ]
+        except (subprocess.TimeoutExpired, OSError):
+            commits_ahead = []
 
     if not commits_ahead:
         # Stale worktree: 0 commits ahead of base. run_task WORKSPACE phase will
@@ -290,7 +329,7 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 4. Check audit trail for a prior review APPROVE
+    # 5. Check audit trail for a prior review APPROVE
     if has_review_approve(project_root, slug, base_branch, branch):
         return StoryTriage(
             story_path=story_path,
@@ -300,7 +339,7 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 5. Gate pre-check to decide REVIEW vs DEV entry
+    # 6. Gate pre-check to decide REVIEW vs DEV entry
     gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
 
     if gate_err is None and gate_decision == "PASS":
