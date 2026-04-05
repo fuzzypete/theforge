@@ -234,3 +234,48 @@ class TestDeepSeekSubmitGating:
         names = _tool_names(schemas)
         assert SUBMIT_REVIEW in names
         assert finalizer is not noop_finalizer
+
+
+class TestProviderFallbackPreservesPhase:
+    """_apply_provider_fallback must carry phase through to the rebuilt ModelProfile."""
+
+    def test_dev_phase_preserved_after_fallback(self):
+        from theforge.config.types import ApiFallbackConfig
+        from theforge.config.profiles import _apply_provider_fallback
+
+        dev_profile = _make_profile("sonnet", provider=None, phase="dev")
+        dev_profile = ModelProfile(
+            name="sonnet",
+            cli="claude",
+            provider=None,
+            model="claude-sonnet-4-6",
+            budget_usd=5.0,
+            timeout_seconds=600,
+            allowed_tools=("read_file", "bash"),
+            phase="dev",
+        )
+        fallbacks = {
+            "anthropic": ApiFallbackConfig(provider="anthropic", model="claude-sonnet-4-6")
+        }
+        result = _apply_provider_fallback(dev_profile, fallbacks)
+        assert result.phase == "dev"
+
+    def test_preflight_phase_preserved_after_fallback(self):
+        from theforge.config.types import ApiFallbackConfig
+        from theforge.config.profiles import _apply_provider_fallback
+
+        preflight_profile = ModelProfile(
+            name="codex-preflight",
+            cli="codex",
+            provider=None,
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("read_file", "bash"),
+            phase="preflight",
+        )
+        fallbacks = {"openai": ApiFallbackConfig(provider="openai", model="o4-mini")}
+        result = _apply_provider_fallback(preflight_profile, fallbacks)
+        assert result.phase == "preflight"
+        # Verify the fallback path would not accidentally enable submit tools
+        assert result.phase in {"preflight", "dev"}

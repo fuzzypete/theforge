@@ -63,6 +63,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
         else None,
         api_fallback=base.api_fallback,
+        phase=base.phase,
     )
 
 
@@ -338,4 +339,5 @@ def _apply_provider_fallback(
         max_tool_output_bytes=profile.max_tool_output_bytes,
         max_iterations=profile.max_iterations,
         api_fallback=fallback,
+        phase=profile.phase,
     )
