@@ -43,8 +43,8 @@ profiles:
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
   preflight:
-    cli: claude
-    model: claude-sonnet-4-6
+    provider: google
+    model: gemini-2.5-pro
     budget_usd: 1.00
     timeout_seconds: 300
   review_pool:
