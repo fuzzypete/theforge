@@ -436,7 +436,7 @@ def _merge_pr(
         # feature worktree can trip worktree branch checkout constraints.
         try:
             merge_proc = subprocess.run(
-                ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
+                ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
                 capture_output=True,
                 text=True,
                 cwd=str(config.project_root),

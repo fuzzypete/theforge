@@ -410,6 +410,41 @@ class TestMergePrFunction:
         assert "branch protection" in result["error"]
         assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 1}
 
+    def test_auto_flag_passed_to_gh_merge(self, tmp_path: Path) -> None:
+        """Verify --auto is passed so branch protection can queue the merge."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        gh_calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                gh_calls.append(cmd)
+                return _make_subprocess_result(0)
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/auto",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert gh_calls
+        assert all("--auto" in c for c in gh_calls)
+
     def test_merge_strategy_squash_passed_to_gh(self, tmp_path: Path) -> None:
         """Verify --squash is passed to gh pr merge."""
         config = _make_merge_pr_config(tmp_path, merge_strategy="squash")
