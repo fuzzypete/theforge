@@ -91,6 +91,7 @@ class ModelProfile:
     reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
     thinking_budget: int | None = None  # Google Gemini ThinkingConfig token budget
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
+    phase: str | None = None  # "dev" | "preflight" | "review" | "plan_review" — set by coordinator
     base_url: str | None = None  # overrides provider's default API endpoint (Ollama etc.)
     max_tool_output_bytes: int = 51200  # cap for tool output (50KB default)
     max_iterations: int | None = (

@@ -368,6 +368,7 @@ def _agent_to_profile(
         timeout_seconds=agent.timeout_seconds,
         allowed_tools=allowed_tools,
         api_fallback=agent.api_fallback,
+        phase=role,
     )
 
 
