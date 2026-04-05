@@ -29,13 +29,35 @@ def _init_repo(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.name", "Test User")
     _git(repo, "config", "user.email", "test@example.com")
 
+    # Mirror the real project's .gitignore: .forge/ entirely ignored.
+    # hooks are intentionally tracked via force-add (negation rules don't overcome
+    # parent-dir exclusion in practice, so -f is required for them too).
+    (repo / ".gitignore").write_text(".forge/\n", encoding="utf-8")
     (repo / "README.md").write_text("base\n", encoding="utf-8")
-    _git(repo, "add", "README.md")
+    _git(repo, "add", ".gitignore", "README.md")
     _git(repo, "commit", "-m", "base")
     _git(repo, "branch", "-M", "main")
     _git(repo, "push", "-u", "origin", "main")
     _git(repo, "checkout", "-b", "feat/test")
     return repo, "main"
+
+
+def _init_repo_with_tracked_hook(tmp_path: Path) -> tuple[Path, str]:
+    """Like _init_repo but also tracks a .forge/hooks/ file in the base branch."""
+    repo, base_branch = _init_repo(tmp_path)
+    _git(repo, "checkout", base_branch)
+
+    hooks_dir = repo / ".forge" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "post_run.sh").write_text("#!/bin/bash\necho ok\n", encoding="utf-8")
+    # .forge/ is gitignored; hooks are intentionally force-added (matches real project).
+    _git(repo, "add", "-f", ".forge/hooks/post_run.sh")
+    _git(repo, "commit", "-m", "base: track hook")
+    _git(repo, "push", "origin", base_branch)
+    # feat/test was already created pointing at the old main; reset it to new HEAD
+    _git(repo, "branch", "-D", "feat/test")
+    _git(repo, "checkout", "-b", "feat/test")
+    return repo, base_branch
 
 
 def _commit_count(repo: Path, base_branch: str) -> int:
@@ -67,7 +89,7 @@ def test_scrub_drops_forge_only_commits(tmp_path):
     forge_dir = repo / ".forge"
     forge_dir.mkdir(exist_ok=True)
     (forge_dir / "handoff.yaml").write_text("temp: true\n", encoding="utf-8")
-    _git(repo, "add", ".forge/handoff.yaml")
+    _git(repo, "add", "-f", ".forge/handoff.yaml")
     _git(repo, "commit", "-m", "chore: forge artifact")
 
     _scrub_forge_history(repo, "feat/test", base_branch)
@@ -84,7 +106,8 @@ def test_scrub_strips_forge_paths_from_mixed_commit(tmp_path):
     forge_dir.mkdir(exist_ok=True)
     (repo / "src.py").write_text("print('mixed')\n", encoding="utf-8")
     (forge_dir / "handoff.yaml").write_text("temp: true\n", encoding="utf-8")
-    _git(repo, "add", "src.py", ".forge/handoff.yaml")
+    _git(repo, "add", "src.py")
+    _git(repo, "add", "-f", ".forge/handoff.yaml")
     _git(repo, "commit", "-m", "feat: mixed change")
 
     _scrub_forge_history(repo, "feat/test", base_branch)
@@ -132,3 +155,41 @@ def test_scrub_returns_early_when_branch_has_no_unique_commits(tmp_path):
         _scrub_forge_history(repo, "feat/test", base_branch)
 
     assert calls == [f"git log --format=%H origin/{base_branch}..HEAD"]
+
+
+def test_scrub_does_not_drop_commit_touching_only_tracked_forge_hooks(tmp_path):
+    """A commit that modifies only .forge/hooks/ files is not dropped or scrubbed."""
+    repo, base_branch = _init_repo_with_tracked_hook(tmp_path)
+
+    hook = repo / ".forge" / "hooks" / "post_run.sh"
+    hook.write_text("#!/bin/bash\necho updated\n", encoding="utf-8")
+    _git(repo, "add", "-f", ".forge/hooks/post_run.sh")
+    _git(repo, "commit", "-m", "feat: update hook")
+
+    _scrub_forge_history(repo, "feat/test", base_branch)
+
+    log = _git(repo, "log", "--oneline", f"origin/{base_branch}..HEAD")
+    assert "update hook" in log
+    assert _commit_count(repo, base_branch) == 1
+
+
+def test_scrub_preserves_hooks_in_mixed_commit(tmp_path):
+    """Mixed commit: artifact paths removed, .forge/hooks/ paths preserved."""
+    repo, base_branch = _init_repo_with_tracked_hook(tmp_path)
+
+    forge_dir = repo / ".forge"
+    (repo / "src.py").write_text("print('hello')\n", encoding="utf-8")
+    (forge_dir / "handoff.yaml").write_text("run: 1\n", encoding="utf-8")
+    hook = forge_dir / "hooks" / "post_run.sh"
+    hook.write_text("#!/bin/bash\necho updated\n", encoding="utf-8")
+    _git(repo, "add", "src.py")
+    _git(repo, "add", "-f", ".forge/handoff.yaml", ".forge/hooks/post_run.sh")
+    _git(repo, "commit", "-m", "feat: real + artifact + hook")
+
+    _scrub_forge_history(repo, "feat/test", base_branch)
+
+    show = _git(repo, "show", "--name-only", "--format=", "--first-parent", "HEAD")
+    changed = show.splitlines()
+    assert "src.py" in changed
+    assert ".forge/handoff.yaml" not in changed
+    assert ".forge/hooks/post_run.sh" in changed

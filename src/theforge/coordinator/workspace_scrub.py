@@ -10,13 +10,29 @@ from pathlib import Path
 
 from . import util as _cu
 
+# Prefixes within .forge/ that are intentionally tracked project files.
+# Everything else under .forge/ is treated as a runtime artifact to be scrubbed.
+_FORGE_PRESERVED_PREFIXES = (".forge/hooks/",)
+
+
+def _is_forge_artifact(path: str) -> bool:
+    """Return True if *path* is a scrub-eligible .forge/ runtime artifact.
+
+    Paths under .forge/ that begin with a preserved prefix (e.g. .forge/hooks/)
+    are intentional project files and are never scrubbed.
+    """
+    if not path.startswith(".forge/"):
+        return False
+    return not any(path.startswith(pfx) for pfx in _FORGE_PRESERVED_PREFIXES)
+
 
 def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: str) -> None:
     """Rewrite branch history to remove committed .forge artifacts.
 
-    Drops commits whose entire diff touches only .forge/ paths and strips .forge/
-    paths from mixed commits via an automated interactive rebase. Failures are
-    logged as warnings but never raised so the dev flow remains automatic.
+    Drops commits whose entire diff touches only .forge/ artifact paths and
+    strips those paths from mixed commits via an automated interactive rebase.
+    Paths under .forge/hooks/ are preserved.  Failures are logged as warnings
+    but never raised so the dev flow remains automatic.
     """
     ok, out = _cu._run_shell(f"git log --format=%H origin/{base_branch}..HEAD", workspace_path)
     if not ok:
@@ -29,6 +45,7 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
 
     forge_only: list[str] = []
     mixed: list[str] = []
+    mixed_artifacts: dict[str, list[str]] = {}  # sha -> artifact paths to remove
 
     for sha in commits:
         ok_diff, diff_out = _cu._run_shell(
@@ -39,11 +56,15 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
         files = [line.strip() for line in diff_out.splitlines() if line.strip()]
         if not files:
             continue
-        forge_files = [path for path in files if path.startswith(".forge/")]
-        if len(forge_files) == len(files):
+        artifact_files = [p for p in files if _is_forge_artifact(p)]
+        if not artifact_files:
+            continue
+        real_files = [p for p in files if not _is_forge_artifact(p)]
+        if not real_files:
             forge_only.append(sha)
-        elif forge_files:
+        else:
             mixed.append(sha)
+            mixed_artifacts[sha] = artifact_files
 
     if not forge_only and not mixed:
         return
@@ -54,21 +75,17 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
         f"from {branch_name}"
     )
 
-    scrub_cmd = (
-        "git rm -r -f --cached --ignore-unmatch -- .forge && "
-        "git add -u && "
-        "(git diff --cached --quiet || git commit --amend --no-edit)"
-    )
     editor_script = "\n".join(
         [
             "#!/usr/bin/env python3",
             "import pathlib",
+            "import shlex",
             "import sys",
             "",
             f"forge_only = {forge_only!r}",
             f"mixed = {mixed!r}",
+            f"mixed_artifacts = {mixed_artifacts!r}",
             f"commit_prefixes = {commit_prefixes!r}",
-            f"scrub_cmd = {scrub_cmd!r}",
             "",
             "todo_path = pathlib.Path(sys.argv[1])",
             'lines = todo_path.read_text(encoding="utf-8").splitlines()',
@@ -97,7 +114,13 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
             "        continue",
             "    rewritten.append(line)",
             "    if full_sha in mixed:",
-            '        rewritten.append(f"exec {scrub_cmd}")',
+            "        artifacts = mixed_artifacts.get(full_sha, [])",
+            "        if artifacts:",
+            "            rm_args = ' '.join(shlex.quote(p) for p in artifacts)",
+            "            rewritten.append(",
+            '                f"exec git rm -f --cached -- {rm_args} && "',
+            '                f"(git diff --cached --quiet || git commit --amend --no-edit)"',
+            "            )",
             'todo_path.write_text("\\n".join(rewritten) + "\\n", encoding="utf-8")',
             "",
         ]
