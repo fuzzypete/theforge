@@ -13,7 +13,7 @@ from theforge.assignment import (
     _reviewer_count,
     assign_models,
 )
-from theforge.config import AgentDef
+from theforge.config import AgentDef, ApiFallbackConfig
 
 
 @pytest.fixture(autouse=True)
@@ -310,6 +310,44 @@ def test_explicit_override():
     assert decision.dev.name == "custom-dev"
     # Other phases still come from pool
     assert decision.planner.model in ("haiku", "sonnet", "opus")
+
+
+def test_agent_to_profile_preserves_api_fallback_for_adaptive_cli_agents():
+    """Adaptive assignment must preserve CLI fallback metadata on synthesized profiles."""
+    agents = [
+        AgentDef(
+            name="codex-dev",
+            provider=None,
+            cli="codex",
+            model="gpt-5.4",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="mid",
+            api_fallback=ApiFallbackConfig(provider="openai", model="gpt-5.4"),
+        ),
+        AgentDef(
+            name="opus",
+            provider="anthropic",
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+        ),
+        AgentDef(
+            name="haiku",
+            provider="anthropic",
+            model="haiku",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            tier="cheap",
+        ),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+
+    decision = assign_models(agents, cfg, "medium")
+
+    assert decision.dev.cli == "codex"
+    assert decision.dev.api_fallback == ApiFallbackConfig(provider="openai", model="gpt-5.4")
 
 
 # ── test_budget_cap_enforcement ───────────────────────────────────────

@@ -338,6 +338,84 @@ class TestRunCodex:
         mock_api.assert_called_once()
         assert result == api_result
 
+    def test_codex_resumed_session_does_not_fall_back_to_api(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+        )
+        cli_result = AgentResult(
+            success=False,
+            output="429 rate limit exceeded",
+            session_id="cli-session",
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_result),
+            patch("theforge.runners.api.run_api_agent") as mock_api,
+        ):
+            result = run_agent(
+                prompt="retry review",
+                profile=profile,
+                working_dir=tmp_path,
+                session_id="cli-session",
+            )
+
+        mock_api.assert_not_called()
+        assert result == cli_result
+
+    def test_codex_api_fallback_inherits_optional_profile_fields(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read", "Bash"),
+            reasoning_effort="high",
+            base_url="https://example.invalid/v1",
+            max_iterations=7,
+            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+        )
+        cli_result = AgentResult(
+            success=False,
+            output="429 rate limit exceeded",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+        api_result = AgentResult(
+            success=True,
+            output="api fallback result",
+            session_id=None,
+            cost_usd=0.12,
+            exit_code=0,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_result),
+            patch("theforge.runners.api.run_api_agent", return_value=api_result) as mock_api,
+        ):
+            result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
+
+        fallback_profile = mock_api.call_args.kwargs["profile"]
+        assert fallback_profile.reasoning_effort == "high"
+        assert fallback_profile.base_url == "https://example.invalid/v1"
+        assert fallback_profile.max_iterations == 7
+        assert result == api_result
+
 
 class TestRunGemini:
     """Test Gemini CLI subprocess invocation."""
