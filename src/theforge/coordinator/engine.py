@@ -412,6 +412,7 @@ def run_task(
     start_phase: Phase | None = None,
     stop_phase: Phase | None = None,
     no_pull: bool = False,
+    cached_preflight_state: CoordinatorState | None = None,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -596,21 +597,33 @@ def run_task(
             return result
 
         # ── PREFLIGHT ──────────────────────────────────────────────────
-        from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
+        if cached_preflight_state is not None:
+            state.preflight_verdict = cached_preflight_state.preflight_verdict
+            state.preflight_reason = cached_preflight_state.preflight_reason
+            state.preflight_complexity = cached_preflight_state.preflight_complexity
+            state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
+            state.preflight_work_type = cached_preflight_state.preflight_work_type
+            state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
+            state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
+            state.preflight_duration_s = cached_preflight_state.preflight_duration_s
+            _pf_result = None
+            _pf_already_done_loop = False
+        else:
+            from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
 
-        config, _pf_result, _pf_already_done_loop = _run_preflight_phase(
-            state,
-            config,
-            task,
-            story_content,
-            workspace_path,
-            branch_name,
-            notify=notify,
-            logger=logger,
-            task_start=_task_start,
-            state_update_fn=state_update_fn,
-            stop_phase=stop_phase,
-        )
+            config, _pf_result, _pf_already_done_loop = _run_preflight_phase(
+                state,
+                config,
+                task,
+                story_content,
+                workspace_path,
+                branch_name,
+                notify=notify,
+                logger=logger,
+                task_start=_task_start,
+                state_update_fn=state_update_fn,
+                stop_phase=stop_phase,
+            )
         if _pf_result is not None:
             return _pf_result
         if _pf_already_done_loop:

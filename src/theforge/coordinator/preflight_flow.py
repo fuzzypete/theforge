@@ -35,6 +35,7 @@ from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
     _apply_complexity_adaptation,
     _parse_preflight_complexity,
+    _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
     _parse_preflight_verdict,
     _parse_preflight_warnings,
@@ -137,8 +138,12 @@ def _run_preflight_phase(
     if preflight_result.success:
         _warnings = _parse_preflight_warnings(preflight_result.output)
         state.preflight_warnings = _warnings
+        _likely_files = _parse_preflight_likely_files(preflight_result.output)
+        state.preflight_likely_files = _likely_files
         if _warnings:
             _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
+        if _likely_files:
+            _log(f"  Likely files: {', '.join(_likely_files)}")
 
     # ── Complexity parsing + adaptive model swapping ───────────────────
     if preflight_result.success:
@@ -268,6 +273,7 @@ def _run_preflight_phase(
         "sufficiency": state.preflight_sufficiency,
         "cost_usd": preflight_result.cost_usd,
         "duration_s": round(_preflight_elapsed, 2),
+        "likely_files": state.preflight_likely_files,
     }
     _write_log_artifact(
         state.log_dir,

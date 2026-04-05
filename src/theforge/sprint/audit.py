@@ -269,7 +269,9 @@ def _write_story_audit(
     from ..coordinator.audit import generate_audit_log  # noqa: PLC0415
 
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
-    if workspace_path.exists():
+    if workspace_path.exists() and not (
+        result.state.workspace_path is None and result.state.preflight_verdict == "ALREADY_DONE"
+    ):
         audit_data = generate_audit_log(config, task, result)
         audit_path = workspace_path / AUDIT_PATH
         ensure_parent_dir(audit_path)

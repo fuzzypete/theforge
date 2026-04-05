@@ -23,6 +23,7 @@ from ..coordinator.util import _fmt_duration, _generate_run_id
 from ..coordinator.workspace import _merge_branch, pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
+from .collision import compute_synthetic_edges, inject_synthetic_deps, run_batch_preflight
 from .dag import (
     StoryDAG,
     StoryTriage,
@@ -189,6 +190,7 @@ def _run_fresh(
     state_update_fn: "Callable[[dict], None] | None",
     no_pull: bool,
     plan_gate: "threading.Event | None",
+    preflight_states: dict[str, CoordinatorState] | None = None,
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
@@ -202,6 +204,7 @@ def _run_fresh(
             sprint_name=sprint_name,
             state_update_fn=state_update_fn,
             no_pull=no_pull,
+            cached_preflight_state=(preflight_states or {}).get(task.slug),
         )
 
     # Phase 1: run through PLAN only
@@ -216,6 +219,7 @@ def _run_fresh(
         state_update_fn=state_update_fn,
         no_pull=no_pull,
         stop_phase=Phase.PLAN_REVIEW,
+        cached_preflight_state=(preflight_states or {}).get(task.slug),
     )
 
     if not plan_result.success:
@@ -266,6 +270,7 @@ def _run_single_story(
     state_update_fn: "Callable[[dict], None] | None",
     no_pull: bool = False,
     plan_gate: "threading.Event | None" = None,
+    preflight_states: dict[str, CoordinatorState] | None = None,
 ) -> "tuple[TaskStory, CoordinatorResult, float, datetime.datetime, datetime.datetime]":
     """Execute a single story and return (task, result, elapsed, started_at, finished_at).
 
@@ -324,6 +329,7 @@ def _run_single_story(
                     state_update_fn,
                     no_pull,
                     plan_gate,
+                    preflight_states,
                 )
         else:
             result = _run_fresh(
@@ -337,6 +343,7 @@ def _run_single_story(
                 state_update_fn,
                 no_pull,
                 plan_gate,
+                preflight_states,
             )
     except Exception as exc:
         _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
@@ -585,8 +592,23 @@ def run_sprint(
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
+    preflight_states = run_batch_preflight(
+        normalized.tasks,
+        config,
+        sprint_name=resolved.name,
+        no_pull=no_pull,
+        max_parallel=max_parallel,
+        notify=notify,
+    )
+    synthetic_edges = compute_synthetic_edges(preflight_states, normalized.tasks)
+    if synthetic_edges:
+        _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")
+    augmented_tasks = inject_synthetic_deps(normalized.tasks, synthetic_edges)
     blocked_slugs = dict(normalized.blocked)
-    dag = build_dag(normalized.tasks, satisfied=satisfied_slugs)
+    try:
+        dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
+    except ValueError as exc:
+        raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
 
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
     if resume:
@@ -700,6 +722,7 @@ def run_sprint(
                     state_fn,
                     no_pull,
                     gate,
+                    preflight_states,
                 )
                 active[task.slug] = fut
 
