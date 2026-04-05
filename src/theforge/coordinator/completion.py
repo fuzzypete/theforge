@@ -18,6 +18,7 @@ from .util import _fmt_duration, _log, _log_verbose
 from .workspace import _merge_branch
 
 _pr_log = logging.getLogger(__name__)
+MAX_MERGE_RETRIES = 3
 
 
 def _archive_story_to_done(
@@ -284,84 +285,108 @@ def _merge_pr(
         except Exception as exc:
             _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
 
-    # Step 1: fetch + rebase onto latest base_branch
-    try:
-        fetch_proc = subprocess.run(
-            ["git", "fetch", "origin", base_branch],
-            capture_output=True,
-            text=True,
-            cwd=str(push_cwd),
-            timeout=60,
-        )
-        if fetch_proc.returncode != 0:
-            err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
-            _pr_log.warning("git fetch failed (exit %d): %s", fetch_proc.returncode, err)
-            return _fail(f"git fetch failed: {err}")
+    pr_url: str | None = None
+    merge_retry_error = "base branch was modified"
 
-        rebase_proc = subprocess.run(
-            ["git", "rebase", f"origin/{base_branch}"],
-            capture_output=True,
-            text=True,
-            cwd=str(push_cwd),
-            timeout=120,
-        )
-        if rebase_proc.returncode != 0:
-            err = rebase_proc.stderr.strip() or rebase_proc.stdout.strip()
-            _pr_log.warning("git rebase failed (exit %d): %s", rebase_proc.returncode, err)
-            subprocess.run(
-                ["git", "rebase", "--abort"],
+    for attempt in range(MAX_MERGE_RETRIES):
+        # Step 1: fetch + rebase onto latest base_branch
+        try:
+            fetch_proc = subprocess.run(
+                ["git", "fetch", "origin", base_branch],
                 capture_output=True,
+                text=True,
                 cwd=str(push_cwd),
-                timeout=30,
+                timeout=60,
             )
-            return _fail(f"rebase onto {base_branch} failed — escalating: {err}")
-    except Exception as exc:
-        _pr_log.warning("rebase step failed: %s", exc)
-        return _fail(f"rebase step failed: {exc}")
+            if fetch_proc.returncode != 0:
+                err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
+                _pr_log.warning("git fetch failed (exit %d): %s", fetch_proc.returncode, err)
+                return _fail(f"git fetch failed: {err}", pr_url=pr_url)
 
-    # Step 2: force-push the rebased branch so _create_pr's push is a fast-forward
-    try:
-        push_proc = subprocess.run(
-            ["git", "push", "-f", "origin", branch_name],
-            capture_output=True,
-            text=True,
-            cwd=str(push_cwd),
-            timeout=60,
-        )
-        if push_proc.returncode != 0:
-            err = push_proc.stderr.strip() or push_proc.stdout.strip()
-            _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
-            return _fail(f"force-push after rebase failed: {err}")
-    except Exception as exc:
-        _pr_log.warning("force-push failed: %s", exc)
-        return _fail(f"force-push after rebase failed: {exc}")
+            rebase_proc = subprocess.run(
+                ["git", "rebase", f"origin/{base_branch}"],
+                capture_output=True,
+                text=True,
+                cwd=str(push_cwd),
+                timeout=120,
+            )
+            if rebase_proc.returncode != 0:
+                err = rebase_proc.stderr.strip() or rebase_proc.stdout.strip()
+                _pr_log.warning("git rebase failed (exit %d): %s", rebase_proc.returncode, err)
+                subprocess.run(
+                    ["git", "rebase", "--abort"],
+                    capture_output=True,
+                    cwd=str(push_cwd),
+                    timeout=30,
+                )
+                return _fail(
+                    f"rebase onto {base_branch} failed — escalating: {err}",
+                    pr_url=pr_url,
+                )
+        except Exception as exc:
+            _pr_log.warning("rebase step failed: %s", exc)
+            return _fail(f"rebase step failed: {exc}", pr_url=pr_url)
 
-    # Step 3: create the PR (also archives story + pushes archive commit)
-    pr_result = _create_pr(config, task, branch_name, parsed_review, state)
-    if not pr_result.get("success"):
-        return _fail(
-            pr_result.get("error") or "PR creation failed",
-            pr_url=pr_result.get("pr_url"),
-        )
-    pr_url = pr_result["pr_url"]
+        # Step 2: force-push the rebased branch so _create_pr's push is a fast-forward
+        try:
+            push_proc = subprocess.run(
+                ["git", "push", "-f", "origin", branch_name],
+                capture_output=True,
+                text=True,
+                cwd=str(push_cwd),
+                timeout=60,
+            )
+            if push_proc.returncode != 0:
+                err = push_proc.stderr.strip() or push_proc.stdout.strip()
+                _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
+                return _fail(f"force-push after rebase failed: {err}", pr_url=pr_url)
+        except Exception as exc:
+            _pr_log.warning("force-push failed: %s", exc)
+            return _fail(f"force-push after rebase failed: {exc}", pr_url=pr_url)
 
-    # Step 4: merge the PR remotely from the repo root. Running gh from the
-    # feature worktree can trip worktree branch checkout constraints.
-    try:
-        merge_proc = subprocess.run(
-            ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
-            capture_output=True,
-            text=True,
-            cwd=str(config.project_root),
-            timeout=120,
+        # Step 3: create the PR only once (also archives story + pushes archive commit)
+        if attempt == 0:
+            pr_result = _create_pr(config, task, branch_name, parsed_review, state)
+            if not pr_result.get("success"):
+                return _fail(
+                    pr_result.get("error") or "PR creation failed",
+                    pr_url=pr_result.get("pr_url"),
+                )
+            pr_url = pr_result["pr_url"]
+
+        # Step 4: merge the PR remotely from the repo root. Running gh from the
+        # feature worktree can trip worktree branch checkout constraints.
+        try:
+            merge_proc = subprocess.run(
+                ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=120,
+            )
+        except Exception as exc:
+            _pr_log.warning("gh pr merge failed: %s", exc)
+            return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
+
+        if merge_proc.returncode == 0:
+            break
+
+        err = "\n".join(
+            part.strip()
+            for part in (merge_proc.stderr, merge_proc.stdout)
+            if part and part.strip()
         )
-        if merge_proc.returncode != 0:
-            err = merge_proc.stderr.strip() or merge_proc.stdout.strip()
-            _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
+        _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
+        if merge_retry_error in err.lower():
+            if attempt < MAX_MERGE_RETRIES - 1:
+                _pr_log.warning(
+                    "base branch changed during PR merge attempt %d/%d; retrying",
+                    attempt + 1,
+                    MAX_MERGE_RETRIES,
+                )
+                continue
             return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
-    except Exception as exc:
-        _pr_log.warning("gh pr merge failed: %s", exc)
-        return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
+        return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
 
     _log(f"  ✓ PR merged: {pr_url}")
 
