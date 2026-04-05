@@ -13,6 +13,7 @@ from theforge.runners.schema_utils import (
     ToolCallRequest,
     _estimate_cost,
     _is_reasoning_model,
+    uses_openai_responses_api,
 )
 
 if TYPE_CHECKING:
@@ -176,9 +177,7 @@ def _run_openai(
     prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
 ) -> AgentResult:
     """Dispatch to Chat Completions or Responses API based on model."""
-    from theforge.runners.schema_utils import _RESPONSES_API_MODELS
-
-    if profile.model in _RESPONSES_API_MODELS:
+    if uses_openai_responses_api(profile.model):
         return _run_openai_responses(prompt, profile, secrets)
     return _run_openai_chat(prompt, profile, secrets)
 

@@ -76,9 +76,12 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("deepseek", "deepseek-reasoner"): (0.55, 2.19),  # R1 alias
 }
 
-# Models that use the Responses API (/v1/responses) instead of Chat Completions.
-# Codex models are agentic and only available on this newer endpoint.
-_RESPONSES_API_MODELS: set[str] = {
+# Models we intentionally route to the Responses API (/v1/responses).
+# Some current OpenAI models (for example gpt-5.4 and o4-mini) accept both
+# Responses and Chat Completions. Keep this set limited to models that are
+# Responses-only in practice, so the name does not imply "all supported
+# Responses models".
+_RESPONSES_ONLY_MODELS: set[str] = {
     "gpt-5.1-codex-mini",
     "gpt-5.1-codex",
     "gpt-5.1-codex-max",
@@ -86,6 +89,12 @@ _RESPONSES_API_MODELS: set[str] = {
     "gpt-5.2-codex",
     "gpt-5.3-codex",
 }
+
+
+def uses_openai_responses_api(model: str) -> bool:
+    """Return True when this OpenAI model should be sent to /v1/responses."""
+    return model in _RESPONSES_ONLY_MODELS
+
 
 # OpenAI reasoning models that do not support temperature=0.
 # These models only accept temperature=1 (the default).

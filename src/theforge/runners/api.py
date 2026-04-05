@@ -42,7 +42,6 @@ from theforge.runners.finalizers import (
 from theforge.runners.schema_utils import (
     _DEFAULT_MAX_ITERATIONS,
     _MAX_MALFORMED,
-    _RESPONSES_API_MODELS,
     _SUBMIT_TOOL_NAMES,
     Finalizer,
     LoopTurn,
@@ -52,6 +51,7 @@ from theforge.runners.schema_utils import (
     _build_submit_tools_google,
     _build_submit_tools_openai,
     _estimate_cost,
+    uses_openai_responses_api,
 )
 from theforge.runners.tool_runtime import TOOL_REGISTRY, ToolDef
 
@@ -584,7 +584,7 @@ def _run_loop_openai(
     import openai
 
     tools = _build_registry_tools(profile)
-    is_responses = profile.model in _RESPONSES_API_MODELS
+    is_responses = uses_openai_responses_api(profile.model)
 
     if is_responses:
         tool_schemas = [
