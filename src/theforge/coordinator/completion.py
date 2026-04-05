@@ -486,6 +486,8 @@ def _merge_pr(
         _log(f"  ✓ PR merged: {pr_url}")
 
     # Step 6: sync local state and clean up the merged feature worktree/branch.
+    # Preserve the remote branch when GitHub only queued auto-merge; branch
+    # protection still needs that ref until the hosted merge completes.
     _cleanup_after_merge(delete_remote_branch=not auto_merge_queued)
 
     return {
