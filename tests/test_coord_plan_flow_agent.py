@@ -87,7 +87,9 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
             timeout_seconds=300,
             allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
         )
-        par_config = PlanAgentReviewConfig(enabled=True, pool=[_plan_review_a, _plan_review_b])
+        par_config = PlanAgentReviewConfig(
+            enabled=True, min_reviewers=2, pool=[_plan_review_a, _plan_review_b]
+        )
     else:
         par_config = PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet")
     return ForgeConfig(
@@ -850,6 +852,7 @@ findings:
             _make_plan_agent_review_config(tmp_path),
             plan_agent_review=PlanAgentReviewConfig(
                 enabled=True,
+                min_reviewers=1,
                 pool=[
                     ModelProfile(
                         name="reviewer-a",
