@@ -188,6 +188,7 @@ class CoordinatorState:
     preflight_sufficiency: str | None = None  # "implementation_ready" | "needs_planning"
     preflight_work_type: str | None = None  # "feature" | "refactor" | "mechanical" | "bug"
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
+    preflight_likely_files: list[str] = field(default_factory=list)
     preflight_result: AgentResult | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (

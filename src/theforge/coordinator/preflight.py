@@ -102,6 +102,30 @@ def _parse_preflight_warnings(output: str) -> list[str]:
     return []
 
 
+def _parse_preflight_likely_files(output: str) -> list[str]:
+    """Extract likely_files list from preflight agent output. Returns [] if absent."""
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            raw = parsed.get("likely_files", [])
+            if isinstance(raw, list):
+                return [str(path) for path in raw if path]
+    except yaml.YAMLError:
+        pass
+
+    return []
+
+
 def _parse_preflight_complexity(output: str) -> str:
     """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
     yaml_text = output
