@@ -34,6 +34,7 @@ from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
     ForgeConfig,
+    GithubConfig,
     HardConventionsConfig,
     HooksConfig,
     LogConfig,
@@ -261,6 +262,9 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)
 
+    github_data = raw.get("github", {})
+    github_cfg = GithubConfig(enabled=bool(github_data.get("enabled", False)))
+
     # Plan
     plan_data = raw.get("plan", {})
 
@@ -458,6 +462,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         synthesis_profile=synthesis_profile,
         retry=retry,
         notifications=notifications,
+        github=github_cfg,
         smart_config_models=smart_config_models,
         plan=plan_cfg,
         plan_review=plan_review_cfg,

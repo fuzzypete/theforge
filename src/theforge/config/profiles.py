@@ -63,6 +63,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
         else None,
         api_fallback=base.api_fallback,
+        github_handle=data.get("github_handle", base.github_handle),
         phase=base.phase,
     )
 
@@ -263,6 +264,7 @@ def _parse_profile(
         max_iterations=int(max_iter_raw)
         if (max_iter_raw := data.get("max_iterations")) is not None
         else None,
+        github_handle=data.get("github_handle"),
     )
 
 
@@ -339,5 +341,6 @@ def _apply_provider_fallback(
         max_tool_output_bytes=profile.max_tool_output_bytes,
         max_iterations=profile.max_iterations,
         api_fallback=fallback,
+        github_handle=profile.github_handle,
         phase=profile.phase,
     )
