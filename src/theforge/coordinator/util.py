@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from theforge.coordinator.log_tee import get_worker_slug
 from theforge.log_level import LogLevel
 
 # ── Log level ─────────────────────────────────────────────────────────
@@ -39,13 +40,17 @@ def _fmt_duration(seconds: float) -> str:
 
 def _log(msg: str) -> None:
     """Print coordinator status to stderr (always shown)."""
-    print(f"[forge] {msg}", file=sys.stderr, flush=True)
+    slug = get_worker_slug()
+    prefix = f"[{slug}] " if slug else ""
+    print(f"[forge] {prefix}{msg}", file=sys.stderr, flush=True)
 
 
 def _log_verbose(msg: str) -> None:
     """Print coordinator detail to stderr (verbose mode only)."""
     if _LOG_LEVEL >= LogLevel.VERBOSE:
-        print(f"[forge] {msg}", file=sys.stderr, flush=True)
+        slug = get_worker_slug()
+        prefix = f"[{slug}] " if slug else ""
+        print(f"[forge] {prefix}{msg}", file=sys.stderr, flush=True)
 
 
 def _fmt_cost(cost: float | None) -> str:

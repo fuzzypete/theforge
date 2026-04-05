@@ -675,3 +675,57 @@ class TestSigtermHandler:
         # When ntfy is not configured, _ntfy_crash_notify guards internally and
         # _ntfy_publish must never be called.
         mock_publish.assert_not_called()
+
+
+class TestWorkerSlugContext:
+    def test_get_worker_slug_default_empty(self) -> None:
+        from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
+
+        set_worker_slug("")
+        assert get_worker_slug() == ""
+
+    def test_set_and_get_worker_slug(self) -> None:
+        from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
+
+        set_worker_slug("issue-99")
+        assert get_worker_slug() == "issue-99"
+        set_worker_slug("")
+
+    def test_worker_slug_is_thread_local(self) -> None:
+        import threading
+
+        from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
+
+        results: dict[str, str] = {}
+
+        def worker_a() -> None:
+            set_worker_slug("issue-99")
+            results["a"] = get_worker_slug()
+
+        def worker_b() -> None:
+            results["b"] = get_worker_slug()
+
+        thread_a = threading.Thread(target=worker_a)
+        thread_b = threading.Thread(target=worker_b)
+        thread_a.start()
+        thread_a.join()
+        thread_b.start()
+        thread_b.join()
+
+        assert results == {"a": "issue-99", "b": ""}
+
+    def test_runner_log_includes_slug(self, monkeypatch, capsys) -> None:
+        from theforge.sprint import runner
+
+        monkeypatch.setattr(runner, "get_worker_slug", lambda: "my-story")
+        runner._log("hello")
+
+        assert "[sprint] [my-story] hello" in capsys.readouterr().err
+
+    def test_util_log_includes_slug(self, monkeypatch, capsys) -> None:
+        from theforge.coordinator import util
+
+        monkeypatch.setattr(util, "get_worker_slug", lambda: "my-story")
+        util._log("hello")
+
+        assert "[forge] [my-story] hello" in capsys.readouterr().err

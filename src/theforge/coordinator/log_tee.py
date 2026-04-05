@@ -7,12 +7,20 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import util as _cu
-
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
 
     from .logging import StructuredLogger
+
+_worker_ctx = threading.local()
+
+
+def set_worker_slug(slug: str) -> None:
+    _worker_ctx.slug = slug
+
+
+def get_worker_slug() -> str:
+    return getattr(_worker_ctx, "slug", "")
 
 
 def _safe_signal(signum, handler):
@@ -59,8 +67,8 @@ def _write_log_artifact(log_dir: "Path | None", relative_path: str, content: str
         dest = log_dir / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001
-        _cu._log(f"Warning: log artifact write failed for {relative_path}: {exc}")
+    except Exception:
+        pass
 
 
 class _TeeStderr:
