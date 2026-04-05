@@ -145,7 +145,7 @@ class TestTriageSpec:
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
-        assert "no worktree" in triage.reason
+        assert "stale" in triage.reason or "0 commits" in triage.reason or "HEAD" in triage.reason
 
     def test_triage_worktree_with_passing_gate(self, tmp_path: Path) -> None:
         """Worktree exists, commits ahead, gate passes → review."""
