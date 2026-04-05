@@ -1,0 +1,14 @@
+dev_notes: |
+  summary: "Implemented the branch-protection-aware `merge-pr` fix by preserving the remote branch when `gh pr merge --auto` only queues auto-merge, while still deleting the branch after an immediate merge; also added regression tests covering both queued auto-merge and immediate-merge cleanup behavior."
+  commits:
+    - sha: "52179cc"
+      message: "fix(coordinator): address review findings (iter 1)"
+    - sha: "e4c7262"
+      message: "fix(coordinator): auto-merge PRs behind branch protection"
+  acceptance_criteria:
+    - criterion: "`merge-pr` should use `--auto` when branch protection is enabled, allowing GitHub to merge once checks pass. Alternatively, wait for CI status before attempting merge."
+      status: MET
+      notes: "The implementation uses the auto-merge flow for branch-protected PRs and now avoids deleting the remote branch when merge completion is deferred to GitHub after checks pass; regression tests cover both deferred auto-merge and immediate-merge cleanup paths."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
