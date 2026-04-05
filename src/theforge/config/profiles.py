@@ -16,7 +16,13 @@ from .defaults import (
     SUPPORTED_CLIS,
 )
 from .models import _resolve_model_info
-from .types import SUPPORTED_PROVIDERS, ModelProfile
+from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
+
+CLI_PROVIDER_MAP: dict[str, str] = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "gemini": "google",
+}
 
 log = logging.getLogger("theforge.config")
 
@@ -56,6 +62,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         max_iterations=int(max_iter_raw)
         if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
         else None,
+        api_fallback=base.api_fallback,
     )
 
 
@@ -252,4 +259,80 @@ def _parse_profile(
         max_iterations=int(max_iter_raw)
         if (max_iter_raw := data.get("max_iterations")) is not None
         else None,
+    )
+
+
+def _parse_provider_fallbacks(
+    data: dict[str, Any],
+    *,
+    secrets: dict[str, str] | None = None,
+) -> dict[str, ApiFallbackConfig]:
+    """Parse top-level provider_fallbacks config."""
+    if not data:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("provider_fallbacks must be a mapping of provider -> config")
+
+    fallbacks: dict[str, ApiFallbackConfig] = {}
+    for provider, raw in data.items():
+        if provider not in SUPPORTED_PROVIDERS:
+            raise ValueError(
+                f"Unsupported provider {provider!r} in provider_fallbacks. "
+                f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+            )
+        if provider == "deepseek":
+            raise ValueError(
+                "provider_fallbacks does not support 'deepseek' because it has no CLI"
+            )
+        if not isinstance(raw, dict):
+            raise ValueError(f"provider_fallbacks.{provider} must be a mapping")
+
+        fallback_profile = _parse_profile(
+            f"{provider}-api-fallback",
+            {"provider": provider, **raw},
+            role="review",
+            secrets=secrets,
+        )
+        fallbacks[provider] = ApiFallbackConfig(
+            provider=provider,
+            model=fallback_profile.model,
+            timeout_seconds=fallback_profile.timeout_seconds,
+            reasoning_effort=fallback_profile.reasoning_effort,
+            thinking_budget=fallback_profile.thinking_budget,
+            base_url=fallback_profile.base_url,
+            max_iterations=fallback_profile.max_iterations,
+        )
+    return fallbacks
+
+
+def _apply_provider_fallback(
+    profile: ModelProfile,
+    fallbacks: dict[str, ApiFallbackConfig],
+) -> ModelProfile:
+    """Attach a same-provider API fallback to CLI profiles when configured."""
+    if profile.provider or not profile.cli:
+        return profile
+    provider = CLI_PROVIDER_MAP.get(profile.cli)
+    if provider is None:
+        return profile
+    fallback = fallbacks.get(provider)
+    if fallback is None:
+        return profile
+    return ModelProfile(
+        name=profile.name,
+        cli=profile.cli,
+        provider=profile.provider,
+        model=profile.model,
+        budget_usd=profile.budget_usd,
+        timeout_seconds=profile.timeout_seconds,
+        allowed_tools=profile.allowed_tools,
+        timeout_medium_seconds=profile.timeout_medium_seconds,
+        timeout_large_seconds=profile.timeout_large_seconds,
+        reasoning_effort=profile.reasoning_effort,
+        thinking_budget=profile.thinking_budget,
+        review_role=profile.review_role,
+        base_url=profile.base_url,
+        max_tool_output_bytes=profile.max_tool_output_bytes,
+        max_iterations=profile.max_iterations,
+        api_fallback=fallback,
     )

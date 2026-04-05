@@ -9,6 +9,7 @@ from pathlib import Path
 from theforge.cli.shared import _find_config
 from theforge.config import ForgeConfig, ModelProfile, load_config
 from theforge.config.auth import check_agent_auth
+from theforge.config.profiles import _apply_provider_fallback
 from theforge.config.types import PlanConfig
 
 
@@ -243,7 +244,12 @@ def cmd_check_config(args: object) -> int:
 
     if config.plan_agent_review.enabled:
         for p in config.plan_agent_review.profiles:
-            _run_auth(p, "plan_review", auth_results, config.secrets)
+            _run_auth(
+                _apply_provider_fallback(p, config.provider_fallbacks),
+                "plan_review",
+                auth_results,
+                config.secrets,
+            )
 
     if config.plan.enabled:
         plan_profile = ModelProfile(
@@ -255,6 +261,7 @@ def cmd_check_config(args: object) -> int:
             timeout_seconds=config.plan.timeout,
             allowed_tools=(),
         )
+        plan_profile = _apply_provider_fallback(plan_profile, config.provider_fallbacks)
         _run_auth(plan_profile, "phase", auth_results, config.secrets)
 
     for agent in config.agents:
