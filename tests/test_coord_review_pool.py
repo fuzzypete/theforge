@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+from unittest.mock import patch
+
+from coord_test_helpers import (
+    APPROVE_REVIEW,
+    PARSE_ERROR_OUTPUT,
+    _make_agent_result,
+    _make_pool_config,
+    _make_review_profile,
+    _make_task,
+)
+
+from theforge.config import RetryPolicy
+from theforge.coordinator.review_pool import _run_review_pool
+from theforge.coordinator.state import CoordinatorState, Phase, ReviewCycleMetadata
+
+
+def _meta() -> ReviewCycleMetadata:
+    return ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+
+
+class TestReviewerDemotion:
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_reviewer_demoted_on_next_cycle_after_threshold(
+        self, mock_pool, _mock_log_agent_result, tmp_path
+    ):
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(demotion_threshold=2)}
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1"),
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+            ],
+            [
+                _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1"),
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+            ],
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2")],
+        ]
+
+        with patch("theforge.coordinator.review_pool._log") as mock_log:
+            for _ in range(2):
+                successful, failed, merged, _, _ = _run_review_pool(
+                    state,
+                    config,
+                    task,
+                    "story",
+                    workspace,
+                    "branch",
+                    _meta(),
+                    notify=False,
+                    enforce_budgets=False,
+                )
+                assert merged is not None
+                assert [r.profile_name for r in successful] == ["r1", "r2"]
+                assert failed == []
+
+            successful, failed, merged, _, _ = _run_review_pool(
+                state,
+                config,
+                task,
+                "story",
+                workspace,
+                "branch",
+                _meta(),
+                notify=False,
+                enforce_budgets=False,
+            )
+
+        assert merged is not None
+        assert [r.profile_name for r in successful] == ["r2"]
+        assert failed == []
+        assert state.reviewer_parse_failure_counts == {"r1": 2}
+        assert mock_pool.call_args_list[2].kwargs["profiles"] == [r2]
+        assert any(
+            "⚠ r1 demoted after 2 parse failures this run" in str(c)
+            for c in mock_log.call_args_list
+        )
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_demotion_threshold_zero_disables_demotion(
+        self, mock_pool, _mock_log_agent_result, tmp_path
+    ):
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(demotion_threshold=0)}
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+
+        for _ in range(3):
+            successful, _, merged, _, _ = _run_review_pool(
+                state,
+                config,
+                task,
+                "story",
+                workspace,
+                "branch",
+                _meta(),
+                notify=False,
+                enforce_budgets=False,
+            )
+            assert merged is not None
+            assert [r.profile_name for r in successful] == ["r1", "r2"]
+
+        assert state.reviewer_parse_failure_counts == {}
+        assert all(call.kwargs["profiles"] == [r1, r2] for call in mock_pool.call_args_list)
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_all_reviewers_demoted_escalates(self, mock_pool, _mock_log_agent_result, tmp_path):
+        reviewer = _make_review_profile("solo")
+        config = _make_pool_config(tmp_path, [reviewer], reviewer)
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(demotion_threshold=1)}
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="solo")
+        ]
+
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+        )
+        assert merged is not None
+        assert [r.profile_name for r in successful] == ["solo"]
+        assert failed == []
+
+        successful, failed, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+        )
+
+        assert successful == []
+        assert failed == []
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert state.error == "All reviewers demoted due to parse failures."
+        assert mock_pool.call_count == 1
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_threshold_one_demotes_after_single_failure(
+        self, mock_pool, _mock_log_agent_result, tmp_path
+    ):
+        reviewer = _make_review_profile("solo")
+        config = _make_pool_config(tmp_path, [reviewer], reviewer)
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(demotion_threshold=1)}
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="solo")
+        ]
+
+        with patch("theforge.coordinator.review_pool._log") as mock_log:
+            _run_review_pool(
+                state,
+                config,
+                task,
+                "story",
+                workspace,
+                "branch",
+                _meta(),
+                notify=False,
+                enforce_budgets=False,
+            )
+
+        assert state.reviewer_parse_failure_counts == {"solo": 1}
+        assert any(
+            "⚠ solo demoted after 1 parse failures this run" in str(c)
+            for c in mock_log.call_args_list
+        )
