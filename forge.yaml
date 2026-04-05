@@ -27,6 +27,7 @@ conventions:
     - "Keep modules single-purpose; extract instead of growing monolith files"
     - "Keep pure-data types in low-dependency modules with stdlib-only imports"
     - "Separate prompt construction, output parsing, and coordinator control flow"
+    - "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail — diagnosing sprint failures requires tracing real data, not reconstructing it"
 
 retry:
   max_dev_iterations: 3
@@ -42,11 +43,10 @@ profiles:
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
   preflight:
-    provider: google
-    model: gemini-2.5-pro
+    cli: claude
+    model: claude-sonnet-4-6
     budget_usd: 1.00
     timeout_seconds: 300
-    thinking_budget: 8192
   review_pool:
     - name: openai-reviewer
       provider: openai
