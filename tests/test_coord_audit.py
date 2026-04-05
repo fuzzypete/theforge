@@ -323,6 +323,32 @@ class TestDevHandoffsInAudit:
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
         assert log["dev_handoffs"][0]["handoff"] is None
 
+    def test_dev_prompt_injections_in_audit(self, tmp_path: Path) -> None:
+        """Audit log includes finding IDs injected into each dev prompt."""
+        state = CoordinatorState()
+        state.dev_prompt_injected_finding_ids.append([])
+        state.dev_prompt_injected_finding_ids.append(["aaa", "bbb"])
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+
+        assert log["dev_prompt_injections"] == [
+            {"iteration": 1, "finding_ids": []},
+            {"iteration": 2, "finding_ids": ["aaa", "bbb"]},
+        ]
+
+    def test_dev_prompt_injections_remain_aligned_with_timeout_resume_passes(
+        self, tmp_path: Path
+    ) -> None:
+        """Timeout resumes still emit an audit row, even when no findings were injected."""
+        state = CoordinatorState()
+        state.dev_results.extend([_make_agent_result(), _make_agent_result()])
+        state.dev_prompt_injected_finding_ids.extend([[], []])
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+
+        assert len(log["dev_prompt_injections"]) == len(state.dev_results)
+        assert log["dev_prompt_injections"][1] == {"iteration": 2, "finding_ids": []}
+
 
 class TestFixPromptDispositions:
     """build_fix_prompt() must annotate P1 findings with their disposition."""

@@ -30,7 +30,12 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.dev_phase import (
+    _current_cycle_p1s_for_dev_prompt,
+    _prior_open_p1s_for_dev_prompt,
+)
 from theforge.coordinator.engine import run_task
+from theforge.coordinator.state import CoordinatorState, FindingRecord
 from theforge.runners import AgentResult
 
 
@@ -84,6 +89,52 @@ class TestCoordinatorPromptRouting:
         assert result.success is True
         assert mock_fix_prompt.called, "build_fix_prompt should be called on review iteration"
         assert mock_dev_prompt.call_count >= 1, "build_dev_prompt should be called on first run"
+        assert mock_fix_prompt.call_args.kwargs["prior_open_p1s"] is None
+        classified = mock_fix_prompt.call_args.kwargs["classified_p1s"]
+        assert len(classified) == 1
+        assert classified[0].description == "Off by one"
+        assert result.state.dev_prompt_injected_finding_ids == [[], []]
+
+    def test_carry_forward_excludes_findings_first_seen_in_current_review_cycle(self):
+        """Only unresolved P1s from earlier cycles are injected as carry-forward context."""
+        state = CoordinatorState(review_cycle=2)
+        older_open = FindingRecord(
+            finding_id="older-open",
+            cycle_first_seen=1,
+            cycle_last_seen=2,
+            file="src/older.py",
+            line=9,
+            severity="P1",
+            description="Older unresolved issue",
+            reporter="reviewer-a",
+            disposition="unresolved",
+        )
+        current_cycle = FindingRecord(
+            finding_id="current-cycle",
+            cycle_first_seen=2,
+            cycle_last_seen=2,
+            file="src/current.py",
+            line=11,
+            severity="P1",
+            description="Current cycle issue",
+            reporter="reviewer-b",
+            disposition="regression",
+        )
+        already_fixed = FindingRecord(
+            finding_id="fixed-prior",
+            cycle_first_seen=1,
+            cycle_last_seen=1,
+            file="src/fixed.py",
+            line=7,
+            severity="P1",
+            description="Already fixed issue",
+            reporter="reviewer-c",
+            disposition="fixed",
+        )
+        state.finding_registry.extend([older_open, current_cycle, already_fixed])
+
+        assert _prior_open_p1s_for_dev_prompt(state) == [older_open]
+        assert _current_cycle_p1s_for_dev_prompt(state) == [older_open, current_cycle]
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
@@ -450,6 +501,8 @@ class TestCoordinatorSessionResume:
         assert dev_prompts[0] == "full dev prompt"
         assert "You were cut off by a timeout." in dev_prompts[1]
         assert dev_prompts[1] != "full dev prompt"
+        assert result.state.dev_prompt_injected_finding_ids == [[], []]
+        assert len(result.state.dev_prompt_injected_finding_ids) == len(result.state.dev_results)
 
     @patch("theforge.coordinator.dev_phase.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")

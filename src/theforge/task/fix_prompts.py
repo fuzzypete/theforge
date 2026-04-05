@@ -122,6 +122,7 @@ def build_fix_prompt(
     escalation_note: str | None = None,
     handoff_file: str = "handoff.yaml",
     plan_output: str | dict | None = None,
+    prior_open_p1s: list | None = None,  # list[FindingRecord]
     classified_p1s: list | None = None,  # list[FindingRecord]
     surviving_families: list[dict] | None = None,
     conventions: list[str] | None = None,
@@ -229,6 +230,29 @@ def build_fix_prompt(
 
         """) + "\n".join(traj_lines)
 
+    carry_forward_section = ""
+    if prior_open_p1s:
+        prior_lines = []
+        for record in prior_open_p1s:
+            location_parts = []
+            if record.file is not None:
+                location_parts.append(f"file={record.file}")
+            if record.line is not None:
+                location_parts.append(f"line={record.line}")
+            location = ", ".join(location_parts) if location_parts else "location=unknown"
+            prior_lines.append(f"- {location}: {record.description}")
+        carry_forward_section = dedent(
+            f"""\
+            ## Still-open Findings from Prior Review
+
+            {chr(10).join(prior_lines)}
+
+            Treat these as unresolved constraints from earlier review cycles. Do not
+            regress or ignore them while addressing the current review feedback.
+
+            """
+        )
+
     # Build the P1 findings section with disposition annotations if available
     if classified_p1s:
         p1_lines = []
@@ -238,6 +262,7 @@ def build_fix_prompt(
             p1_lines.append(f"- [{r.disposition}] {r.description}{loc_suffix}")
         p1_section = "\n".join(p1_lines)
         findings_section = dedent(f"""\
+            {carry_forward_section}\
             ## P1 Findings (with disposition)
 
             {p1_section}
@@ -247,6 +272,7 @@ def build_fix_prompt(
             {review_findings}""")
     else:
         findings_section = dedent(f"""\
+            {carry_forward_section}\
             ## Review Findings
 
             {review_findings}""")

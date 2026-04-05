@@ -10,6 +10,7 @@ from pathlib import Path
 from theforge.config import ForgeConfig
 from theforge.task import TaskStory
 
+from .audit_render import build_agent_entries, build_reviews
 from .state import CoordinatorResult, CoordinatorState
 
 
@@ -230,86 +231,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         except ValueError:
             pass
 
-    # Build per-agent invocation list for cost breakdown.
-    # Durations are measured in the coordinator around each agent call.
-    agents: list[dict] = []
-    for i, r in enumerate(state.dev_results):
-        dur = state.dev_durations[i] if i < len(state.dev_durations) else None
-        entry: dict = {
-            "role": "dev",
-            "profile": r.profile_name or config.dev_profile.name,
-            "cost_usd": r.cost_usd,
-            "duration_seconds": dur,
-        }
-        if r.model_usage:
-            entry["model_usage"] = [
-                {
-                    "model": u.model,
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cache_read_tokens": u.cache_read_tokens,
-                    "cache_creation_tokens": u.cache_creation_tokens,
-                    "cost_usd": u.cost_usd,
-                }
-                for u in r.model_usage
-            ]
-        agents.append(entry)
-    for i, r in enumerate(state.review_agent_results):
-        dur = state.review_durations[i] if i < len(state.review_durations) else None
-        role = "synthesis" if r.profile_name == "synthesis" else "review"
-        entry = {
-            "role": role,
-            "profile": r.profile_name,
-            "cost_usd": r.cost_usd,
-            "duration_seconds": dur,
-        }
-        if r.model_usage:
-            entry["model_usage"] = [
-                {
-                    "model": u.model,
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cache_read_tokens": u.cache_read_tokens,
-                    "cache_creation_tokens": u.cache_creation_tokens,
-                    "cost_usd": u.cost_usd,
-                }
-                for u in r.model_usage
-            ]
-        agents.append(entry)
-
-    # Build reviews list from cycle metadata (primary) joined with parsed results
-    reviews = []
-    for i, meta in enumerate(state.review_cycle_metadata):
-        entry: dict = {
-            "cycle": i + 1,
-            "pool_models": meta.pool_models,
-            "successful": meta.successful,
-            "failed": meta.failed,
-            "failed_detail": meta.failed_detail,
-            "synthesized": meta.synthesized,
-            "parse_retries": meta.parse_retries,
-        }
-        if i < len(state.review_results):
-            r = state.review_results[i]
-            findings_list = [
-                {
-                    "severity": f.severity,
-                    "file": f.file,
-                    "line": f.line,
-                    "description": f.description,
-                }
-                for f in r.findings
-            ]
-            entry.update(
-                {
-                    "verdict": r.verdict,
-                    "summary": r.summary,
-                    "p1_count": sum(1 for f in r.findings if f.severity == "P1"),
-                    "p2_count": sum(1 for f in r.findings if f.severity == "P2"),
-                    "findings": findings_list,
-                }
-            )
-        reviews.append(entry)
+    agents = build_agent_entries(state, config)
+    reviews = build_reviews(state)
 
     return {
         "forge_version": "0.1.0",
@@ -360,6 +283,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "dev_handoffs": [
             {"iteration": i + 1, "handoff": snap}
             for i, snap in enumerate(state.dev_handoff_snapshots)
+        ],
+        "dev_prompt_injections": [
+            {"iteration": i + 1, "finding_ids": finding_ids}
+            for i, finding_ids in enumerate(state.dev_prompt_injected_finding_ids)
         ],
         "reviews": reviews,
         "human_review": (

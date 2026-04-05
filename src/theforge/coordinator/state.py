@@ -224,6 +224,7 @@ class CoordinatorState:
         default_factory=list
     )  # (profile_name, ReviewResult) pairs from the most recent pool run
     finding_registry: list[FindingRecord] = field(default_factory=list)
+    dev_prompt_injected_finding_ids: list[list[str]] = field(default_factory=list)
     dev_handoff_snapshots: list[dict | None] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
     # Each entry is the parsed handoff-file dict, or None if absent/unparseable.
