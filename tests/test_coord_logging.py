@@ -281,6 +281,32 @@ class TestProjectLocalLogDir:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_preflight_raw_log_written(self, mock_shell, mock_agent, mock_preflight, tmp_path):
+        """preflight-raw.log written to story log dir with raw agent output."""
+        config = self._make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        raw_output = "```yaml\nverdict: PROCEED\nreason: Raw trace\n```\n"
+        mock_preflight.return_value = _make_agent_result(success=True, output=raw_output)
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        with patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+            result = run_task(config, task)
+
+        assert result.success is True
+        raw_log_path = tmp_path / ".forge" / "logs" / "test-task" / "preflight-raw.log"
+        assert raw_log_path.exists(), "preflight-raw.log not written"
+        assert raw_log_path.read_text(encoding="utf-8") == raw_output
+
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_preflight_yaml_written(self, mock_shell, mock_agent, mock_preflight, tmp_path):
         """preflight.yaml written to story log dir after PREFLIGHT phase."""
         config = self._make_config(tmp_path)
