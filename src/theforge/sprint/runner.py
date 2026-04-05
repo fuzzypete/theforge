@@ -14,6 +14,7 @@ import yaml
 
 from ..config import ForgeConfig
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
+from ..coordinator.log_tee import _make_story_log_dir
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
@@ -278,37 +279,52 @@ def _run_single_story(
     4. run_from_dev to continue
     """
     started_at = datetime.datetime.now(datetime.timezone.utc)
+    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
 
     if state_update_fn is not None:
         state_update_fn({"spec": task.slug, "phase": "STARTING"})
 
-    if resume and triage is not None:
-        if triage.action == "review" and triage.worktree_path is not None:
-            result = run_from_review(
-                config,
-                task,
-                triage.worktree_path,
-                interactive=interactive,
-                auto_merge=effective_auto_merge,
-                notify=notify,
-                run_id=sprint_run_id,
-                sprint_name=sprint_name,
-                state_update_fn=state_update_fn,
-                no_pull=no_pull,
-            )
-        elif triage.action == "dev" and triage.worktree_path is not None:
-            result = run_from_dev(
-                config,
-                task,
-                triage.worktree_path,
-                interactive=interactive,
-                auto_merge=effective_auto_merge,
-                notify=notify,
-                run_id=sprint_run_id,
-                sprint_name=sprint_name,
-                state_update_fn=state_update_fn,
-                no_pull=no_pull,
-            )
+    try:
+        if resume and triage is not None:
+            if triage.action == "review" and triage.worktree_path is not None:
+                result = run_from_review(
+                    config,
+                    task,
+                    triage.worktree_path,
+                    interactive=interactive,
+                    auto_merge=effective_auto_merge,
+                    notify=notify,
+                    run_id=sprint_run_id,
+                    sprint_name=sprint_name,
+                    state_update_fn=state_update_fn,
+                    no_pull=no_pull,
+                )
+            elif triage.action == "dev" and triage.worktree_path is not None:
+                result = run_from_dev(
+                    config,
+                    task,
+                    triage.worktree_path,
+                    interactive=interactive,
+                    auto_merge=effective_auto_merge,
+                    notify=notify,
+                    run_id=sprint_run_id,
+                    sprint_name=sprint_name,
+                    state_update_fn=state_update_fn,
+                    no_pull=no_pull,
+                )
+            else:
+                result = _run_fresh(
+                    config,
+                    task,
+                    sprint_run_id,
+                    sprint_name,
+                    interactive,
+                    notify,
+                    effective_auto_merge,
+                    state_update_fn,
+                    no_pull,
+                    plan_gate,
+                )
         else:
             result = _run_fresh(
                 config,
@@ -322,18 +338,21 @@ def _run_single_story(
                 no_pull,
                 plan_gate,
             )
-    else:
-        result = _run_fresh(
-            config,
-            task,
-            sprint_run_id,
-            sprint_name,
-            interactive,
-            notify,
-            effective_auto_merge,
-            state_update_fn,
-            no_pull,
-            plan_gate,
+    except Exception as exc:
+        _log(f"ERROR {task.slug}: worker thread raised {type(exc).__name__}: {exc}")
+        failure_state = CoordinatorState(
+            phase=Phase.ESCALATE,
+            started_at=started_at.isoformat(),
+            workspace_path=workspace_path,
+            log_dir=_make_story_log_dir(config, task.slug, sprint_name),
+            error=f"Worker exception: {exc}",
+            error_type=type(exc).__name__,
+        )
+        result = CoordinatorResult(
+            success=False,
+            phase=Phase.ESCALATE,
+            state=failure_state,
+            message=f"Worker thread raised {type(exc).__name__}: {exc}",
         )
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
@@ -740,14 +759,25 @@ def run_sprint(
                     fut.cancel()
                     _log(f"TIMEOUT {slug} (worker unresponsive after 3600s — marking as failed)")
                     spec_str = slug_to_spec[slug]
-                    _timeout_state = CoordinatorState()
-                    _timeout_state.error = "Worker timeout (>3600s)"
+                    timed_out_at = datetime.datetime.now(datetime.timezone.utc)
+                    story_started_at = story_times.get(slug, (timed_out_at, timed_out_at))[0]
+                    _timeout_state = CoordinatorState(
+                        phase=Phase.ESCALATE,
+                        started_at=story_started_at.isoformat(),
+                        workspace_path=(
+                            config.project_root / config.workspace.path_pattern.format(slug=slug)
+                        ),
+                        log_dir=_make_story_log_dir(config, slug, resolved.name),
+                        error="Worker timeout (>3600s)",
+                        error_type="TimeoutError",
+                    )
                     _timeout_result = CoordinatorResult(
                         success=False,
                         phase=Phase.ESCALATE,
                         state=_timeout_state,
                         message="Worker thread timed out after 3600s",
                     )
+                    story_times[slug] = (story_started_at, timed_out_at)
                     results.append((spec_str, _timeout_result))
                     dag.mark_skipped(slug)
                     specs_failed += 1
@@ -764,15 +794,27 @@ def run_sprint(
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
                     del active[slug]
                     spec_str = slug_to_spec[slug]
-                    _exc_state = CoordinatorState()
-                    _exc_state.error = f"Worker exception: {exc}"
+                    failed_at = datetime.datetime.now(datetime.timezone.utc)
+                    story_started_at = story_times.get(slug, (failed_at, failed_at))[0]
+                    _exc_state = CoordinatorState(
+                        phase=Phase.ESCALATE,
+                        started_at=story_started_at.isoformat(),
+                        workspace_path=(
+                            config.project_root / config.workspace.path_pattern.format(slug=slug)
+                        ),
+                        log_dir=_make_story_log_dir(config, slug, resolved.name),
+                        error=f"Worker exception: {exc}",
+                        error_type=type(exc).__name__,
+                    )
                     _exc_result = CoordinatorResult(
                         success=False,
                         phase=Phase.ESCALATE,
                         state=_exc_state,
                         message=f"Worker thread raised {type(exc).__name__}: {exc}",
                     )
+                    story_times[slug] = (story_started_at, failed_at)
                     results.append((spec_str, _exc_result))
+                    _write_story_audit(config, slug_to_context[slug][0], _exc_result)
                     dag.mark_skipped(slug)
                     specs_failed += 1
                     continue

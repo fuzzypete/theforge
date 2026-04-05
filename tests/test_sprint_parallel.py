@@ -763,6 +763,26 @@ class TestWorkerExceptionHandling:
         assert sprint.specs_failed == 1
         assert sprint.specs_succeeded == 1
 
+        sprint_audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+        sprint_audit = yaml.safe_load(sprint_audit_path.read_text(encoding="utf-8")) or {}
+        story_a_entry = next(
+            entry for entry in sprint_audit["specs"] if entry["path"] == "story-a.md"
+        )
+        assert story_a_entry["outcome"] == "ESCALATE"
+        assert story_a_entry["error"] == "Worker exception: agent crashed"
+        assert story_a_entry["error_type"] == "RuntimeError"
+        assert story_a_entry["started_at"] is not None
+        assert story_a_entry["finished_at"] is not None
+
+        durable_audit_path = (
+            tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
+        )
+        durable_audit = yaml.safe_load(durable_audit_path.read_text(encoding="utf-8")) or {}
+        assert durable_audit["outcome"]["final_phase"] == "ESCALATE"
+        assert durable_audit["error"] == "Worker exception: agent crashed"
+        assert durable_audit["error_type"] == "RuntimeError"
+        assert durable_audit["timing"]["started_at"] is not None
+
     def test_worker_exception_dependent_is_skipped(self, tmp_path: Path) -> None:
         """When a worker raises, the story is marked skipped in the DAG so dependents skip too."""
         _make_spec_file(tmp_path, "Story A", "story-a")

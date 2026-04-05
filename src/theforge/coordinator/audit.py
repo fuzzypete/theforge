@@ -447,6 +447,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             else None
         ),
         "error": state.error,
+        "error_type": state.error_type,
         "story_validation": (
             {
                 "verdict": state.story_validation_result.verdict,
