@@ -621,6 +621,19 @@ def run_sprint(
                 merged_slugs.add(slug)
                 dag.mark_complete(slug)
 
+    auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - merged_slugs
+    if (
+        max_parallel > 1
+        and not auto_merge
+        and config.workspace.on_approve != "merge-pr"
+        and auto_enabled_dependency_merges
+    ):
+        listed = ", ".join(sorted(auto_enabled_dependency_merges))
+        _log(
+            "WARN: parallel dependency merging auto-enabled for "
+            f"{listed} so dependent stories are not silently skipped"
+        )
+
     # Stories blocked by unresolved external dependencies never enter the DAG.
     for slug, blocked_by in blocked_slugs.items():
         _log(f"SKIPPED {slug} (blocked: {', '.join(blocked_by)})")
@@ -878,7 +891,11 @@ def run_sprint(
                             _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
                 # In parallel mode, merge actions are serialized in the main thread.
-                needs_deferred_merge = auto_merge or config.workspace.on_approve == "merge-pr"
+                needs_deferred_merge = (
+                    auto_merge
+                    or config.workspace.on_approve == "merge-pr"
+                    or slug in dependent_slugs
+                )
                 if max_parallel > 1 and needs_deferred_merge and result.success:
                     pending_merges[slug] = (task, result)
 
@@ -889,7 +906,9 @@ def run_sprint(
                 _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
 
             # Flush pending merges in dependency order (parallel mode only)
-            needs_flush = auto_merge or config.workspace.on_approve == "merge-pr"
+            needs_flush = (
+                auto_merge or config.workspace.on_approve == "merge-pr" or bool(dependent_slugs)
+            )
             if max_parallel > 1 and needs_flush and pending_merges:
                 changed = True
                 while changed:
