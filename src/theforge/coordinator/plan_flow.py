@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 
 from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
+from theforge.config.profiles import _apply_provider_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.plan_finding_classifier import (
     format_provenance,
@@ -211,6 +212,7 @@ def _run_plan_phase(
             timeout_seconds=_plan_timeout,
             allowed_tools=config.preflight_profile.allowed_tools,
         )
+        plan_profile = _apply_provider_fallback(plan_profile, config.provider_fallbacks)
     _log_phase(state.phase, plan_profile.model)
     logger._safe_emit("phase_start", phase="PLAN", iteration=0)
 
@@ -389,7 +391,10 @@ def _run_plan_agent_review(
         par_profiles = _adaptive.plan_reviewers
         _log(f"  [adaptive] plan_reviewers: {', '.join(p.model for p in par_profiles)}")
     else:
-        par_profiles = config.plan_agent_review.profiles
+        par_profiles = [
+            _apply_provider_fallback(profile, config.provider_fallbacks)
+            for profile in config.plan_agent_review.profiles
+        ]
     _pool_names = [p.name for p in par_profiles]
     _pool_label = "+".join(p.model for p in par_profiles)
     if config.plan_review.enabled:

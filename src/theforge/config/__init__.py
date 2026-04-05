@@ -27,6 +27,7 @@ from .models import (
 )
 from .types import (
     SUPPORTED_PROVIDERS,
+    ApiFallbackConfig,
     AssignmentConfig,
     BackendConfig,
     EmailConfig,
@@ -49,6 +50,7 @@ from .types import (
 __all__ = [
     # types
     "AgentDef",
+    "ApiFallbackConfig",
     "AssignmentConfig",
     "BackendConfig",
     "EmailConfig",

@@ -13,6 +13,7 @@ from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_WORKSPACE,
+    ApiFallbackConfig,
     ModelProfile,
     load_config,
 )
@@ -116,6 +117,64 @@ class TestHybridRunnerConfig:
         assert profile.cli == "claude"
         assert profile.provider is None
         assert profile.mode == "cli"
+
+    def test_provider_fallback_attaches_to_matching_cli_profile(self, tmp_path):
+        config_path = _write_config(
+            {
+                "provider_fallbacks": {
+                    "openai": {
+                        "model": "o4-mini",
+                        "timeout_seconds": 45,
+                    }
+                },
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "codex-reviewer",
+                            "cli": "codex",
+                            "model": "gpt-5.4",
+                        }
+                    ]
+                },
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+
+        assert config.provider_fallbacks["openai"] == ApiFallbackConfig(
+            provider="openai",
+            model="o4-mini",
+            timeout_seconds=45,
+        )
+        assert config.review_pool[0].api_fallback == config.provider_fallbacks["openai"]
+
+    def test_provider_fallback_does_not_attach_to_api_profile(self, tmp_path):
+        config_path = _write_config(
+            {
+                "provider_fallbacks": {"openai": {"model": "o4-mini"}},
+                "profiles": {
+                    "review_pool": [
+                        {
+                            "name": "api-reviewer",
+                            "provider": "openai",
+                            "model": "gpt-4o-mini",
+                        }
+                    ]
+                },
+            },
+            tmp_path,
+        )
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+
+        assert config.review_pool[0].api_fallback is None
 
     def test_mutual_exclusion_cli_provider_raises(self, tmp_path):
         config_path = _write_config(
