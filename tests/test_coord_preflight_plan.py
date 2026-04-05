@@ -558,10 +558,24 @@ class TestPersistentP1Descriptions:
 
     def test_returns_empty_when_no_match(self):
         """Returns empty list when no current P1 matches any previous P1."""
-        curr = [_make_review_finding(description="Off by one error")]
-        prev = [_make_review_finding(description="Missing validation")]
+        curr = [_make_review_finding(file="src/foo.py", description="Off by one error")]
+        prev = [_make_review_finding(file="src/bar.py", description="Missing validation")]
         result = _persistent_p1_descriptions(curr, prev)
         assert result == []
+
+    def test_returns_match_for_same_file_cascading_p1(self):
+        """Different descriptions in the same file are reported as persistent."""
+        curr = [
+            _make_review_finding(file="src/plan_flow.py", description="skip branch drops abandon")
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/plan_flow.py",
+                description="skip branch wrong for refactor",
+            )
+        ]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == ["skip branch drops abandon"]
 
     def test_returns_empty_when_no_current_p1s(self):
         """Returns empty list when there are no current P1 findings."""

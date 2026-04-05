@@ -393,8 +393,14 @@ class TestHasPersistentP1:
     def test_different_descriptions_returns_false(self):
         from theforge.coordinator.preflight import _has_persistent_p1
 
-        curr = [self._make_finding("P1", "missing null check on session id")]
-        prev = [self._make_finding("P1", "wrong HTTP method used in upload endpoint")]
+        curr = [self._make_finding("P1", "missing null check on session id", file="session.py")]
+        prev = [
+            self._make_finding(
+                "P1",
+                "wrong HTTP method used in upload endpoint",
+                file="upload.py",
+            )
+        ]
         assert _has_persistent_p1(curr, prev) is False
 
     def test_empty_current_findings_returns_false(self):

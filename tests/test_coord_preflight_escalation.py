@@ -101,6 +101,19 @@ class TestHasPersistentP1:
         prev = [_make_review_finding(file="src/bar.py", description="Missing validation")]
         assert _has_persistent_p1(curr, prev) is False
 
+    def test_same_file_cascading_p1_is_persistent(self):
+        """Different descriptions in the same file still count as persistent."""
+        curr = [
+            _make_review_finding(file="src/plan_flow.py", description="skip branch drops abandon")
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/plan_flow.py",
+                description="skip branch wrong for refactor",
+            )
+        ]
+        assert _has_persistent_p1(curr, prev) is True
+
     def test_persistent_p1_different_files(self):
         """Same P1 description on different files → still detected as persistent."""
         curr = [
@@ -190,6 +203,27 @@ test_coverage:
 ```
 """
 
+_CASCADING_P1_REVIEW = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "New blocker in same file."
+findings:
+  - severity: P1
+    file: src/cli.py
+    line: 43
+    description: "cli.py now drops abandon handling after wiring gate_override"
+    suggestion: "Preserve the abandon path"
+story_compliance:
+  matches_spec: false
+  mismatches:
+    - "Abandon handling regressed"
+test_coverage:
+  adequate: false
+  gaps:
+    - "No regression test for abandon handling"
+```
+"""
+
 
 class TestDevModelEscalationIntegration:
     """Integration tests for dev model escalation on persistent P1s."""
@@ -253,6 +287,56 @@ class TestDevModelEscalationIntegration:
         assert result.state.dev_escalated is True
         # After escalation, dev should have used opus
         assert "opus" in dev_profiles
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_escalation_with_cascading_same_file_p1(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Escalation fires when a new P1 appears in the same file on the next cycle."""
+        config = _make_smart_config(tmp_path, max_review_cycles=3)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [_make_agent_result() for _ in range(3)]
+
+        pool_call = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_call["n"] += 1
+            if pool_call["n"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=_PERSISTENT_P1_REVIEW,
+                        profile_name="claude-opus",
+                    )
+                ]
+            if pool_call["n"] == 2:
+                return [
+                    _make_agent_result(
+                        success=True,
+                        output=_CASCADING_P1_REVIEW,
+                        profile_name="claude-opus",
+                    )
+                ]
+            return [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="claude-opus")
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.dev_escalated is True
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")

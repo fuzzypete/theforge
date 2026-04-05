@@ -179,8 +179,8 @@ def _has_persistent_p1(
 ) -> bool:
     """Return True if any P1 appears in both current and previous cycles.
 
-    Matches on description similarity alone (substring containment or
-    >=60% token overlap) regardless of file.
+    Matches when findings are text-similar (substring containment or
+    >=60% token overlap) or when they recur in the same file.
     """
     current_p1s = [f for f in current_findings if f.severity == "P1"]
     previous_p1s = [f for f in previous_findings if f.severity == "P1"]
@@ -190,16 +190,8 @@ def _has_persistent_p1(
 
     for curr in current_p1s:
         for prev in previous_p1s:
-            # Substring containment
-            if curr.description in prev.description or prev.description in curr.description:
+            if _p1_findings_match(curr, prev):
                 return True
-            # Token overlap >= 60%
-            curr_tokens = set(curr.description.lower().split())
-            prev_tokens = set(prev.description.lower().split())
-            if curr_tokens and prev_tokens:
-                overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
-                if overlap >= 0.6:
-                    return True
 
     return False
 
@@ -210,8 +202,8 @@ def _persistent_p1_descriptions(
 ) -> list[str]:
     """Return description strings of current P1 findings that match previous P1 findings.
 
-    Uses the same matching logic as _has_persistent_p1 (substring containment or
-    >=60% token overlap). Returns matched current descriptions, truncated to 200 chars.
+    Uses the same matching logic as _has_persistent_p1. Returns matched current
+    descriptions, truncated to 200 chars.
     """
     current_p1s = [f for f in current_findings if f.severity == "P1"]
     previous_p1s = [f for f in previous_findings if f.severity == "P1"]
@@ -222,18 +214,29 @@ def _persistent_p1_descriptions(
     matched: list[str] = []
     for curr in current_p1s:
         for prev in previous_p1s:
-            if curr.description in prev.description or prev.description in curr.description:
+            if _p1_findings_match(curr, prev):
                 matched.append(curr.description[:200])
                 break
-            curr_tokens = set(curr.description.lower().split())
-            prev_tokens = set(prev.description.lower().split())
-            if curr_tokens and prev_tokens:
-                overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
-                if overlap >= 0.6:
-                    matched.append(curr.description[:200])
-                    break
 
     return matched
+
+
+def _p1_findings_match(current: ReviewFinding, previous: ReviewFinding) -> bool:
+    """Return True when two P1 findings should be treated as the same persistent issue."""
+    if current.file and previous.file and current.file == previous.file:
+        return True
+
+    if current.description in previous.description or previous.description in current.description:
+        return True
+
+    curr_tokens = set(current.description.lower().split())
+    prev_tokens = set(previous.description.lower().split())
+    if curr_tokens and prev_tokens:
+        overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
+        if overlap >= 0.6:
+            return True
+
+    return False
 
 
 def _escalate_dev_model(
