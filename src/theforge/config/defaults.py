@@ -103,6 +103,13 @@ retry:
   max_dev_iterations: 3    # retries within a review cycle
   max_review_cycles: 2     # full dev→review loops before escalation
 
+# Optional: same-provider API fallback when a CLI is rate-limited/unavailable.
+# provider_fallbacks:
+#   openai:
+#     model: o4-mini
+#   google:
+#     model: gemini-2.5-flash
+
 # Multi-CLI review pool example:
 # review_pool:
 #   - name: claude-reviewer

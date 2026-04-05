@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import logging
 from pathlib import Path
@@ -21,7 +22,14 @@ from .defaults import (
     SUPPORTED_CLIS,
 )
 from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_agents, _parse_assignment
-from .profiles import _apply_profile_overrides, _auto_assign_models, _parse_profile
+from .profiles import (
+    CLI_PROVIDER_MAP,
+    _apply_profile_overrides,
+    _apply_provider_fallback,
+    _auto_assign_models,
+    _parse_profile,
+    _parse_provider_fallbacks,
+)
 from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
@@ -103,6 +111,11 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     with open(config_path, encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
+
+    provider_fallbacks = _parse_provider_fallbacks(
+        raw.get("provider_fallbacks", {}),
+        secrets=secrets,
+    )
 
     workspace = _parse_workspace(raw.get("workspace", {}))
 
@@ -220,6 +233,14 @@ def load_config(config_path: Path) -> ForgeConfig:
             synthesis_profile = None
             _review_pool_is_default = True
 
+    dev_profile = _apply_provider_fallback(dev_profile, provider_fallbacks)
+    preflight_profile = _apply_provider_fallback(preflight_profile, provider_fallbacks)
+    review_pool = [
+        _apply_provider_fallback(profile, provider_fallbacks) for profile in review_pool
+    ]
+    if synthesis_profile is not None:
+        synthesis_profile = _apply_provider_fallback(synthesis_profile, provider_fallbacks)
+
     # smart_config_models — escalation chain; works alongside explicit profiles
     if smart_config_models is None and "smart_config_models" in raw:
         models_raw = raw["smart_config_models"]
@@ -290,6 +311,15 @@ def load_config(config_path: Path) -> ForgeConfig:
     )
 
     agents_list = _parse_agents(raw.get("agents", []))
+    agents_list = [
+        agent
+        if agent.provider or not agent.cli
+        else dataclasses.replace(
+            agent,
+            api_fallback=provider_fallbacks.get(CLI_PROVIDER_MAP.get(agent.cli, "")),
+        )
+        for agent in agents_list
+    ]
     assignment_cfg = _parse_assignment(raw.get("assignment", {}))
 
     plan_agent_review_cfg = _parse_plan_agent_review(
@@ -300,6 +330,14 @@ def load_config(config_path: Path) -> ForgeConfig:
         assignment_cfg.enabled,
         _plan_model_is_default,
     )
+    if plan_agent_review_cfg.pool:
+        plan_agent_review_cfg = dataclasses.replace(
+            plan_agent_review_cfg,
+            pool=[
+                _apply_provider_fallback(profile, provider_fallbacks)
+                for profile in plan_agent_review_cfg.pool
+            ],
+        )
 
     # Logging
     log_data = raw.get("logging", {})
@@ -429,6 +467,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         secrets=secrets,
         agents=agents_list,
         assignment=assignment_cfg,
+        provider_fallbacks=provider_fallbacks,
         review_pool_is_default=_review_pool_is_default,
         plan_model_is_default=_plan_model_is_default,
         conventions_hard=conventions_hard_cfg,

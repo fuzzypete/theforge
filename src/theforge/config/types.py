@@ -96,6 +96,7 @@ class ModelProfile:
     max_iterations: int | None = (
         None  # override default agent loop iterations (None = use default)
     )
+    api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
 
     @property
     def mode(self) -> str:
@@ -117,6 +118,19 @@ class WorkspaceConfig:
     merge_strategy: str = "squash"  # merge | squash | rebase (used by on_approve="merge-pr")
     pr_labels: tuple[str, ...] = ()  # labels to apply when on_approve="pr" or "merge-pr"
     pr_draft: bool = False  # create PR as draft when on_approve="pr"
+
+
+@dataclass(frozen=True)
+class ApiFallbackConfig:
+    """Fallback API transport for a CLI profile of the same provider."""
+
+    provider: str
+    model: str
+    timeout_seconds: int | None = None
+    reasoning_effort: str | None = None
+    thinking_budget: int | None = None
+    base_url: str | None = None
+    max_iterations: int | None = None
 
 
 @dataclass(frozen=True)
@@ -293,6 +307,7 @@ class ForgeConfig:
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
+    provider_fallbacks: dict[str, ApiFallbackConfig] = field(default_factory=dict)
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks

@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from theforge.agent_types import AgentResult
-from theforge.config import ModelProfile
+from theforge.config import ApiFallbackConfig, ModelProfile
 from theforge.log_level import LogLevel, set_log_level
 from theforge.runners import log_agent_result, run_agent
 
@@ -227,6 +227,116 @@ class TestRunCodex:
 
         mock_extract.assert_called_once()
         assert result.session_id == "abc-123"
+
+    def test_codex_rate_limit_falls_back_to_openai_api(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read", "Bash"),
+            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+        )
+        cli_result = AgentResult(
+            success=False,
+            output="429 rate limit exceeded",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+        api_result = AgentResult(
+            success=True,
+            output="api fallback result",
+            session_id=None,
+            cost_usd=0.12,
+            exit_code=0,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_result),
+            patch("theforge.runners.api.run_api_agent", return_value=api_result) as mock_api,
+        ):
+            result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
+
+        fallback_profile = mock_api.call_args.kwargs["profile"]
+        assert fallback_profile.cli is None
+        assert fallback_profile.provider == "openai"
+        assert fallback_profile.model == "o4-mini"
+        assert fallback_profile.allowed_tools == ("Read", "Bash")
+        assert result == api_result
+
+    def test_codex_non_retryable_failure_does_not_fall_back(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+        )
+        cli_result = AgentResult(
+            success=False,
+            output="syntax error in prompt",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_result),
+            patch("theforge.runners.api.run_api_agent") as mock_api,
+        ):
+            result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
+
+        mock_api.assert_not_called()
+        assert result == cli_result
+
+    def test_codex_startup_failure_falls_back_to_openai_api(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+        )
+        cli_result = AgentResult(
+            success=False,
+            output="ERROR: 'npx @openai/codex' CLI not found. Is it installed?",
+            session_id=None,
+            cost_usd=None,
+            exit_code=-1,
+            raw={},
+            profile_name="codex-reviewer",
+            startup_failure=True,
+        )
+        api_result = AgentResult(
+            success=True,
+            output="api fallback result",
+            session_id=None,
+            cost_usd=0.12,
+            exit_code=0,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_result),
+            patch("theforge.runners.api.run_api_agent", return_value=api_result) as mock_api,
+        ):
+            result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
+
+        mock_api.assert_called_once()
+        assert result == api_result
 
 
 class TestRunGemini:

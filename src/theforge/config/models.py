@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .types import AssignmentConfig, ModelProfile
+from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,7 @@ class AgentDef:
     timeout_seconds: int
     tier: str  # "cheap" | "mid" | "strong"
     cli: str | None = None  # "claude", "codex", etc. — set for CLI agents
+    api_fallback: ApiFallbackConfig | None = None
     strengths: tuple[str, ...] = ()
 
     def to_model_profile(self, *, allowed_tools: tuple[str, ...] = ()) -> ModelProfile:
@@ -43,6 +44,7 @@ class AgentDef:
             budget_usd=self.budget_usd,
             timeout_seconds=self.timeout_seconds,
             allowed_tools=allowed_tools,
+            api_fallback=self.api_fallback,
         )
 
 

@@ -15,7 +15,7 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -118,6 +118,55 @@ def _handle_exception(
     return None
 
 
+_CLI_RETRY_EXIT_CODES = frozenset({69, 75})
+_CLI_FALLBACK_PATTERNS = (
+    "429",
+    "quota",
+    "rate limit",
+    "resource exhausted",
+    "resource_exhausted",
+    "service unavailable",
+    "temporarily unavailable",
+    "unavailable",
+    "overloaded",
+    "try again later",
+)
+
+
+def _classify_cli_fallback(result: AgentResult) -> str | None:
+    """Return a fallback reason when a CLI failure should retry via API."""
+    if result.success:
+        return None
+    if result.startup_failure:
+        return "CLI unavailable"
+    if result.exit_code in _CLI_RETRY_EXIT_CODES:
+        return f"CLI exited {result.exit_code}"
+    output = result.output.lower()
+    for pattern in _CLI_FALLBACK_PATTERNS:
+        if pattern in output:
+            return f"matched {pattern!r}"
+    return None
+
+
+def _build_api_fallback_profile(profile: ModelProfile) -> ModelProfile | None:
+    """Build an API fallback profile for a CLI profile when configured."""
+    fallback = profile.api_fallback
+    if fallback is None:
+        return None
+    return replace(
+        profile,
+        cli=None,
+        provider=fallback.provider,
+        model=fallback.model,
+        timeout_seconds=fallback.timeout_seconds or profile.timeout_seconds,
+        reasoning_effort=fallback.reasoning_effort,
+        thinking_budget=fallback.thinking_budget,
+        base_url=fallback.base_url,
+        max_iterations=fallback.max_iterations,
+        api_fallback=None,
+    )
+
+
 # ── Runner dispatch ───────────────────────────────────────────────────
 
 
@@ -157,11 +206,12 @@ def run_agent(
         )
 
     cli = profile.cli
+    api_fallback_profile = _build_api_fallback_profile(profile)
 
     if cli == "claude":
         from .runner_claude import _run_claude  # noqa: PLC0415
 
-        return _run_claude(
+        result = _run_claude(
             prompt=prompt,
             profile=profile,
             working_dir=working_dir,
@@ -170,11 +220,28 @@ def run_agent(
             quiet=quiet,
             secrets=secrets,
         )
+        reason = _classify_cli_fallback(result)
+        if api_fallback_profile is not None and reason is not None:
+            from theforge.runners import api as runner_api  # noqa: PLC0415
+
+            _log(
+                f"  ⚠ {profile.name or profile.model} CLI failed ({reason}); "
+                f"retrying via {api_fallback_profile.provider}/{api_fallback_profile.model}"
+            )
+            return runner_api.run_api_agent(
+                prompt=prompt,
+                profile=api_fallback_profile,
+                working_dir=working_dir,
+                quiet=quiet,
+                secrets=secrets or {},
+                plain_text=plain_text,
+            )
+        return result
 
     if cli == "codex":
         from .runner_codex import _run_codex  # noqa: PLC0415
 
-        return _run_codex(
+        result = _run_codex(
             prompt=prompt,
             profile=profile,
             working_dir=working_dir,
@@ -183,11 +250,28 @@ def run_agent(
             is_pool=is_pool,
             secrets=secrets,
         )
+        reason = _classify_cli_fallback(result)
+        if api_fallback_profile is not None and reason is not None:
+            from theforge.runners import api as runner_api  # noqa: PLC0415
+
+            _log(
+                f"  ⚠ {profile.name or profile.model} CLI failed ({reason}); "
+                f"retrying via {api_fallback_profile.provider}/{api_fallback_profile.model}"
+            )
+            return runner_api.run_api_agent(
+                prompt=prompt,
+                profile=api_fallback_profile,
+                working_dir=working_dir,
+                quiet=quiet,
+                secrets=secrets or {},
+                plain_text=plain_text,
+            )
+        return result
 
     if cli == "gemini":
         from .runner_gemini import _run_gemini  # noqa: PLC0415
 
-        return _run_gemini(
+        result = _run_gemini(
             prompt=prompt,
             profile=profile,
             working_dir=working_dir,
@@ -196,6 +280,23 @@ def run_agent(
             is_pool=is_pool,
             secrets=secrets,
         )
+        reason = _classify_cli_fallback(result)
+        if api_fallback_profile is not None and reason is not None:
+            from theforge.runners import api as runner_api  # noqa: PLC0415
+
+            _log(
+                f"  ⚠ {profile.name or profile.model} CLI failed ({reason}); "
+                f"retrying via {api_fallback_profile.provider}/{api_fallback_profile.model}"
+            )
+            return runner_api.run_api_agent(
+                prompt=prompt,
+                profile=api_fallback_profile,
+                working_dir=working_dir,
+                quiet=quiet,
+                secrets=secrets or {},
+                plain_text=plain_text,
+            )
+        return result
 
     return AgentResult(
         success=False,
