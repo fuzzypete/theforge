@@ -740,6 +740,11 @@ def run_api_agent(
 
     When profile.allowed_tools is non-empty, drives an agent loop where the model
     can call tools. When empty, falls back to a single-shot stateless call.
+
+    Google Gemini plain-text calls intentionally bypass the tool loop even when
+    the profile allows tools. Ideation expects raw markdown/text output, and the
+    Google loop's review finalization path can otherwise force response_schema
+    JSON output that does not match the ideation prompt.
     """
     if not profile.provider:
         return AgentResult(
@@ -756,7 +761,20 @@ def run_api_agent(
     if not quiet:
         _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
-    if profile.allowed_tools:
+    if profile.provider == "google" and plain_text:
+        runner_fn = PROVIDER_RUNNERS.get(profile.provider)
+        if not runner_fn:
+            return AgentResult(
+                success=False,
+                output=f"Unknown API provider: {profile.provider}",
+                session_id=None,
+                cost_usd=None,
+                exit_code=1,
+                raw={},
+                profile_name=profile.name,
+            )
+        result = runner_fn(prompt, profile, secrets, plain_text=True)
+    elif profile.allowed_tools:
         loop_runner = _LOOP_RUNNERS.get(profile.provider)
         if not loop_runner:
             return AgentResult(
@@ -781,10 +799,7 @@ def run_api_agent(
                 raw={},
                 profile_name=profile.name,
             )
-        if profile.provider == "google" and plain_text:
-            result = runner_fn(prompt, profile, secrets, plain_text=True)
-        else:
-            result = runner_fn(prompt, profile, secrets)
+        result = runner_fn(prompt, profile, secrets)
 
     if not quiet:
         status = "OK" if result.success else "FAIL"
