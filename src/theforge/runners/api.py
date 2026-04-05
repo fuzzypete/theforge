@@ -42,6 +42,7 @@ from theforge.runners.finalizers import (
 from theforge.runners.schema_utils import (
     _DEFAULT_MAX_ITERATIONS,
     _MAX_MALFORMED,
+    _NO_SUBMIT_PHASES,
     _SUBMIT_TOOL_NAMES,
     Finalizer,
     LoopTurn,
@@ -51,6 +52,7 @@ from theforge.runners.schema_utils import (
     _build_submit_tools_google,
     _build_submit_tools_openai,
     _estimate_cost,
+    noop_finalizer,
     uses_openai_responses_api,
 )
 from theforge.runners.tool_runtime import TOOL_REGISTRY, ToolDef
@@ -585,19 +587,22 @@ def _run_loop_openai(
 
     tools = _build_registry_tools(profile)
     is_responses = uses_openai_responses_api(profile.model)
+    is_review = profile.phase not in _NO_SUBMIT_PHASES
 
     if is_responses:
-        tool_schemas = [
-            t.to_openai_responses_function() for t in tools
-        ] + _build_submit_tools_openai(responses_api=True)
+        tool_schemas = [t.to_openai_responses_function() for t in tools] + (
+            _build_submit_tools_openai(responses_api=True) if is_review else []
+        )
         adapter = _make_openai_responses_adapter(profile, secrets)
-        finalizer = _make_openai_responses_finalizer(profile, secrets)
+        finalizer = (
+            _make_openai_responses_finalizer(profile, secrets) if is_review else noop_finalizer
+        )
     else:
-        tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai(
-            responses_api=False
+        tool_schemas = [t.to_openai_function() for t in tools] + (
+            _build_submit_tools_openai(responses_api=False) if is_review else []
         )
         adapter = _make_openai_chat_adapter(profile, secrets)
-        finalizer = _make_openai_chat_finalizer(profile, secrets)
+        finalizer = _make_openai_chat_finalizer(profile, secrets) if is_review else noop_finalizer
 
     manager = AgentLoopManager(
         profile=profile,
@@ -643,9 +648,12 @@ def _run_loop_anthropic(
 ) -> AgentResult:
     """Run Anthropic provider in agent loop mode."""
     tools = _build_registry_tools(profile)
-    tool_schemas = [t.to_anthropic_tool() for t in tools] + _build_submit_tools_anthropic()
+    is_review = profile.phase not in _NO_SUBMIT_PHASES
+    tool_schemas = [t.to_anthropic_tool() for t in tools] + (
+        _build_submit_tools_anthropic() if is_review else []
+    )
     adapter = _make_anthropic_adapter(profile, secrets)
-    finalizer = _make_anthropic_finalizer(profile, secrets)
+    finalizer = _make_anthropic_finalizer(profile, secrets) if is_review else noop_finalizer
 
     manager = AgentLoopManager(
         profile=profile,
@@ -669,9 +677,12 @@ def _run_loop_google(
 ) -> AgentResult:
     """Run Google provider in agent loop mode."""
     tools = _build_registry_tools(profile)
-    tool_schemas = [t.to_google_declaration() for t in tools] + _build_submit_tools_google()
+    is_review = profile.phase not in _NO_SUBMIT_PHASES
+    tool_schemas = [t.to_google_declaration() for t in tools] + (
+        _build_submit_tools_google() if is_review else []
+    )
     adapter = _make_google_adapter(profile, secrets)
-    finalizer = _make_google_finalizer(profile, secrets)
+    finalizer = _make_google_finalizer(profile, secrets) if is_review else noop_finalizer
 
     manager = AgentLoopManager(
         profile=profile,
@@ -696,11 +707,14 @@ def _run_loop_deepseek(
     """Run DeepSeek provider in agent loop mode (OpenAI Chat Completions)."""
     client = _deepseek_client(profile, secrets)
     tools = _build_registry_tools(profile)
-    tool_schemas = [t.to_openai_function() for t in tools] + _build_submit_tools_openai(
-        responses_api=False
+    is_review = profile.phase not in _NO_SUBMIT_PHASES
+    tool_schemas = [t.to_openai_function() for t in tools] + (
+        _build_submit_tools_openai(responses_api=False) if is_review else []
     )
     adapter = _make_openai_chat_adapter(profile, secrets, client=client)
-    finalizer = _make_deepseek_finalizer(profile, secrets, client=client)
+    finalizer = (
+        _make_deepseek_finalizer(profile, secrets, client=client) if is_review else noop_finalizer
+    )
 
     manager = AgentLoopManager(
         profile=profile,

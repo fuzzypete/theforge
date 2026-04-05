@@ -113,6 +113,9 @@ SUBMIT_REVIEW = "submit_review"
 SUBMIT_PLAN_REVIEW = "submit_plan_review"
 _SUBMIT_TOOL_NAMES = {SUBMIT_REVIEW, SUBMIT_PLAN_REVIEW}
 
+# Phases that must NOT receive submit tools or review finalizers
+_NO_SUBMIT_PHASES = {"preflight", "dev"}
+
 # Max consecutive malformed tool calls before aborting
 _MAX_MALFORMED = 3
 
@@ -182,6 +185,16 @@ class Finalizer(Protocol):
     """
 
     def __call__(self, messages: list[dict]) -> LoopTurn: ...
+
+
+def noop_finalizer(messages: list[dict]) -> LoopTurn:
+    """No-op finalizer for non-review phases (dev, preflight).
+
+    On timeout, these phases don't produce structured review output — the
+    coordinator handles their timeouts via exit-code / output parsing. This
+    finalizer just signals loop termination without coercing review-shaped JSON.
+    """
+    return LoopTurn(tool_calls=[], text_output=None, structured_data=None, usage=None)
 
 
 # ── Submit tool schemas ───────────────────────────────────────────────

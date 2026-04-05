@@ -63,6 +63,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         if (max_iter_raw := data.get("max_iterations", base.max_iterations)) is not None
         else None,
         api_fallback=base.api_fallback,
+        phase=base.phase,
     )
 
 
@@ -113,6 +114,7 @@ def _auto_assign_models(
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
         allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
+        phase="dev",
     )
     preflight_profile = ModelProfile(
         name="preflight",
@@ -122,6 +124,7 @@ def _auto_assign_models(
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
         allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+        phase="preflight",
     )
     review_pool = [
         ModelProfile(
@@ -255,6 +258,7 @@ def _parse_profile(
         if (thinking_budget_raw := data.get("thinking_budget")) is not None
         else None,
         review_role=data.get("review_role"),
+        phase=role,
         base_url=data.get("base_url"),
         max_iterations=int(max_iter_raw)
         if (max_iter_raw := data.get("max_iterations")) is not None
@@ -335,4 +339,5 @@ def _apply_provider_fallback(
         max_tool_output_bytes=profile.max_tool_output_bytes,
         max_iterations=profile.max_iterations,
         api_fallback=fallback,
+        phase=profile.phase,
     )

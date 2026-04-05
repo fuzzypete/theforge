@@ -197,7 +197,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             else DEFAULT_DEV_PROFILE
         )
         preflight_profile = (
-            _parse_profile("preflight", profiles["preflight"], role="review", secrets=secrets)
+            _parse_profile("preflight", profiles["preflight"], role="preflight", secrets=secrets)
             if "preflight" in profiles
             else DEFAULT_PREFLIGHT_PROFILE
         )

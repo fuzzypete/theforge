@@ -12,6 +12,7 @@ DEFAULT_DEV_PROFILE = ModelProfile(
     budget_usd=2.00,
     timeout_seconds=900,
     allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    phase="dev",
 )
 
 DEFAULT_REVIEW_PROFILE = ModelProfile(
@@ -32,6 +33,7 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     budget_usd=1.00,
     timeout_seconds=300,
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    phase="preflight",
 )
 
 DEFAULT_WORKSPACE = WorkspaceConfig(
