@@ -606,6 +606,8 @@ class TestOpenAIEndpointRouting:
         assert uses_openai_responses_api(model) is expected
 
     def test_run_loop_openai_uses_responses_adapter_for_responses_only_models(self, tmp_path):
+        import sys
+
         profile = _make_profile(model="gpt-5.1-codex", allowed_tools=("read_file",))
         mock_result = AgentResult(
             success=True,
@@ -618,6 +620,7 @@ class TestOpenAIEndpointRouting:
         )
 
         with (
+            patch.dict(sys.modules, {"openai": MagicMock(), "httpx": MagicMock()}),
             patch("theforge.runners.api._make_openai_responses_adapter") as make_responses,
             patch(
                 "theforge.runners.api._make_openai_responses_finalizer"
@@ -639,6 +642,8 @@ class TestOpenAIEndpointRouting:
         make_chat_finalizer.assert_not_called()
 
     def test_run_loop_openai_uses_chat_adapter_for_dual_endpoint_models(self, tmp_path):
+        import sys
+
         profile = _make_profile(model="gpt-5.4", allowed_tools=("read_file",))
         mock_result = AgentResult(
             success=True,
@@ -651,6 +656,7 @@ class TestOpenAIEndpointRouting:
         )
 
         with (
+            patch.dict(sys.modules, {"openai": MagicMock(), "httpx": MagicMock()}),
             patch("theforge.runners.api._make_openai_responses_adapter") as make_responses,
             patch(
                 "theforge.runners.api._make_openai_responses_finalizer"
