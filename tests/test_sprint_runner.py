@@ -199,8 +199,10 @@ def test_is_branch_merged_regular_merge(tmp_path: Path) -> None:
     def _mock_regular(cmd: list[str], **kwargs: object) -> MagicMock:
         m = MagicMock()
         m.returncode = 0
-        if "rev-list" in cmd and "--count" in cmd:
+        if cmd[:2] == ["git", "rev-list"] and cmd[2] == "forge/story-a..main":
             m.stdout = b"3"  # base is 3 commits ahead of branch
+        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
+            m.stdout = b"2"  # branch had unique commits before merge
         else:
             m.stdout = b""
         return m
@@ -208,6 +210,25 @@ def test_is_branch_merged_regular_merge(tmp_path: Path) -> None:
     with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_regular):
         result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
     assert result is True
+
+
+def test_is_branch_merged_stale_empty_branch(tmp_path: Path) -> None:
+    """Base moving past an empty branch must not count as merged."""
+
+    def _mock_stale(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 0
+        if cmd[:2] == ["git", "rev-list"] and cmd[2] == "forge/story-a..main":
+            m.stdout = b"3"  # base advanced beyond the stale branch tip
+        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
+            m.stdout = b"0"  # branch never had unique commits
+        else:
+            m.stdout = b""
+        return m
+
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_stale):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is False
 
 
 def test_is_branch_merged_not_ancestor(tmp_path: Path) -> None:
