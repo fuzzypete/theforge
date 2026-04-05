@@ -361,6 +361,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             {"iteration": i + 1, "handoff": snap}
             for i, snap in enumerate(state.dev_handoff_snapshots)
         ],
+        "dev_prompt_injections": [
+            {"iteration": i + 1, "finding_ids": finding_ids}
+            for i, finding_ids in enumerate(state.dev_prompt_injected_finding_ids)
+        ],
         "reviews": reviews,
         "human_review": (
             {

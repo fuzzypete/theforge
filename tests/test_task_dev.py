@@ -85,6 +85,48 @@ class TestBuildFixPrompt:
         )
         assert findings in prompt
 
+    def test_carry_forward_section_precedes_review_feedback(self, tmp_path):
+        from theforge.coordinator.state import FindingRecord
+
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="- P1: Current reviewer phrasing",
+            gate_command="make gate",
+            prior_open_p1s=[
+                FindingRecord(
+                    finding_id="abc123",
+                    cycle_first_seen=1,
+                    cycle_last_seen=2,
+                    file="src/foo.py",
+                    line=42,
+                    severity="P1",
+                    description="Original verbatim finding text",
+                    reporter="reviewer-a",
+                    disposition="unresolved",
+                )
+            ],
+        )
+
+        carry_idx = prompt.index("## Still-open Findings from Prior Review")
+        review_idx = prompt.index("## Review Findings")
+        assert carry_idx < review_idx
+        assert "file=src/foo.py, line=42: Original verbatim finding text" in prompt
+
+    def test_no_carry_forward_section_when_no_prior_open_p1s(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            review_findings="P1: bug",
+            gate_command="make gate",
+            prior_open_p1s=None,
+        )
+        assert "Still-open Findings from Prior Review" not in prompt
+
     def test_does_not_contain_spec_content(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_fix_prompt(
