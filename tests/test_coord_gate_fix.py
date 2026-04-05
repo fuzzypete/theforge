@@ -553,9 +553,11 @@ class TestCreatePR:
         )
         state = CoordinatorState()
 
-        # First call: git push (success). Second call: gh pr create (success).
+        # First call: git push (success). Second call: rev-list count.
+        # Third call: gh pr create (success).
         mock_run.side_effect = [
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
             type(
                 "Proc",
                 (),
@@ -567,15 +569,19 @@ class TestCreatePR:
 
         assert result["success"] is True
         assert result["pr_url"] == "https://github.com/test/pr/1"
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
         # First call must be git push
         push_call = mock_run.call_args_list[0]
         assert push_call[0][0][:3] == ["git", "push", "-u"]
         assert "feat/test-task" in push_call[0][0]
 
-        # Second call must be gh pr create
-        pr_call = mock_run.call_args_list[1]
+        # Second call must be git rev-list count
+        rev_list_call = mock_run.call_args_list[1]
+        assert rev_list_call[0][0][:3] == ["git", "rev-list", "--count"]
+
+        # Third call must be gh pr create
+        pr_call = mock_run.call_args_list[2]
         assert pr_call[0][0][:3] == ["gh", "pr", "create"]
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
@@ -591,6 +597,7 @@ class TestCreatePR:
 
         mock_run.side_effect = [
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
             type(
                 "Proc",
                 (),
@@ -600,7 +607,7 @@ class TestCreatePR:
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
-        pr_call = mock_run.call_args_list[1]
+        pr_call = mock_run.call_args_list[2]
         body_idx = pr_call[0][0].index("--body") + 1
         body = pr_call[0][0][body_idx]
         assert "Closes #99" in body
@@ -618,6 +625,7 @@ class TestCreatePR:
 
         mock_run.side_effect = [
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
             type(
                 "Proc",
                 (),
@@ -627,7 +635,7 @@ class TestCreatePR:
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
-        pr_call = mock_run.call_args_list[1]
+        pr_call = mock_run.call_args_list[2]
         body_idx = pr_call[0][0].index("--body") + 1
         body = pr_call[0][0][body_idx]
         assert "Closes" not in body
@@ -656,6 +664,52 @@ class TestCreatePR:
         assert result["success"] is False
         assert "git push failed" in result["error"]
         assert mock_run.call_count == 1  # only push, no gh pr create
+
+    @patch("theforge.coordinator.validate_phase.subprocess.run")
+    def test_zero_delta_branch_skips_pr_creation(self, mock_run, tmp_path):
+        """If branch has no commits ahead of base, _create_pr skips gh pr create."""
+        from theforge.coordinator.completion import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec)
+        state = CoordinatorState()
+
+        mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})(),
+        ]
+
+        result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["skip_reason"] == "zero-delta branch"
+        assert result["pr_url"] is None
+        assert mock_run.call_count == 2
+
+    @patch("theforge.coordinator.validate_phase.subprocess.run")
+    def test_branch_delta_check_failure_aborts_pr(self, mock_run, tmp_path):
+        """If ahead/behind check fails, _create_pr returns failure without calling gh."""
+        from theforge.coordinator.completion import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec)
+        state = CoordinatorState()
+
+        mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+            type("Proc", (), {"returncode": 128, "stdout": "", "stderr": "fatal: bad revision"})(),
+        ]
+
+        result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        assert result["success"] is False
+        assert "git rev-list failed" in result["error"]
+        assert mock_run.call_count == 2
 
 
 # ── Gate fail retry tests ───────────────────────────────────────────────

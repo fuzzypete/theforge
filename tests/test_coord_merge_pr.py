@@ -938,6 +938,8 @@ class TestPrBodyContent:
         pr_bodies: list[str] = []
 
         def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["git", "rev-list", "--count"]:
+                return _make_subprocess_result(0, stdout="1\n")
             m = _make_subprocess_result(0, stdout="https://github.com/x/y/pull/10")
             if isinstance(cmd, list) and "gh" in cmd:
                 # Find --body arg
