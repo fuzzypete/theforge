@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import subprocess
 from pathlib import Path
 
 
@@ -38,6 +39,41 @@ def _read_lock_pid(fd) -> int | None:
         return int(raw_pid)
     except ValueError:
         return None
+
+
+def check_active_worktrees(
+    slugs: list[str],
+    path_pattern: str,
+    base_branch: str,
+    project_root: Path,
+) -> list[str]:
+    """Return slugs whose existing worktrees contain non-base commits."""
+    active: list[str] = []
+    for slug in slugs:
+        worktree_path = project_root / path_pattern.format(slug=slug)
+        if not worktree_path.exists():
+            continue
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "rev-list",
+                "--count",
+                f"{base_branch}..HEAD",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            continue
+        try:
+            ahead_count = int(result.stdout.strip())
+        except ValueError:
+            continue
+        if ahead_count > 0:
+            active.append(slug)
+    return active
 
 
 def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, list[str]]:

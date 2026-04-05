@@ -295,7 +295,6 @@ class TestDaemonNoPull:
                 "theforge.cli.sprint.load_config", return_value=MagicMock(project_root=tmp_path)
             ),
             patch("theforge.cli.sprint.parse_manifest_slugs", return_value=[]),
-            patch("theforge.cli.sprint.acquire_story_locks", return_value=([], [])),
             patch("theforge.cli.sprint.release_story_locks"),
             # cmd_sprint does `from theforge import daemon as _daemon` locally;
             # patch the symbol on the theforge.daemon module itself
