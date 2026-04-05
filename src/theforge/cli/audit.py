@@ -176,7 +176,11 @@ def cmd_audit(args: object) -> int:
 
     if audit.get("error"):
         print()
-        print(f"  Error: {audit['error']}")
+        error_type = audit.get("error_type")
+        if error_type:
+            print(f"  Error: {error_type}: {audit['error']}")
+        else:
+            print(f"  Error: {audit['error']}")
 
     print(f"{sep}")
     return 0

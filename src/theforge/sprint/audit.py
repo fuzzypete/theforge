@@ -81,6 +81,8 @@ def _write_sprint_audit(
                 "outcome": outcome,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
+                "error": res.state.error,
+                "error_type": res.state.error_type,
                 "merge": res.merge is not None and res.merge.get("merged", False),
                 "reviews": reviews_summary,
                 "depends_on": task.depends_on if task else [],
@@ -107,6 +109,8 @@ def _write_sprint_audit(
                 "outcome": "SKIPPED",
                 "cost_usd": 0.0,
                 "preflight": None,
+                "error": None,
+                "error_type": None,
                 "merge": False,
                 "reviews": [],
                 "depends_on": task.depends_on if task else [],
@@ -201,6 +205,8 @@ def _write_sprint_summary(
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
+                "error": res.state.error,
+                "error_type": res.state.error_type,
                 "merge": res.merge is not None and res.merge.get("merged", False),
             }
             if slug in story_times:
@@ -215,6 +221,8 @@ def _write_sprint_summary(
                 "verdict": None,
                 "cost_usd": 0.0,
                 "preflight": None,
+                "error": None,
+                "error_type": None,
                 "merge": False,
                 "batch": batch_assignments.get(slug, 0),
             }
