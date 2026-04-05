@@ -182,6 +182,8 @@ def _merge_branch(
         _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
+    _deindex_forge_artifacts(workspace_path)
+
     ok, out = _cu._run_shell(f"git checkout {base_branch}", project_root)
     if not ok:
         info["error"] = f"Failed to checkout {base_branch!r}: {out}"
@@ -344,9 +346,12 @@ def _deindex_forge_artifacts(workspace_path: Path) -> None:
 
     Uses -f so removal succeeds even when the index entry has staged content that
     differs from both HEAD and the working tree (the agent-misbehavior state described
-    in the story).  Uses --ignore-unmatch so the call is a no-op when files are not
-    tracked.  This prevents merge conflicts and dirty-worktree noise from gitignored
+    in the story). Uses --ignore-unmatch so the call is a no-op when files are not
+    tracked. This prevents merge conflicts and dirty-worktree noise from gitignored
     files that were previously committed or accidentally staged.
+
+    This helper is intentionally safe to run repeatedly at workspace setup, after the
+    dev phase, and immediately before rebase/merge operations.
     """
     files_arg = " ".join(_FORGE_ARTIFACTS)
     ok, out = _cu._run_shell(f"git rm -f --cached --ignore-unmatch {files_arg}", workspace_path)

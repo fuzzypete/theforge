@@ -149,6 +149,7 @@ def _run_validate_phase(
                         f"wip: uncommitted changes from dev iteration {state.dev_iteration}"
                     )
                 _cu._run_shell("git add -A", workspace_path)
+                _deindex_forge_artifacts(workspace_path)
                 # Use subprocess.run directly to avoid shell injection
                 # from model-authored dev_notes (quotes, backticks, $()).
                 try:

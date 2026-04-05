@@ -409,6 +409,42 @@ class TestDeindexForgeArtifacts:
         assert cwd_used == workspace
 
 
+@patch("theforge.coordinator.workspace._deindex_forge_artifacts")
+@patch("theforge.coordinator.workspace._cu._run_shell")
+def test_merge_branch_deindexes_workspace_before_merge(mock_shell, mock_deindex, tmp_path):
+    """_merge_branch scrubs tracked forge artifacts from the workspace before merge."""
+    from theforge.coordinator.workspace import _merge_branch
+
+    workspace = tmp_path / "wt"
+    workspace.mkdir()
+
+    def shell_side_effect(cmd, cwd, **kwargs):
+        if "git branch --list" in cmd:
+            return (True, "* main")
+        if "git status --porcelain" in cmd:
+            return (True, "")
+        if "git log main..forge/issue-1 --oneline" in cmd:
+            return (True, "abc123 feat: change")
+        if "git checkout main" in cmd:
+            return (True, "")
+        if "git merge --ff-only forge/issue-1" in cmd:
+            return (True, "")
+        return (True, "")
+
+    mock_shell.side_effect = shell_side_effect
+
+    info = _merge_branch(
+        project_root=tmp_path,
+        base_branch="main",
+        branch_name="forge/issue-1",
+        slug="issue-1",
+        workspace_path=workspace,
+    )
+
+    assert info["merged"] is True
+    mock_deindex.assert_called_once_with(workspace)
+
+
 class TestDeindexRunsOnAllReturnPaths:
     """_create_workspace calls _deindex_forge_artifacts on every successful return path."""
 

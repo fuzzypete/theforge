@@ -16,7 +16,7 @@ from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, Phase
 from .util import _fmt_duration, _log, _log_verbose
-from .workspace import _merge_branch
+from .workspace import _deindex_forge_artifacts, _merge_branch
 
 _pr_log = logging.getLogger(__name__)
 MAX_MERGE_RETRIES = 3
@@ -304,7 +304,10 @@ def _merge_pr(
     merge_retry_error = "base branch was modified"
 
     for attempt in range(MAX_MERGE_RETRIES):
-        # Step 1: fetch + rebase onto latest base_branch
+        # Step 1: defensively scrub tracked forge artifacts before rebase.
+        _deindex_forge_artifacts(push_cwd)
+
+        # Step 2: fetch + rebase onto latest base_branch
         try:
             fetch_proc = subprocess.run(
                 ["git", "fetch", "origin", base_branch],
@@ -342,7 +345,7 @@ def _merge_pr(
             _pr_log.warning("rebase step failed: %s", exc)
             return _fail(f"rebase step failed: {exc}", pr_url=pr_url)
 
-        # Step 2: force-push the rebased branch so _create_pr's push is a fast-forward
+        # Step 3: force-push the rebased branch so _create_pr's push is a fast-forward
         try:
             push_proc = subprocess.run(
                 ["git", "push", "-f", "origin", branch_name],
@@ -369,7 +372,11 @@ def _merge_pr(
                 )
             pr_url = pr_result["pr_url"]
 
-        # Step 4: merge the PR remotely from the repo root. Running gh from the
+        # Step 4: defensively scrub tracked forge artifacts again after rebase,
+        # before any push/merge consumes the rewritten commit graph.
+        _deindex_forge_artifacts(push_cwd)
+
+        # Step 5: merge the PR remotely from the repo root. Running gh from the
         # feature worktree can trip worktree branch checkout constraints.
         try:
             merge_proc = subprocess.run(
@@ -405,7 +412,7 @@ def _merge_pr(
 
     _log(f"  ✓ PR merged: {pr_url}")
 
-    # Step 5: sync local state and clean up the merged feature worktree/branch.
+    # Step 6: sync local state and clean up the merged feature worktree/branch.
     _cleanup_after_merge()
 
     return {

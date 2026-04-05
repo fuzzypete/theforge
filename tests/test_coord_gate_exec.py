@@ -246,12 +246,58 @@ class TestCoordinatorDirtyWorktree:
         assert result.success is True
         assert result.phase == Phase.DONE
         assert mock_agent.call_count == 1
-        mock_deindex.assert_called_once_with(workspace)
+        assert mock_deindex.call_count == 2
+        assert mock_deindex.call_args_list[0].args == (workspace,)
+        assert mock_deindex.call_args_list[1].args == (workspace,)
         assert any("git add" in c for c in shell_cmds)
         assert any(
             c[0][0] == ["git", "commit", "-m", mock.ANY] for c in mock_subprocess.call_args_list
         )
         assert mock_subprocess.call_args[0][0] == ["git", "commit", "-m", mock.ANY]
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dirty_worktree_deindexes_before_status_and_after_git_add(
+        self, mock_shell, mock_deindex, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """PASS path scrubs forge artifacts before status and again after staging dirty files."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        shell_cmds: list[str] = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            shell_cmds.append(cmd)
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, " M src/theforge/runner.py")
+            if "git add" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        with patch("theforge.coordinator.validate_phase.subprocess.run"):
+            result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_deindex.call_count == 2
+        assert mock_deindex.call_args_list[0].args == (workspace,)
+        assert mock_deindex.call_args_list[1].args == (workspace,)
+        assert any("git status --porcelain" in c for c in shell_cmds)
+        assert any("git add -A" in c for c in shell_cmds)
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
