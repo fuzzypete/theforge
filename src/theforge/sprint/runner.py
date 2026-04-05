@@ -23,6 +23,7 @@ from ..coordinator.util import _fmt_duration, _generate_run_id
 from ..coordinator.workspace import _merge_branch, pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
+from .ci_checks import poll_required_checks
 from .collision import compute_synthetic_edges, inject_synthetic_deps, run_batch_preflight
 from .dag import (
     StoryDAG,
@@ -596,6 +597,7 @@ def run_sprint(
     specs_failed = 0
     specs_skipped = 0
     stopped_reason: str | None = None
+    ci_halt_slug: str | None = None
     merged_slugs: set[str] = set()
 
     # Derive slug_to_spec from unified context mapping
@@ -932,6 +934,39 @@ def run_sprint(
                         except Exception as exc:
                             _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
+                if (
+                    max_parallel == 1
+                    and config.workspace.on_approve == "merge-pr"
+                    and result.merge
+                    and result.merge.get("merged")
+                    and not result.merge.get("auto_merge_queued", False)
+                ):
+                    ci_result = poll_required_checks(
+                        config.project_root,
+                        config.workspace.base_branch,
+                        config.workspace.ci_check_timeout_seconds,
+                    )
+                    if ci_result["status"] in {"fail", "timeout"}:
+                        failing = (
+                            ", ".join(ci_result["failing_checks"]) or "pending required checks"
+                        )
+                        stopped_reason = (
+                            "Required CI checks "
+                            f"{ci_result['status']} after merging {slug} "
+                            f"at {ci_result['sha']}: {failing}"
+                        )
+                        ci_halt_slug = slug
+                        _log(
+                            f"HALT {slug}: required CI checks {ci_result['status']} "
+                            f"for {ci_result['sha']} ({failing})"
+                        )
+                        for t in dag.ready():
+                            if t.slug not in active:
+                                dag.mark_skipped(t.slug)
+                                specs_skipped += 1
+                                _log(f"SKIPPED {t.slug} ({stopped_reason})")
+                        break
+
                 # In parallel mode, merge actions are serialized in the main thread.
                 needs_deferred_merge = (
                     auto_merge
@@ -981,6 +1016,33 @@ def run_sprint(
                                     if merge_info.get("merged"):
                                         merged_slugs.add(slug)
                                         dag.mark_complete(slug)
+                                        if not merge_info.get("auto_merge_queued", False):
+                                            ci_result = poll_required_checks(
+                                                config.project_root,
+                                                config.workspace.base_branch,
+                                                config.workspace.ci_check_timeout_seconds,
+                                            )
+                                            if ci_result["status"] in {"fail", "timeout"}:
+                                                failing = (
+                                                    ", ".join(ci_result["failing_checks"])
+                                                    or "pending required checks"
+                                                )
+                                                stopped_reason = (
+                                                    "Required CI checks "
+                                                    f"{ci_result['status']} after merging {slug} "
+                                                    f"at {ci_result['sha']}: {failing}"
+                                                )
+                                                ci_halt_slug = slug
+                                                _log(
+                                                    f"HALT {slug}: required CI checks "
+                                                    f"{ci_result['status']} for {ci_result['sha']}"
+                                                    f" ({failing})"
+                                                )
+                                        else:
+                                            _log(
+                                                f"INFO {slug}: PR auto-merge queued; "
+                                                "skipping CI gate until GitHub lands the merge"
+                                            )
                                     else:
                                         result.success = False
                                         result.phase = Phase.ESCALATE
@@ -1028,6 +1090,13 @@ def run_sprint(
                                     _write_story_audit(config, task, result)
                             del pending_merges[slug]
                             changed = True
+                    if stopped_reason is not None:
+                        for t in dag.ready():
+                            if t.slug not in active:
+                                dag.mark_skipped(t.slug)
+                                specs_skipped += 1
+                                _log(f"SKIPPED {t.slug} ({stopped_reason})")
+                        pending_merges.clear()
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
@@ -1108,6 +1177,7 @@ def run_sprint(
         batch_assignments=batch_assignments,
         slug_map=slug_map,
         tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
+        ci_break_slug=ci_halt_slug,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -1124,6 +1194,7 @@ def run_sprint(
             batch_assignments=batch_assignments,
             slug_map=slug_map,
             run_id=_cli_run_id,
+            ci_break_slug=ci_halt_slug,
         )
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────

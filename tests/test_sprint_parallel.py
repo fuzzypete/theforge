@@ -944,6 +944,15 @@ class TestParallelMergeOrderingParallelMode:
                     "error": "gh pr merge failed: branch protection",
                 },
             ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
         ):
             sprint = run_sprint(config, manifest_path)
 
@@ -1014,6 +1023,15 @@ class TestParallelMergeOrderingParallelMode:
                     "merged": True,
                     "success": True,
                     "error": None,
+                },
+            ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
                 },
             ),
         ):
@@ -1222,3 +1240,54 @@ class TestParallelLogIsolation:
         assert not isinstance(sys.stderr, _TeeStderr)
         assert list(story_a_dir.glob("run-*.log")) == []
         assert list(story_b_dir.glob("run-*.log")) == []
+
+
+def test_write_sprint_summary_records_ci_break_slug(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from theforge.sprint.audit import _write_sprint_summary
+
+    manifest = SimpleNamespace(name="demo-sprint", budget_usd=12.5, max_parallel=1)
+    state = SimpleNamespace(
+        preflight_verdict="PROCEED",
+        review_results=[],
+        total_cost=1.25,
+        error=None,
+        error_type=None,
+    )
+    result = SimpleNamespace(
+        results=[
+            (
+                "issue:123",
+                SimpleNamespace(
+                    state=state, phase=SimpleNamespace(name="DONE"), success=True, merge=None
+                ),
+            )
+        ],
+        total_cost_usd=1.25,
+        specs_total=1,
+        specs_succeeded=1,
+        specs_failed=0,
+        specs_skipped=0,
+        stopped_reason="ci failed",
+    )
+    started_at = finished_at = __import__("datetime").datetime(
+        2024, 1, 1, tzinfo=__import__("datetime").timezone.utc
+    )
+    sprint_log_dir = tmp_path / ".forge" / "logs" / "demo-sprint"
+
+    _write_sprint_summary(
+        manifest=manifest,
+        result=result,
+        canonical_refs=["issue:123"],
+        started_at=started_at,
+        finished_at=finished_at,
+        duration=0.0,
+        sprint_log_dir=sprint_log_dir,
+        slug_map={"issue:123": "story-123"},
+        run_id="run-abc",
+        ci_break_slug="story-123",
+    )
+
+    summary = __import__("yaml").safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
+    assert summary["sprint"]["ci_break_slug"] == "story-123"

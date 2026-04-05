@@ -132,6 +132,7 @@ class WorkspaceConfig:
     merge_strategy: str = "squash"  # merge | squash | rebase (used by on_approve="merge-pr")
     pr_labels: tuple[str, ...] = ()  # labels to apply when on_approve="pr" or "merge-pr"
     pr_draft: bool = False  # create PR as draft when on_approve="pr"
+    ci_check_timeout_seconds: int = 300  # bounded wait for required CI checks after merge
 
 
 @dataclass(frozen=True)

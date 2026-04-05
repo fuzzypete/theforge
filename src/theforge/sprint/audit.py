@@ -34,6 +34,7 @@ def _write_sprint_audit(
     batch_assignments: "dict[str, int] | None" = None,
     slug_map: "dict[str, str] | None" = None,
     tasks_by_slug: "dict[str, TaskStory] | None" = None,
+    ci_break_slug: str | None = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
@@ -143,6 +144,7 @@ def _write_sprint_audit(
             "specs_failed": result.specs_failed,
             "specs_skipped": result.specs_skipped,
             "stopped_reason": result.stopped_reason,
+            "ci_break_slug": ci_break_slug,
         },
         "specs": spec_entries,
     }
@@ -174,6 +176,7 @@ def _write_sprint_summary(
     batch_assignments: "dict[str, int] | None" = None,
     slug_map: "dict[str, str] | None" = None,
     run_id: str | None = None,
+    ci_break_slug: str | None = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/."""
     story_times = story_times or {}
@@ -245,6 +248,7 @@ def _write_sprint_summary(
             "specs_failed": result.specs_failed,
             "specs_skipped": result.specs_skipped,
             "stopped_reason": result.stopped_reason,
+            "ci_break_slug": ci_break_slug,
         },
         "stories": spec_entries,
     }

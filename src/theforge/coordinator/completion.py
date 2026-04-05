@@ -496,6 +496,7 @@ def _merge_pr(
         "merged": True,
         "success": True,
         "error": None,
+        "auto_merge_queued": auto_merge_queued,
     }
 
 
