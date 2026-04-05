@@ -410,8 +410,8 @@ class TestMergePrFunction:
         assert "branch protection" in result["error"]
         assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 1}
 
-    def test_auto_flag_passed_to_gh_merge(self, tmp_path: Path) -> None:
-        """Verify --auto is passed so branch protection can queue the merge."""
+    def test_sync_merge_attempted_before_auto_fallback(self, tmp_path: Path) -> None:
+        """Verify merge-pr tries a synchronous gh merge before any --auto fallback."""
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
@@ -443,7 +443,15 @@ class TestMergePrFunction:
             _merge_pr(config, task, "forge/test-task", review, state)
 
         assert gh_calls
-        assert all("--auto" in c for c in gh_calls)
+        assert gh_calls[0] == [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/fuzzypete/theforge/pull/auto",
+            "--squash",
+        ]
+        assert all("--squash" in c for c in gh_calls)
+        assert all("--auto" not in c for c in gh_calls)
 
     def test_merge_strategy_squash_passed_to_gh(self, tmp_path: Path) -> None:
         """Verify --squash is passed to gh pr merge."""
@@ -547,8 +555,78 @@ class TestMergePrFunction:
             result = _merge_pr(config, task, "forge/test-task", review, state)
 
         assert result["success"] is True
-        assert result["merged"] is True
+        assert result["merged"] is False
+        assert result["merge_queued"] is True
+        assert [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/fuzzypete/theforge/pull/queued",
+            "--squash",
+        ] in commands
+        assert [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/fuzzypete/theforge/pull/queued",
+            "--auto",
+            "--squash",
+        ] not in commands
         assert ["git", "push", "origin", "--delete", "forge/test-task"] not in commands
+
+    def test_branch_protection_falls_back_to_auto_merge_queue(self, tmp_path: Path) -> None:
+        """Branch protection errors should retry with --auto and report queued state."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        commands: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                commands.append(cmd)
+                if cmd[:3] == ["gh", "pr", "merge"] and "--auto" not in cmd:
+                    return _make_subprocess_result(1, stderr="required status checks are expected")
+                if cmd[:3] == ["gh", "pr", "merge"] and "--auto" in cmd:
+                    return _make_subprocess_result(0, stdout="Auto-merge enabled for pull request")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/queued-auto",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is True
+        assert result["merged"] is False
+        assert result["merge_queued"] is True
+        assert [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/fuzzypete/theforge/pull/queued-auto",
+            "--squash",
+        ] in commands
+        assert [
+            "gh",
+            "pr",
+            "merge",
+            "https://github.com/fuzzypete/theforge/pull/queued-auto",
+            "--auto",
+            "--squash",
+        ] in commands
 
     def test_immediate_merge_still_deletes_remote_branch(self, tmp_path: Path) -> None:
         """Completed merges should still perform remote branch cleanup."""

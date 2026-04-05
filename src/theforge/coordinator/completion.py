@@ -361,8 +361,17 @@ def _merge_pr(
             _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
 
     pr_url: str | None = None
-    auto_merge_queued = False
+    merge_queued = False
     merge_retry_error = "base branch was modified"
+    branch_protection_signals = (
+        "required status checks",
+        "protected branch",
+        "approval required",
+        "waiting for status",
+        "merging is blocked",
+        "cannot be merged",
+        "review required",
+    )
 
     for attempt in range(MAX_MERGE_RETRIES):
         # Step 1: defensively scrub tracked forge artifacts before rebase.
@@ -441,7 +450,7 @@ def _merge_pr(
         # feature worktree can trip worktree branch checkout constraints.
         try:
             merge_proc = subprocess.run(
-                ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
+                ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
                 capture_output=True,
                 text=True,
                 cwd=str(config.project_root),
@@ -457,7 +466,7 @@ def _merge_pr(
                 for part in (merge_proc.stdout, merge_proc.stderr)
                 if part and part.strip()
             ).lower()
-            auto_merge_queued = (
+            merge_queued = (
                 "auto-merge enabled" in merge_output
                 or "pull request is not mergeable" in merge_output
             )
@@ -468,8 +477,9 @@ def _merge_pr(
             for part in (merge_proc.stderr, merge_proc.stdout)
             if part and part.strip()
         )
+        err_lower = err.lower()
         _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
-        if merge_retry_error in err.lower():
+        if merge_retry_error in err_lower:
             if attempt < MAX_MERGE_RETRIES - 1:
                 _pr_log.warning(
                     "base branch changed during PR merge attempt %d/%d; retrying",
@@ -478,9 +488,44 @@ def _merge_pr(
                 )
                 continue
             return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
+
+        if not any(signal in err_lower for signal in branch_protection_signals):
+            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
+
+        _pr_log.info("gh pr merge blocked by branch protection; falling back to --auto: %s", err)
+        try:
+            merge_proc = subprocess.run(
+                ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=120,
+            )
+        except Exception as exc:
+            _pr_log.warning("gh pr merge --auto failed: %s", exc)
+            return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
+
+        if merge_proc.returncode == 0:
+            merge_output = "\n".join(
+                part.strip()
+                for part in (merge_proc.stdout, merge_proc.stderr)
+                if part and part.strip()
+            ).lower()
+            merge_queued = (
+                "auto-merge enabled" in merge_output
+                or "pull request is not mergeable" in merge_output
+            )
+            break
+
+        err = "\n".join(
+            part.strip()
+            for part in (merge_proc.stderr, merge_proc.stdout)
+            if part and part.strip()
+        )
+        _pr_log.warning("gh pr merge --auto failed (exit %d): %s", merge_proc.returncode, err)
         return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
 
-    if auto_merge_queued:
+    if merge_queued:
         _log(f"  ✓ PR queued for auto-merge: {pr_url}")
     else:
         _log(f"  ✓ PR merged: {pr_url}")
@@ -488,15 +533,15 @@ def _merge_pr(
     # Step 6: sync local state and clean up the merged feature worktree/branch.
     # Preserve the remote branch when GitHub only queued auto-merge; branch
     # protection still needs that ref until the hosted merge completes.
-    _cleanup_after_merge(delete_remote_branch=not auto_merge_queued)
+    _cleanup_after_merge(delete_remote_branch=not merge_queued)
 
     return {
         "action": "merge-pr",
         "pr_url": pr_url,
-        "merged": True,
+        "merged": not merge_queued,
+        "merge_queued": merge_queued,
         "success": True,
         "error": None,
-        "auto_merge_queued": auto_merge_queued,
     }
 
 

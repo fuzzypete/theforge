@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,7 +24,7 @@ from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phas
 from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, build_dag
-from theforge.sprint.runner import _classify_and_record
+from theforge.sprint.runner import _classify_and_record, _poll_pr_merge_state
 from theforge.task import TaskStory
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -120,6 +121,8 @@ def _make_coordinator_result(
     preflight_verdict: str = "PROCEED",
     phase: Phase = Phase.DONE,
     merged: bool = False,
+    merge_queued: bool = False,
+    pr_url: str = "https://example.test/pr/1",
 ) -> CoordinatorResult:
     state = CoordinatorState()
     state.preflight_verdict = preflight_verdict
@@ -132,7 +135,13 @@ def _make_coordinator_result(
         phase=phase,
         state=state,
         message="Done." if success else "Failed.",
-        merge={"merged": True} if merged else None,
+        merge=(
+            {"merged": True, "pr_url": pr_url}
+            if merged
+            else (
+                {"merged": False, "merge_queued": True, "pr_url": pr_url} if merge_queued else None
+            )
+        ),
     )
 
 
@@ -557,9 +566,10 @@ class TestClassifyAndRecord:
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
+        queued_prs: dict[str, tuple[TaskStory, str]] = {}
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=False)
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs, queued_prs)
 
         assert ds == 1
         assert df == 0
@@ -574,9 +584,10 @@ class TestClassifyAndRecord:
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
+        queued_prs: dict[str, tuple[TaskStory, str]] = {}
 
         result = _make_coordinator_result(success=True, cost=1.0, merged=True)
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs, queued_prs)
 
         assert ds == 1
         assert "a" in merged_slugs
@@ -589,11 +600,12 @@ class TestClassifyAndRecord:
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
+        queued_prs: dict[str, tuple[TaskStory, str]] = {}
 
         result = _make_coordinator_result(
             success=True, cost=0.0, preflight_verdict="ALREADY_DONE", phase=Phase.DONE
         )
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs, queued_prs)
 
         assert ds == 0
         assert dsk == 1
@@ -606,13 +618,104 @@ class TestClassifyAndRecord:
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
+        queued_prs: dict[str, tuple[TaskStory, str]] = {}
 
         result = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs, queued_prs)
 
         assert df == 1
         assert "a" not in merged_slugs
         assert dag.ready() == []
+
+    def test_merge_queued_does_not_complete_for_dag(self) -> None:
+        """Queued merges stay blocked until polling promotes them."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+        queued_prs: dict[str, tuple[TaskStory, str]] = {}
+
+        result = _make_coordinator_result(success=True, cost=1.0, merge_queued=True)
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs, queued_prs)
+
+        assert ds == 1
+        assert df == 0
+        assert dsk == 0
+        assert "a" not in merged_slugs
+        assert queued_prs["a"][1] == "https://example.test/pr/1"
+        assert dag.ready() == []
+
+
+class TestQueuedMergePolling:
+    def test_poll_pr_merge_state_returns_unknown_on_error(self, tmp_path: Path) -> None:
+        with patch(
+            "theforge.sprint.runner.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="boom"
+            ),
+        ):
+            assert _poll_pr_merge_state("https://example.test/pr/1", tmp_path) == "UNKNOWN"
+
+    def test_run_sprint_promotes_queued_merge_when_pr_lands(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md", "story-b.md"], max_parallel=1
+        )
+        config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            config, workspace=dataclasses.replace(config.workspace, on_approve="merge-pr")
+        )
+
+        result_a = _make_coordinator_result(
+            success=True, merge_queued=True, pr_url="https://example.test/pr/a"
+        )
+        result_b = _make_coordinator_result(
+            success=True, merged=True, pr_url="https://example.test/pr/b"
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]) as mock_run,
+            patch("theforge.sprint.runner._poll_pr_merge_state", side_effect=["MERGED"]),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={"status": "pass", "sha": "abc", "failing_checks": []},
+            ),
+            patch("theforge.sprint.runner.pull_base_branch", return_value=True),
+            patch("theforge.sprint.runner._write_story_audit"),
+            patch("theforge.sprint.runner._write_sprint_audit"),
+            patch("theforge.sprint.runner._write_sprint_summary"),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 2
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_failed == 0
+
+    def test_run_sprint_escalates_when_queued_pr_closes(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(tmp_path, ["story-a.md"], max_parallel=1)
+        config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            config, workspace=dataclasses.replace(config.workspace, on_approve="merge-pr")
+        )
+
+        result_a = _make_coordinator_result(
+            success=True, merge_queued=True, pr_url="https://example.test/pr/a"
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result_a),
+            patch("theforge.sprint.runner._poll_pr_merge_state", return_value="CLOSED"),
+            patch("theforge.sprint.runner.pull_base_branch", return_value=True),
+            patch("theforge.sprint.runner._write_story_audit"),
+            patch("theforge.sprint.runner._write_sprint_audit"),
+            patch("theforge.sprint.runner._write_sprint_summary"),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
 
 
 class TestMergeOrdering:
