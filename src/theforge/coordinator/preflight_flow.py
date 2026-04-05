@@ -33,7 +33,7 @@ from .audit import has_review_approve
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
-    _apply_complexity_adaptation,
+    _apply_preflight_config,
     _parse_preflight_complexity,
     _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
@@ -160,101 +160,7 @@ def _run_preflight_phase(
         complexity = state.preflight_complexity
         _log(f"  Complexity: {complexity} (preflight failed — using fallback)")
 
-    if config.smart_config_models is not None:
-        config = _apply_complexity_adaptation(config, complexity)
-
-    # ── Adaptive assignment ────────────────────────────────────────────
-    if config.assignment.enabled and config.agents:
-        from .assignment import (  # noqa: PLC0415
-            PHASE_TIER as _PHASE_TIER,
-        )
-        from .assignment import (  # noqa: PLC0415
-            _normalize_complexity as _norm_complexity,
-        )
-        from .assignment import (  # noqa: PLC0415
-            _pick_agent as _pick_agt,
-        )
-        from .assignment import (  # noqa: PLC0415
-            _promote_tier as _prom_tier,
-        )
-        from .assignment import (  # noqa: PLC0415
-            assign_models as _assign_models,
-        )
-        from .assignment import (  # noqa: PLC0415
-            load_escalation_history as _load_esc_history,
-        )
-
-        _history_path = config.project_root / ".forge" / "assignment_history.yaml"
-        _esc_history = _load_esc_history(_history_path)
-
-        from .config import DEFAULT_DEV_PROFILE as _DEF_DEV  # noqa: PLC0415
-        from .config import DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE  # noqa: PLC0415
-
-        _explicit: dict[str, object] = {}
-        _explicit_roles: set[str] = set()
-        if config.smart_config_models is None:
-            if config.dev_profile is not _DEF_DEV:
-                _explicit["dev"] = config.dev_profile
-                _explicit_roles.add("dev")
-            if config.preflight_profile is not _DEF_PRE:
-                _explicit["preflight"] = config.preflight_profile
-                _explicit_roles.add("preflight")
-            if config.review_pool and not config.review_pool_is_default:
-                _explicit_roles.add("review_pool")
-            if not config.plan_model_is_default:
-                _explicit_roles.add("planner")
-            if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
-                _explicit_roles.add("plan_agent_review")
-
-        _decision = _assign_models(
-            config.agents,
-            config.assignment,
-            complexity,
-            _esc_history,
-            _explicit if _explicit else None,
-            state.sprint_promotions,
-            config.secrets,
-        )
-
-        import dataclasses as _dc  # noqa: PLC0415
-
-        _replace_kwargs: dict = {
-            "dev_profile": _decision.dev,
-            "preflight_profile": _decision.preflight,
-        }
-        if _decision.code_reviewers:
-            if "review_pool" not in _explicit_roles:
-                _replace_kwargs["review_pool"] = _decision.code_reviewers
-            else:
-                _log("  [adaptive] review_pool: explicit override preserved")
-        config = _dc.replace(config, **_replace_kwargs)
-
-        state._adaptive_decision = _decision
-        state._explicit_roles = _explicit_roles
-
-        _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
-        _dev_agent = _pick_agt(config.agents, _dev_base_tier, config.secrets)
-        _dev_name = _dev_agent.name if _dev_agent else ""
-        if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
-            from .assignment import _check_promotion as _chk_prom  # noqa: PLC0415
-
-            _prom = _chk_prom(
-                _norm_complexity(complexity),
-                _dev_name,
-                _esc_history,
-                state.sprint_promotions,
-            )
-            if _prom is not None:
-                _promoted_tier = _prom_tier(_dev_base_tier)
-                state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
-                _log_verbose(
-                    f"[adaptive] {_norm_complexity(complexity)} dev promoted "
-                    f"{_dev_name} → tier {_promoted_tier} (sticky for sprint)"
-                )
-
-        _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
-        for _phase, _rsn in _decision.rationale.items():
-            _log_verbose(f"[adaptive] {_phase}: {_rsn}")
+    config = _apply_preflight_config(config, state, log=_log, log_verbose=_log_verbose)
 
     _log(f"  ✓ PREFLIGHT   {verdict}")
     _log_verbose(f"  Reason: {reason}")

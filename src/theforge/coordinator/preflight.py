@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace as _dc_replace
+from typing import TYPE_CHECKING
 
 import yaml
 
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
 from theforge.review import ReviewFinding
+
+if TYPE_CHECKING:
+    from .state import CoordinatorState
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
 
@@ -341,5 +346,101 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
         ):
             return config  # already using strongest, synthesis unchanged
         return _dc_replace(config, dev_profile=new_dev, synthesis_profile=synthesis)
+
+    return config
+
+
+def _apply_preflight_config(
+    config: ForgeConfig,
+    state: "CoordinatorState",
+    *,
+    log: Callable[[str], None] | None = None,
+    log_verbose: Callable[[str], None] | None = None,
+) -> ForgeConfig:
+    """Apply complexity-driven config updates using values already stored on state."""
+    complexity = state.preflight_complexity or "medium"
+    _log = log or (lambda _msg: None)
+    _log_verbose = log_verbose or (lambda _msg: None)
+
+    if config.smart_config_models is not None:
+        config = _apply_complexity_adaptation(config, complexity)
+
+    if not (config.assignment.enabled and config.agents):
+        return config
+
+    from .assignment import PHASE_TIER as _PHASE_TIER  # noqa: PLC0415
+    from .assignment import _check_promotion as _chk_prom  # noqa: PLC0415
+    from .assignment import _normalize_complexity as _norm_complexity  # noqa: PLC0415
+    from .assignment import _pick_agent as _pick_agt  # noqa: PLC0415
+    from .assignment import _promote_tier as _prom_tier  # noqa: PLC0415
+    from .assignment import assign_models as _assign_models  # noqa: PLC0415
+    from .assignment import load_escalation_history as _load_esc_history  # noqa: PLC0415
+    from .config import DEFAULT_DEV_PROFILE as _DEF_DEV  # noqa: PLC0415
+    from .config import DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE  # noqa: PLC0415
+
+    _history_path = config.project_root / ".forge" / "assignment_history.yaml"
+    _esc_history = _load_esc_history(_history_path)
+
+    _explicit: dict[str, object] = {}
+    _explicit_roles: set[str] = set()
+    if config.smart_config_models is None:
+        if config.dev_profile is not _DEF_DEV:
+            _explicit["dev"] = config.dev_profile
+            _explicit_roles.add("dev")
+        if config.preflight_profile is not _DEF_PRE:
+            _explicit["preflight"] = config.preflight_profile
+            _explicit_roles.add("preflight")
+        if config.review_pool and not config.review_pool_is_default:
+            _explicit_roles.add("review_pool")
+        if not config.plan_model_is_default:
+            _explicit_roles.add("planner")
+        if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
+            _explicit_roles.add("plan_agent_review")
+
+    _decision = _assign_models(
+        config.agents,
+        config.assignment,
+        complexity,
+        _esc_history,
+        _explicit if _explicit else None,
+        state.sprint_promotions,
+        config.secrets,
+    )
+
+    _replace_kwargs: dict[str, object] = {
+        "dev_profile": _decision.dev,
+        "preflight_profile": _decision.preflight,
+    }
+    if _decision.code_reviewers:
+        if "review_pool" not in _explicit_roles:
+            _replace_kwargs["review_pool"] = _decision.code_reviewers
+        else:
+            _log("  [adaptive] review_pool: explicit override preserved")
+    config = _dc_replace(config, **_replace_kwargs)
+
+    state._adaptive_decision = _decision
+    state._explicit_roles = _explicit_roles
+
+    _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
+    _dev_agent = _pick_agt(config.agents, _dev_base_tier, config.secrets)
+    _dev_name = _dev_agent.name if _dev_agent else ""
+    if _dev_name and "dev" not in _explicit and complexity not in state.sprint_promotions:
+        _prom = _chk_prom(
+            _norm_complexity(complexity),
+            _dev_name,
+            _esc_history,
+            state.sprint_promotions,
+        )
+        if _prom is not None:
+            _promoted_tier = _prom_tier(_dev_base_tier)
+            state.sprint_promotions[_norm_complexity(complexity)] = _promoted_tier
+            _log_verbose(
+                f"[adaptive] {_norm_complexity(complexity)} dev promoted "
+                f"{_dev_name} -> tier {_promoted_tier} (sticky for sprint)"
+            )
+
+    _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
+    for _phase, _rsn in _decision.rationale.items():
+        _log_verbose(f"[adaptive] {_phase}: {_rsn}")
 
     return config
