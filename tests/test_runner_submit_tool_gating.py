@@ -77,9 +77,9 @@ def _capture(
 
 
 def _captured_openai(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict], object]:
-    from theforge.runners.api import _run_loop_openai
-
     with _patch_openai_httpx_modules():
+        from theforge.runners.api import _run_loop_openai
+
         return _capture(
             _run_loop_openai,
             profile,
@@ -120,9 +120,9 @@ def _captured_google(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict],
 
 
 def _captured_deepseek(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict], object]:
-    from theforge.runners.api import _run_loop_deepseek
-
     with _patch_openai_httpx_modules():
+        from theforge.runners.api import _run_loop_deepseek
+
         return _capture(
             _run_loop_deepseek,
             profile,
