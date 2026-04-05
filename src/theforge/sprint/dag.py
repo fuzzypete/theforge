@@ -241,11 +241,11 @@ def _triage_spec(
     base_branch = config.workspace.base_branch
     worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
     commits_ahead: list[str] | None = None
+    commits_behind: int | None = None
 
-    # 1. A branch at the base tip (0 ahead, 0 behind) is stale/empty, not merged.
-    # This can happen when a prior run created the branch/worktree but never
-    # produced story commits. Treat it as full so WORKSPACE recreates it, even
-    # if the old worktree directory has already been removed.
+    # 1. Probe branch divergence up front so same-tip branches can distinguish
+    # fast-forward merges (audit-backed skip_merged) from stale/empty worktrees
+    # that were merely created at the base tip.
     try:
         log_result = subprocess.run(
             ["git", "log", f"{base_branch}..{branch}", "--oneline"],
@@ -268,21 +268,9 @@ def _triage_spec(
             commits_behind = int(
                 behind_result.stdout.decode("utf-8", errors="replace").strip() or "0"
             )
-            if commits_behind == 0:
-                stale_reason = (
-                    f"branch is at {base_branch} HEAD with 0 commits ahead"
-                    if not worktree_path.exists()
-                    else f"worktree exists but branch is at {base_branch} HEAD (stale)"
-                )
-                return StoryTriage(
-                    story_path=story_path,
-                    action="full",
-                    reason=stale_reason,
-                    worktree_path=None,
-                    slug=slug,
-                )
     except (subprocess.TimeoutExpired, OSError, ValueError):
         commits_ahead = None
+        commits_behind = None
 
     # 2. Check if already merged to base branch.
     # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
@@ -296,7 +284,25 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 3. Check if worktree exists
+    # 3. A branch at the base tip (0 ahead, 0 behind) is stale/empty, not merged.
+    # This can happen when a prior run created the branch/worktree but never
+    # produced story commits. Treat it as full so WORKSPACE recreates it, even
+    # if the old worktree directory has already been removed.
+    if commits_ahead == [] and commits_behind == 0:
+        stale_reason = (
+            f"branch is at {base_branch} HEAD with 0 commits ahead"
+            if not worktree_path.exists()
+            else f"worktree exists but branch is at {base_branch} HEAD (stale)"
+        )
+        return StoryTriage(
+            story_path=story_path,
+            action="full",
+            reason=stale_reason,
+            worktree_path=None,
+            slug=slug,
+        )
+
+    # 4. Check if worktree exists
     if not worktree_path.exists():
         return StoryTriage(
             story_path=story_path,
@@ -306,7 +312,7 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 4. Check commits ahead of base branch
+    # 5. Check commits ahead of base branch
     if commits_ahead is None:
         try:
             log_result = subprocess.run(
