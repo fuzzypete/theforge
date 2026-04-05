@@ -8,7 +8,12 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from theforge.sprint.lock import SprintConflictError, acquire_story_locks, release_story_locks
+from theforge.sprint.lock import (
+    SprintConflictError,
+    acquire_story_locks,
+    check_active_worktrees,
+    release_story_locks,
+)
 
 # Use 'fork' so local functions can be passed to child processes without pickling.
 _mp = multiprocessing.get_context("fork")
@@ -181,6 +186,49 @@ class TestAcquireStoryLocks:
             release_story_locks(fds)
 
 
+class TestCheckActiveWorktrees:
+    def test_missing_worktree_is_not_active(self, tmp_path: Path) -> None:
+        active = check_active_worktrees(["story-a"], ".forge/worktrees/{slug}", "main", tmp_path)
+        assert active == []
+
+    def test_existing_worktree_with_commits_is_active(self, tmp_path: Path) -> None:
+        worktree = tmp_path / ".forge" / "worktrees" / "story-a"
+        worktree.mkdir(parents=True)
+
+        completed = MagicMock(returncode=0, stdout="3\n")
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed) as mock_run:
+            active = check_active_worktrees(
+                ["story-a"], ".forge/worktrees/{slug}", "main", tmp_path
+            )
+
+        assert active == ["story-a"]
+        mock_run.assert_called_once()
+
+    def test_existing_worktree_without_commits_is_not_active(self, tmp_path: Path) -> None:
+        worktree = tmp_path / ".forge" / "worktrees" / "story-a"
+        worktree.mkdir(parents=True)
+
+        completed = MagicMock(returncode=0, stdout="0\n")
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+            active = check_active_worktrees(
+                ["story-a"], ".forge/worktrees/{slug}", "main", tmp_path
+            )
+
+        assert active == []
+
+    def test_git_failure_is_not_active(self, tmp_path: Path) -> None:
+        worktree = tmp_path / ".forge" / "worktrees" / "story-a"
+        worktree.mkdir(parents=True)
+
+        completed = MagicMock(returncode=1, stdout="", stderr="fatal")
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+            active = check_active_worktrees(
+                ["story-a"], ".forge/worktrees/{slug}", "main", tmp_path
+            )
+
+        assert active == []
+
+
 # ── SprintConflictError ──────────────────────────────────────────────────
 
 
@@ -242,6 +290,8 @@ class TestCmdSprintConflictGuard:
 
         mock_config = MagicMock()
         mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
 
         ready_event = _mp.Event()
         release_event = _mp.Event()
@@ -282,6 +332,8 @@ class TestCmdSprintConflictGuard:
 
         mock_config = MagicMock()
         mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
 
         mock_result = MagicMock()
         mock_result.specs_failed = 0
@@ -293,3 +345,33 @@ class TestCmdSprintConflictGuard:
 
         assert rc == 0
         mock_run.assert_called_once()
+
+    def test_active_worktree_returns_exit_1(self, tmp_path: Path, capsys) -> None:
+        """cmd_sprint returns 1 when a story already has an active worktree."""
+        from theforge import cli
+
+        story = self._make_story(tmp_path, "my-feature")
+        manifest = self._make_manifest(tmp_path, story)
+        args = self._make_args(tmp_path, manifest)
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
+
+        worktree = tmp_path / ".forge" / "worktrees" / "my-feature"
+        worktree.mkdir(parents=True)
+
+        with patch("theforge.cli.sprint.load_config", return_value=mock_config):
+            with patch("theforge.cli.sprint.run_sprint") as mock_run:
+                with patch(
+                    "theforge.sprint.lock.subprocess.run",
+                    return_value=MagicMock(returncode=0, stdout="2\n"),
+                ):
+                    rc = cli.cmd_sprint(args)
+
+        assert rc == 1
+        mock_run.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Stories already have active worktrees" in captured.err
+        assert "my-feature" in captured.err
