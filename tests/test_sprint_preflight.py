@@ -45,25 +45,44 @@ def test_check_active_worktrees_returns_abort_when_active(tmp_path: Path) -> Non
     assert rc == 1
 
 
-def test_reacquire_story_locks_in_daemon_aborts_on_conflict(capsys) -> None:
+def test_reacquire_story_locks_in_daemon_updates_pid_in_place() -> None:
+    # Simulate two inherited lock FDs (StringIO-like objects with seek/truncate/write/flush)
+    import io
+
+    fd_a = io.StringIO()
+    fd_a.write("11111")  # parent PID written before fork
+    fd_b = io.StringIO()
+    fd_b.write("11111")
+
+    import os
+
+    returned = reacquire_story_locks_in_daemon(
+        ["story-a", "story-b"],
+        Path("/tmp/project"),
+        [fd_a, fd_b],
+    )
+
+    # Same FD objects returned — no close, no re-acquire
+    assert returned == [fd_a, fd_b]
+
+    # Each FD now contains the daemon's PID
+    daemon_pid = str(os.getpid())
+    fd_a.seek(0)
+    assert fd_a.read() == daemon_pid
+    fd_b.seek(0)
+    assert fd_b.read() == daemon_pid
+
+
+def test_reacquire_story_locks_in_daemon_does_not_close_fds() -> None:
+    # Regression: before fix, the inherited FDs were closed, which dropped the
+    # flock and caused a self-conflict race with the still-alive parent process.
     inherited_fd = MagicMock()
+    inherited_fd.read.return_value = ""
 
-    with patch(
-        "theforge.sprint.preflight.acquire_story_locks",
-        return_value=([], ["story-a", "story-b"]),
-    ):
-        try:
-            reacquire_story_locks_in_daemon(
-                ["story-a", "story-b"],
-                Path("/tmp/project"),
-                [inherited_fd],
-            )
-        except SystemExit as exc:
-            assert exc.code == 1
-        else:
-            raise AssertionError("expected SystemExit")
+    reacquire_story_locks_in_daemon(
+        ["story-a"],
+        Path("/tmp/project"),
+        [inherited_fd],
+    )
 
-    inherited_fd.close.assert_called_once()
-    captured = capsys.readouterr()
-    assert "Stories already running" in captured.err
-    assert "story-a, story-b" in captured.err
+    inherited_fd.close.assert_not_called()
