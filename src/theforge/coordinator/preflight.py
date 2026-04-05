@@ -20,9 +20,9 @@ _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
 def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     """Extract verdict and reason from preflight agent output.
 
-    Returns (verdict, reason). If parsing fails, returns ("PROCEED", reason)
-    to avoid blocking on a broken preflight — it's cheaper to try DEV than
-    to stall.
+    Returns (verdict, reason). Parse failures still fail open to PROCEED, but
+    unrecognized verdict values are treated as BLOCKED because downstream
+    classifications from a confused preflight are unreliable.
     """
     # Extract YAML block from markdown fences
     yaml_text = output
@@ -47,7 +47,11 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     reason = str(parsed.get("reason", "(no reason provided)"))
 
     if verdict not in _VALID_PREFLIGHT_VERDICTS:
-        return "PROCEED", f"Unknown preflight verdict {verdict!r}; proceeding anyway. {reason}"
+        return (
+            "BLOCKED",
+            "Unknown preflight verdict "
+            f"{verdict!r}; escalating because preflight output is invalid. {reason}",
+        )
 
     return verdict, reason
 

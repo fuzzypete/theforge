@@ -205,6 +205,47 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_preflight_unknown_verdict_escalates(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Unknown preflight verdicts are treated as hard failures."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="""```yaml
+verdict: APPROVE
+complexity: small
+reason: \"Model returned a review verdict during preflight.\"
+likely_files:
+  - src/theforge/coordinator/preflight_flow.py
+```
+""",
+            cost_usd=0.05,
+            profile_name="review",
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert "unknown preflight verdict" in result.state.preflight_reason.lower()
+        assert result.state.preflight_likely_files == [
+            "src/theforge/coordinator/preflight_flow.py"
+        ]
+        assert len(result.state.dev_results) == 0
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_preflight_cost_in_audit(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
