@@ -513,6 +513,80 @@ class TestMergePrFunction:
 
         assert any("--rebase" in c for c in gh_calls)
 
+    def test_auto_merge_queue_skips_remote_branch_deletion(self, tmp_path: Path) -> None:
+        """Queued auto-merge must not delete the remote branch before GitHub merges."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        commands: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                commands.append(cmd)
+                if cmd[:3] == ["gh", "pr", "merge"]:
+                    return _make_subprocess_result(0, stdout="Auto-merge enabled for pull request")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/queued",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is True
+        assert result["merged"] is True
+        assert ["git", "push", "origin", "--delete", "forge/test-task"] not in commands
+
+    def test_immediate_merge_still_deletes_remote_branch(self, tmp_path: Path) -> None:
+        """Completed merges should still perform remote branch cleanup."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        commands: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                commands.append(cmd)
+                if cmd[:3] == ["gh", "pr", "merge"]:
+                    return _make_subprocess_result(0, stdout="Merged pull request")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/merged",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is True
+        assert result["merged"] is True
+        assert ["git", "push", "origin", "--delete", "forge/test-task"] in commands
+
     def test_delete_branch_not_passed_to_gh(self, tmp_path: Path) -> None:
         """gh pr merge avoids local cleanup flags that trip worktree constraints."""
         config = _make_merge_pr_config(tmp_path)

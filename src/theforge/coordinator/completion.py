@@ -283,7 +283,8 @@ def _merge_pr(
     3. Call _create_pr() to archive story, push, and open the PR.
     4. Merge via `gh pr merge --{strategy}` from the project root.
     5. Best-effort local cleanup: fast-forward local base_branch, remove the
-       feature worktree, and delete the feature branch locally and remotely.
+       feature worktree, and delete the feature branch locally. Remote branch
+       deletion is deferred unless the PR is already merged.
 
     Returns a result dict with keys: action, pr_url, merged, success, error.
     Never raises.
@@ -303,7 +304,7 @@ def _merge_pr(
             "error": error,
         }
 
-    def _cleanup_after_merge() -> None:
+    def _cleanup_after_merge(*, delete_remote_branch: bool) -> None:
         """Best-effort local cleanup after a successful remote PR merge."""
         try:
             subprocess.run(
@@ -345,6 +346,9 @@ def _merge_pr(
         except Exception as exc:
             _pr_log.warning("local branch cleanup failed (non-fatal): %s", exc)
 
+        if not delete_remote_branch:
+            return
+
         try:
             subprocess.run(
                 ["git", "push", "origin", "--delete", branch_name],
@@ -357,6 +361,7 @@ def _merge_pr(
             _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
 
     pr_url: str | None = None
+    auto_merge_queued = False
     merge_retry_error = "base branch was modified"
 
     for attempt in range(MAX_MERGE_RETRIES):
@@ -447,6 +452,15 @@ def _merge_pr(
             return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
 
         if merge_proc.returncode == 0:
+            merge_output = "\n".join(
+                part.strip()
+                for part in (merge_proc.stdout, merge_proc.stderr)
+                if part and part.strip()
+            ).lower()
+            auto_merge_queued = (
+                "auto-merge enabled" in merge_output
+                or "pull request is not mergeable" in merge_output
+            )
             break
 
         err = "\n".join(
@@ -466,10 +480,13 @@ def _merge_pr(
             return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
         return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
 
-    _log(f"  ✓ PR merged: {pr_url}")
+    if auto_merge_queued:
+        _log(f"  ✓ PR queued for auto-merge: {pr_url}")
+    else:
+        _log(f"  ✓ PR merged: {pr_url}")
 
     # Step 6: sync local state and clean up the merged feature worktree/branch.
-    _cleanup_after_merge()
+    _cleanup_after_merge(delete_remote_branch=not auto_merge_queued)
 
     return {
         "action": "merge-pr",
