@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.runners.cli import _log_verbose
 from theforge.runners.schema_utils import (
+    _NO_SUBMIT_PHASES,
     LoopTurn,
     ProviderAdapter,
     ToolCallRequest,
@@ -332,7 +333,14 @@ def _make_google_adapter(
 
     def _needs_finalization(response: Any) -> bool:
         """Check if the response indicates the model is done exploring
-        but failed to call submit_review."""
+        but failed to call submit_review.
+
+        Returns False for non-review phases (preflight, dev) — those phases
+        do not use submit_review and text-without-tool-call is their normal
+        completion path, not an indication of failure.
+        """
+        if profile.phase in _NO_SUBMIT_PHASES:
+            return False
         for candidate in response.candidates or []:
             fr = str(getattr(candidate, "finish_reason", ""))
             if "MALFORMED" in fr:

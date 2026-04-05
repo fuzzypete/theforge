@@ -15,6 +15,7 @@ def _make_profile(
     provider: str = "google",
     model: str = "gemini-2.5-flash",
     thinking_budget: int | None = None,
+    phase: str | None = None,
 ) -> ModelProfile:
     return ModelProfile(
         name=name,
@@ -26,6 +27,7 @@ def _make_profile(
         allowed_tools=(),
         max_tool_output_bytes=51200,
         thinking_budget=thinking_budget,
+        phase=phase,
     )
 
 
@@ -554,6 +556,118 @@ class TestGoogleAdapter:
         # Must be empty — the loop manager will fail it as "no output"
         assert turn.tool_calls == []
         assert not turn.text_output  # None or ""
+
+    def test_preflight_phase_text_without_tool_does_not_trigger_finalization(self):
+        """Preflight phase: text-without-tool-call is normal completion, not a finalization signal.
+
+        The root cause of the v0.5.0 sprint collision-detection failure was that
+        _make_google_adapter fired the review-schema finalization path whenever Gemini
+        returned prose — including during preflight, which has no submit_review tool and
+        always delivers its verdict as text. This forced review-JSON output
+        (APPROVE/REQUEST_CHANGES) instead of preflight YAML (PROCEED/ALREADY_DONE),
+        leaving likely_files empty.
+        """
+        prose_candidate = MagicMock()
+        prose_candidate.finish_reason = "STOP"
+        prose_candidate.content = MagicMock()
+        prose_part = MagicMock()
+        prose_part.text = "verdict: PROCEED\nlikely_files:\n  - src/foo.py\n"
+        prose_part.function_call = None
+        prose_candidate.content.parts = [prose_part]
+
+        fake_response = MagicMock()
+        fake_response.candidates = [prose_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(phase="preflight")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "analyse codebase"}], [])
+
+        # Only one API call — finalization must NOT have been triggered
+        assert fake_client.models.generate_content.call_count == 1
+        assert turn.text_output is not None
+        assert "PROCEED" in turn.text_output
+        assert turn.tool_calls == []
+
+    def test_dev_phase_text_without_tool_does_not_trigger_finalization(self):
+        """Dev phase: text-without-tool-call returns raw text, no review-schema finalization."""
+        prose_candidate = MagicMock()
+        prose_candidate.finish_reason = "STOP"
+        prose_candidate.content = MagicMock()
+        prose_part = MagicMock()
+        prose_part.text = "Implementation complete."
+        prose_part.function_call = None
+        prose_candidate.content.parts = [prose_part]
+
+        fake_response = MagicMock()
+        fake_response.candidates = [prose_candidate]
+        fake_response.usage_metadata = None
+        fake_response.prompt_feedback = None
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.return_value = fake_response
+
+        _, modules = _make_google_modules(fake_client)
+        profile = _make_profile(phase="dev")
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "implement this"}], [])
+
+        assert fake_client.models.generate_content.call_count == 1
+        assert turn.text_output == "Implementation complete."
+        assert turn.tool_calls == []
+
+    def test_review_phase_text_without_tool_still_triggers_finalization(self):
+        """Review phase (phase=None or explicit review): text-without-tool still forces schema.
+
+        Finalization must remain active for review phases — that's the whole point.
+        This test guards against accidentally disabling finalization for review.
+        """
+        prose_candidate = MagicMock()
+        prose_candidate.finish_reason = "STOP"
+        prose_candidate.content = MagicMock()
+        prose_part = MagicMock()
+        prose_part.text = "I think the code looks fine overall."
+        prose_part.function_call = None
+        prose_candidate.content.parts = [prose_part]
+
+        first_response = MagicMock()
+        first_response.candidates = [prose_candidate]
+        first_response.usage_metadata = _make_response(
+            input_tokens=100, output_tokens=20
+        ).usage_metadata
+        first_response.prompt_feedback = None
+
+        final_json = (
+            '{"verdict": "APPROVE", "summary": "ok", "findings": [],'
+            ' "story_compliance": {"matches_spec": true, "mismatches": []},'
+            ' "test_coverage": {"adequate": true, "gaps": []}}'
+        )
+        second_response = _make_response(text=final_json, input_tokens=110, output_tokens=30)
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.side_effect = [first_response, second_response]
+
+        _, modules = _make_google_modules(fake_client)
+        # phase=None (default) — unknown phases default to review finalization behavior
+        profile = _make_profile(phase=None)
+
+        with patch.dict(sys.modules, modules):
+            adapter = _make_google_adapter(profile, secrets=None)
+            turn = adapter([{"role": "user", "content": "review this"}], [])
+
+        # Two calls: initial + finalization
+        assert fake_client.models.generate_content.call_count == 2
+        assert turn.structured_data is not None
+        assert turn.structured_data["verdict"] == "APPROVE"
 
 
 class TestTranslateMessagesGoogle:
