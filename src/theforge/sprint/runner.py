@@ -181,6 +181,40 @@ def _extract_plan_footprint(workspace_path: Path) -> set[str]:
         return set()
 
 
+def _populate_resumed_story_footprint(
+    slug: str,
+    state: CoordinatorState,
+    workspace_path: Path,
+) -> CoordinatorState:
+    """Populate preflight_likely_files from an existing plan.md for resumed stories."""
+    if state.preflight_likely_files:
+        return state
+
+    files = sorted(_extract_plan_footprint(workspace_path))
+    state.preflight_likely_files = files
+    _log(
+        f"Resumed story {slug}: registered {len(files)} file(s) from plan.md "
+        f"for collision detection: {files}"
+    )
+    return state
+
+
+def _register_resumed_story_footprints(
+    triages: dict[str, StoryTriage],
+    preflight_states: dict[str, CoordinatorState],
+) -> dict[str, CoordinatorState]:
+    """Ensure resumed dev/review stories contribute likely_files to collision detection."""
+    for triage in triages.values():
+        if triage.action not in {"review", "dev"} or triage.worktree_path is None:
+            continue
+        state = preflight_states.get(triage.slug)
+        if state is None:
+            state = CoordinatorState()
+            preflight_states[triage.slug] = state
+        _populate_resumed_story_footprint(triage.slug, state, triage.worktree_path)
+    return preflight_states
+
+
 def _run_fresh(
     config: ForgeConfig,
     task: TaskStory,
@@ -606,6 +640,8 @@ def run_sprint(
         max_parallel=max_parallel,
         notify=notify,
     )
+    if resume:
+        _register_resumed_story_footprints(triages, preflight_states)
     synthetic_edges = compute_synthetic_edges(preflight_states, normalized.tasks)
     if synthetic_edges:
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")

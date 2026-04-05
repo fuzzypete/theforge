@@ -2,6 +2,8 @@ from pathlib import Path
 
 from theforge.coordinator.state import CoordinatorState
 from theforge.sprint.collision import compute_synthetic_edges, inject_synthetic_deps
+from theforge.sprint.dag import StoryTriage
+from theforge.sprint.runner import _register_resumed_story_footprints
 from theforge.task import TaskStory
 
 
@@ -65,3 +67,40 @@ def test_compute_synthetic_edges_falls_back_to_slug_order_when_issue_missing() -
     }
 
     assert compute_synthetic_edges(states, tasks) == {"b-story": ["a-story"]}
+
+
+def test_register_resumed_story_footprints_reads_plan_md(tmp_path: Path) -> None:
+    slug = "story-12"
+    workspace_path = tmp_path / slug
+    plan_dir = workspace_path / ".forge"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "plan.md").write_text(
+        """---
+plan:
+  approach: Resume implementation
+  steps:
+    - id: 1
+      description: Update API
+      files:
+        - src/foo.py
+        - tests/test_foo.py
+      action: modify
+      details: Continue the resumed story
+""",
+        encoding="utf-8",
+    )
+
+    preflight_states = {slug: CoordinatorState()}
+    triages = {
+        slug: StoryTriage(
+            story_path="stories/story-12.md",
+            action="dev",
+            reason="resume",
+            worktree_path=workspace_path,
+            slug=slug,
+        )
+    }
+
+    _register_resumed_story_footprints(triages, preflight_states)
+
+    assert preflight_states[slug].preflight_likely_files == ["src/foo.py", "tests/test_foo.py"]
