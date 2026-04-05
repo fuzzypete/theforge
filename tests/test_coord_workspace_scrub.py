@@ -30,8 +30,8 @@ def _init_repo(tmp_path: Path) -> tuple[Path, str]:
     _git(repo, "config", "user.email", "test@example.com")
 
     # Mirror the real project's .gitignore: .forge/ entirely ignored.
-    # hooks are intentionally tracked via force-add (negation rules don't overcome
-    # parent-dir exclusion in practice, so -f is required for them too).
+    # Tracked .forge/ files (hooks, .env.example) are force-added because the
+    # parent-dir rule prevents negation overrides in practice.
     (repo / ".gitignore").write_text(".forge/\n", encoding="utf-8")
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", ".gitignore", "README.md")
@@ -42,19 +42,36 @@ def _init_repo(tmp_path: Path) -> tuple[Path, str]:
     return repo, "main"
 
 
-def _init_repo_with_tracked_hook(tmp_path: Path) -> tuple[Path, str]:
-    """Like _init_repo but also tracks a .forge/hooks/ file in the base branch."""
+def _init_repo_with_tracked_forge_files(
+    tmp_path: Path,
+    *,
+    with_hook: bool = False,
+    with_env_example: bool = False,
+) -> tuple[Path, str]:
+    """Like _init_repo but optionally tracks .forge/ project files in the base branch."""
     repo, base_branch = _init_repo(tmp_path)
     _git(repo, "checkout", base_branch)
 
-    hooks_dir = repo / ".forge" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
-    (hooks_dir / "post_run.sh").write_text("#!/bin/bash\necho ok\n", encoding="utf-8")
-    # .forge/ is gitignored; hooks are intentionally force-added (matches real project).
-    _git(repo, "add", "-f", ".forge/hooks/post_run.sh")
-    _git(repo, "commit", "-m", "base: track hook")
-    _git(repo, "push", "origin", base_branch)
-    # feat/test was already created pointing at the old main; reset it to new HEAD
+    forge_dir = repo / ".forge"
+    to_add: list[str] = []
+
+    if with_hook:
+        hooks_dir = forge_dir / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / "post_run.sh").write_text("#!/bin/bash\necho ok\n", encoding="utf-8")
+        to_add.append(".forge/hooks/post_run.sh")
+
+    if with_env_example:
+        forge_dir.mkdir(parents=True, exist_ok=True)
+        (forge_dir / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+        to_add.append(".forge/.env.example")
+
+    if to_add:
+        _git(repo, "add", "-f", *to_add)
+        _git(repo, "commit", "-m", "base: track forge project files")
+        _git(repo, "push", "origin", base_branch)
+
+    # feat/test pointed at old main HEAD; reset it to the new HEAD
     _git(repo, "branch", "-D", "feat/test")
     _git(repo, "checkout", "-b", "feat/test")
     return repo, base_branch
@@ -125,6 +142,8 @@ def test_scrub_rebase_failure_is_silent(tmp_path):
     def side_effect(cmd, cwd, **kwargs):
         if cmd == f"git log --format=%H origin/{base_branch}..HEAD":
             return True, "abc123"
+        if cmd == f"git ls-tree -r --name-only origin/{base_branch} -- .forge/":
+            return True, ""
         if cmd == "git diff-tree --no-commit-id -r --name-only abc123":
             return True, ".forge/handoff.yaml"
         if cmd == f"git rebase -i --keep-empty origin/{base_branch}":
@@ -159,7 +178,7 @@ def test_scrub_returns_early_when_branch_has_no_unique_commits(tmp_path):
 
 def test_scrub_does_not_drop_commit_touching_only_tracked_forge_hooks(tmp_path):
     """A commit that modifies only .forge/hooks/ files is not dropped or scrubbed."""
-    repo, base_branch = _init_repo_with_tracked_hook(tmp_path)
+    repo, base_branch = _init_repo_with_tracked_forge_files(tmp_path, with_hook=True)
 
     hook = repo / ".forge" / "hooks" / "post_run.sh"
     hook.write_text("#!/bin/bash\necho updated\n", encoding="utf-8")
@@ -175,7 +194,7 @@ def test_scrub_does_not_drop_commit_touching_only_tracked_forge_hooks(tmp_path):
 
 def test_scrub_preserves_hooks_in_mixed_commit(tmp_path):
     """Mixed commit: artifact paths removed, .forge/hooks/ paths preserved."""
-    repo, base_branch = _init_repo_with_tracked_hook(tmp_path)
+    repo, base_branch = _init_repo_with_tracked_forge_files(tmp_path, with_hook=True)
 
     forge_dir = repo / ".forge"
     (repo / "src.py").write_text("print('hello')\n", encoding="utf-8")
@@ -193,3 +212,40 @@ def test_scrub_preserves_hooks_in_mixed_commit(tmp_path):
     assert "src.py" in changed
     assert ".forge/handoff.yaml" not in changed
     assert ".forge/hooks/post_run.sh" in changed
+
+
+def test_scrub_does_not_drop_commit_touching_only_env_example(tmp_path):
+    """A commit that modifies only .forge/.env.example is not dropped or scrubbed."""
+    repo, base_branch = _init_repo_with_tracked_forge_files(tmp_path, with_env_example=True)
+
+    env_example = repo / ".forge" / ".env.example"
+    env_example.write_text("API_KEY=\nNEW_VAR=\n", encoding="utf-8")
+    _git(repo, "add", "-f", ".forge/.env.example")
+    _git(repo, "commit", "-m", "feat: update env example")
+
+    _scrub_forge_history(repo, "feat/test", base_branch)
+
+    log = _git(repo, "log", "--oneline", f"origin/{base_branch}..HEAD")
+    assert "update env example" in log
+    assert _commit_count(repo, base_branch) == 1
+
+
+def test_scrub_preserves_env_example_in_mixed_commit(tmp_path):
+    """Mixed commit with .forge/.env.example + artifact: only artifact is stripped."""
+    repo, base_branch = _init_repo_with_tracked_forge_files(tmp_path, with_env_example=True)
+
+    forge_dir = repo / ".forge"
+    (repo / "src.py").write_text("print('hi')\n", encoding="utf-8")
+    (forge_dir / "handoff.yaml").write_text("run: 1\n", encoding="utf-8")
+    (forge_dir / ".env.example").write_text("API_KEY=\nNEW_VAR=\n", encoding="utf-8")
+    _git(repo, "add", "src.py")
+    _git(repo, "add", "-f", ".forge/handoff.yaml", ".forge/.env.example")
+    _git(repo, "commit", "-m", "feat: real + artifact + env.example")
+
+    _scrub_forge_history(repo, "feat/test", base_branch)
+
+    show = _git(repo, "show", "--name-only", "--format=", "--first-parent", "HEAD")
+    changed = show.splitlines()
+    assert "src.py" in changed
+    assert ".forge/handoff.yaml" not in changed
+    assert ".forge/.env.example" in changed

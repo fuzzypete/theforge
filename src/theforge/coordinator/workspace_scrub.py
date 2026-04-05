@@ -10,29 +10,20 @@ from pathlib import Path
 
 from . import util as _cu
 
-# Prefixes within .forge/ that are intentionally tracked project files.
-# Everything else under .forge/ is treated as a runtime artifact to be scrubbed.
-_FORGE_PRESERVED_PREFIXES = (".forge/hooks/",)
-
-
-def _is_forge_artifact(path: str) -> bool:
-    """Return True if *path* is a scrub-eligible .forge/ runtime artifact.
-
-    Paths under .forge/ that begin with a preserved prefix (e.g. .forge/hooks/)
-    are intentional project files and are never scrubbed.
-    """
-    if not path.startswith(".forge/"):
-        return False
-    return not any(path.startswith(pfx) for pfx in _FORGE_PRESERVED_PREFIXES)
-
 
 def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: str) -> None:
     """Rewrite branch history to remove committed .forge artifacts.
 
-    Drops commits whose entire diff touches only .forge/ artifact paths and
-    strips those paths from mixed commits via an automated interactive rebase.
-    Paths under .forge/hooks/ are preserved.  Failures are logged as warnings
-    but never raised so the dev flow remains automatic.
+    Drops commits whose entire diff touches only .forge/ artifact paths and strips
+    those paths from mixed commits via an automated interactive rebase.
+
+    Artifact detection is driven by ``git ls-tree origin/<base_branch> -- .forge/``:
+    any .forge/ path that is already tracked in the base branch is treated as an
+    intentional project file (hooks, .env.example, …) and is never touched.
+    Everything else under .forge/ that appears in a branch-only commit is considered
+    a runtime artifact and is eligible for scrubbing.
+
+    Failures are logged as warnings but never raised so the dev flow remains automatic.
     """
     ok, out = _cu._run_shell(f"git log --format=%H origin/{base_branch}..HEAD", workspace_path)
     if not ok:
@@ -42,6 +33,14 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
     commit_prefixes = {sha[:7]: sha for sha in commits}
     if not commits:
         return
+
+    # Files tracked in the base branch are intentional project files — preserve them.
+    # Everything else under .forge/ that appears in a branch commit is a runtime artifact.
+    ok_tree, tree_out = _cu._run_shell(
+        f"git ls-tree -r --name-only origin/{base_branch} -- .forge/",
+        workspace_path,
+    )
+    tracked_in_base: set[str] = set(tree_out.splitlines()) if ok_tree else set()
 
     forge_only: list[str] = []
     mixed: list[str] = []
@@ -56,10 +55,12 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
         files = [line.strip() for line in diff_out.splitlines() if line.strip()]
         if not files:
             continue
-        artifact_files = [p for p in files if _is_forge_artifact(p)]
+        artifact_files = [p for p in files if p.startswith(".forge/") and p not in tracked_in_base]
         if not artifact_files:
             continue
-        real_files = [p for p in files if not _is_forge_artifact(p)]
+        real_files = [
+            p for p in files if not (p.startswith(".forge/") and p not in tracked_in_base)
+        ]
         if not real_files:
             forge_only.append(sha)
         else:
