@@ -71,8 +71,22 @@ def _is_branch_merged(
             )
             ahead_count = int(ahead_result.stdout.decode("utf-8", errors="replace").strip() or "0")
             if ahead_count > 0:
-                # Regular merge: base has commits not in branch.
-                return True
+                # Distinguish a real regular merge from an abandoned branch whose
+                # tip is merely behind base_branch. A merged branch must also have
+                # unique commits that are now reachable from base_branch.
+                unique_result = subprocess.run(
+                    ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
+                    cwd=str(project_root),
+                    capture_output=True,
+                    timeout=30,
+                )
+                unique_count = int(
+                    unique_result.stdout.decode("utf-8", errors="replace").strip() or "0"
+                )
+                if unique_count > 0:
+                    # Regular merge: base has moved past branch and branch had
+                    # unique work of its own.
+                    return True
             # Fast-forward merge: branch and base at the same tip (count == 0).
             # Fall back to the audit trail when the slug is known.
             if slug is not None:
