@@ -53,7 +53,10 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
         on_approve=on_approve,
         merge_strategy=merge_strategy,
         pr_labels=tuple(ws_data.get("pr_labels", [])),
-        pr_draft=bool(ws_data.get("pr_draft", False)),
+        pr_draft=bool(ws_data.get("pr_draft", DEFAULT_WORKSPACE.pr_draft)),
+        ci_check_timeout_seconds=int(
+            ws_data.get("ci_check_timeout_seconds", DEFAULT_WORKSPACE.ci_check_timeout_seconds)
+        ),
     )
 
 
