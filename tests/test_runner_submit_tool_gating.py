@@ -7,8 +7,9 @@ correctly excludes submit tools for dev/preflight runs.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from theforge.config import ModelProfile
 from theforge.runners.schema_utils import (
@@ -37,6 +38,19 @@ def _make_profile(
     )
 
 
+def _patch_openai_httpx_modules():
+    """Stub optional SDK imports so tests do not depend on CI extras."""
+
+    class FakeBadRequestError(Exception):
+        pass
+
+    mock_openai = MagicMock()
+    mock_openai.BadRequestError = FakeBadRequestError
+    mock_openai.OpenAI = MagicMock()
+    mock_httpx = MagicMock()
+    return patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx})
+
+
 def _capture(
     runner_fn, profile: ModelProfile, tmp_path: Path, extra_patches=()
 ) -> tuple[list[dict], object]:
@@ -63,17 +77,18 @@ def _capture(
 
 
 def _captured_openai(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict], object]:
-    from theforge.runners.api import _run_loop_openai
+    with _patch_openai_httpx_modules():
+        from theforge.runners.api import _run_loop_openai
 
-    return _capture(
-        _run_loop_openai,
-        profile,
-        tmp_path,
-        extra_patches=[
-            "theforge.runners.api._make_openai_chat_adapter",
-            "theforge.runners.api._make_openai_chat_finalizer",
-        ],
-    )
+        return _capture(
+            _run_loop_openai,
+            profile,
+            tmp_path,
+            extra_patches=[
+                "theforge.runners.api._make_openai_chat_adapter",
+                "theforge.runners.api._make_openai_chat_finalizer",
+            ],
+        )
 
 
 def _captured_anthropic(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict], object]:
@@ -105,18 +120,19 @@ def _captured_google(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict],
 
 
 def _captured_deepseek(profile: ModelProfile, tmp_path: Path) -> tuple[list[dict], object]:
-    from theforge.runners.api import _run_loop_deepseek
+    with _patch_openai_httpx_modules():
+        from theforge.runners.api import _run_loop_deepseek
 
-    return _capture(
-        _run_loop_deepseek,
-        profile,
-        tmp_path,
-        extra_patches=[
-            "theforge.runners.adapters.deepseek._deepseek_client",
-            "theforge.runners.api._make_openai_chat_adapter",
-            "theforge.runners.api._make_deepseek_finalizer",
-        ],
-    )
+        return _capture(
+            _run_loop_deepseek,
+            profile,
+            tmp_path,
+            extra_patches=[
+                "theforge.runners.adapters.deepseek._deepseek_client",
+                "theforge.runners.api._make_openai_chat_adapter",
+                "theforge.runners.api._make_deepseek_finalizer",
+            ],
+        )
 
 
 def _tool_names(schemas: list[dict]) -> set[str]:
