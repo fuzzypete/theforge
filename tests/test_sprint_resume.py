@@ -353,9 +353,9 @@ class TestTriageSpec:
         with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
-        assert triage.action == "skip"
+        assert triage.action == "skip_merged"
         assert "APPROVE" in triage.reason or "approve" in triage.reason.lower()
-        assert triage.worktree_path == worktree
+        assert triage.worktree_path is None
 
     def test_triage_gate_pass_no_approve_routes_to_review(self, tmp_path: Path) -> None:
         """Worktree with commits, gate passes, but no APPROVE → review (not skip)."""
@@ -386,7 +386,7 @@ class TestTriageSpec:
 
 class TestResumeSprintSkipApproved:
     def test_resume_sprint_skips_approved(self, tmp_path: Path) -> None:
-        """Resume sprint: spec with prior APPROVE is skipped without running."""
+        """Resume sprint: spec with prior APPROVE is treated as already satisfied."""
         import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -404,9 +404,9 @@ class TestResumeSprintSkipApproved:
 
         skip_triage = StoryTriage(
             story_path="feature-a.md",
-            action="skip",
-            reason="prior APPROVE in audit trail (2 commits ahead)",
-            worktree_path=worktree,
+            action="skip_merged",
+            reason="prior APPROVE in audit trail; branch already satisfied (2 commits ahead)",
+            worktree_path=None,
             slug="feature-a",
         )
 
@@ -733,7 +733,7 @@ class TestSprintDependencies:
         assert result.stopped_reason is None
 
     def test_resume_approved_satisfies_dependency(self, tmp_path: Path) -> None:
-        """Resume mode: spec triaged as 'skip' (prior APPROVE) satisfies downstream deps."""
+        """Resume mode: prior-APPROVE triage is treated as already satisfied for deps."""
         _make_spec_file(tmp_path, "Spec A", "spec-a")
         _make_spec_file(tmp_path, "Spec B", "spec-b", depends_on=["spec-a"])
         manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
@@ -741,7 +741,7 @@ class TestSprintDependencies:
 
         approved_triage = StoryTriage(
             story_path="spec-a.md",
-            action="skip",
+            action="skip_merged",
             reason="already approved",
             worktree_path=None,
             slug="spec-a",
@@ -832,6 +832,32 @@ class TestSprintDependencies:
         # Neither call should override auto_merge
         for call in mock_run.call_args_list:
             assert call.kwargs["auto_merge"] is False
+
+    def test_resume_prior_approve_does_not_run_review_or_dev(self, tmp_path: Path) -> None:
+        """Resume mode: prior APPROVE stories do not re-enter review/dev flows."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        approved_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="prior APPROVE in audit trail; branch already satisfied (2 commits ahead)",
+            worktree_path=None,
+            slug="feature-a",
+        )
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=approved_triage):
+            with patch("theforge.sprint.runner.run_task") as mock_run_task:
+                with patch("theforge.sprint.runner.run_from_review") as mock_review:
+                    with patch("theforge.sprint.runner.run_from_dev") as mock_dev:
+                        result = run_sprint(config, manifest_path, resume=True)
+
+        mock_run_task.assert_not_called()
+        mock_review.assert_not_called()
+        mock_dev.assert_not_called()
+        assert result.specs_succeeded == 1
+        assert result.total_cost_usd == 0.0
 
     def test_already_done_satisfies_dependency(self, tmp_path: Path) -> None:
         """ALREADY_DONE spec counts as merged for dependency purposes (changes already on main)."""

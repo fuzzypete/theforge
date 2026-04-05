@@ -358,9 +358,12 @@ def _triage_spec(
     if has_review_approve(project_root, slug, base_branch, branch):
         return StoryTriage(
             story_path=story_path,
-            action="skip",
-            reason=f"prior APPROVE in audit trail ({len(commits_ahead)} commits ahead)",
-            worktree_path=worktree_path,
+            action="skip_merged",
+            reason=(
+                "prior APPROVE in audit trail; branch already satisfied "
+                f"({len(commits_ahead)} commits ahead)"
+            ),
+            worktree_path=None,
             slug=slug,
         )
 

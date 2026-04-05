@@ -553,7 +553,7 @@ class TestCreatePR:
         )
         state = CoordinatorState()
 
-        # First call: merged PR lookup (none). Second: git push. Third: rev-list count. Fourth: gh pr create.
+        # Calls: (1) merged PR lookup, (2) git push, (3) rev-list count, (4) gh pr create.
         mock_run.side_effect = [
             type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
@@ -612,7 +612,7 @@ class TestCreatePR:
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
-        pr_call = mock_run.call_args_list[2]
+        pr_call = mock_run.call_args_list[3]
         body_idx = pr_call[0][0].index("--body") + 1
         body = pr_call[0][0][body_idx]
         assert "Closes #99" in body
@@ -641,7 +641,7 @@ class TestCreatePR:
 
         _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
-        pr_call = mock_run.call_args_list[2]
+        pr_call = mock_run.call_args_list[3]
         body_idx = pr_call[0][0].index("--body") + 1
         body = pr_call[0][0][body_idx]
         assert "Closes" not in body
