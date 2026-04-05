@@ -19,6 +19,7 @@ from theforge.runners.schema_utils import (
     SUBMIT_REVIEW,
     LoopTurn,
     ToolCallRequest,
+    uses_openai_responses_api,
 )
 from theforge.runners.tool_runtime import TOOL_REGISTRY
 
@@ -587,3 +588,91 @@ class TestToolCallingFallback:
             MockManager.return_value.run.side_effect = bad_request
             with pytest.raises(FakeBadRequestError):
                 _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+
+class TestOpenAIEndpointRouting:
+    """Tests for OpenAI Chat vs Responses endpoint selection."""
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("gpt-5.1-codex", True),
+            ("gpt-5.1-codex-mini", True),
+            ("gpt-5.4", False),
+            ("o4-mini", False),
+        ],
+    )
+    def test_uses_openai_responses_api_matches_runtime_expectations(self, model, expected):
+        assert uses_openai_responses_api(model) is expected
+
+    def test_run_loop_openai_uses_responses_adapter_for_responses_only_models(self, tmp_path):
+        import sys
+
+        profile = _make_profile(model="gpt-5.1-codex", allowed_tools=("read_file",))
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name=profile.name,
+        )
+
+        with (
+            patch.dict(sys.modules, {"openai": MagicMock(), "httpx": MagicMock()}),
+            patch("theforge.runners.api._make_openai_responses_adapter") as make_responses,
+            patch(
+                "theforge.runners.api._make_openai_responses_finalizer"
+            ) as make_responses_finalizer,
+            patch("theforge.runners.api._make_openai_chat_adapter") as make_chat,
+            patch("theforge.runners.api._make_openai_chat_finalizer") as make_chat_finalizer,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+        ):
+            make_responses.return_value = MagicMock()
+            make_responses_finalizer.return_value = MagicMock()
+            MockManager.return_value.run.return_value = mock_result
+
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result is mock_result
+        make_responses.assert_called_once()
+        make_responses_finalizer.assert_called_once()
+        make_chat.assert_not_called()
+        make_chat_finalizer.assert_not_called()
+
+    def test_run_loop_openai_uses_chat_adapter_for_dual_endpoint_models(self, tmp_path):
+        import sys
+
+        profile = _make_profile(model="gpt-5.4", allowed_tools=("read_file",))
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name=profile.name,
+        )
+
+        with (
+            patch.dict(sys.modules, {"openai": MagicMock(), "httpx": MagicMock()}),
+            patch("theforge.runners.api._make_openai_responses_adapter") as make_responses,
+            patch(
+                "theforge.runners.api._make_openai_responses_finalizer"
+            ) as make_responses_finalizer,
+            patch("theforge.runners.api._make_openai_chat_adapter") as make_chat,
+            patch("theforge.runners.api._make_openai_chat_finalizer") as make_chat_finalizer,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+        ):
+            make_chat.return_value = MagicMock()
+            make_chat_finalizer.return_value = MagicMock()
+            MockManager.return_value.run.return_value = mock_result
+
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result is mock_result
+        make_chat.assert_called_once()
+        make_chat_finalizer.assert_called_once()
+        make_responses.assert_not_called()
+        make_responses_finalizer.assert_not_called()
