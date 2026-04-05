@@ -35,9 +35,7 @@ def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
     """
     dirty = _has_uncommitted_changes(workspace_path)
 
-    ok, log = _cu._run_shell(
-        f"git log {base_branch}..HEAD --format='%h %s' --reverse", workspace_path
-    )
+    ok, log = _cu._run_shell(f"git log {base_branch}..HEAD --oneline --reverse", workspace_path)
 
     parts: list[str] = []
     if ok and log:
@@ -129,3 +127,40 @@ def _get_dev_notes(config: ForgeConfig, workspace_path: Path) -> str | None:
         return raw
     formatted = dev_handoff_to_reviewer_text(handoff)
     return formatted if formatted else raw
+
+
+def _get_commit_diffs(
+    workspace_path: Path,
+    base_branch: str,
+    per_commit_limit: int = 50_000,
+    total_limit: int = 300_000,
+) -> str:
+    """Get full `git show` output for each commit on the branch, with truncation."""
+    ok, log = _cu._run_shell(f"git log {base_branch}..HEAD --oneline --reverse", workspace_path)
+    if not ok or not log.strip():
+        return "(no commits ahead of base branch)"
+
+    commit_lines = [line.strip() for line in log.splitlines() if line.strip()]
+    parts: list[str] = []
+    total_chars = 0
+
+    for idx, line in enumerate(commit_lines):
+        sha = line.split()[0]
+        ok_show, diff = _cu._run_shell(f"git show {sha}", workspace_path)
+        if not ok_show:
+            diff = f"(failed to load git show for {sha})"
+        if len(diff) > per_commit_limit:
+            diff = (
+                diff[:per_commit_limit] + f"\n[... diff truncated at {per_commit_limit} chars ...]"
+            )
+
+        addition = diff if not parts else f"\n\n{diff}"
+        if total_chars + len(addition) > total_limit:
+            remaining = len(commit_lines) - idx
+            parts.append(f"[... remaining {remaining} commits omitted — total diff too large ...]")
+            break
+
+        parts.append(diff)
+        total_chars += len(addition)
+
+    return "\n\n".join(parts)

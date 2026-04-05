@@ -132,6 +132,7 @@ def build_review_prompt(
     *,
     story_content: str,
     commit_log: str,
+    commit_diffs: str,
     workspace_path: str,
     branch: str,
     handoff_content: str,
@@ -144,13 +145,13 @@ def build_review_prompt(
     """Build the review agent prompt.
 
     The reviewer receives:
-    - The commit log (git log main..HEAD) as the primary handoff artifact
+    - The commit log (git log main..HEAD --oneline) in commit order
+    - The full per-commit diffs (git show for each commit) as the primary source of truth
     - The spec (to verify compliance)
     - The handoff file (to cross-check validation claims)
-    - Instructions to use Read/Bash/Glob/Grep tools to inspect actual source
 
-    This mirrors a PR review workflow: reviewers discover files from commits,
-    not from a pre-enumerated file list.
+    This mirrors a PR review workflow: reviewers discover files from commits and
+    review the embedded diffs, not a pre-enumerated file list.
 
     When review_role is set to a known role ("correctness", "patterns",
     "edge-cases"), the "Your Role" section uses a role-specific lens.
@@ -265,11 +266,17 @@ def build_review_prompt(
         ## Commits
 
         The following commits implement the spec on branch `{branch}`.
-        Use `git show <sha>` or Read/Bash/Glob/Grep tools to inspect the source
-        in the worktree at: {workspace_path}
+        The full diffs are embedded above. Use Read/Bash/Glob tools only if you need
+        to inspect surrounding context not shown in the diff. Worktree: {workspace_path}
 
+        Commit history:
         ```
         {commit_log}
+        ```
+
+        Full diffs:
+        ```
+        {commit_diffs}
         ```
 
         ## Handoff from Dev Agent

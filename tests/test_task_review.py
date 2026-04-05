@@ -30,6 +30,7 @@ def _make_task(tmp_path: Path) -> TaskStory:
 _REVIEW_COMMON_KWARGS = dict(
     story_content="# Spec",
     commit_log="abc1234 feat(foo): implement the thing\ndef5678 test(foo): add tests",
+    commit_diffs="diff --git a/foo.py b/foo.py\n+print('hello')",
     workspace_path="/tmp/ws",
     branch="feat/test",
     handoff_content="gate_decision: PASS",
@@ -135,12 +136,15 @@ class TestBuildReviewPrompt:
         assert "Test Task" in prompt
 
     def test_includes_commit_log(self, review_task: TaskStory) -> None:
-        """Commit log is embedded in the prompt as primary handoff."""
+        """Commit log and embedded diffs are included in the prompt."""
         prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
         assert "## Commits" in prompt
+        assert "Commit history:" in prompt
         assert "abc1234 feat(foo): implement the thing" in prompt
         assert "def5678 test(foo): add tests" in prompt
-        assert "git show" in prompt
+        assert "Full diffs:" in prompt
+        assert "diff --git a/foo.py b/foo.py" in prompt
+        assert "Use `git show <sha>`" not in prompt
         assert "Changed Files (git diff --stat)" not in prompt
 
     def test_includes_tool_instructions(self, review_task: TaskStory) -> None:
@@ -149,7 +153,6 @@ class TestBuildReviewPrompt:
         assert "Read" in prompt
         assert "Bash" in prompt
         assert "Glob" in prompt
-        assert "Grep" in prompt
         assert "/tmp/ws" in prompt
         assert "feat/test" in prompt
 
@@ -586,6 +589,7 @@ class TestNotesConventionInReviewPrompt:
             task,
             story_content="# Spec\n\n## Notes\n\nSee src/old.py",
             commit_log="abc1234 feat: thing",
+            commit_diffs="diff --git a/foo.py b/foo.py",
             workspace_path="/tmp/ws",
             branch="feat/test",
             handoff_content="gate_decision: PASS",
