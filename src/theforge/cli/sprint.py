@@ -11,12 +11,9 @@ from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import run_sprint
-from theforge.sprint.lock import acquire_story_locks, release_story_locks
-from theforge.sprint.preflight import (
-    abort_for_running_stories,
-    check_active_worktrees_or_continue,
-    reacquire_story_locks_in_daemon,
-)
+from theforge.sprint.launch_guard import acquire_launch_story_locks
+from theforge.sprint.lock import release_story_locks
+from theforge.sprint.preflight import reacquire_story_locks_in_daemon
 from theforge.sprint.runner import parse_manifest_slugs
 
 
@@ -201,17 +198,11 @@ def cmd_sprint(args: object) -> int:
 def _acquire_launch_locks(
     slugs: list[str], config: object, resume: bool
 ) -> tuple[list, int | None]:
-    active_worktree_error = check_active_worktrees_or_continue(
+    return acquire_launch_story_locks(
         slugs=slugs,
         config=config,
         resume=resume,
     )
-    if active_worktree_error is not None:
-        return [], active_worktree_error
-    locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
-    if conflicted:
-        return [], abort_for_running_stories(conflicted)
-    return locked_fds, None
 
 
 def _run_query_mode(

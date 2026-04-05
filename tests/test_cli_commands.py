@@ -590,7 +590,6 @@ class TestCmdSprintQueryMode:
             patch(
                 "theforge.sprint.query.build_resolved_sprint", return_value=resolved
             ) as mock_build,
-            patch("theforge.cli.sprint.acquire_story_locks", return_value=([], [])),
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint.run_sprint",

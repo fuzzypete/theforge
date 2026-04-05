@@ -363,7 +363,7 @@ class TestCmdSprintConflictGuard:
         worktree.mkdir(parents=True)
 
         with patch("theforge.cli.sprint.load_config", return_value=mock_config):
-            with patch("theforge.cli.sprint.acquire_story_locks") as mock_locks:
+            with patch("theforge.sprint.launch_guard.acquire_story_locks") as mock_locks:
                 with patch(
                     "theforge.sprint.lock.subprocess.run",
                     return_value=MagicMock(returncode=0, stdout="1\n"),
