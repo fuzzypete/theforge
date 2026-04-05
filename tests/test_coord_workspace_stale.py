@@ -800,3 +800,42 @@ class TestRunSetupSplit:
         assert ok is False
         assert out == "venv error"
         assert len(calls) == 1  # install was not called
+
+    def test_forge_python_placeholder_replaced_with_sys_executable(self, tmp_path):
+        """{forge_python} in setup_command is replaced with sys.executable before running."""
+        import sys
+
+        from theforge.coordinator.workspace import _run_setup_split
+
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e .)"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kw):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell):
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        assert len(calls) == 2
+        # venv creation uses sys.executable, not the literal placeholder
+        assert sys.executable in calls[0]
+        assert "{forge_python}" not in calls[0]
+
+    def test_resolve_setup_command_replaces_placeholder(self):
+        """_resolve_setup_command swaps {forge_python} for the absolute interpreter path."""
+        import sys
+
+        from theforge.coordinator.workspace import _resolve_setup_command
+
+        result = _resolve_setup_command("test -d .venv || ({forge_python} -m venv .venv)")
+        assert sys.executable in result
+        assert "{forge_python}" not in result
+
+    def test_resolve_setup_command_noop_without_placeholder(self):
+        """_resolve_setup_command is a no-op when {forge_python} is absent."""
+        from theforge.coordinator.workspace import _resolve_setup_command
+
+        cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
+        assert _resolve_setup_command(cmd) == cmd

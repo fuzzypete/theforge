@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -19,25 +20,36 @@ run_agent = None
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
 
-# Matches: test -d .venv || (python -m venv .venv && <install>)
+# Matches: test -d .venv || (<python> -m venv .venv && <install>)
+# Captures the python executable (group 1) and the install command (group 2).
 _VENV_GUARD_RE = re.compile(
-    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*python\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
+    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*(\S+)\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
     re.DOTALL,
 )
+
+
+def _resolve_setup_command(cmd: str) -> str:
+    """Replace {forge_python} with the absolute path to the running interpreter."""
+    return cmd.replace("{forge_python}", sys.executable)
 
 
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
     """Run workspace setup, always running pip install even if .venv exists.
 
-    Detects the `test -d .venv || (python -m venv .venv && <install>)` pattern
+    Substitutes {forge_python} with sys.executable before processing, so
+    setup_command can reference the forge interpreter without relying on shell PATH.
+
+    Detects the `test -d .venv || (<python> -m venv .venv && <install>)` pattern
     and splits it: venv creation is guarded, install always runs.
     Falls back to running setup_command verbatim when the pattern is not found.
     """
-    m = _VENV_GUARD_RE.search(setup_command)
+    cmd = _resolve_setup_command(setup_command)
+    m = _VENV_GUARD_RE.search(cmd)
     if not m:
-        return _cu._run_shell(setup_command, workspace_path)
-    install_cmd = m.group(1).strip()
-    ok, out = _cu._run_shell("test -d .venv || python -m venv .venv", workspace_path)
+        return _cu._run_shell(cmd, workspace_path)
+    python_exe = m.group(1)
+    install_cmd = m.group(2).strip()
+    ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
     if not ok:
         return ok, out
     return _cu._run_shell(install_cmd, workspace_path)
