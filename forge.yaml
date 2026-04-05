@@ -55,13 +55,6 @@ profiles:
       timeout_seconds: 600
       reasoning_effort: high
       max_iterations: 20
-    - name: claude-reviewer
-      cli: claude
-      model: claude-sonnet-4-6
-      review_role: edge-cases
-      budget_usd: 2.00
-      timeout_seconds: 300
-      max_iterations: 10
     - name: gemini-reviewer
       provider: google
       model: gemini-3.1-pro-preview
@@ -69,12 +62,12 @@ profiles:
       budget_usd: 2.00
       timeout_seconds: 300
       thinking_budget: 8192
-      max_iterations: 10
+      max_iterations: 20
 
-# Plan uses DeepSeek reasoner — good structured thinking, cheap
+# Plan uses Claude CLI directly on this machine
 plan:
   enabled: true
-  provider: anthropic
+  cli: claude
   model: claude-sonnet-4-6
   budget_usd: 3.00
   timeout: 600
@@ -84,12 +77,6 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: claude-plan-reviewer
-      cli: claude
-      model: claude-sonnet-4-6
-      budget_usd: 0.50
-      timeout_seconds: 300
-      max_iterations: 30
     - name: gemini-plan-reviewer
       provider: google
       model: gemini-3.1-pro-preview
