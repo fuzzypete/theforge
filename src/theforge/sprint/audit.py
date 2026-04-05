@@ -173,6 +173,7 @@ def _write_sprint_summary(
     story_times: "dict[str, tuple[datetime.datetime, datetime.datetime]] | None" = None,
     batch_assignments: "dict[str, int] | None" = None,
     slug_map: "dict[str, str] | None" = None,
+    run_id: str | None = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/."""
     story_times = story_times or {}
@@ -233,6 +234,8 @@ def _write_sprint_summary(
             "name": manifest.name,
             "budget_usd": manifest.budget_usd,
             "max_parallel": manifest.max_parallel,
+            "run_id": run_id,
+            "run_log": f"run-{run_id}.log" if run_id else None,
             "total_cost_usd": round(result.total_cost_usd, 4),
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),

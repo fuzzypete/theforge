@@ -157,6 +157,8 @@ class TestDaemonizeRun:
             patch("theforge.detach.os.dup2"),
             patch("theforge.detach.os.waitpid"),
             patch("theforge.detach.os.devnull", "/dev/null"),
+            patch("theforge.detach.os.open", side_effect=[10, 11]) as mock_os_open,
+            patch("theforge.detach.os.close"),
             patch("theforge.detach.write_pid") as mock_write_pid,
             patch(
                 "builtins.open",
@@ -180,8 +182,26 @@ class TestDaemonizeRun:
             detach.daemonize_run("run123", "my-slug", tmp_path)
 
         mock_write_pid.assert_called_once_with("run123", "my-slug", tmp_path)
+        log_path = tmp_path / ".forge" / "logs" / "my-slug" / "run-run123.log"
+        assert mock_os_open.call_args_list[1].args[0] == str(log_path)
 
     def test_raises_on_no_fork(self, tmp_path):
         with patch("theforge.detach.os.fork", side_effect=AttributeError):
             with pytest.raises(RuntimeError, match="os.fork"):
                 detach.daemonize_run("run123", "slug", tmp_path)
+
+
+def test_find_log_path_prefers_per_run_log(tmp_path):
+    log_path = tmp_path / ".forge" / "logs" / "my-slug" / "run-run123.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("hello")
+
+    assert detach._find_log_path("my-slug", "run123", tmp_path) == log_path
+
+
+def test_find_log_path_falls_back_to_legacy_run_log(tmp_path):
+    legacy_path = tmp_path / ".forge" / "logs" / "my-slug" / "run.log"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text("legacy")
+
+    assert detach._find_log_path("my-slug", "run123", tmp_path) == legacy_path

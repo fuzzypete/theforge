@@ -444,6 +444,7 @@ def run_sprint(
     resume: bool = False,
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
+    run_id: str | None = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -520,6 +521,7 @@ def run_sprint(
     _log("⚠ Budget tracks Claude costs only (Codex/Gemini report $0.00)")
 
     # Sprint-level structured logger
+    _cli_run_id = run_id
     _sprint_run_id = _generate_run_id()
     _sprint_logger = StructuredLogger(
         run_id=_sprint_run_id,
@@ -1085,6 +1087,7 @@ def run_sprint(
             story_times=story_times,
             batch_assignments=batch_assignments,
             slug_map=slug_map,
+            run_id=_cli_run_id,
         )
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────

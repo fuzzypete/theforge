@@ -176,6 +176,7 @@ def cmd_sprint(args: object) -> int:
             notify=not args.no_notify,
             resume=resume,
             no_pull=no_pull,
+            run_id=run_id,
         )
     except Exception as exc:
         import traceback
@@ -355,6 +356,7 @@ def _run_query_mode(
             notify=not args.no_notify,
             resume=resume,
             no_pull=no_pull,
+            run_id=run_id,
         )
     except Exception as exc:
         import traceback
