@@ -113,6 +113,9 @@ SUBMIT_REVIEW = "submit_review"
 SUBMIT_PLAN_REVIEW = "submit_plan_review"
 _SUBMIT_TOOL_NAMES = {SUBMIT_REVIEW, SUBMIT_PLAN_REVIEW}
 
+# Phases that must NOT receive submit tools — they output text parsed by the coordinator
+_NO_SUBMIT_PHASES = {"preflight", "dev"}
+
 # Max consecutive malformed tool calls before aborting
 _MAX_MALFORMED = 3
 
