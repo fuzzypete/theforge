@@ -28,7 +28,7 @@ def test_poll_required_checks_pass(tmp_path: Path) -> None:
         result = poll_required_checks(tmp_path, "main", 30)
 
     assert result["status"] == "pass"
-    assert result["sha"] == '"abc123"'
+    assert result["sha"] == "abc123"
     assert result["failing_checks"] == []
 
 
