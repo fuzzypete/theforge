@@ -1,0 +1,12 @@
+dev_notes: |
+  summary: "Updated test_runner_submit_tool_gating.py to stub the optional openai and httpx SDK imports before exercising the OpenAI and DeepSeek loop runners, using the same sys.modules patching pattern already used elsewhere so the submit-tool gating assertions remain valid in CI environments without those extras installed."
+  commits:
+    - sha: "e39ac6c"
+      message: "fix(tests): stub optional sdk imports in submit gating tests"
+  acceptance_criteria:
+    - criterion: "main CI broken — test_runner_submit_tool_gating.py imports openai/httpx without mocking"
+      status: MET
+      notes: "The submit-tool gating test now stubs the optional openai and httpx imports before invoking the affected runners, so the test no longer depends on those packages being installed in CI."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
