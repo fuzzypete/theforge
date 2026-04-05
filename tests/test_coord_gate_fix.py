@@ -553,9 +553,9 @@ class TestCreatePR:
         )
         state = CoordinatorState()
 
-        # First call: git push (success). Second call: rev-list count.
-        # Third call: gh pr create (success).
+        # First call: merged PR lookup (none). Second: git push. Third: rev-list count. Fourth: gh pr create.
         mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
             type(
@@ -569,19 +569,23 @@ class TestCreatePR:
 
         assert result["success"] is True
         assert result["pr_url"] == "https://github.com/test/pr/1"
-        assert mock_run.call_count == 3
+        assert mock_run.call_count == 4
 
-        # First call must be git push
-        push_call = mock_run.call_args_list[0]
+        # First call must be merged PR lookup
+        lookup_call = mock_run.call_args_list[0]
+        assert lookup_call[0][0][:3] == ["gh", "pr", "list"]
+
+        # Second call must be git push
+        push_call = mock_run.call_args_list[1]
         assert push_call[0][0][:3] == ["git", "push", "-u"]
         assert "feat/test-task" in push_call[0][0]
 
-        # Second call must be git rev-list count
-        rev_list_call = mock_run.call_args_list[1]
+        # Third call must be git rev-list count
+        rev_list_call = mock_run.call_args_list[2]
         assert rev_list_call[0][0][:3] == ["git", "rev-list", "--count"]
 
-        # Third call must be gh pr create
-        pr_call = mock_run.call_args_list[2]
+        # Fourth call must be gh pr create
+        pr_call = mock_run.call_args_list[3]
         assert pr_call[0][0][:3] == ["gh", "pr", "create"]
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
@@ -596,6 +600,7 @@ class TestCreatePR:
         state = CoordinatorState()
 
         mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
             type(
@@ -624,6 +629,7 @@ class TestCreatePR:
         state = CoordinatorState()
 
         mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})(),
             type(
@@ -641,6 +647,38 @@ class TestCreatePR:
         assert "Closes" not in body
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
+    def test_merged_pr_lookup_skips_duplicate_pr_creation(self, mock_run, tmp_path):
+        """If a merged PR already exists for the branch, _create_pr returns early."""
+        from theforge.coordinator.completion import _create_pr
+
+        config = self._make_pr_config(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec)
+        state = CoordinatorState()
+
+        mock_run.return_value = type(
+            "Proc",
+            (),
+            {
+                "returncode": 0,
+                "stdout": (
+                    '[{"number": 222, "url": "https://github.com/test/pr/222", "merged": true}]'
+                ),
+                "stderr": "",
+            },
+        )()
+
+        result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
+
+        assert result["success"] is False
+        assert result["pr_url"] == "https://github.com/test/pr/222"
+        assert "already merged" in result["error"]
+        assert mock_run.call_count == 1
+        lookup_call = mock_run.call_args_list[0]
+        assert lookup_call[0][0][:3] == ["gh", "pr", "list"]
+
+    @patch("theforge.coordinator.validate_phase.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):
         """If git push fails, _create_pr returns failure without calling gh."""
         from theforge.coordinator.completion import _create_pr
@@ -655,15 +693,16 @@ class TestCreatePR:
         )
         state = CoordinatorState()
 
-        mock_run.return_value = type(
-            "Proc", (), {"returncode": 128, "stdout": "", "stderr": "fatal: remote error"}
-        )()
+        mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
+            type("Proc", (), {"returncode": 128, "stdout": "", "stderr": "fatal: remote error"})(),
+        ]
 
         result = _create_pr(config, task, "feat/test-task", self._make_review(), state)
 
         assert result["success"] is False
         assert "git push failed" in result["error"]
-        assert mock_run.call_count == 1  # only push, no gh pr create
+        assert mock_run.call_count == 2  # lookup + push, no gh pr create
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
     def test_zero_delta_branch_skips_pr_creation(self, mock_run, tmp_path):
@@ -677,6 +716,7 @@ class TestCreatePR:
         state = CoordinatorState()
 
         mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "0\n", "stderr": ""})(),
         ]
@@ -687,7 +727,7 @@ class TestCreatePR:
         assert result["skipped"] is True
         assert result["skip_reason"] == "zero-delta branch"
         assert result["pr_url"] is None
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
     def test_branch_delta_check_failure_aborts_pr(self, mock_run, tmp_path):
@@ -701,6 +741,7 @@ class TestCreatePR:
         state = CoordinatorState()
 
         mock_run.side_effect = [
+            type("Proc", (), {"returncode": 0, "stdout": "[]", "stderr": ""})(),
             type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
             type("Proc", (), {"returncode": 128, "stdout": "", "stderr": "fatal: bad revision"})(),
         ]
@@ -709,7 +750,7 @@ class TestCreatePR:
 
         assert result["success"] is False
         assert "git rev-list failed" in result["error"]
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 3
 
 
 # ── Gate fail retry tests ───────────────────────────────────────────────

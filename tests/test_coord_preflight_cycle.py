@@ -26,6 +26,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.engine import run_task
+from theforge.coordinator.state import Phase
 
 
 def _make_smart_config(
@@ -221,9 +222,17 @@ class TestAlreadyDoneOverride:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=False)
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=False)
     def test_already_done_with_commits_no_approve_resumes_review(
-        self, mock_approve, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+        self,
+        mock_approve,
+        mock_merged,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        tmp_path,
     ):
         """Preflight says ALREADY_DONE but commits exist and no audit APPROVE → run REVIEW."""
         config = _make_config(tmp_path)
@@ -288,9 +297,65 @@ class TestAlreadyDoneOverride:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True)
+    @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=False)
+    def test_already_done_with_commits_on_merged_branch_honours_already_done(
+        self,
+        mock_approve,
+        mock_merged,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        tmp_path,
+    ):
+        """ALREADY_DONE with commits ahead on an already-merged branch stays DONE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            if "--oneline" in cmd and "git log" in cmd:
+                return (True, "abc123 a commit")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "ALREADY_DONE"
+        assert len(result.state.review_results) == 0
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=False)
     @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=False)
     def test_already_done_with_no_commits_ahead_honours_already_done(
-        self, mock_approve, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+        self,
+        mock_approve,
+        mock_merged,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        tmp_path,
     ):
         """ALREADY_DONE with 0 commits ahead → honour ALREADY_DONE (no interrupted run)."""
         config = _make_config(tmp_path)
