@@ -152,8 +152,13 @@ class TestCmdSprintIssuesValidation:
         assert "--budget <usd> is required" in err
 
     def test_invalid_issue_number_reports_cli_error(self, tmp_path: Path, capsys) -> None:
+        config = _make_forge_config(tmp_path)
         args = _make_args(tmp_path, issues="403,abc")
-        rc = cmd_sprint(args)
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        ):
+            rc = cmd_sprint(args)
         err = capsys.readouterr().err
         assert rc == 1
         assert "--issues must be a comma-separated list of integer issue numbers" in err
