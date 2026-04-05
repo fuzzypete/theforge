@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from coord_test_helpers import _make_config, _make_task
 
+from theforge.coordinator.path_setup import prepend_worktree_src
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import Phase
 
@@ -83,3 +84,50 @@ def test_setup_returns_escalate_when_workspace_missing(tmp_path):
 
     assert isinstance(result, CoordinatorResult)
     assert not result.success
+
+
+def test_prepend_worktree_src_puts_worktree_src_first(tmp_path, monkeypatch):
+    """Worktree src is prepended ahead of an existing project-root src entry."""
+    root_src = tmp_path / "root" / "src"
+    worktree_src = tmp_path / "worktree" / "src"
+    root_src.mkdir(parents=True)
+    worktree_src.mkdir(parents=True)
+
+    monkeypatch.setattr("sys.path", [str(root_src), "existing"])
+
+    prepend_worktree_src(worktree_src.parent)
+
+    import sys
+
+    assert sys.path[0] == str(worktree_src.resolve())
+    assert str(root_src) in sys.path
+
+
+def test_setup_resume_entry_prepends_worktree_src(tmp_path):
+    """Resume setup prepends the active worktree src directory to sys.path."""
+    import sys
+
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    original_sys_path = list(sys.path)
+    try:
+        with patch(
+            "theforge.coordinator.run_setup._cu._run_shell", return_value=(True, "forge/test-task")
+        ):
+            result = _setup_resume_entry(
+                config,
+                task,
+                workspace,
+                initial_phase=Phase.DEV,
+                notify=False,
+                run_id="test-run-id",
+            )
+
+        assert isinstance(result, tuple)
+        assert sys.path[0] == str((workspace / "src").resolve())
+    finally:
+        sys.path[:] = original_sys_path
