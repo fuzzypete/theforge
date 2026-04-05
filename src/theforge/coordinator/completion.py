@@ -75,6 +75,36 @@ def _archive_story_to_done(
         return False
 
 
+def _branch_has_unique_commits(
+    push_cwd: Path, base_branch: str, branch_name: str
+) -> tuple[bool, str | None]:
+    """Return whether branch has commits not reachable from base_branch.
+
+    Returns (has_unique_commits, error). On git failure, error is populated and
+    callers should treat the check as failed rather than assuming zero delta.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-list", "--count", f"origin/{base_branch}..{branch_name}"],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=30,
+        )
+    except Exception as exc:
+        return False, f"git rev-list failed: {exc}"
+
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip()
+        return False, f"git rev-list failed: {err}"
+
+    output = proc.stdout.strip()
+    try:
+        return int(output) > 0, None
+    except ValueError:
+        return False, f"git rev-list returned non-integer count: {output!r}"
+
+
 def _create_pr(
     config: ForgeConfig,
     task: TaskStory,
@@ -175,6 +205,32 @@ def _create_pr(
             "pr_url": None,
             "success": False,
             "error": f"git push failed: {exc}",
+        }
+
+    has_unique_commits, commit_check_error = _branch_has_unique_commits(
+        push_cwd, config.workspace.base_branch, branch_name
+    )
+    if commit_check_error is not None:
+        _pr_log.warning("branch delta check failed: %s", commit_check_error)
+        return {
+            "action": "pr",
+            "pr_url": None,
+            "success": False,
+            "error": commit_check_error,
+        }
+    if not has_unique_commits:
+        _log(
+            f"  Skipping PR creation: branch {branch_name} has no commits ahead of "
+            f"origin/{config.workspace.base_branch}"
+        )
+        return {
+            "action": "pr",
+            "pr_url": None,
+            "success": True,
+            "error": None,
+            "skipped": True,
+            "skip_reason": "zero-delta branch",
+            "ahead_commit_count": 0,
         }
 
     try:
@@ -553,7 +609,9 @@ def _finalize_approve(
             )
     elif effective_on_approve == "pr":
         merge_info = _create_pr(config, task, branch_name, parsed_review, state)
-        if merge_info["success"]:
+        if merge_info.get("skipped"):
+            merge_suffix = " PR skipped: zero-delta branch"
+        elif merge_info["success"]:
             merge_suffix = f" PR: {merge_info['pr_url']}"
         else:
             merge_suffix = f" PR creation failed: {merge_info['error']}"
