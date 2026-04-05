@@ -248,7 +248,9 @@ def _run_query_mode(
             issues = fetch_issues_for_label(label, config.project_root)
         else:
             try:
-                issue_numbers = [int(part.strip()) for part in issues_arg.split(",") if part.strip()]
+                issue_numbers = [
+                    int(part.strip()) for part in issues_arg.split(",") if part.strip()
+                ]
             except ValueError as exc:
                 raise RuntimeError(
                     "--issues must be a comma-separated list of integer issue numbers"
