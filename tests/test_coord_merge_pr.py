@@ -21,7 +21,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.completion import _merge_pr
+from theforge.coordinator.completion import MAX_MERGE_RETRIES, _merge_pr
 from theforge.review import ReviewResult
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -135,6 +135,7 @@ class TestMergePrFunction:
         push_ok: bool = True,
         create_pr_result: dict | None = None,
         gh_merge_ok: bool = True,
+        gh_merge_results: list[MagicMock] | None = None,
         fetch_after_ok: bool = True,
     ) -> dict:
         """Run _merge_pr with mocked subprocess.run and _create_pr."""
@@ -180,6 +181,10 @@ class TestMergePrFunction:
         def _fake_gh_run(cmd, **kwargs):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
             if "gh" in cmd_str and "pr" in cmd_str and "merge" in cmd_str:
+                if gh_merge_results is not None:
+                    if gh_merge_results:
+                        return gh_merge_results.pop(0)
+                    return _make_subprocess_result(0)
                 rc = 0 if gh_merge_ok else 1
                 err = "" if gh_merge_ok else "merge failed"
                 return _make_subprocess_result(rc, stderr=err)
@@ -240,6 +245,170 @@ class TestMergePrFunction:
         assert result["success"] is False
         assert result["pr_url"] == "https://github.com/fuzzypete/theforge/pull/42"
         assert "merge failed" in result["error"] or "gh pr merge" in result["error"].lower()
+
+    def test_base_branch_modified_retries_then_succeeds(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        call_counts = {"fetch": 0, "rebase": 0, "push": 0}
+        merge_results = [
+            _make_subprocess_result(
+                1,
+                stderr="GraphQL: Base branch was modified. Review and try the merge again.",
+            ),
+            _make_subprocess_result(0),
+        ]
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:4] == [
+                "git",
+                "fetch",
+                "origin",
+                config.workspace.base_branch,
+            ]:
+                call_counts["fetch"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"] and "--abort" not in cmd:
+                call_counts["rebase"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:4] == ["git", "push", "-f", "origin"]:
+                call_counts["push"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                return merge_results.pop(0)
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                    "success": True,
+                    "error": None,
+                },
+            ) as mock_create_pr,
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is True
+        assert result["merged"] is True
+        assert mock_create_pr.call_count == 1
+        assert call_counts == {"fetch": 2, "rebase": 2, "push": 2}
+
+    def test_base_branch_modified_exhausts_retry_limit(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        call_counts = {"fetch": 0, "rebase": 0, "push": 0, "merge": 0}
+        merge_error = "GraphQL: Base branch was modified. Review and try the merge again."
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:4] == [
+                "git",
+                "fetch",
+                "origin",
+                config.workspace.base_branch,
+            ]:
+                call_counts["fetch"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"] and "--abort" not in cmd:
+                call_counts["rebase"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:4] == ["git", "push", "-f", "origin"]:
+                call_counts["push"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                call_counts["merge"] += 1
+                return _make_subprocess_result(1, stderr=merge_error)
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                    "success": True,
+                    "error": None,
+                },
+            ) as mock_create_pr,
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is False
+        assert result["merged"] is False
+        assert result["pr_url"] == "https://github.com/fuzzypete/theforge/pull/42"
+        assert merge_error in result["error"]
+        assert mock_create_pr.call_count == 1
+        assert call_counts == {
+            "fetch": MAX_MERGE_RETRIES,
+            "rebase": MAX_MERGE_RETRIES,
+            "push": MAX_MERGE_RETRIES,
+            "merge": MAX_MERGE_RETRIES,
+        }
+
+    def test_non_retryable_merge_failure_does_not_retry(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        call_counts = {"fetch": 0, "rebase": 0, "push": 0, "merge": 0}
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:4] == [
+                "git",
+                "fetch",
+                "origin",
+                config.workspace.base_branch,
+            ]:
+                call_counts["fetch"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:2] == ["git", "rebase"] and "--abort" not in cmd:
+                call_counts["rebase"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:4] == ["git", "push", "-f", "origin"]:
+                call_counts["push"] += 1
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                call_counts["merge"] += 1
+                return _make_subprocess_result(1, stderr="merge blocked by branch protection")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is False
+        assert result["merged"] is False
+        assert "branch protection" in result["error"]
+        assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 1}
 
     def test_merge_strategy_squash_passed_to_gh(self, tmp_path: Path) -> None:
         """Verify --squash is passed to gh pr merge."""
