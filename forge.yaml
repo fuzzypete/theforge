@@ -36,7 +36,7 @@ retry:
 profiles:
   dev:
     provider: openai
-    model: gpt-5.1-codex
+    model: gpt-5.4
     budget_usd: 50.00
     timeout_seconds: 600
     timeout_medium_seconds: 900
