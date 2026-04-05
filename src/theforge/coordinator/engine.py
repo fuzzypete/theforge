@@ -79,6 +79,7 @@ from .util import (
     _log_verbose,
 )
 from .workspace import _check_behind_origin, _create_workspace
+from .workspace_scrub import _scrub_forge_history
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
@@ -272,6 +273,9 @@ def _coordinator_loop(
                     state=state,
                     message=state.error,
                 )
+
+            # ── Scrub forge-artifact commits from branch history ──
+            _scrub_forge_history(workspace_path, branch_name, config.workspace.base_branch)
 
             # ── VALIDATE ──────────────────────────────────────────
             _val_outcome, _val_result = _run_validate_phase(

@@ -6,6 +6,7 @@ Extracted from coord_state.py so that coord_state.py can remain stdlib-only
 
 from __future__ import annotations
 
+import os
 import secrets
 import subprocess
 import sys
@@ -92,7 +93,9 @@ def resolve_timeout(
     return base
 
 
-def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
+def _run_shell(
+    cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
+) -> tuple[bool, str]:
     """Run a shell command. Returns (success, combined output)."""
     try:
         proc = subprocess.run(
@@ -102,6 +105,7 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
             text=True,
             cwd=str(cwd),
             timeout=timeout,
+            env=env if env is not None else os.environ.copy(),
         )
         output = (proc.stdout + proc.stderr).strip()
         return proc.returncode == 0, output
