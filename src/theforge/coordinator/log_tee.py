@@ -14,6 +14,16 @@ if TYPE_CHECKING:
 
     from .logging import StructuredLogger
 
+_worker_ctx = threading.local()
+
+
+def set_worker_slug(slug: str) -> None:
+    _worker_ctx.slug = slug
+
+
+def get_worker_slug() -> str:
+    return getattr(_worker_ctx, "slug", "")
+
 
 def _safe_signal(signum, handler):
     """Register a signal handler only from the main thread.

@@ -14,7 +14,7 @@ import yaml
 
 from ..config import ForgeConfig
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
-from ..coordinator.log_tee import _make_story_log_dir
+from ..coordinator.log_tee import _make_story_log_dir, get_worker_slug, set_worker_slug
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
@@ -45,7 +45,9 @@ from .sources import StorySource
 
 
 def _log(msg: str) -> None:
-    print(f"[sprint] {msg}", file=sys.stderr, flush=True)
+    slug = get_worker_slug()
+    prefix = f"[{slug}] " if slug else ""
+    print(f"[sprint] {prefix}{msg}", file=sys.stderr, flush=True)
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
@@ -363,6 +365,7 @@ def _run_single_story(
         )
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
+    set_worker_slug("")
     elapsed = (finished_at - started_at).total_seconds()
     return task, result, elapsed, started_at, finished_at
 
@@ -988,6 +991,7 @@ def run_sprint(
                             changed = True
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
+    set_worker_slug("")
     duration = (finished_at - started_at).total_seconds()
 
     final_cost = accumulated_cost + prior_cost
