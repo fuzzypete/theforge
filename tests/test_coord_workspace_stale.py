@@ -841,7 +841,7 @@ class TestRunSetupSplit:
         assert _resolve_setup_command(cmd) == cmd
 
     def test_forge_python_with_spaces_in_path_is_shell_quoted(self, tmp_path):
-        """sys.executable with spaces is shell-quoted so the venv command stays valid."""
+        """sys.executable with spaces is shell-quoted; command is still split (not verbatim)."""
         from theforge.coordinator.workspace import _run_setup_split
 
         spaced_exe = "/home/my user/.pyenv/versions/3.12.12/bin/python3.12"
@@ -860,10 +860,41 @@ class TestRunSetupSplit:
             ok, out = _run_setup_split(cmd, tmp_path)
 
         assert ok is True
+        # Template matched before substitution — command was split, not run verbatim
+        assert len(calls) == 2
         # The interpreter path must appear single-quoted (shlex.quote output)
         assert "'/home/my user/.pyenv/versions/3.12.12/bin/python3.12'" in calls[0]
-        # Must not appear unquoted — an unquoted space would split the token
-        assert " -m venv" in calls[0]  # normal args still follow
+        assert " -m venv" in calls[0]
+
+    def test_forge_python_with_single_quote_in_path_still_splits(self, tmp_path):
+        """Interpreter path containing a single quote is handled; command still splits."""
+        import shlex
+
+        from theforge.coordinator.workspace import _run_setup_split
+
+        # A path with a single quote — shlex.quote produces a complex fragment that
+        # cannot be matched by a simple regex, but we match before substitution so
+        # the split must still occur.
+        tricky_exe = "/tmp/has'quote/python3"
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e .)"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kw):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with (
+            patch("theforge.coordinator.workspace.sys") as mock_sys,
+            patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
+        ):
+            mock_sys.executable = tricky_exe
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        # Must have split into two calls, not fallen back to verbatim (one call)
+        assert len(calls) == 2
+        # The quoted token must appear in the venv creation command
+        assert shlex.quote(tricky_exe) in calls[0]
 
     def test_resolve_setup_command_quotes_spaced_path(self):
         """_resolve_setup_command wraps a space-containing path in single quotes."""
