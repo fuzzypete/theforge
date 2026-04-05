@@ -286,6 +286,7 @@ def _run_single_story(
     4. run_from_dev to continue
     """
     started_at = datetime.datetime.now(datetime.timezone.utc)
+    set_worker_slug(task.slug)
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
 
     if state_update_fn is not None:
