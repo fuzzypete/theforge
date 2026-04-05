@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -21,16 +22,22 @@ _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
 
 # Matches: test -d .venv || (<python> -m venv .venv && <install>)
-# Captures the python executable (group 1) and the install command (group 2).
+# Captures the python executable token (group 1, bare or single-quoted) and
+# the install command (group 2).  shlex.quote() may wrap paths that contain
+# spaces in single quotes, so the pattern accepts both forms.
 _VENV_GUARD_RE = re.compile(
-    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*(\S+)\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
+    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*('[^']*'|\S+)\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
     re.DOTALL,
 )
 
 
 def _resolve_setup_command(cmd: str) -> str:
-    """Replace {forge_python} with the absolute path to the running interpreter."""
-    return cmd.replace("{forge_python}", sys.executable)
+    """Replace {forge_python} with the shell-safe path to the running interpreter.
+
+    Uses shlex.quote so that paths containing spaces (e.g. a home directory
+    with a space) do not break shell=True invocations.
+    """
+    return cmd.replace("{forge_python}", shlex.quote(sys.executable))
 
 
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:

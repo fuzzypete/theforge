@@ -839,3 +839,40 @@ class TestRunSetupSplit:
 
         cmd = "test -d .venv || (python -m venv .venv && pip install -e .)"
         assert _resolve_setup_command(cmd) == cmd
+
+    def test_forge_python_with_spaces_in_path_is_shell_quoted(self, tmp_path):
+        """sys.executable with spaces is shell-quoted so the venv command stays valid."""
+        from theforge.coordinator.workspace import _run_setup_split
+
+        spaced_exe = "/home/my user/.pyenv/versions/3.12.12/bin/python3.12"
+        cmd = "test -d .venv || ({forge_python} -m venv .venv && pip install -e .)"
+        calls = []
+
+        def fake_shell(cmd_arg, cwd, **kw):
+            calls.append(cmd_arg)
+            return (True, "ok")
+
+        with (
+            patch("theforge.coordinator.workspace.sys") as mock_sys,
+            patch("theforge.coordinator.workspace._cu._run_shell", side_effect=fake_shell),
+        ):
+            mock_sys.executable = spaced_exe
+            ok, out = _run_setup_split(cmd, tmp_path)
+
+        assert ok is True
+        # The interpreter path must appear single-quoted (shlex.quote output)
+        assert "'/home/my user/.pyenv/versions/3.12.12/bin/python3.12'" in calls[0]
+        # Must not appear unquoted — an unquoted space would split the token
+        assert " -m venv" in calls[0]  # normal args still follow
+
+    def test_resolve_setup_command_quotes_spaced_path(self):
+        """_resolve_setup_command wraps a space-containing path in single quotes."""
+        from theforge.coordinator.workspace import _resolve_setup_command
+
+        spaced_exe = "/home/my user/.pyenv/bin/python3"
+        with patch("theforge.coordinator.workspace.sys") as mock_sys:
+            mock_sys.executable = spaced_exe
+            result = _resolve_setup_command("{forge_python} -m venv .venv")
+
+        assert "'/home/my user/.pyenv/bin/python3'" in result
+        assert "{forge_python}" not in result
