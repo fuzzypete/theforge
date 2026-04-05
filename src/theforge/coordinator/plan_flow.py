@@ -451,7 +451,14 @@ def _run_plan_agent_review(
                 )
                 _parsed = parse_plan_review_output("")  # force parse error → REJECT
             else:
-                _parsed = parse_plan_review_output(_res.output)
+                if not (_res.output or "").strip():
+                    _log(
+                        f"  ⚠ PLAN_REVIEW   {_prof.name} returned empty output "
+                        "— treating as REJECT"
+                    )
+                    _parsed = parse_plan_review_output("")
+                else:
+                    _parsed = parse_plan_review_output(_res.output)
 
             if _parsed.parse_errors:
                 _log(
@@ -481,15 +488,16 @@ def _run_plan_agent_review(
             )
             _parsed_prs.append(_parsed)
 
-        # Minimum-success gate: at least one reviewer must parse successfully
+        # Minimum-success gate: require the configured number of parseable reviewers
         _failed_this_attempt = sum(1 for _p in _parsed_prs if _p.parse_errors)
         _successful_count = len(par_profiles) - _failed_this_attempt
-        if _successful_count < 1:
+        _min_reviewers = config.plan_agent_review.min_reviewers
+        if _successful_count < _min_reviewers:
             state.plan_review_decision = "reject"
             state.phase = Phase.ESCALATE
             state.error = (
-                f"All {len(par_profiles)} plan reviewer(s) failed to produce parseable output"
-                f" on attempt {_attempt}. Cannot determine a plan review verdict."
+                f"Only {_successful_count}/{len(par_profiles)} plan reviewer(s) produced "
+                f"parseable output; minimum required is {_min_reviewers}."
             )
             _log(f"  ✗ PLAN_REVIEW   {state.error}")
             _escalate_notify(task, state, notify, config)

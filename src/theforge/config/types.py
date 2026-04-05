@@ -235,6 +235,7 @@ class PlanAgentReviewConfig:
     timeout: int = 300
     # Pool format — populated by load_forge_yaml when pool: key is present.
     pool: list[ModelProfile] = field(default_factory=list)
+    min_reviewers: int = 1
 
     @property
     def profiles(self) -> list[ModelProfile]:
