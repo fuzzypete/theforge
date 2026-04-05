@@ -133,6 +133,7 @@ def _parse_plan_agent_review(
         budget_usd=float(par_data.get("budget_usd", 0.50)),
         timeout=int(par_data.get("timeout", 300)),
         pool=par_pool,
+        min_reviewers=int(par_data.get("min_reviewers", 1)),
     )
 
     if plan_agent_review_cfg.enabled:

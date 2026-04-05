@@ -87,7 +87,9 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
             timeout_seconds=300,
             allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
         )
-        par_config = PlanAgentReviewConfig(enabled=True, pool=[_plan_review_a, _plan_review_b])
+        par_config = PlanAgentReviewConfig(
+            enabled=True, min_reviewers=2, pool=[_plan_review_a, _plan_review_b]
+        )
     else:
         par_config = PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet")
     return ForgeConfig(
@@ -850,6 +852,7 @@ findings:
             _make_plan_agent_review_config(tmp_path),
             plan_agent_review=PlanAgentReviewConfig(
                 enabled=True,
+                min_reviewers=1,
                 pool=[
                     ModelProfile(
                         name="reviewer-a",
@@ -1150,6 +1153,9 @@ class TestPlanReviewerFailureAudit:
         assert failure["reviewer"] == "plan-review"
         assert len(failure["errors"]) > 0
 
+        audit = generate_audit_log(config, task, result)
+        assert audit["plan_review"]["reviewer_failures"] == result.state.plan_review_failures
+
     @patch("theforge.coordinator.plan_flow.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -1224,7 +1230,7 @@ class TestPlanReviewerFailureAudit:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_mixed_failure_one_succeeds_no_escalation(
+    def test_min_reviewers_two_one_failure_escalates(
         self,
         mock_shell,
         mock_agent,
@@ -1235,11 +1241,12 @@ class TestPlanReviewerFailureAudit:
         mock_code_pool,
         tmp_path,
     ):
-        """One reviewer fails, one succeeds → failure recorded but merge proceeds."""
+        """Two reviewers configured with min_reviewers=2 → one failure escalates."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
             plan_agent_review=PlanAgentReviewConfig(
                 enabled=True,
+                min_reviewers=2,
                 pool=[
                     ModelProfile(
                         name="reviewer-a",
@@ -1273,7 +1280,7 @@ class TestPlanReviewerFailureAudit:
             _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
             _make_agent_result(success=True, output="Implemented."),
         ]
-        # reviewer-a fails (garbage), reviewer-b approves
+        # reviewer-a fails (garbage), reviewer-b approves, but min_reviewers=2 blocks approval
         mock_plan_pool.side_effect = [
             [
                 _make_agent_result(
@@ -1296,8 +1303,10 @@ class TestPlanReviewerFailureAudit:
 
         result = run_task(config=pool_config, task=task, interactive=True)
 
-        assert result.success is True
-        assert result.state.plan_review_decision == "approve"
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.plan_review_decision == "reject"
+        assert "minimum required is 2" in (result.message or "")
         # Failure was recorded for reviewer-a
         assert len(result.state.plan_review_failures) == 1
         assert result.state.plan_review_failures[0]["reviewer"] == "reviewer-a"
