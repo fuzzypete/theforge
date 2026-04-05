@@ -1118,3 +1118,64 @@ class TestSprintPrePull:
             run_sprint(config, manifest_path, no_pull=True)
 
         mock_pull.assert_not_called()
+
+
+class TestParallelLogIsolation:
+    def test_begin_run_log_tee_skipped_for_parallel_story_threads(self, tmp_path: Path) -> None:
+        """Worker-thread tee setup is skipped so parallel stories cannot stack stderr tees."""
+        import sys
+        import threading
+
+        from theforge.coordinator.log_tee import _begin_run_log_tee, _TeeStderr
+        from theforge.coordinator.logging import StructuredLogger
+
+        config = _make_config(tmp_path)
+        story_a_dir = tmp_path / ".forge" / "logs" / "parallel-sprint" / "story-a"
+        story_b_dir = tmp_path / ".forge" / "logs" / "parallel-sprint" / "story-b"
+        story_a_dir.mkdir(parents=True)
+        story_b_dir.mkdir(parents=True)
+
+        logger_a = StructuredLogger(
+            run_id="parallel-run",
+            project="test",
+            task="story-a",
+            log_file=str(tmp_path / "forge.log"),
+            enabled=True,
+            project_root=tmp_path,
+        )
+        logger_b = StructuredLogger(
+            run_id="parallel-run",
+            project="test",
+            task="story-b",
+            log_file=str(tmp_path / "forge.log"),
+            enabled=True,
+            project_root=tmp_path,
+        )
+
+        barrier = threading.Barrier(3)
+        results: dict[str, object] = {}
+        original_stderr = sys.stderr
+
+        def worker(name: str, logger: StructuredLogger, log_dir: Path) -> None:
+            barrier.wait()
+            results[name] = _begin_run_log_tee(config, logger, name, log_dir=log_dir)
+            barrier.wait()
+
+        threads = [
+            threading.Thread(target=worker, args=("story-a", logger_a, story_a_dir)),
+            threading.Thread(target=worker, args=("story-b", logger_b, story_b_dir)),
+        ]
+        for thread in threads:
+            thread.start()
+
+        barrier.wait()
+        barrier.wait()
+
+        for thread in threads:
+            thread.join()
+
+        assert results == {"story-a": None, "story-b": None}
+        assert sys.stderr is original_stderr
+        assert not isinstance(sys.stderr, _TeeStderr)
+        assert list(story_a_dir.glob("run-*.log")) == []
+        assert list(story_b_dir.glob("run-*.log")) == []

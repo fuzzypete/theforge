@@ -390,6 +390,84 @@ class TestProjectLocalLogDir:
         data = _yaml.safe_load(summary_path.read_text())
         assert data["sprint"]["name"] == "my-sprint"
 
+    def test_parallel_sprint_story_log_dir_still_accepts_artifacts(self, tmp_path):
+        """Parallel sprint workers still get per-story log dirs for structured artifacts."""
+        import yaml as _yaml
+
+        from theforge.coordinator.log_tee import (
+            _begin_run_log_tee,
+            _make_story_log_dir,
+            _write_log_artifact,
+        )
+        from theforge.coordinator.logging import StructuredLogger
+        from theforge.sprint import run_sprint
+
+        spec_a = tmp_path / "story-a.md"
+        spec_a.write_text("---\nslug: story-a\n---\n# Story A", encoding="utf-8")
+        spec_b = tmp_path / "story-b.md"
+        spec_b.write_text("---\nslug: story-b\n---\n# Story B", encoding="utf-8")
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.write_text(
+            _yaml.dump(
+                {
+                    "name": "parallel-sprint",
+                    "budget_usd": 10.0,
+                    "specs": ["story-a.md", "story-b.md"],
+                    "max_parallel": 2,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        config = self._make_config(tmp_path)
+        captured_log_dirs: dict[str, Path] = {}
+        tee_results: dict[str, object] = {}
+
+        def _fake_run_task(cfg, tsk, **kwargs):
+            sprint_name = kwargs["sprint_name"]
+            log_dir = _make_story_log_dir(cfg, tsk.slug, sprint_name=sprint_name)
+            assert log_dir is not None
+            logger = StructuredLogger(
+                run_id="parallel-run",
+                project=cfg.project,
+                task=tsk.slug,
+                log_file=str(tmp_path / "forge.log"),
+                enabled=True,
+                project_root=tmp_path,
+            )
+            tee_results[tsk.slug] = _begin_run_log_tee(cfg, logger, tsk.slug, log_dir=log_dir)
+            _write_log_artifact(log_dir, "preflight.yaml", f"slug: {tsk.slug}\n")
+            captured_log_dirs[tsk.slug] = log_dir
+
+            result_state = CoordinatorState()
+            result_state.log_dir = log_dir
+
+            class _FakeResult:
+                success = True
+                phase = Phase.DONE
+                merge = None
+                message = "done"
+
+            fake_result = _FakeResult()
+            fake_result.state = result_state
+            return fake_result
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.coordinator.audit.generate_audit_log", return_value={"task": {}}),
+        ):
+            result = run_sprint(config, manifest_path)
+
+        assert result.specs_succeeded == 2
+        assert tee_results == {"story-a": None, "story-b": None}
+        for slug in ("story-a", "story-b"):
+            log_dir = captured_log_dirs[slug]
+            assert log_dir == tmp_path / ".forge" / "logs" / "parallel-sprint" / slug
+            artifact = log_dir / "preflight.yaml"
+            assert artifact.exists(), f"Missing artifact for {slug}"
+            assert _yaml.safe_load(artifact.read_text()) == {"slug": slug}
+            assert list(log_dir.glob("run-*.log")) == []
+
 
 class TestSigtermHandler:
     """Tests for _make_sigterm_handler crash diagnostics."""
