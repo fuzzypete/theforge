@@ -240,30 +240,12 @@ def _triage_spec(
     branch = config.workspace.branch_pattern.format(slug=slug)
     base_branch = config.workspace.base_branch
     worktree_path = project_root / config.workspace.path_pattern.format(slug=slug)
+    commits_ahead: list[str] | None = None
+    commits_behind: int | None = None
 
-    # 1. Check if already merged to base branch.
-    # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
-    # for fast-forward merges where branch and base land on the same commit.
-    if _is_branch_merged(branch, base_branch, project_root, slug=slug):
-        return StoryTriage(
-            story_path=story_path,
-            action="skip_merged",
-            reason=f"already merged to {base_branch}",
-            worktree_path=None,
-            slug=slug,
-        )
-
-    # 2. Check if worktree exists
-    if not worktree_path.exists():
-        return StoryTriage(
-            story_path=story_path,
-            action="full",
-            reason="no worktree found",
-            worktree_path=None,
-            slug=slug,
-        )
-
-    # 3. Check commits ahead of base branch
+    # 1. Probe branch divergence up front so same-tip branches can distinguish
+    # fast-forward merges (audit-backed skip_merged) from stale/empty worktrees
+    # that were merely created at the base tip.
     try:
         log_result = subprocess.run(
             ["git", "log", f"{base_branch}..{branch}", "--oneline"],
@@ -276,8 +258,76 @@ def _triage_spec(
             for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
             if ln.strip()
         ]
-    except (subprocess.TimeoutExpired, OSError):
-        commits_ahead = []
+        if not commits_ahead:
+            behind_result = subprocess.run(
+                ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
+            )
+            commits_behind = int(
+                behind_result.stdout.decode("utf-8", errors="replace").strip() or "0"
+            )
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        commits_ahead = None
+        commits_behind = None
+
+    # 2. Check if already merged to base branch.
+    # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
+    # for fast-forward merges where branch and base land on the same commit.
+    if _is_branch_merged(branch, base_branch, project_root, slug=slug):
+        return StoryTriage(
+            story_path=story_path,
+            action="skip_merged",
+            reason=f"already merged to {base_branch}",
+            worktree_path=None,
+            slug=slug,
+        )
+
+    # 3. A branch at the base tip (0 ahead, 0 behind) is stale/empty, not merged.
+    # This can happen when a prior run created the branch/worktree but never
+    # produced story commits. Treat it as full so WORKSPACE recreates it, even
+    # if the old worktree directory has already been removed.
+    if commits_ahead == [] and commits_behind == 0:
+        stale_reason = (
+            f"branch is at {base_branch} HEAD with 0 commits ahead"
+            if not worktree_path.exists()
+            else f"worktree exists but branch is at {base_branch} HEAD (stale)"
+        )
+        return StoryTriage(
+            story_path=story_path,
+            action="full",
+            reason=stale_reason,
+            worktree_path=None,
+            slug=slug,
+        )
+
+    # 4. Check if worktree exists
+    if not worktree_path.exists():
+        return StoryTriage(
+            story_path=story_path,
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+            slug=slug,
+        )
+
+    # 5. Check commits ahead of base branch
+    if commits_ahead is None:
+        try:
+            log_result = subprocess.run(
+                ["git", "log", f"{base_branch}..{branch}", "--oneline"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
+            )
+            commits_ahead = [
+                ln
+                for ln in log_result.stdout.decode("utf-8", errors="replace").strip().splitlines()
+                if ln.strip()
+            ]
+        except (subprocess.TimeoutExpired, OSError):
+            commits_ahead = []
 
     if not commits_ahead:
         # Stale worktree: 0 commits ahead of base. run_task WORKSPACE phase will
@@ -290,7 +340,7 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 4. Check audit trail for a prior review APPROVE
+    # 5. Check audit trail for a prior review APPROVE
     if has_review_approve(project_root, slug, base_branch, branch):
         return StoryTriage(
             story_path=story_path,
@@ -300,7 +350,7 @@ def _triage_spec(
             slug=slug,
         )
 
-    # 5. Gate pre-check to decide REVIEW vs DEV entry
+    # 6. Gate pre-check to decide REVIEW vs DEV entry
     gate_decision, gate_err, _gate_output = _run_gate(config, worktree_path, task=task)
 
     if gate_err is None and gate_decision == "PASS":

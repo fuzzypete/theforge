@@ -145,7 +145,7 @@ class TestTriageSpec:
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
-        assert "no worktree" in triage.reason
+        assert "stale" in triage.reason or "0 commits" in triage.reason or "HEAD" in triage.reason
 
     def test_triage_worktree_with_passing_gate(self, tmp_path: Path) -> None:
         """Worktree exists, commits ahead, gate passes → review."""
@@ -244,6 +244,80 @@ class TestTriageSpec:
 
         assert triage.action == "full"
         assert "stale" in triage.reason or "0 commits" in triage.reason
+
+    def test_triage_same_tip_missing_worktree_without_audit_runs_full(
+        self, tmp_path: Path
+    ) -> None:
+        """Missing worktree at base HEAD with no audit trail stays stale/full."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"0"
+            elif "--is-ancestor" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        ):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "full"
+        assert "stale" in triage.reason or "0 commits" in triage.reason or "HEAD" in triage.reason
+
+    def test_triage_same_tip_worktree_with_prior_approve_skips_when_merged(
+        self, tmp_path: Path
+    ) -> None:
+        """Same-tip branch with audit-backed FF merge should still skip_merged."""
+        import json
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        config = _make_config(tmp_path)
+
+        worktree = tmp_path / "feature-a"
+        worktree.mkdir()
+
+        audits_dir = tmp_path / ".forge" / "audits"
+        audits_dir.mkdir(parents=True)
+        record = {
+            "task": {"slug": "feature-a"},
+            "reviews": [{"verdict": "APPROVE"}],
+        }
+        (audits_dir / "history.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if "log" in cmd:
+                m.returncode = 0
+                m.stdout = b""  # 0 commits ahead
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"0"  # branch and base at same tip
+            elif "--is-ancestor" in cmd:
+                m.returncode = 0
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run):
+            triage = _triage_spec("feature-a.md", config, tmp_path)
+
+        assert triage.action == "skip_merged"
+        assert "merged" in triage.reason
 
     def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
         """Worktree has commits ahead and prior APPROVE in audit trail → skip."""
