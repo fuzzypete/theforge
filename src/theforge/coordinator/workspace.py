@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -19,25 +21,63 @@ run_agent = None
 _MAX_AUTO_RESOLVE_FILES = 5
 _CONFLICT_RESOLUTION_TIMEOUT = 120
 
-# Matches: test -d .venv || (python -m venv .venv && <install>)
-_VENV_GUARD_RE = re.compile(
-    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*python\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
+# Matches setup_command templates that still contain the {forge_python} placeholder.
+# Captures the install command (group 1).  Matched BEFORE substitution so we never
+# have to parse shlex.quote() output — any valid interpreter path is accepted.
+_VENV_GUARD_TEMPLATE_RE = re.compile(
+    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*\{forge_python\}\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
     re.DOTALL,
 )
+
+# Legacy form: bare executable token, no {forge_python} placeholder.
+# Only applied when the template form does not match.
+_VENV_GUARD_RE = re.compile(
+    r"test\s+-d\s+\.venv\s*\|\|\s*\(\s*(\S+)\s+-m\s+venv\s+\.venv\s*&&\s*(.+?)\s*\)",
+    re.DOTALL,
+)
+
+
+def _resolve_setup_command(cmd: str) -> str:
+    """Replace {forge_python} with the shell-safe path to the running interpreter.
+
+    Uses shlex.quote so that paths containing spaces or shell-sensitive characters
+    do not break shell=True invocations.
+    """
+    return cmd.replace("{forge_python}", shlex.quote(sys.executable))
 
 
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
     """Run workspace setup, always running pip install even if .venv exists.
 
-    Detects the `test -d .venv || (python -m venv .venv && <install>)` pattern
-    and splits it: venv creation is guarded, install always runs.
-    Falls back to running setup_command verbatim when the pattern is not found.
+    When setup_command contains the {forge_python} placeholder, the template is
+    matched BEFORE substitution so the regex never has to parse shlex.quote()
+    output (which varies with the interpreter path and cannot be reliably matched
+    by a single regex pattern).  sys.executable is then injected directly into
+    the constructed shell strings via shlex.quote().
+
+    For legacy commands without {forge_python}, falls back to matching the bare
+    executable token after resolving any other substitutions.
+
+    Falls back to running setup_command verbatim when neither pattern matches.
     """
-    m = _VENV_GUARD_RE.search(setup_command)
+    # --- template form: match before substitution ---
+    m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
+    if m:
+        install_cmd = m.group(1).strip()
+        python_exe = shlex.quote(sys.executable)
+        ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
+        if not ok:
+            return ok, out
+        return _cu._run_shell(install_cmd, workspace_path)
+
+    # --- legacy form: resolve then match ---
+    cmd = _resolve_setup_command(setup_command)
+    m = _VENV_GUARD_RE.search(cmd)
     if not m:
-        return _cu._run_shell(setup_command, workspace_path)
-    install_cmd = m.group(1).strip()
-    ok, out = _cu._run_shell("test -d .venv || python -m venv .venv", workspace_path)
+        return _cu._run_shell(cmd, workspace_path)
+    python_exe = m.group(1)
+    install_cmd = m.group(2).strip()
+    ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
     if not ok:
         return ok, out
     return _cu._run_shell(install_cmd, workspace_path)
