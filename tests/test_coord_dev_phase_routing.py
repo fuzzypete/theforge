@@ -84,10 +84,11 @@ class TestCoordinatorPromptRouting:
         assert result.success is True
         assert mock_fix_prompt.called, "build_fix_prompt should be called on review iteration"
         assert mock_dev_prompt.call_count >= 1, "build_dev_prompt should be called on first run"
-        injected = mock_fix_prompt.call_args.kwargs["prior_open_p1s"]
-        assert len(injected) == 1
-        assert injected[0].description == "Off by one"
-        assert result.state.dev_prompt_injected_finding_ids == [[], [injected[0].finding_id]]
+        assert mock_fix_prompt.call_args.kwargs["prior_open_p1s"] is None
+        classified = mock_fix_prompt.call_args.kwargs["classified_p1s"]
+        assert len(classified) == 1
+        assert classified[0].description == "Off by one"
+        assert result.state.dev_prompt_injected_finding_ids == [[], []]
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
@@ -454,6 +455,7 @@ class TestCoordinatorSessionResume:
         assert dev_prompts[0] == "full dev prompt"
         assert "You were cut off by a timeout." in dev_prompts[1]
         assert dev_prompts[1] != "full dev prompt"
+        assert result.state.dev_prompt_injected_finding_ids == [[], []]
 
     @patch("theforge.coordinator.dev_phase.build_dev_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")

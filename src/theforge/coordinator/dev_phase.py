@@ -45,6 +45,28 @@ def _still_open_p1s_for_dev_prompt(state: CoordinatorState) -> list:
     ]
 
 
+def _prior_open_p1s_for_dev_prompt(state: CoordinatorState) -> list:
+    """Return still-open P1s that predate the most recent review cycle."""
+    if state.review_cycle <= 1:
+        return []
+    return [
+        record
+        for record in _still_open_p1s_for_dev_prompt(state)
+        if record.cycle_first_seen < state.review_cycle
+    ]
+
+
+def _current_cycle_p1s_for_dev_prompt(state: CoordinatorState) -> list:
+    """Return classified P1s from the most recent review cycle."""
+    if state.review_cycle <= 0:
+        return []
+    return [
+        record
+        for record in state.finding_registry
+        if record.severity == "P1" and record.cycle_last_seen == state.review_cycle
+    ]
+
+
 def _ensure_runners() -> None:
     global run_agent, log_agent_result
     if run_agent is not None and log_agent_result is not None:
@@ -106,10 +128,12 @@ def _run_dev_phase(
             state.human_feedback
             or "You were cut off by a timeout. Continue from where you left off."
         )
+        state.dev_prompt_injected_finding_ids.append([])
         state.retry_reason = None
         state.human_feedback = None
     elif state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
-        carry_forward_p1s = _still_open_p1s_for_dev_prompt(state)
+        carry_forward_p1s = _prior_open_p1s_for_dev_prompt(state)
+        current_cycle_p1s = _current_cycle_p1s_for_dev_prompt(state)
         prompt = build_fix_prompt(
             task,
             workspace_path=workspace_path,
@@ -125,7 +149,7 @@ def _run_dev_phase(
             if state.plan_structured is not None
             else state.plan_output,
             prior_open_p1s=carry_forward_p1s or None,
-            classified_p1s=carry_forward_p1s or None,
+            classified_p1s=current_cycle_p1s or None,
             surviving_families=state.surviving_families or None,
             conventions=config.conventions_soft,
         )
