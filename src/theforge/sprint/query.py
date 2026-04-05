@@ -155,6 +155,47 @@ def fetch_issues_for_label(
     return sorted(issues, key=lambda x: x["number"])
 
 
+def fetch_issues_by_numbers(
+    numbers: list[int],
+    project_root: Path | None = None,
+) -> list[dict]:
+    """Fetch specific issues by number.
+
+    Returns a list of ``{"number": int, "title": str}`` dicts ordered by number.
+    Raises ``RuntimeError`` if any requested issue is missing or a ``gh`` call fails.
+    """
+    issues: list[dict] = []
+    found_numbers: set[int] = set()
+
+    for number in numbers:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(number), "--json", "number,title"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root) if project_root else None,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            if "Could not resolve to an issue" in stderr or "not found" in stderr.lower():
+                continue
+            raise RuntimeError(f"gh issue view {number!r} failed: {stderr}")
+        try:
+            issue = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"gh issue view returned malformed JSON for #{number}: {exc}"
+            ) from exc
+        issues.append({"number": issue["number"], "title": issue["title"]})
+        found_numbers.add(issue["number"])
+
+    missing = sorted(set(numbers) - found_numbers)
+    if missing:
+        missing_str = ", ".join(str(number) for number in missing)
+        raise RuntimeError(f"Issue number(s) not found in this repository: {missing_str}")
+
+    return sorted(issues, key=lambda x: x["number"])
+
+
 def assign_dependency_batches(
     tasks: list["TaskStory"],
     max_parallel: int | None,

@@ -23,32 +23,47 @@ def cmd_sprint(args: object) -> int:
 
     milestone: str | None = getattr(args, "milestone", None)
     label: str | None = getattr(args, "label", None)
-    query_mode = bool(milestone or label)
+    issues_arg: str | None = getattr(args, "issues", None)
+    query_mode = bool(milestone or label or issues_arg)
     manifest_arg: str | None = getattr(args, "manifest", None)
 
     # ── Validate argument combinations ──────────────────────────────────
     if not query_mode and not manifest_arg:
         print(
-            "forge sprint: provide a manifest path or use --milestone/--label",
+            "forge sprint: provide a manifest path or use --milestone/--label/--issues",
             file=sys.stderr,
         )
         return 1
 
     if query_mode and manifest_arg:
         print(
-            "forge sprint: --milestone/--label and a manifest path are mutually exclusive",
+            "forge sprint: --milestone/--label/--issues and a manifest path "
+            "are mutually exclusive",
             file=sys.stderr,
         )
         return 1
 
-    if milestone and label:
-        print("forge sprint: --milestone and --label are mutually exclusive", file=sys.stderr)
+    selected_queries = [
+        flag
+        for flag, value in (
+            ("--milestone", milestone),
+            ("--label", label),
+            ("--issues", issues_arg),
+        )
+        if value
+    ]
+    if len(selected_queries) > 1:
+        print(
+            f"forge sprint: {', '.join(selected_queries)} are mutually exclusive",
+            file=sys.stderr,
+        )
         return 1
 
     budget_str: str | None = getattr(args, "budget", None)
     if query_mode and budget_str is None:
         print(
-            "forge sprint: --budget <usd> is required when using --milestone or --label",
+            "forge sprint: --budget <usd> is required when using "
+            "--milestone, --label, or --issues",
             file=sys.stderr,
         )
         return 1
@@ -92,6 +107,7 @@ def cmd_sprint(args: object) -> int:
             config_path=config_path,
             milestone=milestone,
             label=label,
+            issues_arg=issues_arg,
             budget_str=budget_str,
             dry_run=dry_run,
             max_parallel=max_parallel,
@@ -182,6 +198,7 @@ def _run_query_mode(
     config_path: Path,
     milestone: str | None,
     label: str | None,
+    issues_arg: str | None = None,
     budget_str: str | None,
     dry_run: bool,
     max_parallel: int | None,
@@ -193,11 +210,12 @@ def _run_query_mode(
     _detach: object,
     _generate_run_id: object,
 ) -> int:
-    """Handle --milestone / --label query mode."""
+    """Handle --milestone / --label / --issues query mode."""
     from theforge.sprint.dag import resolve_satisfied_dependencies
     from theforge.sprint.query import (
         assign_dependency_batches_with_satisfied,
         build_resolved_sprint,
+        fetch_issues_by_numbers,
         fetch_issues_for_label,
         fetch_issues_for_milestone,
     )
@@ -214,14 +232,25 @@ def _run_query_mode(
     # Query mode is sequential by default unless the caller explicitly opts in.
     effective_max_parallel = 1 if max_parallel is None else max_parallel
 
-    query_desc = f"milestone '{milestone}'" if milestone else f"label '{label}'"
+    query_desc = (
+        f"milestone '{milestone}'"
+        if milestone
+        else f"label '{label}'"
+        if label
+        else f"issues '{issues_arg}'"
+    )
 
     # Fetch issue list (lightweight — just numbers and titles)
     try:
         if milestone:
             issues = fetch_issues_for_milestone(milestone, config.project_root)
-        else:
+        elif label:
             issues = fetch_issues_for_label(label, config.project_root)
+        else:
+            issue_numbers = [int(part.strip()) for part in issues_arg.split(",") if part.strip()]
+            if not issue_numbers:
+                raise RuntimeError("No issue numbers provided")
+            issues = fetch_issues_by_numbers(issue_numbers, config.project_root)
     except RuntimeError as exc:
         print(f"[forge] GitHub query failed for {query_desc}: {exc}", file=sys.stderr)
         return 1
@@ -233,7 +262,7 @@ def _run_query_mode(
         )
         return 0
 
-    sprint_name: str = getattr(args, "name", None) or milestone or label
+    sprint_name: str = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
 
     # Build full ResolvedSprint (fetches individual issue bodies via gh)
     try:
@@ -304,7 +333,7 @@ def _run_query_mode(
     if getattr(args, "detach", False) and _daemon.is_daemon_running(config.project_root):
         release_story_locks(locked_fds)
         print(
-            "[forge] --detach is not supported in query mode (--milestone/--label).\n"
+            "[forge] --detach is not supported in query mode (--milestone/--label/--issues).\n"
             "        Run with --fg or without --detach instead.",
             file=sys.stderr,
         )
@@ -340,12 +369,12 @@ def register_parser(subparsers: object) -> None:
         "sprint",
         help="Run multiple stories from a sprint manifest or GitHub query",
     )
-    # Manifest path is now optional — query mode uses --milestone/--label instead
+    # Manifest path is now optional — query mode uses --milestone/--label/--issues instead
     sprint_parser.add_argument(
         "manifest",
         nargs="?",
         default=None,
-        help="Path to sprint.yaml manifest (omit when using --milestone or --label)",
+        help="Path to sprint.yaml manifest (omit when using --milestone, --label, or --issues)",
     )
     sprint_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
 
@@ -361,9 +390,15 @@ def register_parser(subparsers: object) -> None:
         help="Run all open issues with a GitHub label (requires --budget)",
     )
     sprint_parser.add_argument(
+        "--issues",
+        metavar="N[,N,...]",
+        default=None,
+        help="Run specific GitHub issues by comma-separated number (requires --budget)",
+    )
+    sprint_parser.add_argument(
         "--budget",
         metavar="USD",
-        help="Budget ceiling in USD (required for --milestone/--label)",
+        help="Budget ceiling in USD (required for --milestone/--label/--issues)",
     )
     sprint_parser.add_argument(
         "--name",
