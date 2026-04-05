@@ -435,14 +435,15 @@ class TestParallelDependencyGating:
         )
         config = _make_config(tmp_path)
 
-        # A succeeds but does NOT merge → B should be skipped
+        # A succeeds but deferred merge fails → B should be skipped
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1  # only A ran
-        assert sprint.specs_succeeded == 1
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 1
 
     def test_dependency_satisfied_by_merge_unlocks_dependent(self, tmp_path: Path) -> None:
@@ -807,6 +808,48 @@ class TestWorkerExceptionHandling:
 
 
 # ── TestParallelMergeOrderingParallelMode ─────────────────────────────────────
+
+
+class TestParallelDependencySafety:
+    def test_parallel_dep_without_auto_merge_runs_dependent_story_and_warns(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Parallel depends_on auto-enables deferred merges so dependents are not skipped."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        merge_calls: list[str] = []
+
+        def _fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            merge_calls.append(slug)
+            return {"merged": True}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]) as mock_run,
+            patch("theforge.sprint.runner._merge_branch", side_effect=_fake_merge),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=False)
+
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_failed == 0
+        assert sprint.specs_skipped == 0
+        assert mock_run.call_count == 2
+        assert [call.args[1].slug for call in mock_run.call_args_list] == ["story-a", "story-b"]
+        assert merge_calls == ["story-a"]
+
+        captured = capsys.readouterr()
+        assert "parallel dependency merging auto-enabled" in captured.err
+        assert "story-a" in captured.err
 
 
 class TestParallelMergeOrderingParallelMode:
