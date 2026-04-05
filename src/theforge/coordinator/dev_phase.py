@@ -275,10 +275,9 @@ def _run_dev_phase(
 
     # ── Zero-change guard (review-driven retry only) ─────────────────
     # If the coordinator retried DEV after review REQUEST_CHANGES and the dev
-    # agent produced no changes (no commits, no dirty files), escalate immediately.
-    # Without this guard the coordinator sends the identical code back to review,
-    # the finding classifier sees no diff, classifies new P1s as net_new
-    # (non-blocking), and the story passes with unfixed code.
+    # agent produced no changes relative to the previous iteration baseline,
+    # escalate immediately. This rejects self-reported handoffs when the
+    # worktree is unchanged instead of burning another review cycle.
     # Only applies when THIS dev pass was entered for review_changes or extend —
     # gate retries and timeout resumes may legitimately produce no code changes.
     _is_review_driven = _dev_entry_reason in ("review_changes", "extend")
@@ -308,7 +307,8 @@ def _run_dev_phase(
         if not _has_commits and not _has_dirty:
             state.phase = Phase.ESCALATE
             state.error = (
-                "Dev retry produced no changes — escalating to avoid re-reviewing identical code"
+                "Dev retry produced no changes in the worktree relative to the previous "
+                "iteration baseline — escalating to avoid re-reviewing identical code"
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
