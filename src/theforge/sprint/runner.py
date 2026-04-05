@@ -960,6 +960,12 @@ def run_sprint(
                             f"HALT {slug}: required CI checks {ci_result['status']} "
                             f"for {ci_result['sha']} ({failing})"
                         )
+                        for t in dag.ready():
+                            if t.slug not in active:
+                                dag.mark_skipped(t.slug)
+                                specs_skipped += 1
+                                _log(f"SKIPPED {t.slug} ({stopped_reason})")
+                        break
 
                 # In parallel mode, merge actions are serialized in the main thread.
                 needs_deferred_merge = (

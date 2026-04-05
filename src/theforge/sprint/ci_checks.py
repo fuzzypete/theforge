@@ -106,9 +106,10 @@ def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: 
     if not isinstance(owner_repo, str) or not owner_repo:
         raise RuntimeError("Unable to resolve GitHub repository owner/name")
 
-    sha = _gh_text(
+    sha_raw = _gh_text(
         project_root, ["api", f"repos/{owner_repo}/branches/{base_branch}", "--jq", ".commit.sha"]
     )
+    sha = json.loads(sha_raw) if sha_raw.startswith('"') else sha_raw
     try:
         required_checks_raw = _gh_json(
             project_root,
