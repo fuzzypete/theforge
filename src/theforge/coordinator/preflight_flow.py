@@ -181,6 +181,7 @@ def _run_preflight_phase(
         "duration_s": round(_preflight_elapsed, 2),
         "likely_files": state.preflight_likely_files,
     }
+    _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
     _write_log_artifact(
         state.log_dir,
         "preflight.yaml",
