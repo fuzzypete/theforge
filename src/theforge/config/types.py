@@ -74,6 +74,18 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True)
+class GithubConfig:
+    """Native GitHub integration settings.
+
+    When enabled, the coordinator posts PR comments and assigns configured
+    GitHub reviewers after creating a PR. Reviewer assignment uses optional
+    ModelProfile.github_handle values when present.
+    """
+
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
@@ -98,6 +110,7 @@ class ModelProfile:
         None  # override default agent loop iterations (None = use default)
     )
     api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
+    github_handle: str | None = None  # optional GitHub username for reviewer assignment
 
     @property
     def mode(self) -> str:
@@ -299,6 +312,7 @@ class ForgeConfig:
     synthesis_profile: ModelProfile | None  # None when pool size <= 1
     retry: RetryPolicy
     notifications: NotificationConfig = NotificationConfig()
+    github: GithubConfig = field(default_factory=GithubConfig)
     smart_config_models: list[str] | None = None  # None = classic config; list = smart config
     plan: PlanConfig = field(default_factory=PlanConfig)
     plan_review: PlanReviewConfig = field(default_factory=PlanReviewConfig)

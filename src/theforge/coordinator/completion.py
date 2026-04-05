@@ -11,6 +11,7 @@ from theforge.config import ForgeConfig
 from theforge.review import ReviewResult
 from theforge.task import TaskStory
 
+from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, Phase
@@ -187,6 +188,20 @@ def _create_pr(
         if proc.returncode == 0:
             pr_url = proc.stdout.strip()
             _log(f"  ✓ PR created: {pr_url}")
+            if config.github.enabled:
+                reviewer_result = assign_pr_reviewers(pr_url, config.review_pool, push_cwd)
+                if not reviewer_result["success"]:
+                    _pr_log.warning(
+                        "GitHub reviewer assignment failed (non-fatal): %s",
+                        reviewer_result["error"],
+                    )
+                comment_result = post_findings_comment(
+                    pr_url, parsed_review, config.review_pool, push_cwd
+                )
+                if not comment_result["success"]:
+                    _pr_log.warning(
+                        "GitHub findings comment failed (non-fatal): %s", comment_result["error"]
+                    )
             return {"action": "pr", "pr_url": pr_url, "success": True, "error": None}
         else:
             err = proc.stderr.strip() or proc.stdout.strip()
