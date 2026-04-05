@@ -132,17 +132,9 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     slugs = parse_manifest_slugs(config, manifest_path)
-    active_worktree_error = check_active_worktrees_or_continue(
-        slugs=slugs,
-        config=config,
-        resume=resume,
-    )
-    if active_worktree_error is not None:
-        return active_worktree_error
-
-    locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
-    if conflicted:
-        return abort_for_running_stories(conflicted)
+    locked_fds, launch_error = _acquire_launch_locks(slugs=slugs, config=config, resume=resume)
+    if launch_error is not None:
+        return launch_error
 
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
         run_id = _generate_run_id()
@@ -204,6 +196,22 @@ def cmd_sprint(args: object) -> int:
 
     _detach.remove_pid(run_id, config.project_root)
     return 0 if result.specs_failed == 0 else 1
+
+
+def _acquire_launch_locks(
+    slugs: list[str], config: object, resume: bool
+) -> tuple[list, int | None]:
+    active_worktree_error = check_active_worktrees_or_continue(
+        slugs=slugs,
+        config=config,
+        resume=resume,
+    )
+    if active_worktree_error is not None:
+        return [], active_worktree_error
+    locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
+    if conflicted:
+        return [], abort_for_running_stories(conflicted)
+    return locked_fds, None
 
 
 def _run_query_mode(
@@ -334,17 +342,9 @@ def _run_query_mode(
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──
     slugs = [task.slug for task, _src, _ref in resolved.stories]
-    active_worktree_error = check_active_worktrees_or_continue(
-        slugs=slugs,
-        config=config,
-        resume=resume,
-    )
-    if active_worktree_error is not None:
-        return active_worktree_error
-
-    locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
-    if conflicted:
-        return abort_for_running_stories(conflicted)
+    locked_fds, launch_error = _acquire_launch_locks(slugs=slugs, config=config, resume=resume)
+    if launch_error is not None:
+        return launch_error
 
     # ── Daemonization: slug from sprint name, not manifest filename ───────
     run_id = _generate_run_id()

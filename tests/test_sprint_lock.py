@@ -346,6 +346,33 @@ class TestCmdSprintConflictGuard:
         assert rc == 0
         mock_run.assert_called_once()
 
+    def test_active_worktree_guard_runs_before_lock_acquisition(self, tmp_path: Path) -> None:
+        """Active worktrees abort launch before per-story locks are attempted."""
+        from theforge import cli
+
+        story = self._make_story(tmp_path, "busy-story")
+        manifest = self._make_manifest(tmp_path, story)
+        args = self._make_args(tmp_path, manifest)
+
+        mock_config = MagicMock()
+        mock_config.project_root = tmp_path
+        mock_config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        mock_config.workspace.base_branch = "main"
+
+        worktree = tmp_path / ".forge" / "worktrees" / "busy-story"
+        worktree.mkdir(parents=True)
+
+        with patch("theforge.cli.sprint.load_config", return_value=mock_config):
+            with patch("theforge.cli.sprint.acquire_story_locks") as mock_locks:
+                with patch(
+                    "theforge.sprint.lock.subprocess.run",
+                    return_value=MagicMock(returncode=0, stdout="1\n"),
+                ):
+                    rc = cli.cmd_sprint(args)
+
+        assert rc == 1
+        mock_locks.assert_not_called()
+
     def test_active_worktree_returns_exit_1(self, tmp_path: Path, capsys) -> None:
         """cmd_sprint returns 1 when a story already has an active worktree."""
         from theforge import cli
