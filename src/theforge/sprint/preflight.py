@@ -8,13 +8,27 @@ from typing import Any
 
 from theforge.sprint.lock import acquire_story_locks, check_active_worktrees
 
+_ACTIVE_WORKTREE_ABORT_PREFIX = "[forge] Stories already have active worktrees"
+_RUNNING_STORIES_ABORT_PREFIX = "[forge] Stories already running"
 
-def _abort_for_active_worktrees(slugs: list[str]) -> int:
-    print(
-        f"[forge] Stories already have active worktrees: {', '.join(slugs)}. Aborting.",
-        file=sys.stderr,
-    )
+
+def _format_slug_list(slugs: list[str]) -> str:
+    return ", ".join(slugs)
+
+
+def _abort_with_message(prefix: str, slugs: list[str]) -> int:
+    print(f"{prefix}: {_format_slug_list(slugs)}. Aborting.", file=sys.stderr)
     return 1
+
+
+def abort_for_active_worktrees(slugs: list[str]) -> int:
+    """Print the active-worktree refusal message and return the CLI exit code."""
+    return _abort_with_message(_ACTIVE_WORKTREE_ABORT_PREFIX, slugs)
+
+
+def abort_for_running_stories(slugs: list[str]) -> int:
+    """Print the running-stories refusal message and return the CLI exit code."""
+    return _abort_with_message(_RUNNING_STORIES_ABORT_PREFIX, slugs)
 
 
 def check_active_worktrees_or_continue(
@@ -33,7 +47,7 @@ def check_active_worktrees_or_continue(
         config.project_root,
     )
     if active_worktrees:
-        return _abort_for_active_worktrees(active_worktrees)
+        return abort_for_active_worktrees(active_worktrees)
     return None
 
 
@@ -47,9 +61,6 @@ def reacquire_story_locks_in_daemon(
         fd.close()
     refreshed_fds, conflicted = acquire_story_locks(slugs, project_root)
     if conflicted:
-        print(
-            f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
-            file=sys.stderr,
-        )
+        abort_for_running_stories(conflicted)
         sys.exit(1)
     return refreshed_fds

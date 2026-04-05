@@ -13,6 +13,7 @@ from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import run_sprint
 from theforge.sprint.lock import acquire_story_locks, release_story_locks
 from theforge.sprint.preflight import (
+    abort_for_running_stories,
     check_active_worktrees_or_continue,
     reacquire_story_locks_in_daemon,
 )
@@ -141,11 +142,7 @@ def cmd_sprint(args: object) -> int:
 
     locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
     if conflicted:
-        print(
-            f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
-            file=sys.stderr,
-        )
-        return 1
+        return abort_for_running_stories(conflicted)
 
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
         run_id = _generate_run_id()
@@ -347,11 +344,7 @@ def _run_query_mode(
 
     locked_fds, conflicted = acquire_story_locks(slugs, config.project_root)
     if conflicted:
-        print(
-            f"[forge] Stories already running: {', '.join(conflicted)}. Aborting.",
-            file=sys.stderr,
-        )
-        return 1
+        return abort_for_running_stories(conflicted)
 
     # ── Daemonization: slug from sprint name, not manifest filename ───────
     run_id = _generate_run_id()
