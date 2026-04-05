@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import logging
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -91,6 +92,46 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         ]
     if "surviving_families" in data and isinstance(data["surviving_families"], list):
         state.surviving_families = data["surviving_families"]
+
+
+def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[bool, str]:
+    """Fetch and rebase the resumed worktree onto origin/base_branch."""
+    git_dir = Path(worktree_path) / ".git"
+    if not git_dir.exists():
+        return True, ""
+
+    try:
+        fetch_proc = subprocess.run(
+            ["git", "fetch", "origin", base_branch],
+            capture_output=True,
+            text=True,
+            cwd=worktree_path,
+        )
+        if fetch_proc.returncode != 0:
+            err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
+            return False, err
+
+        rebase_proc = subprocess.run(
+            ["git", "rebase", f"origin/{base_branch}"],
+            capture_output=True,
+            text=True,
+            cwd=worktree_path,
+        )
+        if rebase_proc.returncode != 0:
+            err = rebase_proc.stderr.strip() or rebase_proc.stdout.strip()
+            subprocess.run(
+                ["git", "rebase", "--abort"],
+                capture_output=True,
+                text=True,
+                cwd=worktree_path,
+            )
+            return False, err
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.warning("resume rebase step failed: %s", exc)
+        return False, str(exc)
+
+    return True, ""
 
 
 def _setup_resume_entry(
