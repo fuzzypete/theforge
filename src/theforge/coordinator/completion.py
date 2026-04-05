@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import time
@@ -154,6 +155,44 @@ def _create_pr(
     )
 
     pr_title = f"{task.name}"
+
+    try:
+        merged_pr_proc = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch_name,
+                "--state",
+                "closed",
+                "--json",
+                "number,url,merged",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=config.project_root,
+            timeout=30,
+        )
+        if merged_pr_proc.returncode == 0:
+            merged_prs = json.loads(merged_pr_proc.stdout or "[]")
+            merged_pr = next((pr for pr in merged_prs if pr.get("merged")), None)
+            if merged_pr is not None:
+                pr_url = merged_pr.get("url")
+                message = f"PR already merged for branch {branch_name}: {pr_url}"
+                _pr_log.warning(message)
+                return {"action": "pr", "pr_url": pr_url, "success": False, "error": message}
+        else:
+            err = merged_pr_proc.stderr.strip() or merged_pr_proc.stdout.strip()
+            _pr_log.warning(
+                "Merged PR lookup failed for %s (gh exited %d): %s",
+                branch_name,
+                merged_pr_proc.returncode,
+                err,
+            )
+    except Exception as exc:
+        _pr_log.warning("Merged PR lookup failed for %s: %s", branch_name, exc)
+
     cmd = [
         "gh",
         "pr",

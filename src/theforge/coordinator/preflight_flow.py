@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.config import ForgeConfig
+from theforge.sprint.dag import _is_branch_merged
 from theforge.task import TaskStory, build_preflight_prompt
 
 from . import util as _cu
@@ -203,13 +204,23 @@ def _run_preflight_phase(
 
     # ── ALREADY_DONE ──────────────────────────────────────────────────
     if verdict == "ALREADY_DONE":
+        branch_merged = _is_branch_merged(
+            branch_name,
+            config.workspace.base_branch,
+            config.project_root,
+            slug=task.slug,
+        )
         ok_log, log_out = _cu._run_shell(
             f"git log {config.workspace.base_branch}..{branch_name} --oneline",
             config.project_root,
         )
         commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok_log else []
-        if commits_ahead and not has_review_approve(
-            config.project_root, task.slug, config.workspace.base_branch, branch_name
+        if (
+            not branch_merged
+            and commits_ahead
+            and not has_review_approve(
+                config.project_root, task.slug, config.workspace.base_branch, branch_name
+            )
         ):
             n = len(commits_ahead)
             _log(
