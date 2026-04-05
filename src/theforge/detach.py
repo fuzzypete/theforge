@@ -168,21 +168,23 @@ def read_run_status(run_id: str, slug: str, project_root: Path) -> dict:
 def _find_log_path(slug: str, run_id: str, project_root: Path) -> Path | None:
     """Find the log file for a run.
 
-    Checks .forge/logs/<slug>/run.log first (new-style from daemonization),
-    then falls back to searching for run-<run_id>.log in any log subdirectory.
+    Checks .forge/logs/<slug>/run-<run_id>.log first, then falls back to
+    searching for the same filename in any log subdirectory. Finally, falls
+    back to the legacy shared run.log path for pre-migration runs.
     """
-    # New-style log path (written by daemonize_run)
-    new_style = project_root / ".forge" / "logs" / slug / "run.log"
+    new_style = project_root / ".forge" / "logs" / slug / f"run-{run_id}.log"
     if new_style.exists():
         return new_style
 
-    # Fallback: search for run-<run_id>.log
     logs_dir = project_root / ".forge" / "logs"
     if logs_dir.exists():
         for match in logs_dir.rglob(f"run-{run_id}.log"):
             return match
 
-    # Return the expected new-style path even if it doesn't exist yet
+    legacy = project_root / ".forge" / "logs" / slug / "run.log"
+    if legacy.exists():
+        return legacy
+
     return new_style
 
 
@@ -247,7 +249,7 @@ def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
 
     Raises RuntimeError if os.fork() is unavailable (Windows).
     """
-    log_file = project_root / ".forge" / "logs" / slug / "run.log"
+    log_file = project_root / ".forge" / "logs" / slug / f"run-{run_id}.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Save original stdout for the pre-fork print
