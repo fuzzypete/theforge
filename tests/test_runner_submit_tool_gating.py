@@ -240,8 +240,8 @@ class TestProviderFallbackPreservesPhase:
     """_apply_provider_fallback must carry phase through to the rebuilt ModelProfile."""
 
     def test_dev_phase_preserved_after_fallback(self):
-        from theforge.config.types import ApiFallbackConfig
         from theforge.config.profiles import _apply_provider_fallback
+        from theforge.config.types import ApiFallbackConfig
 
         dev_profile = _make_profile("sonnet", provider=None, phase="dev")
         dev_profile = ModelProfile(
@@ -261,8 +261,8 @@ class TestProviderFallbackPreservesPhase:
         assert result.phase == "dev"
 
     def test_preflight_phase_preserved_after_fallback(self):
-        from theforge.config.types import ApiFallbackConfig
         from theforge.config.profiles import _apply_provider_fallback
+        from theforge.config.types import ApiFallbackConfig
 
         preflight_profile = ModelProfile(
             name="codex-preflight",
