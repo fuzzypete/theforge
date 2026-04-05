@@ -598,6 +598,8 @@ def run_task(
 
         # ── PREFLIGHT ──────────────────────────────────────────────────
         if cached_preflight_state is not None:
+            from .preflight import _apply_preflight_config  # noqa: PLC0415
+
             state.preflight_verdict = cached_preflight_state.preflight_verdict
             state.preflight_reason = cached_preflight_state.preflight_reason
             state.preflight_complexity = cached_preflight_state.preflight_complexity
@@ -606,6 +608,7 @@ def run_task(
             state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
             state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
             state.preflight_duration_s = cached_preflight_state.preflight_duration_s
+            config = _apply_preflight_config(config, state)
             _pf_result = None
             _pf_already_done_loop = False
         else:

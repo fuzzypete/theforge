@@ -33,7 +33,7 @@ from theforge.coordinator.preflight import (
     _parse_preflight_complexity,
     _parse_preflight_warnings,
 )
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import CoordinatorState, Phase
 
 # ── Preflight phase tests ─────────────────────────────────────────────
 
@@ -502,6 +502,38 @@ criteria_checked: []
             result = run_task(config, task)
 
         assert result.state.preflight_complexity == "large"
+
+    def test_cached_preflight_large_reuses_complexity_adaptation(self, tmp_path):
+        """Cached preflight state should still apply smart-config model adaptation."""
+        config = _make_smart_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="PROCEED",
+            preflight_reason="Already classified in sprint preflight.",
+            preflight_complexity="large",
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+        ):
+            mock_dev.return_value = _make_agent_result(output="Implemented.")
+            result = run_task(
+                config,
+                task,
+                cached_preflight_state=cached_state,
+                stop_phase=Phase.DEV,
+            )
+
+        assert result.success is True
+        assert mock_preflight.call_count == 0
+        assert mock_dev.call_args.kwargs["profile"].model == "opus"
 
     def test_complexity_small_skips_synthesis_in_run(self, tmp_path):
         """small complexity causes pool to be reduced to 1 reviewer."""

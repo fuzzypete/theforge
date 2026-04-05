@@ -247,7 +247,14 @@ def _run_query_mode(
         elif label:
             issues = fetch_issues_for_label(label, config.project_root)
         else:
-            issue_numbers = [int(part.strip()) for part in issues_arg.split(",") if part.strip()]
+            try:
+                issue_numbers = [
+                    int(part.strip()) for part in issues_arg.split(",") if part.strip()
+                ]
+            except ValueError as exc:
+                raise RuntimeError(
+                    "--issues must be a comma-separated list of integer issue numbers"
+                ) from exc
             if not issue_numbers:
                 raise RuntimeError("No issue numbers provided")
             issues = fetch_issues_by_numbers(issue_numbers, config.project_root)
