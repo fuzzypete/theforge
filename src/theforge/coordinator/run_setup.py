@@ -22,6 +22,7 @@ from theforge.task import TaskStory, load_story
 from . import util as _cu
 from .logging import StructuredLogger
 from .notify import _escalate_notify
+from .path_setup import prepend_worktree_src
 from .state import CoordinatorResult, CoordinatorState, Phase
 
 _logger = logging.getLogger(__name__)
@@ -145,6 +146,7 @@ def _setup_resume_entry(
         )
 
     state.workspace_path = workspace_path
+    prepend_worktree_src(workspace_path)
 
     # Restore trajectory data from sidecar (survives --resume)
     load_trajectory_state(workspace_path, state)
