@@ -110,7 +110,23 @@ def _run_review_pool(
         max_review_parse_retries: Per-reviewer parse retry budget.
     """
     _ensure_runners()
-    pool_size = len(config.review_pool)
+    pool = list(config.review_pool)
+    demotion_threshold = config.retry.demotion_threshold
+    if demotion_threshold > 0:
+        active_pool: list = []
+        for profile in pool:
+            failure_count = state.reviewer_parse_failure_counts.get(profile.name, 0)
+            if failure_count >= demotion_threshold:
+                _log(f"⚠ {profile.name} demoted after {failure_count} parse failures this run")
+                continue
+            active_pool.append(profile)
+        pool = active_pool
+        if not pool:
+            state.phase = Phase.ESCALATE
+            state.error = "All reviewers demoted due to parse failures."
+            return [], [], None, [], []
+
+    pool_size = len(pool)
 
     if review_prompts is None:
         commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
@@ -132,9 +148,9 @@ def _run_review_pool(
                     cycle_history=state.cycle_history if state.cycle_history else None,
                     conventions=config.conventions_soft,
                 )
-                for p in config.review_pool
+                for p in pool
             ]
-            if any(p.review_role for p in config.review_pool)
+            if any(p.review_role for p in pool)
             else build_review_prompt(
                 task,
                 story_content=story_content,
@@ -142,27 +158,27 @@ def _run_review_pool(
                 workspace_path=str(workspace_path),
                 branch=branch_name,
                 handoff_content=handoff_content,
-                mode=config.review_pool[0].mode,
+                mode=pool[0].mode,
                 dev_notes=dev_notes,
                 cycle_history=state.cycle_history if state.cycle_history else None,
                 conventions=config.conventions_soft,
             )
         )
-    _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in config.review_pool]}")
+    _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in pool]}")
     _pool_start = time.monotonic()
-    pool_session_ids = [state.reviewer_session_ids.get(p.name) for p in config.review_pool]
-    for _p, _sid in zip(config.review_pool, pool_session_ids):
+    pool_session_ids = [state.reviewer_session_ids.get(p.name) for p in pool]
+    for _p, _sid in zip(pool, pool_session_ids):
         _tag = f"resuming {_sid[:8]}" if _sid else "new session"
         _log_verbose(f"  reviewer {_p.name}: {_tag}")
     pool_results = run_agent_pool(
         prompt=review_prompts,
-        profiles=config.review_pool,
+        profiles=pool,
         working_dir=workspace_path,
         session_ids=pool_session_ids,
         secrets=config.secrets,
     )
     _pool_elapsed = time.monotonic() - _pool_start
-    for profile, result in zip(config.review_pool, pool_results):
+    for profile, result in zip(pool, pool_results):
         if result.session_id:
             state.reviewer_session_ids[profile.name] = result.session_id
     save_sessions(
@@ -194,7 +210,7 @@ def _run_review_pool(
     # reviewers from this cycle's results rather than killing the whole run.
     _budget_excluded: set[str] = set()
     if enforce_budgets:
-        for profile in config.review_pool:
+        for profile in pool:
             profile_cost = sum(
                 r.cost_usd if r.cost_usd is not None else 0.0
                 for r in state.review_agent_results
@@ -255,7 +271,7 @@ def _run_review_pool(
     # For each reviewer whose initial output has parse errors, send a corrective
     # prompt via run_agent up to max_review_parse_retries times.
     # meta.parse_retries accumulates the sum of per-reviewer retries attempted.
-    _profile_by_name = {p.name: p for p in config.review_pool}
+    _profile_by_name = {p.name: p for p in pool}
     _corrective_yaml_structure = (
         "verdict: APPROVE | REQUEST_CHANGES\n"
         'summary: "one-line summary"\n'
@@ -349,6 +365,15 @@ def _run_review_pool(
                     parse_errors=[_error_desc],
                     raw_yaml={},
                 )
+
+    if demotion_threshold > 0:
+        for name, parsed in zip(names, parsed_results):
+            if not parsed.parse_errors:
+                continue
+            failure_count = state.reviewer_parse_failure_counts.get(name, 0) + 1
+            state.reviewer_parse_failure_counts[name] = failure_count
+            if failure_count >= demotion_threshold:
+                _log(f"⚠ {name} demoted after {failure_count} parse failures this run")
 
     # Individual parsed results (no parse errors) — used by caller for fallback
     individual_parsed: list[ReviewResult] = [p for p in parsed_results if not p.parse_errors]

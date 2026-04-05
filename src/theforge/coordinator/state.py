@@ -152,6 +152,7 @@ class CoordinatorState:
     plan_session_id: str | None = None
     plan_review_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
+    reviewer_parse_failure_counts: dict[str, int] = field(default_factory=dict)
     review_cycle: int = 0  # which dev→review loop we're on
     dev_iteration: int = 0  # retries within the current review cycle
     dev_trace_count: int = 0  # monotonically increasing across all cycles; never reset
