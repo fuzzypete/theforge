@@ -43,22 +43,22 @@ profiles:
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
   preflight:
-    provider: google
-    model: gemini-2.5-pro
+    provider: deepseek
+    model: deepseek-reasoner
     budget_usd: 1.00
     timeout_seconds: 300
   review_pool:
     - name: openai-reviewer
       provider: openai
-      model: o4-mini
+      model: gpt-5.4
       review_role: correctness
       budget_usd: 5.00
       timeout_seconds: 600
-      reasoning_effort: high
+      reasoning_effort: medium
       max_iterations: 20
     - name: gemini-reviewer
       provider: google
-      model: gemini-2.5-pro
+      model: gemini-3.1-pro-preview
       review_role: architecture
       budget_usd: 2.00
       timeout_seconds: 300
@@ -80,15 +80,15 @@ plan_agent_review:
   pool:
     - name: openai-plan-reviewer
       provider: openai
-      model: o4-mini
+      model: gpt-5.4
       review_role: correctness
       budget_usd: 0.50
       timeout_seconds: 300
-      reasoning_effort: high
+      reasoning_effort: medium
       max_iterations: 20
     - name: gemini-plan-reviewer
       provider: google
-      model: gemini-2.5-pro
+      model: gemini-3.1-pro-preview
       review_role: architecture
       budget_usd: 0.50
       timeout_seconds: 300
@@ -100,7 +100,7 @@ plan_agent_review:
 # smart_config_models:
 #   - deepseek/deepseek-reasoner
 #   - openai/gpt-5.4
-#   - google/gemini-2.5-pro
+#   - google/gemini-3.1-pro-preview
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh
