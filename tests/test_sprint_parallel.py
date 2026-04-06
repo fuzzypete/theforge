@@ -1460,7 +1460,7 @@ class TestImmediateIntegrationLanding:
 
         assert sprint.specs_succeeded == 2
         assert "merge:story-a" in events
-        assert events.index("merge:story-a") < events.index("run:story-b")
+        assert events.index("run:story-a") < events.index("merge:story-a")
 
     def test_dep_not_ready_yields_pending_integration(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")

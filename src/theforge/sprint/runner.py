@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 import subprocess
 import sys
@@ -898,9 +897,6 @@ def run_sprint(
                     plan_gates[task.slug] = gate
 
                 worker_config = config
-                if max_parallel > 1 and config.workspace.on_approve == "merge-pr":
-                    deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
-                    worker_config = dataclasses.replace(config, workspace=deferred_ws)
 
                 state_fn = _make_worker_phase_fn(
                     task.slug,

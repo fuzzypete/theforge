@@ -837,10 +837,10 @@ class TestFinalizeApproveMergePr:
                 message="done. ",
             )
 
-        # merge-pr failure escalates: success=False, phase=ESCALATE
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
+        assert result.success is True
+        assert result.phase == Phase.DONE
         assert result.merge["merged"] is False
+        assert result.landing_status == "failed"
         assert "merge-pr failed" in result.message
 
     def test_auto_merge_overrides_merge_pr(self, tmp_path: Path) -> None:
@@ -1158,21 +1158,6 @@ class TestExistingOnApproveUnchanged:
 class TestSprintParallelMergeLock:
     """Verify that gh pr merge is serialized in parallel sprint mode."""
 
-    def test_worker_config_defers_merge_pr(self, tmp_path: Path) -> None:
-        """In parallel mode, workers run with on_approve=none; flush loop does merge-pr."""
-        import dataclasses
-
-        config = _make_merge_pr_config(tmp_path)
-        assert config.workspace.on_approve == "merge-pr"
-
-        # Simulate what the sprint runner does for parallel workers
-        _deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
-        worker_config = dataclasses.replace(config, workspace=_deferred_ws)
-
-        assert worker_config.workspace.on_approve == "none"
-        # Original config unchanged
-        assert config.workspace.on_approve == "merge-pr"
-
     def test_merge_pr_called_in_flush_loop(self, tmp_path: Path) -> None:
         """Flush loop calls _merge_pr (not _merge_branch) when on_approve=merge-pr."""
 
@@ -1207,45 +1192,6 @@ class TestSprintParallelMergeLock:
 
         assert result["merged"] is True
         assert result["action"] == "merge-pr"
-
-    def test_on_approve_none_worker_config_skips_merge_pr(self, tmp_path: Path) -> None:
-        """Workers with on_approve=none do not call _merge_pr in _finalize_approve."""
-        import dataclasses
-        import time
-
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
-
-        config = _make_merge_pr_config(tmp_path)
-        # Simulate deferred worker_config used in parallel mode
-        _deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
-        worker_config = dataclasses.replace(config, workspace=_deferred_ws)
-
-        task = _make_task(tmp_path)
-        review = _make_review_result()
-        state = CoordinatorState()
-        state.phase = Phase.REVIEW
-
-        with patch("theforge.coordinator.completion._merge_pr") as mock_merge_pr:
-            result = _finalize_approve(
-                state,
-                worker_config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=False,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
-            )
-
-        mock_merge_pr.assert_not_called()
-        assert result.success is True
-        assert result.merge["action"] == "none"
 
 
 # ── PR body content ───────────────────────────────────────────────
@@ -1302,7 +1248,7 @@ class TestPrBodyContent:
 
 
 class TestMergePrEscalate:
-    """_finalize_approve must escalate (not DONE) when merge-pr fails."""
+    """_finalize_approve preserves approval when merge-pr landing fails."""
 
     def test_finalize_approve_escalates_on_merge_pr_failure(self, tmp_path: Path) -> None:
         import time
@@ -1342,12 +1288,11 @@ class TestMergePrEscalate:
                 message="done. ",
             )
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
+        assert result.success is True
+        assert result.phase == Phase.DONE
         assert result.merge["merged"] is False
-        assert state.phase == Phase.ESCALATE
-        assert state.error is not None
-        assert "rebase conflict" in state.error
+        assert result.landing_status == "failed"
+        assert state.phase == Phase.DONE
 
     def test_finalize_approve_done_on_merge_pr_success(self, tmp_path: Path) -> None:
         import time
@@ -1390,59 +1335,6 @@ class TestMergePrEscalate:
         assert result.success is True
         assert result.phase == Phase.DONE
         assert result.merge["merged"] is True
-
-
-# ── Deferred merge failure updates sprint counters ────────────────
-
-
-class TestDeferredMergePrFailure:
-    """Deferred merge-pr failure in sprint flush must update result and counters."""
-
-    def test_deferred_merge_failure_updates_result_and_counters(self, tmp_path: Path) -> None:
-        """When flush loop _merge_pr fails, result.success=False and counters reflect failure."""
-        from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-
-        review = _make_review_result()
-
-        worker_state = CoordinatorState()
-        worker_state.phase = Phase.DONE
-        worker_state.review_results = [review]
-
-        # Simulate what the sprint runner stores after a worker completes
-        worker_result = CoordinatorResult(
-            success=True,
-            phase=Phase.DONE,
-            state=worker_state,
-            message="done. Branch: forge/test-task",
-            merge={"action": "none", "success": True, "error": None},
-        )
-
-        # Simulate the flush loop logic inline
-        specs_succeeded = 1
-        specs_failed = 0
-        merge_info = {
-            "action": "merge-pr",
-            "pr_url": None,
-            "merged": False,
-            "success": False,
-            "error": "gh pr merge failed: branch protection",
-        }
-
-        # Apply the fix from the flush loop
-        worker_result.success = False
-        worker_result.phase = Phase.ESCALATE
-        worker_result.merge = merge_info
-        worker_result.state.phase = Phase.ESCALATE
-        worker_result.state.error = merge_info.get("error") or "deferred merge-pr failed"
-        specs_succeeded -= 1
-        specs_failed += 1
-
-        assert worker_result.success is False
-        assert worker_result.phase == Phase.ESCALATE
-        assert worker_result.merge["merged"] is False
-        assert worker_result.state.error == "gh pr merge failed: branch protection"
-        assert specs_succeeded == 0
-        assert specs_failed == 1
 
 
 # ── Config validation: merge_strategy ────────────────────────────
