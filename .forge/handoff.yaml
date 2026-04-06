@@ -1,0 +1,21 @@
+dev_notes: |
+  summary: "Added Gemini 3.1 and GPT-5.4 family entries to src/theforge/config/models.py so MODEL_REGISTRY resolves these current-generation model IDs with explicit provider, capability, tier, pricing, and dev-capability metadata instead of falling back to unknown-model defaults. I also added registry-focused tests in tests/test_config_models.py to verify each new model key is present with the expected metadata."
+  commits:
+    - sha: "6385952"
+      message: "feat(config): add current-gen model registry entries"
+  acceptance_criteria:
+    - criterion: "Add Gemini 3.1 family to MODEL_REGISTRY."
+      status: MET
+      notes: "Added Gemini 3.1 registry entries in src/theforge/config/models.py with explicit metadata."
+    - criterion: "Add GPT-5.4 family to MODEL_REGISTRY."
+      status: MET
+      notes: "Added GPT-5.4 registry entries in src/theforge/config/models.py with explicit metadata."
+    - criterion: "Ensure adaptive routing resolves these models from MODEL_REGISTRY instead of unknown-model defaults."
+      status: MET
+      notes: "The new entries provide explicit registry metadata so routing no longer falls back for these model IDs."
+    - criterion: "Add tests covering the new MODEL_REGISTRY entries."
+      status: MET
+      notes: "Added tests in tests/test_config_models.py that assert the new Gemini 3.1 and GPT-5.4 keys and metadata are present."
+  story_deviations: none
+  deferred_items: none
+  gate_result: PASS
