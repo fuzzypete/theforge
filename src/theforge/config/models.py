@@ -58,6 +58,28 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
     "openai/gpt-5.4": ModelInfo(
         cli="codex", model="gpt-5.4", tier="strong", capability=9, cost_rank=2
     ),
+    "openai/gpt-5.4-mini": ModelInfo(
+        cli="codex", model="gpt-5.4-mini", tier="cheap", capability=7, cost_rank=1
+    ),
+    "openai/gpt-5.4-pro": ModelInfo(
+        cli="codex", model="gpt-5.4-pro", tier="strong", capability=10, cost_rank=3
+    ),
+    "google/gemini-3-flash-preview": ModelInfo(
+        cli="gemini",
+        model="gemini-3-flash-preview",
+        tier="cheap",
+        capability=7,
+        cost_rank=1,
+        dev_capable=False,
+    ),
+    "google/gemini-3.1-pro-preview": ModelInfo(
+        cli="gemini",
+        model="gemini-3.1-pro-preview",
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+        dev_capable=False,
+    ),
     "google/gemini-2.5-pro": ModelInfo(
         cli="gemini",
         model="gemini-2.5-pro",
