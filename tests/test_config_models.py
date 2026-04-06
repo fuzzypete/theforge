@@ -901,6 +901,62 @@ class TestLocalModelRegistry:
             assert key.startswith("openai/"), f"{key} must use 'openai/' prefix"
 
 
+class TestCurrentGenModelRegistry:
+    """Current-gen Gemini 3.1 and GPT-5.4 family models are registered."""
+
+    @pytest.mark.parametrize(
+        ("key", "cli", "model", "tier", "capability", "cost_rank", "dev_capable"),
+        [
+            (
+                "google/gemini-3-flash-preview",
+                "gemini",
+                "gemini-3-flash-preview",
+                "cheap",
+                7,
+                1,
+                False,
+            ),
+            (
+                "google/gemini-3.1-pro-preview",
+                "gemini",
+                "gemini-3.1-pro-preview",
+                "strong",
+                9,
+                2,
+                False,
+            ),
+            (
+                "openai/gpt-5.4-mini",
+                "codex",
+                "gpt-5.4-mini",
+                "cheap",
+                7,
+                1,
+                True,
+            ),
+            (
+                "openai/gpt-5.4-pro",
+                "codex",
+                "gpt-5.4-pro",
+                "strong",
+                10,
+                3,
+                True,
+            ),
+        ],
+    )
+    def test_current_gen_models_present_with_expected_metadata(
+        self, key, cli, model, tier, capability, cost_rank, dev_capable
+    ):
+        info = MODEL_REGISTRY[key]
+        assert info.cli == cli
+        assert info.model == model
+        assert info.tier == tier
+        assert info.capability == capability
+        assert info.cost_rank == cost_rank
+        assert info.dev_capable is dev_capable
+
+
 class TestSprintConfig:
     """Tests for forge.yaml sprint.max_parallel parsing."""
 
