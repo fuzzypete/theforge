@@ -17,19 +17,7 @@ from typing import Any
 import yaml
 
 from .coordinator import util as _cu
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Return True when *pid* refers to a running process."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return True
-    return True
+from .pid import _is_pid_alive
 
 
 def _pending_dir(project_root: Path | None = None) -> Path:
@@ -225,16 +213,15 @@ def cleanup_stale(project_root: Path | None = None) -> int:
 
         # Remove if PID is no longer running
         pid = entry.get("pid")
-        if pid is not None:
-            try:
-                owner_pid = int(pid)
-            except (TypeError, ValueError):
-                cleanup_pending(run_id, project_root)
-                removed += 1
-                continue
+        try:
+            owner_pid = int(pid)
+        except (TypeError, ValueError):
+            cleanup_pending(run_id, project_root)
+            removed += 1
+            continue
 
-            if not _is_pid_alive(owner_pid):
-                cleanup_pending(run_id, project_root)
-                removed += 1
+        if not _is_pid_alive(owner_pid):
+            cleanup_pending(run_id, project_root)
+            removed += 1
 
     return removed

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import datetime
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
 
+import theforge.pending as pending
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -20,6 +23,7 @@ from theforge.config import (
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage, _triage_spec
+from theforge.sprint.lock import acquire_story_locks, release_story_locks
 from theforge.sprint.manifest import _build_task_from_story
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -880,3 +884,66 @@ class TestSprintDependencies:
         assert result.specs_skipped == 1  # spec-a counted as skipped (ALREADY_DONE)
         assert result.specs_succeeded == 1  # spec-b succeeded
         assert result.stopped_reason is None  # no halt
+
+    def test_resume_cleans_stale_lock_and_pending_files(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        lock_dir = tmp_path / ".forge" / "locks"
+        lock_dir.mkdir(parents=True)
+        lock_path = lock_dir / "feature-a.lock"
+        dead_pid = os.getpid() + 99999
+        lock_path.write_text(str(dead_pid), encoding="utf-8")
+
+        pending_dir = tmp_path / ".forge" / "pending"
+        pending_dir.mkdir(parents=True)
+        pending_path = pending_dir / "resume-run.yaml"
+        future = (
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=60)
+        ).isoformat()
+        pending_path.write_text(
+            yaml.safe_dump(
+                {
+                    "run_id": "resume-run",
+                    "story": "feature-a",
+                    "phase": "ESCALATE",
+                    "reason": "r",
+                    "options": ["approve"],
+                    "created_at": future,
+                    "timeout_at": future,
+                    "pid": dead_pid,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        review_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="review",
+            reason="gate passes",
+            worktree_path=tmp_path / "feature-a",
+        )
+        review_triage.worktree_path.mkdir()
+        coord_result = _make_coordinator_result(success=True, cost=1.0, merged=True)
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=review_triage):
+            with patch("theforge.sprint.runner.run_from_review", return_value=coord_result):
+                with patch("theforge.sprint.runner.pull_base_branch", return_value=True):
+                    with patch("theforge.sprint.runner.run_batch_preflight", return_value={}):
+                        result = run_sprint(config, manifest_path, resume=True)
+
+        assert result.specs_succeeded == 1
+
+        removed = pending.cleanup_stale(project_root=tmp_path)
+        assert removed == 1
+        assert not pending_path.exists()
+
+        with patch("theforge.sprint.lock.fcntl.flock", side_effect=[BlockingIOError, None]):
+            with patch("theforge.sprint.lock.os.kill", side_effect=ProcessLookupError):
+                fds, conflicted = acquire_story_locks(["feature-a"], tmp_path)
+        try:
+            assert conflicted == []
+            assert len(fds) == 1
+        finally:
+            release_story_locks(fds)

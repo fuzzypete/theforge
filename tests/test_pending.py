@@ -257,3 +257,25 @@ def test_cleanup_stale_removes_expired_files(tmp_path):
     removed = pending.cleanup_stale(project_root=tmp_path)
     assert removed == 1
     assert pending.read_pending("stale-run", project_root=tmp_path) is None
+
+
+def test_cleanup_stale_removes_pidless_files(tmp_path):
+    pending_dir = tmp_path / ".forge" / "pending"
+    pending_dir.mkdir(parents=True)
+    future = (
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=60)
+    ).isoformat()
+    data = {
+        "run_id": "pidless-run",
+        "story": "s",
+        "phase": "ESCALATE",
+        "reason": "r",
+        "options": ["approve"],
+        "created_at": future,
+        "timeout_at": future,
+    }
+    (pending_dir / "pidless-run.yaml").write_text(yaml.safe_dump(data))
+
+    removed = pending.cleanup_stale(project_root=tmp_path)
+    assert removed == 1
+    assert not (pending_dir / "pidless-run.yaml").exists()
