@@ -815,6 +815,168 @@ class TestFinalizeApproveMergePr:
         mock_merge_pr.assert_not_called()
 
 
+class TestPreMergeDirtyWorktreeCleanup:
+    def test_tracked_dirty_worktree_is_committed_before_merge(self, tmp_path: Path) -> None:
+        import time
+
+        from theforge.coordinator.completion import _finalize_approve
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = CoordinatorState()
+        state.phase = Phase.REVIEW
+
+        shell_calls: list[str] = []
+
+        def _fake_run_shell(cmd: str, cwd: Path):
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain":
+                return True, " M tracked.py\nA  added.py\nD  removed.py"
+            if cmd == "git add -- tracked.py added.py removed.py":
+                return True, ""
+            if cmd == 'git commit -m "chore: commit remaining worktree changes before merge"':
+                return True, "[feat abc123] cleanup"
+            raise AssertionError(cmd)
+
+        with (
+            patch("theforge.coordinator.completion._run_shell", side_effect=_fake_run_shell),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "error": None},
+            ) as mock_merge_branch,
+        ):
+            result = _finalize_approve(
+                state,
+                config,
+                task,
+                review,
+                tmp_path,
+                "forge/test-task",
+                time.monotonic(),
+                auto_merge=True,
+                notify=False,
+                logger=None,
+                review_cost=0.5,
+                review_elapsed=1.0,
+                message="done. ",
+            )
+
+        assert result.success is True
+        assert shell_calls == [
+            "git status --porcelain",
+            "git add -- tracked.py added.py removed.py",
+            'git commit -m "chore: commit remaining worktree changes before merge"',
+        ]
+        mock_merge_branch.assert_called_once()
+
+    def test_clean_worktree_skips_pre_merge_commit(self, tmp_path: Path) -> None:
+        import time
+
+        from theforge.coordinator.completion import _finalize_approve
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = CoordinatorState()
+        state.phase = Phase.REVIEW
+
+        shell_calls: list[str] = []
+
+        def _fake_run_shell(cmd: str, cwd: Path):
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain":
+                return True, ""
+            raise AssertionError(cmd)
+
+        with (
+            patch("theforge.coordinator.completion._run_shell", side_effect=_fake_run_shell),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "error": None},
+            ) as mock_merge_branch,
+        ):
+            result = _finalize_approve(
+                state,
+                config,
+                task,
+                review,
+                tmp_path,
+                "forge/test-task",
+                time.monotonic(),
+                auto_merge=True,
+                notify=False,
+                logger=None,
+                review_cost=0.5,
+                review_elapsed=1.0,
+                message="done. ",
+            )
+
+        assert result.success is True
+        assert shell_calls == ["git status --porcelain"]
+        mock_merge_branch.assert_called_once()
+
+    def test_untracked_files_are_warned_but_not_added(self, tmp_path: Path) -> None:
+        import time
+
+        from theforge.coordinator.completion import _finalize_approve
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = CoordinatorState()
+        state.phase = Phase.REVIEW
+
+        shell_calls: list[str] = []
+        log_messages: list[str] = []
+
+        def _fake_run_shell(cmd: str, cwd: Path):
+            shell_calls.append(cmd)
+            if cmd == "git status --porcelain":
+                return True, "?? scratch.txt\n M tracked.py"
+            if cmd == "git add -- tracked.py":
+                return True, ""
+            if cmd == 'git commit -m "chore: commit remaining worktree changes before merge"':
+                return True, "[feat abc123] cleanup"
+            raise AssertionError(cmd)
+
+        with (
+            patch("theforge.coordinator.completion._run_shell", side_effect=_fake_run_shell),
+            patch("theforge.coordinator.completion._log", side_effect=log_messages.append),
+            patch(
+                "theforge.coordinator.completion._merge_branch",
+                return_value={"merged": True, "error": None},
+            ),
+        ):
+            result = _finalize_approve(
+                state,
+                config,
+                task,
+                review,
+                tmp_path,
+                "forge/test-task",
+                time.monotonic(),
+                auto_merge=True,
+                notify=False,
+                logger=None,
+                review_cost=0.5,
+                review_elapsed=1.0,
+                message="done. ",
+            )
+
+        assert result.success is True
+        assert shell_calls == [
+            "git status --porcelain",
+            "git add -- tracked.py",
+            'git commit -m "chore: commit remaining worktree changes before merge"',
+        ]
+        assert any("untracked files left in worktree before merge" in msg for msg in log_messages)
+        assert any("scratch.txt" in msg for msg in log_messages)
+
+
 # ── on_approve: merge and pr unchanged ───────────────────────────
 
 
