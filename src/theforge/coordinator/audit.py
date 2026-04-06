@@ -40,6 +40,8 @@ def has_review_approve(
     slug: str,
     base_branch: str = "main",
     branch: str | None = None,
+    *,
+    allow_unmerged_commits: bool = False,
 ) -> bool:
     """Return True if any prior run for slug produced a review APPROVE.
 
@@ -47,12 +49,17 @@ def has_review_approve(
     file, parse errors, or if no matching APPROVE record exists (safe default:
     assume no APPROVE so review is never skipped incorrectly).
 
-    An APPROVE record is skipped if the feature branch still has unmerged
-    commits ahead of base_branch — that indicates an abandoned run.
+    By default, an APPROVE record is skipped if the feature branch still has
+    unmerged commits ahead of base_branch — that indicates an abandoned run.
+    Callers can opt out of that stale-branch guard when they only need the
+    persisted audit verdict itself (for example, squash-merge detection where
+    the branch necessarily remains ahead after merge).
 
     Args:
         branch: The feature branch name (e.g. config.workspace.branch_pattern
             formatted with slug). If None, defaults to 'feat/<slug>'.
+        allow_unmerged_commits: When True, return APPROVE based solely on audit
+            history without rejecting branches that still appear ahead of base.
     """
     history_path = project_root / ".forge" / "audits" / "history.jsonl"
     if not history_path.exists():
@@ -75,12 +82,13 @@ def has_review_approve(
                     continue
                 for review in record.get("reviews", []):
                     if review.get("verdict") == "APPROVE":
-                        if branch_is_stale is None:
-                            branch_is_stale = _branch_has_unmerged_commits(
-                                project_root, feature_branch, base_branch
-                            )
-                        if branch_is_stale:
-                            continue  # stale APPROVE from abandoned run
+                        if not allow_unmerged_commits:
+                            if branch_is_stale is None:
+                                branch_is_stale = _branch_has_unmerged_commits(
+                                    project_root, feature_branch, base_branch
+                                )
+                            if branch_is_stale:
+                                continue  # stale APPROVE from abandoned run
                         return True
     except OSError:
         pass

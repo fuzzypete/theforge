@@ -274,22 +274,21 @@ def _write_story_audit(
     from ..artifacts import AUDIT_PATH, ensure_parent_dir  # noqa: PLC0415
     from ..coordinator import audit as coordinator_audit  # noqa: PLC0415
 
-    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
-    if workspace_path.exists() and not (
-        result.state.workspace_path is None and result.state.preflight_verdict == "ALREADY_DONE"
-    ):
-        audit_data = coordinator_audit.generate_audit_log(config, task, result)
-        audit_path = workspace_path / AUDIT_PATH
-        ensure_parent_dir(audit_path)
-        with open(audit_path, "w", encoding="utf-8") as f:
-            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
-        _log(f"Per-story audit written: {audit_path}")
-
     try:
         audit_data = coordinator_audit.generate_audit_log(config, task, result)
     except Exception as exc:
         _log(f"Warning: failed to generate story audit log for {task.slug}: {exc}")
         return
+
+    workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+    if workspace_path.exists() and not (
+        result.state.workspace_path is None and result.state.preflight_verdict == "ALREADY_DONE"
+    ):
+        audit_path = workspace_path / AUDIT_PATH
+        ensure_parent_dir(audit_path)
+        with open(audit_path, "w", encoding="utf-8") as f:
+            yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+        _log(f"Per-story audit written: {audit_path}")
 
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)

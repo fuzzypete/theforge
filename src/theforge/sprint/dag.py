@@ -29,6 +29,29 @@ class StoryTriage:
     slug: str = ""
 
 
+def _has_prior_review_approve(
+    project_root: Path,
+    slug: str,
+    base_branch: str,
+    branch: str,
+) -> bool:
+    """Return True when audit history shows a prior APPROVE for this story.
+
+    Resume merged detection needs the persisted review outcome even when the
+    feature branch still appears ahead of base (squash merges rewrite commits,
+    so git topology alone cannot prove the merge). This helper intentionally
+    bypasses the stale-branch guard inside has_review_approve and only answers
+    the audit-history question.
+    """
+    return has_review_approve(
+        project_root,
+        slug,
+        base_branch,
+        branch,
+        allow_unmerged_commits=True,
+    )
+
+
 def _is_branch_merged(
     branch: str,
     base_branch: str,
@@ -102,7 +125,7 @@ def _is_branch_merged(
     # this check must live outside the topology-success branch above.
     if slug is not None:
         try:
-            return has_review_approve(project_root, slug, base_branch, branch)
+            return _has_prior_review_approve(project_root, slug, base_branch, branch)
         except Exception:
             return False
     return False
@@ -303,7 +326,7 @@ def _triage_spec(
     # for fast-forward merges where branch and base land on the same commit.
     if _is_branch_merged(branch, base_branch, project_root, slug=slug):
         merged_reason = f"already merged to {base_branch}"
-        if has_review_approve(project_root, slug, base_branch, branch):
+        if _has_prior_review_approve(project_root, slug, base_branch, branch):
             merged_reason = f"prior APPROVE in audit trail; already merged to {base_branch}"
         return StoryTriage(
             story_path=story_path,

@@ -263,9 +263,9 @@ class TestTriageSpec:
                 m.stdout = b""
             elif "rev-list" in cmd and "--count" in cmd:
                 m.returncode = 0
-                m.stdout = b"0"
+                m.stdout = b"2"
             elif "--is-ancestor" in cmd:
-                m.returncode = 0
+                m.returncode = 1
                 m.stdout = b""
             else:
                 m.returncode = 0
@@ -284,7 +284,7 @@ class TestTriageSpec:
     def test_triage_same_tip_missing_worktree_with_prior_approve_skips_when_squash_merged(
         self, tmp_path: Path
     ) -> None:
-        """Missing worktree plus audit-backed same-tip branch is treated as merged."""
+        """Missing worktree plus audit-backed squash-merged branch is treated as merged."""
         import json
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
