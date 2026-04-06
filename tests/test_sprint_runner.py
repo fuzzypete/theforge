@@ -212,6 +212,28 @@ def test_is_branch_merged_regular_merge(tmp_path: Path) -> None:
     assert result is True
 
 
+def test_is_branch_merged_regular_merge_falls_back_to_audit(tmp_path: Path) -> None:
+    """Regular merge fallback: ahead > 0, unique == 0, audit APPROVE → True."""
+
+    def _mock_regular_fallback(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        m.returncode = 0
+        if cmd[:2] == ["git", "rev-list"] and cmd[2] == "forge/story-a..main":
+            m.stdout = b"3"
+        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
+            m.stdout = b"0"
+        else:
+            m.stdout = b""
+        return m
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_regular_fallback),
+        patch("theforge.sprint.dag.has_review_approve", return_value=True),
+    ):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is True
+
+
 def test_is_branch_merged_stale_empty_branch(tmp_path: Path) -> None:
     """Base moving past an empty branch must not count as merged."""
 

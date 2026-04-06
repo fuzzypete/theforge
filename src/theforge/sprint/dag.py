@@ -87,6 +87,13 @@ def _is_branch_merged(
                     # Regular merge: base has moved past branch and branch had
                     # unique work of its own.
                     return True
+                # ahead_count > 0 with no unique commits is ambiguous in git state
+                # alone: it can be an abandoned empty branch or a regular merge
+                # commit whose branch tip is already reachable from base. Use the
+                # audit trail as the tiebreaker when the slug is known.
+                if slug is not None:
+                    return has_review_approve(project_root, slug, base_branch, branch)
+                return False
             # Fast-forward merge: branch and base at the same tip (count == 0).
             # Fall back to the audit trail when the slug is known.
             if slug is not None:
