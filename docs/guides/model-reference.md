@@ -1,0 +1,113 @@
+# Model Reference
+
+Per-provider model recommendations for TheForge, organized by phase and
+complexity tier. These reflect vendor positioning and observed behavior as of
+April 2026.
+
+TheForge's adaptive assignment maps complexity (small/medium/large) to tiers
+(cheap/mid/strong). The tables below show which concrete model fits each cell.
+
+---
+
+## OpenAI (GPT-5.4 family)
+
+Source: Codex recommendation, April 2026.
+
+| Phase | Small | Medium | Large |
+|---|---|---|---|
+| Preflight | `gpt-5.4-mini` effort=medium | `gpt-5.4` effort=medium | `gpt-5.4` effort=high |
+| Planning | `gpt-5.4-mini` effort=medium | `gpt-5.4` effort=high | `gpt-5.4-pro` effort=high |
+| Dev | `gpt-5.4-mini` effort=low | `gpt-5.4` effort=medium | `gpt-5.4-pro` effort=high |
+| Review | `gpt-5.4-mini` effort=medium | `gpt-5.4` effort=medium | `gpt-5.4` effort=high |
+
+**Tier mapping:**
+- **cheap:** `gpt-5.4-mini` — fast, cost-effective for small stories and high-volume work
+- **mid:** `gpt-5.4` — flagship for complex reasoning and coding; default backbone
+- **strong:** `gpt-5.4-pro` — reserved for large planning and dev where "think harder" justifies latency and cost
+
+**Notes:**
+- `o4-mini` is retired; GPT-5.4 family is the current default line
+- `gpt-5.4-pro` should not be used as a reviewer — cost doesn't justify it for review workloads
+- `reasoning_effort` is a first-class config key in forge.yaml profile definitions
+
+---
+
+## Anthropic (Claude family)
+
+| Phase | Small | Medium | Large |
+|---|---|---|---|
+| Preflight | Sonnet | Sonnet | Sonnet |
+| Planning | Sonnet | Sonnet | Opus |
+| Dev | Sonnet | Sonnet | Opus |
+| Review | Sonnet | Sonnet | Sonnet |
+
+**Tier mapping:**
+- **cheap:** Haiku — fast classifier tasks only; not recommended for dev or review
+- **mid:** Sonnet — strong all-rounder; handles most stories well
+- **strong:** Opus — highest capability; large planning and dev
+
+**Notes:**
+- Sonnet is the default for TheForge's CLI transport (`cli: claude, model: sonnet`)
+- Opus is expensive; reserve for large stories where Sonnet struggles
+- Claude CLI handles session management natively (session ID extraction from stdout)
+
+---
+
+## Google (Gemini family)
+
+Per Google's April 2026 recommendation:
+
+| Phase | Small | Medium | Large |
+|---|---|---|---|
+| Preflight | `gemini-3.1-pro-preview` + thinking | `gemini-3.1-pro-preview` + thinking | `gemini-3.1-pro-preview` + thinking |
+| Planning | not applicable | `gemini-3.1-pro-preview` + thinking | `gemini-3.1-pro-preview` + thinking |
+| Dev | `gemini-3-flash-preview` | `gemini-3.1-pro-preview` | `gemini-3.1-pro-preview` |
+| Review (audit) | not applicable | `gemini-3.1-pro-preview` | `gemini-3.1-pro-preview` |
+| Review (synthesis) | `gemini-3-flash-preview` | `gemini-3-flash-preview` | `gemini-3-flash-preview` |
+
+**Tier mapping:**
+- **cheap:** `gemini-3-flash-preview` — lightning-fast for small edits and synthesis tasks
+- **strong:** `gemini-3.1-pro-preview` with `thinkingConfig` — architectural reasoning, deep audit, complex planning
+
+**Key points:**
+- **Preflight is load-bearing:** Use 3.1 Pro + thinking for all complexities to ensure correct
+  complexity routing and avoid false ALREADY_DONE verdicts
+- **Dev split:** Flash for small/localized; 3.1 Pro for multi-file plans and test debugging
+- **Review synthesis (consensus):** Use Flash even for large stories — merging findings from multiple
+  reviewers into structured YAML is mechanical and doesn't need heavyweight reasoning
+- **Review audit (deep dive):** Use 3.1 Pro to catch subtle architectural drift and missed acceptance criteria
+- `thinkingConfig` (extended thinking) is essential for preflight and planning phases to handle
+  complex spec-to-codebase reasoning
+
+---
+
+## DeepSeek
+
+| Phase | Small | Medium | Large |
+|---|---|---|---|
+| Preflight | `deepseek-reasoner` | `deepseek-reasoner` | `deepseek-reasoner` |
+| Planning | not recommended | not recommended | not recommended |
+| Dev | not recommended | not recommended | not recommended |
+| Review | not recommended | not recommended | not recommended |
+
+**Notes:**
+- DeepSeek Reasoner is used for preflight classification — the reasoning
+  overhead is justified because preflight drives $20-50 of downstream spend
+- Not recommended for dev or review due to tool-use limitations
+- Cost: ~$0.30 per preflight call
+
+---
+
+## Pragmatic defaults
+
+If you don't want to think about the full matrix:
+
+| Complexity | Dev | Preflight | Plan | Review (audit) | Review (synthesis) |
+|---|---|---|---|---|---|
+| Small | `gpt-5.4-mini` | `gemini-3.1-pro` + thinking | `gpt-5.4-mini` | — | `gemini-3-flash` |
+| Medium | `gpt-5.4` | `gemini-3.1-pro` + thinking | `gpt-5.4` | `gemini-3.1-pro` | `gemini-3-flash` |
+| Large | `gpt-5.4-pro` | `gemini-3.1-pro` + thinking | `gpt-5.4-pro` | `gemini-3.1-pro` | `gemini-3-flash` |
+
+Cross-provider review pools (OpenAI + Google) catch more issues than
+single-provider pools. The cost of a second reviewer is small relative to
+the cost of a missed P1 causing a dev retry cycle.
