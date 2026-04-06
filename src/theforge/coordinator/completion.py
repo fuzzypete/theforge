@@ -339,6 +339,8 @@ def _merge_pr(
             "action": "merge-pr",
             "pr_url": pr_url,
             "merged": merged,
+            "merge_queued": False,
+            "auto_merge_queued": False,
             "success": False,
             "error": error,
         }
@@ -400,8 +402,17 @@ def _merge_pr(
             _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
 
     pr_url: str | None = None
+    merge_queued = False
     auto_merge_queued = False
     merge_retry_error = "base branch was modified"
+    branch_protection_markers = (
+        "required status",
+        "protected branch",
+        "cannot be merged",
+        "branch protection",
+        "required check",
+        "required reviews",
+    )
 
     for attempt in range(MAX_MERGE_RETRIES):
         # Step 1: defensively scrub tracked forge artifacts before rebase.
@@ -477,10 +488,12 @@ def _merge_pr(
         _deindex_forge_artifacts(push_cwd)
 
         # Step 5: merge the PR remotely from the repo root. Running gh from the
-        # feature worktree can trip worktree branch checkout constraints.
+        # feature worktree can trip worktree branch checkout constraints. Try a
+        # synchronous merge first; only fall back to --auto when GitHub reports
+        # branch protection / required-check gating.
         try:
             merge_proc = subprocess.run(
-                ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
+                ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
                 capture_output=True,
                 text=True,
                 cwd=str(config.project_root),
@@ -491,15 +504,6 @@ def _merge_pr(
             return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
 
         if merge_proc.returncode == 0:
-            merge_output = "\n".join(
-                part.strip()
-                for part in (merge_proc.stdout, merge_proc.stderr)
-                if part and part.strip()
-            ).lower()
-            auto_merge_queued = (
-                "auto-merge enabled" in merge_output
-                or "pull request is not mergeable" in merge_output
-            )
             break
 
         err = "\n".join(
@@ -507,8 +511,9 @@ def _merge_pr(
             for part in (merge_proc.stderr, merge_proc.stdout)
             if part and part.strip()
         )
+        err_lower = err.lower()
         _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
-        if merge_retry_error in err.lower():
+        if merge_retry_error in err_lower:
             if attempt < MAX_MERGE_RETRIES - 1:
                 _pr_log.warning(
                     "base branch changed during PR merge attempt %d/%d; retrying",
@@ -517,9 +522,65 @@ def _merge_pr(
                 )
                 continue
             return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
-        return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
 
-    if auto_merge_queued:
+        if not any(marker in err_lower for marker in branch_protection_markers):
+            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
+
+        try:
+            auto_merge_proc = subprocess.run(
+                ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=120,
+            )
+        except Exception as exc:
+            _pr_log.warning("gh pr merge --auto failed: %s", exc)
+            return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
+
+        if auto_merge_proc.returncode != 0:
+            auto_err = "\n".join(
+                part.strip()
+                for part in (auto_merge_proc.stderr, auto_merge_proc.stdout)
+                if part and part.strip()
+            )
+            _pr_log.warning(
+                "gh pr merge --auto failed (exit %d): %s",
+                auto_merge_proc.returncode,
+                auto_err,
+            )
+            return _fail(f"gh pr merge failed: {auto_err}", pr_url=pr_url)
+
+        try:
+            state_proc = subprocess.run(
+                ["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
+                capture_output=True,
+                text=True,
+                cwd=str(config.project_root),
+                timeout=30,
+            )
+        except Exception as exc:
+            _pr_log.warning("gh pr view failed after auto-merge queue: %s", exc)
+            return _fail(f"gh pr view failed after auto-merge queue: {exc}", pr_url=pr_url)
+
+        if state_proc.returncode != 0:
+            state_err = state_proc.stderr.strip() or state_proc.stdout.strip()
+            _pr_log.warning(
+                "gh pr view failed after auto-merge queue (exit %d): %s",
+                state_proc.returncode,
+                state_err,
+            )
+            return _fail(f"gh pr view failed after auto-merge queue: {state_err}", pr_url=pr_url)
+
+        pr_state = state_proc.stdout.strip()
+        if pr_state == "MERGED":
+            break
+
+        merge_queued = True
+        auto_merge_queued = True
+        break
+
+    if merge_queued:
         _log(f"  ✓ PR queued for auto-merge: {pr_url}")
     else:
         _log(f"  ✓ PR merged: {pr_url}")
@@ -527,12 +588,13 @@ def _merge_pr(
     # Step 6: sync local state and clean up the merged feature worktree/branch.
     # Preserve the remote branch when GitHub only queued auto-merge; branch
     # protection still needs that ref until the hosted merge completes.
-    _cleanup_after_merge(delete_remote_branch=not auto_merge_queued)
+    _cleanup_after_merge(delete_remote_branch=not merge_queued)
 
     return {
         "action": "merge-pr",
         "pr_url": pr_url,
-        "merged": True,
+        "merged": not merge_queued,
+        "merge_queued": merge_queued,
         "success": True,
         "error": None,
         "auto_merge_queued": auto_merge_queued,
@@ -624,6 +686,8 @@ def _finalize_approve(
         merge_info = _merge_pr(config, task, branch_name, parsed_review, state)
         if merge_info["merged"]:
             merge_suffix = f" PR merged: {merge_info['pr_url']}"
+        elif merge_info.get("merge_queued"):
+            merge_suffix = f" PR queued for auto-merge: {merge_info['pr_url']}"
         else:
             merge_suffix = f" merge-pr failed: {merge_info['error']}"
         if logger:
@@ -647,7 +711,7 @@ def _finalize_approve(
                 logger,
                 secrets=config.secrets,
             )
-        if not merge_info["merged"]:
+        if not merge_info["merged"] and not merge_info.get("merge_queued"):
             # PR merge failed (rebase conflict, gh error, etc.) — escalate rather than DONE.
             state.phase = Phase.ESCALATE
             state.error = merge_info.get("error") or "merge-pr failed"
