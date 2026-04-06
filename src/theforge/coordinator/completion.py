@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -12,11 +13,12 @@ from theforge.config import ForgeConfig
 from theforge.review import ReviewResult
 from theforge.task import TaskStory
 
+from .gate import _parse_dirty_files
 from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
 from .state import CoordinatorResult, CoordinatorState, CycleHistory, Phase
-from .util import _fmt_duration, _log, _log_verbose
+from .util import _fmt_duration, _log, _log_verbose, _run_shell
 from .workspace import _deindex_forge_artifacts, _merge_branch
 
 _pr_log = logging.getLogger(__name__)
@@ -645,6 +647,38 @@ def _finalize_approve(
     effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
 
     if effective_on_approve == "merge":
+        status_ok, status_out = _run_shell("git status --porcelain", workspace_path)
+        if status_ok:
+            tracked_dirty = _parse_dirty_files(status_out)
+            untracked_files = [
+                line[3:].strip()
+                for line in status_out.splitlines()
+                if len(line) >= 4 and line[:2] in {"??", " ?"}
+            ]
+            if tracked_dirty:
+                quoted = " ".join(shlex.quote(path) for path in tracked_dirty)
+                add_ok, add_out = _run_shell(f"git add -- {quoted}", workspace_path)
+                if add_ok:
+                    commit_ok, commit_out = _run_shell(
+                        'git commit -m "chore: commit remaining worktree changes before merge"',
+                        workspace_path,
+                    )
+                    if commit_ok:
+                        _log(
+                            "  Auto-committed tracked worktree changes before merge: "
+                            + ", ".join(tracked_dirty)
+                        )
+                    else:
+                        _log(f"Warning: pre-merge cleanup commit failed: {commit_out}")
+                else:
+                    _log(f"Warning: pre-merge cleanup git add failed: {add_out}")
+            if untracked_files:
+                _log(
+                    "Warning: untracked files left in worktree before merge (not auto-added): "
+                    + ", ".join(untracked_files)
+                )
+        else:
+            _log(f"Warning: could not inspect worktree before merge: {status_out}")
         merge_info = _merge_branch(
             config.project_root,
             config.workspace.base_branch,
