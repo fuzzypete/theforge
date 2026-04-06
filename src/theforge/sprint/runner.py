@@ -492,6 +492,8 @@ def _classify_and_record(
         ):
             merged_slugs.add(task.slug)
             dag.mark_complete(task.slug)
+        elif result.landing_status == "failed":
+            dag.mark_skipped(task.slug)
     else:
         delta_failed = 1
         dag.mark_skipped(task.slug)
@@ -807,7 +809,6 @@ def run_sprint(
 
         result.landing_status = "failed"
         result.state.error = merge_info.get("error") or "integration failed"
-        dag.mark_skipped(slug)
         _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
         _write_story_audit(config, task, result)
         return True

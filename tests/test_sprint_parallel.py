@@ -889,7 +889,7 @@ class TestParallelMergeOrderingParallelMode:
         assert merge_calls.index("story-a") < merge_calls.index("story-b")
 
     def test_merge_pr_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
-        """Deferred merge-pr failures must update the final per-story audit."""
+        """Landing failures record failed integration without rewriting review success."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         (tmp_path / "story-a").mkdir()
         manifest_path = _make_manifest_parallel(
@@ -1050,7 +1050,7 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["merge"]["merged"] is True
 
     def test_deferred_local_merge_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
-        """Deferred local merge failures must update the final per-story audit."""
+        """Local landing failures record failed integration without rewriting review success."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         (tmp_path / "story-a").mkdir()
         manifest_path = _make_manifest_parallel(
@@ -1430,54 +1430,88 @@ class TestImmediateIntegrationLanding:
         _make_spec_file(tmp_path, "Story A", "story-a")
         _make_spec_file(tmp_path, "Story B", "story-b")
         manifest_path = _make_manifest_parallel(
-            tmp_path, ["story-a.md", "story-b.md"], budget=10.0, max_parallel=2
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
         )
         config = _make_config(tmp_path)
-        calls: list[str] = []
 
-        def fake_run_task(*args, **kwargs):
-            slug = args[1].slug
-            calls.append(f"done:{slug}")
-            return _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        events: list[str] = []
 
-        def fake_merge(*args, **kwargs):
-            slug = args[3]
-            calls.append(f"merge:{slug}")
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            events.append(f"run:{task.slug}")
+            return result_a if task.slug == "story-a" else result_b
+
+        def fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            events.append(f"merge:{slug}")
             return {"merged": True, "success": True, "action": "merge"}
 
         with (
             patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
             patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
-            patch("theforge.sprint.runner.integration_lock") as mock_lock,
         ):
-            mock_lock.return_value.__enter__.return_value = None
-            mock_lock.return_value.__exit__.return_value = None
-            run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
 
-        assert "merge:story-a" in calls
-        assert calls.index("done:story-a") < calls.index("merge:story-a")
+        assert sprint.specs_succeeded == 2
+        assert "merge:story-a" in events
+        assert events.index("merge:story-a") < events.index("run:story-b")
 
-    def test_dep_not_ready_yields_pending_integration(self) -> None:
-        a = _make_task("a", depends_on=["other-slug"])
-        dag = StoryDAG([a])
-        merged_slugs: set[str] = set()
-        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
-        result.landing_status = "pending_integration"
+    def test_dep_not_ready_yields_pending_integration(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
 
-        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+        state_a = CoordinatorState()
+        state_a.preflight_verdict = "PROCEED"
+        state_a.preflight_result = MagicMock(cost_usd=1.0)
+        state_b = CoordinatorState()
+        state_b.preflight_verdict = "PROCEED"
+        state_b.preflight_result = MagicMock(cost_usd=1.0)
+        result_a = CoordinatorResult(True, Phase.DONE, state_a, "Done.")
+        result_b = CoordinatorResult(True, Phase.DONE, state_b, "Done.")
 
-        assert ds == 1
-        assert df == 0
-        assert dsk == 0
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert dag.ready() == []
-        assert a.slug not in dag._finished
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            if task.slug == "story-a":
+                time.sleep(0.2)
+                return result_a
+            return result_b
+
+        merge_calls: list[str] = []
+
+        def fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            merge_calls.append(slug)
+            return {"merged": True, "success": True, "action": "merge"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 2
+        assert result_b.success is True
+        assert result_b.phase is Phase.DONE
+        assert result_b.landing_status == "landed"
+        assert merge_calls == ["story-a", "story-b"]
 
     def test_landing_failure_does_not_rewrite_success(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
         manifest_path = _make_manifest_parallel(
-            tmp_path, ["story-a.md"], budget=10.0, max_parallel=2
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
         )
         config = dataclasses.replace(
             _make_config(tmp_path),
@@ -1489,13 +1523,14 @@ class TestImmediateIntegrationLanding:
                 auto_push=True,
             ),
         )
+
         state = CoordinatorState()
         state.preflight_verdict = "PROCEED"
         state.preflight_result = MagicMock(cost_usd=1.0)
         state.review_results = [
             ReviewResult(
                 verdict="APPROVE",
-                summary="ok",
+                summary="Looks good.",
                 findings=[],
                 story_matches=True,
                 story_mismatches=[],
@@ -1505,57 +1540,63 @@ class TestImmediateIntegrationLanding:
                 raw_yaml={},
             )
         ]
-        result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
+        result = CoordinatorResult(True, Phase.DONE, state, "Done.")
 
         with (
             patch("theforge.sprint.runner.run_task", return_value=result),
             patch(
                 "theforge.coordinator.completion._merge_pr",
                 return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://example.test/pr/1",
                     "merged": False,
                     "merge_queued": False,
                     "success": False,
                     "error": "conflict",
-                    "action": "merge-pr",
                 },
             ),
-            patch("theforge.sprint.runner.integration_lock") as mock_lock,
         ):
-            mock_lock.return_value.__enter__.return_value = None
-            mock_lock.return_value.__exit__.return_value = None
             sprint = run_sprint(config, manifest_path)
 
-        story_result = sprint.results[0][1]
-        assert story_result.success is True
-        assert story_result.phase == Phase.DONE
-        assert story_result.landing_status == "failed"
         assert sprint.specs_succeeded == 1
         assert sprint.specs_failed == 0
+        assert result.success is True
+        assert result.phase is Phase.DONE
+        assert result.landing_status == "failed"
 
 
-class TestIntegrationLock:
-    def test_integration_lock_serializes(self, tmp_path: Path) -> None:
-        forge_root = tmp_path
-        events: list[str] = []
-        entered = threading.Event()
+def test_integration_lock_serializes(tmp_path: Path) -> None:
+    entered: list[str] = []
+    exited: list[str] = []
+    overlap = [False]
+    inside = threading.Event()
+    release = threading.Event()
 
-        def first() -> None:
-            with integration_lock(forge_root):
-                events.append("first-enter")
-                entered.set()
-                time.sleep(0.2)
-                events.append("first-exit")
+    def worker(name: str) -> None:
+        with integration_lock(tmp_path):
+            if inside.is_set():
+                overlap[0] = True
+            inside.set()
+            entered.append(name)
+            if name == "first":
+                release.wait(timeout=2)
+            else:
+                exited.append(name)
+            inside.clear()
+        if name == "first":
+            exited.append(name)
 
-        def second() -> None:
-            entered.wait(timeout=1)
-            with integration_lock(forge_root):
-                events.append("second-enter")
+    first = threading.Thread(target=worker, args=("first",))
+    second = threading.Thread(target=worker, args=("second",))
+    first.start()
+    time.sleep(0.1)
+    second.start()
+    time.sleep(0.1)
+    assert entered == ["first"]
+    release.set()
+    first.join()
+    second.join()
 
-        t1 = threading.Thread(target=first)
-        t2 = threading.Thread(target=second)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        assert events == ["first-enter", "first-exit", "second-enter"]
+    assert overlap[0] is False
+    assert entered == ["first", "second"]
+    assert exited == ["first", "second"]
