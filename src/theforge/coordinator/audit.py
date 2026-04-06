@@ -362,6 +362,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             }
         ),
         "merge": result.merge,
+        "landing_status": result.landing_status,
         "escalation": (
             {
                 "reason": state.escalate_reason,

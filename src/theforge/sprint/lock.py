@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 from theforge.pid import _is_pid_alive
@@ -139,3 +140,19 @@ def release_story_locks(fds: list) -> None:
             fd.close()
         except Exception:
             pass
+
+
+@contextmanager
+def integration_lock(forge_root: Path):
+    """Serialize branch integration operations across forge processes."""
+    lock_path = forge_root / ".forge" / "merge.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path, "a+")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            fd.close()

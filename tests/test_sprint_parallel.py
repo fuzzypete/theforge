@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +25,7 @@ from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phas
 from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, build_dag
+from theforge.sprint.lock import integration_lock
 from theforge.sprint.runner import _classify_and_record
 from theforge.task import TaskStory
 
@@ -565,8 +568,8 @@ class TestClassifyAndRecord:
         assert df == 0
         assert dsk == 0
         assert "a" not in merged_slugs
-        # B still not ready (a not completed)
-        assert dag.ready() == []
+        # A remains ready because successful-but-unlanded stories are pending integration.
+        assert {t.slug for t in dag.ready()} == {"a"}
 
     def test_success_with_merge_completes_for_dag(self) -> None:
         """Success with merge → specs_succeeded, dag.mark_complete (unlocks deps)."""
@@ -1420,3 +1423,139 @@ class TestQueuedMergePolling:
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 1
+
+
+class TestImmediateIntegrationLanding:
+    def test_immediate_landing_on_approve(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md", "story-b.md"], budget=10.0, max_parallel=2
+        )
+        config = _make_config(tmp_path)
+        calls: list[str] = []
+
+        def fake_run_task(*args, **kwargs):
+            slug = args[1].slug
+            calls.append(f"done:{slug}")
+            return _make_coordinator_result(success=True, cost=1.0, merged=False)
+
+        def fake_merge(*args, **kwargs):
+            slug = args[3]
+            calls.append(f"merge:{slug}")
+            return {"merged": True, "success": True, "action": "merge"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
+            patch("theforge.sprint.runner.integration_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__enter__.return_value = None
+            mock_lock.return_value.__exit__.return_value = None
+            run_sprint(config, manifest_path, auto_merge=True)
+
+        assert "merge:story-a" in calls
+        assert calls.index("done:story-a") < calls.index("merge:story-a")
+
+    def test_dep_not_ready_yields_pending_integration(self) -> None:
+        a = _make_task("a", depends_on=["other-slug"])
+        dag = StoryDAG([a])
+        merged_slugs: set[str] = set()
+        result = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result.landing_status = "pending_integration"
+
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 1
+        assert df == 0
+        assert dsk == 0
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert dag.ready() == []
+        assert a.slug not in dag._finished
+
+    def test_landing_failure_does_not_rewrite_success(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md"], budget=10.0, max_parallel=2
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+            ),
+        )
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_result = MagicMock(cost_usd=1.0)
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="ok",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "merged": False,
+                    "merge_queued": False,
+                    "success": False,
+                    "error": "conflict",
+                    "action": "merge-pr",
+                },
+            ),
+            patch("theforge.sprint.runner.integration_lock") as mock_lock,
+        ):
+            mock_lock.return_value.__enter__.return_value = None
+            mock_lock.return_value.__exit__.return_value = None
+            sprint = run_sprint(config, manifest_path)
+
+        story_result = sprint.results[0][1]
+        assert story_result.success is True
+        assert story_result.phase == Phase.DONE
+        assert story_result.landing_status == "failed"
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+
+
+class TestIntegrationLock:
+    def test_integration_lock_serializes(self, tmp_path: Path) -> None:
+        forge_root = tmp_path
+        events: list[str] = []
+        entered = threading.Event()
+
+        def first() -> None:
+            with integration_lock(forge_root):
+                events.append("first-enter")
+                entered.set()
+                time.sleep(0.2)
+                events.append("first-exit")
+
+        def second() -> None:
+            entered.wait(timeout=1)
+            with integration_lock(forge_root):
+                events.append("second-enter")
+
+        t1 = threading.Thread(target=first)
+        t2 = threading.Thread(target=second)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert events == ["first-enter", "first-exit", "second-enter"]
