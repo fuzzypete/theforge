@@ -176,6 +176,16 @@ def test_is_branch_merged_ff_with_audit_approve(tmp_path: Path) -> None:
     assert result is True
 
 
+def test_is_branch_merged_squash_merge_with_audit_approve(tmp_path: Path) -> None:
+    """Squash merges still resolve via audit trail when git topology is not ancestor."""
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor),
+        patch("theforge.sprint.dag.has_review_approve", return_value=True),
+    ):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is True
+
+
 def test_is_branch_merged_ff_no_audit(tmp_path: Path) -> None:
     """After FF merge (branch = base tip), no audit trail entry → False (fresh branch)."""
     with (
@@ -253,9 +263,12 @@ def test_is_branch_merged_stale_empty_branch(tmp_path: Path) -> None:
     assert result is False
 
 
-def test_is_branch_merged_not_ancestor(tmp_path: Path) -> None:
-    """Branch not an ancestor of base → False."""
-    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor):
+def test_is_branch_merged_not_ancestor_without_audit(tmp_path: Path) -> None:
+    """Branch not an ancestor of base with no APPROVE audit stays unmerged."""
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
         result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
     assert result is False
 
@@ -309,3 +322,32 @@ def test_run_sprint_summary_records_run_log(tmp_path: Path) -> None:
     summary = __import__("yaml").safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
     assert summary["sprint"]["run_id"] == "run-abc"
     assert summary["sprint"]["run_log"] == "run-run-abc.log"
+
+
+def test_is_branch_merged_squash_merge_reads_real_audit_history(tmp_path: Path) -> None:
+    """Squash merges use persisted APPROVE history even though branch stays ahead."""
+    import json
+
+    audits_dir = tmp_path / ".forge" / "audits"
+    audits_dir.mkdir(parents=True)
+    (audits_dir / "history.jsonl").write_text(
+        json.dumps({"task": {"slug": "story-a"}, "reviews": [{"verdict": "APPROVE"}]}) + "\n",
+        encoding="utf-8",
+    )
+
+    def _mock_squash(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1
+            m.stdout = b""
+        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..forge/story-a":
+            m.returncode = 0
+            m.stdout = b"2"
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_squash):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is True

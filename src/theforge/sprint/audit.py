@@ -155,9 +155,8 @@ def _write_sprint_audit(
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Append to history log (JSONL, never overwritten).
-    history_path = audits_dir / "history.jsonl"
     try:
-        with open(history_path, "a", encoding="utf-8") as f:
+        with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(audit, default=str) + "\n")
     except OSError:
         pass
@@ -273,22 +272,34 @@ def _write_story_audit(
     Best-effort: silently ignores missing workspace or log dir.
     """
     from ..artifacts import AUDIT_PATH, ensure_parent_dir  # noqa: PLC0415
-    from ..coordinator.audit import generate_audit_log  # noqa: PLC0415
+    from ..coordinator import audit as coordinator_audit  # noqa: PLC0415
+
+    try:
+        audit_data = coordinator_audit.generate_audit_log(config, task, result)
+    except Exception as exc:
+        _log(f"Warning: failed to generate story audit log for {task.slug}: {exc}")
+        return
 
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
     if workspace_path.exists() and not (
         result.state.workspace_path is None and result.state.preflight_verdict == "ALREADY_DONE"
     ):
-        audit_data = generate_audit_log(config, task, result)
         audit_path = workspace_path / AUDIT_PATH
         ensure_parent_dir(audit_path)
         with open(audit_path, "w", encoding="utf-8") as f:
             yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
         _log(f"Per-story audit written: {audit_path}")
 
+    audits_dir = config.project_root / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_data, default=str) + "\n")
+    except OSError:
+        pass
+
     if result.state.log_dir is not None:
         try:
-            audit_data = generate_audit_log(config, task, result)
             _story_audit_path = result.state.log_dir / "audit.yaml"
             _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
             with open(_story_audit_path, "w", encoding="utf-8") as f:

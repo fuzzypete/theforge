@@ -29,6 +29,29 @@ class StoryTriage:
     slug: str = ""
 
 
+def _has_prior_review_approve(
+    project_root: Path,
+    slug: str,
+    base_branch: str,
+    branch: str,
+) -> bool:
+    """Return True when audit history shows a prior APPROVE for this story.
+
+    Resume merged detection needs the persisted review outcome even when the
+    feature branch still appears ahead of base (squash merges rewrite commits,
+    so git topology alone cannot prove the merge). This helper intentionally
+    bypasses the stale-branch guard inside has_review_approve and only answers
+    the audit-history question.
+    """
+    return has_review_approve(
+        project_root,
+        slug,
+        base_branch,
+        branch,
+        allow_unmerged_commits=True,
+    )
+
+
 def _is_branch_merged(
     branch: str,
     base_branch: str,
@@ -37,19 +60,26 @@ def _is_branch_merged(
 ) -> bool:
     """Return True if branch has been merged into base_branch.
 
-    Two detection paths handle the two merge strategies theforge uses:
+    Three detection paths handle the merge strategies theforge uses:
 
     1. Regular merge commit (git merge --no-edit fallback):
        --is-ancestor passes AND branch..base_branch count > 0 (base advanced
-       past the branch tip via a merge commit).
+       past the branch tip via a merge commit) AND base_branch..branch count > 0
+       (the branch had unique commits before merge).
 
     2. Fast-forward merge (git merge --ff-only, preferred):
        After an FF merge, branch and base point at the same commit, so
-       branch..base_branch count == 0.  This is indistinguishable from a branch
-       created at the current base HEAD using git state alone.  When slug is
-       provided, the audit trail (has_review_approve) acts as the tiebreaker:
-       a story that ran through the pipeline has an APPROVE record; a freshly
-       created branch with no work does not.
+       branch..base_branch count == 0.
+
+    3. Squash merge (configured default):
+       The feature branch tip remains an ancestor of base because it was based
+       on base, but the squash commit on base is a new commit with no parent
+       relationship to the branch. Git topology alone therefore looks identical
+       to an empty/stale branch: branch..base_branch count == 0 and
+       base_branch..branch count == 0. When slug is provided, the audit trail
+       (has_review_approve) acts as the tiebreaker: a story that ran through
+       the pipeline has an APPROVE record; a freshly created branch with no work
+       does not.
 
     A branch that was merely created at base HEAD (count == 0, no audit entry)
     correctly returns False.
@@ -87,19 +117,17 @@ def _is_branch_merged(
                     # Regular merge: base has moved past branch and branch had
                     # unique work of its own.
                     return True
-                # ahead_count > 0 with no unique commits is ambiguous in git state
-                # alone: it can be an abandoned empty branch or a regular merge
-                # commit whose branch tip is already reachable from base. Use the
-                # audit trail as the tiebreaker when the slug is known.
-                if slug is not None:
-                    return has_review_approve(project_root, slug, base_branch, branch)
-                return False
-            # Fast-forward merge: branch and base at the same tip (count == 0).
-            # Fall back to the audit trail when the slug is known.
-            if slug is not None:
-                return has_review_approve(project_root, slug, base_branch, branch)
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
+
+    # Fast-forward merges at the same tip and squash merges both need the audit
+    # trail fallback. In real squash merges, --is-ancestor returns non-zero, so
+    # this check must live outside the topology-success branch above.
+    if slug is not None:
+        try:
+            return _has_prior_review_approve(project_root, slug, base_branch, branch)
+        except Exception:
+            return False
     return False
 
 
@@ -297,10 +325,13 @@ def _triage_spec(
     # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
     # for fast-forward merges where branch and base land on the same commit.
     if _is_branch_merged(branch, base_branch, project_root, slug=slug):
+        merged_reason = f"already merged to {base_branch}"
+        if _has_prior_review_approve(project_root, slug, base_branch, branch):
+            merged_reason = f"prior APPROVE in audit trail; already merged to {base_branch}"
         return StoryTriage(
             story_path=story_path,
             action="skip_merged",
-            reason=f"already merged to {base_branch}",
+            reason=merged_reason,
             worktree_path=None,
             slug=slug,
         )
