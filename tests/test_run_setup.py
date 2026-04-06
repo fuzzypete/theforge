@@ -1,12 +1,13 @@
 """Tests for _setup_resume_entry in coordinator/run_setup.py."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import _make_config, _make_task
 
+from theforge.coordinator.engine import _run_resume_coordinator
 from theforge.coordinator.path_setup import prepend_worktree_src
 from theforge.coordinator.run_setup import _setup_resume_entry
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import CoordinatorResult, Phase
 
 
 def _call_setup(config, task, workspace_path):
@@ -64,8 +65,6 @@ def test_forge_yaml_sync_skipped_when_root_missing(tmp_path):
 
 def test_setup_returns_escalate_when_workspace_missing(tmp_path):
     """Returns CoordinatorResult when workspace_path doesn't exist."""
-    from theforge.coordinator.state import CoordinatorResult
-
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
     missing = tmp_path / "nonexistent"
@@ -131,3 +130,104 @@ def test_setup_resume_entry_prepends_worktree_src(tmp_path):
         assert sys.path[0] == str((workspace / "src").resolve())
     finally:
         sys.path[:] = original_sys_path
+
+
+def test_run_resume_coordinator_rebases_before_loop_and_continues(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    state = MagicMock()
+    state.workspace_path = workspace
+    state.log_dir = None
+    logger = MagicMock()
+    setup = (state, logger, "forge/test-task", "story", 123.0)
+    loop_result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+
+    with (
+        patch("theforge.coordinator.engine._ensure_runners"),
+        patch("theforge.coordinator.engine._check_behind_origin"),
+        patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
+        patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
+        patch("theforge.coordinator.engine.prepend_worktree_src"),
+        patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
+        patch("theforge.coordinator.engine._rebase_onto_main", return_value=(True, "")),
+        patch(
+            "theforge.coordinator.engine._coordinator_loop", return_value=loop_result
+        ) as mock_loop,
+        patch("theforge.coordinator.engine._fire_post_run_hook"),
+    ):
+        mock_ctx.return_value.__enter__.return_value = None
+        mock_ctx.return_value.__exit__.return_value = None
+        result = _run_resume_coordinator(
+            config,
+            task,
+            workspace,
+            initial_phase=Phase.DEV,
+            skip_dev_first_iter=False,
+            interactive=False,
+            auto_merge=False,
+            notify=False,
+            run_id="run-1",
+            sprint_name=None,
+            state_update_fn=None,
+        )
+
+    assert result is loop_result
+    mock_loop.assert_called_once()
+    logger._safe_emit.assert_any_call(
+        "rebase", phase="RESUME_REBASE", base_branch=config.workspace.base_branch, outcome="ok"
+    )
+
+
+def test_run_resume_coordinator_escalates_when_rebase_fails(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+
+    state = MagicMock()
+    state.workspace_path = workspace
+    state.log_dir = None
+    setup = (state, MagicMock(), "forge/test-task", "story", 123.0)
+
+    with (
+        patch("theforge.coordinator.engine._ensure_runners"),
+        patch("theforge.coordinator.engine._check_behind_origin"),
+        patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
+        patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
+        patch("theforge.coordinator.engine.prepend_worktree_src"),
+        patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
+        patch(
+            "theforge.coordinator.engine._rebase_onto_main",
+            return_value=(False, "merge conflict"),
+        ),
+        patch("theforge.coordinator.engine._coordinator_loop") as mock_loop,
+        patch("theforge.coordinator.engine._fire_post_run_hook"),
+        patch("theforge.coordinator.engine._escalate_notify") as mock_notify,
+    ):
+        mock_ctx.return_value.__enter__.return_value = None
+        mock_ctx.return_value.__exit__.return_value = None
+        result = _run_resume_coordinator(
+            config,
+            task,
+            workspace,
+            initial_phase=Phase.DEV,
+            skip_dev_first_iter=False,
+            interactive=False,
+            auto_merge=False,
+            notify=True,
+            run_id="run-1",
+            sprint_name=None,
+            state_update_fn=None,
+        )
+
+    assert result.success is False
+    assert result.phase == Phase.ESCALATE
+    assert "pre-dev rebase" in result.message
+    assert "pre-dev rebase" in state.escalate_reason
+    mock_loop.assert_not_called()
+    mock_notify.assert_called_once()

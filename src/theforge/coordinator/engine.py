@@ -189,7 +189,7 @@ from .dev_phase import _run_dev_phase  # noqa: E402
 from .path_setup import prepend_worktree_src  # noqa: E402
 from .review_context import _parse_dev_handoff  # noqa: E402
 from .review_phase import _ReviewOutcome, _run_review_only_phase, _run_review_phase  # noqa: E402
-from .run_setup import _setup_resume_entry  # noqa: E402
+from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402
 from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
 
 
@@ -782,6 +782,24 @@ def _run_resume_coordinator(
     prepend_worktree_src(workspace_path)
 
     with _run_log_context(config, logger, task, state, _task_start):
+        base_branch = config.workspace.base_branch
+        rebase_ok, rebase_err = _rebase_onto_main(str(state.workspace_path), base_branch, logger)
+        if not rebase_ok:
+            state.phase = Phase.ESCALATE
+            state.escalate_reason = (
+                f"pre-dev rebase onto {base_branch} failed — conflicts must be resolved manually: "
+                f"{rebase_err}"
+            )
+            state.error = state.escalate_reason
+            logger._safe_emit("escalate", reason=state.escalate_reason, phase="RESUME_REBASE")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=Phase.ESCALATE,
+                state=state,
+                message=state.escalate_reason,
+            )
+        logger._safe_emit("rebase", phase="RESUME_REBASE", base_branch=base_branch, outcome="ok")
         result = _coordinator_loop(
             state,
             config,
