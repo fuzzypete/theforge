@@ -574,6 +574,8 @@ class TestCreatePR:
         # First call must be merged PR lookup
         lookup_call = mock_run.call_args_list[0]
         assert lookup_call[0][0][:3] == ["gh", "pr", "list"]
+        json_idx = lookup_call[0][0].index("--json") + 1
+        assert lookup_call[0][0][json_idx] == "number,url,mergedAt"
 
         # Second call must be git push
         push_call = mock_run.call_args_list[1]
@@ -663,7 +665,8 @@ class TestCreatePR:
             {
                 "returncode": 0,
                 "stdout": (
-                    '[{"number": 222, "url": "https://github.com/test/pr/222", "merged": true}]'
+                    '[{"number": 222, "url": "https://github.com/test/pr/222", '
+                    '"mergedAt": "2024-01-02T03:04:05Z"}]'
                 ),
                 "stderr": "",
             },
@@ -677,6 +680,8 @@ class TestCreatePR:
         assert mock_run.call_count == 1
         lookup_call = mock_run.call_args_list[0]
         assert lookup_call[0][0][:3] == ["gh", "pr", "list"]
+        json_idx = lookup_call[0][0].index("--json") + 1
+        assert lookup_call[0][0][json_idx] == "number,url,mergedAt"
 
     @patch("theforge.coordinator.validate_phase.subprocess.run")
     def test_push_failure_aborts_pr(self, mock_run, tmp_path):

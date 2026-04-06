@@ -167,7 +167,7 @@ def _create_pr(
                 "--state",
                 "closed",
                 "--json",
-                "number,url,merged",
+                "number,url,mergedAt",
             ],
             capture_output=True,
             text=True,
@@ -176,7 +176,7 @@ def _create_pr(
         )
         if merged_pr_proc.returncode == 0:
             merged_prs = json.loads(merged_pr_proc.stdout or "[]")
-            merged_pr = next((pr for pr in merged_prs if pr.get("merged")), None)
+            merged_pr = next((pr for pr in merged_prs if pr.get("mergedAt")), None)
             if merged_pr is not None:
                 pr_url = merged_pr.get("url")
                 message = f"PR already merged for branch {branch_name}: {pr_url}"
