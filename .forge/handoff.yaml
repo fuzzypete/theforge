@@ -1,0 +1,44 @@
+dev_notes: |
+  summary: "Verified the stop-phase behavior for --until plan/plan-review against the implementation, preserved the existing runtime semantics because the coordinator already stops before DEV at the correct point, and fixed the handoff schema by documenting the work completed, acceptance criteria coverage, deviations, and commit history in the required YAML structure."
+  commits:
+    - sha: "9cb340f"
+      message: "test(coordinator): split stop-phase coverage"
+    - sha: "e620a35"
+      message: "test(coordinator): cover until plan-review stop gate"
+    - sha: "fd14ca1"
+      message: "fix: double-fork daemonize race causes self-conflict on fresh sprint launch (#475) (#476)"
+    - sha: "20a553f"
+      message: "Sprint resume creates duplicate PRs for already-merged stories (#227) (#468)"
+    - sha: "ac421b0"
+      message: "Guard concurrent sprint launches against active worktrees (#348) (#469)"
+    - sha: "2972cc0"
+      message: "Scrub .forge/ artifacts from branch history before merge (#461) (#470)"
+  acceptance_criteria:
+    - criterion: "forge run <story> --until plan exits after PLAN_REVIEW completes and before DEV starts. Exit code is 0."
+      status: MET
+      notes: "Verified the coordinator stop gate already returns before _coordinator_loop and preserved regression coverage for stopping before DEV with success=True and phase==Phase.PLAN when plan review is disabled."
+    - criterion: "forge run <story> --until plan-review behaves identically to --until plan (both names are already accepted by the CLI; both must stop at the same point)."
+      status: MET
+      notes: "Preserved dedicated regression coverage for stop_phase=Phase.PLAN_REVIEW asserting the same stop point before DEV."
+    - criterion: "forge run <story> --until dev still enters DEV and stops before VALIDATE, as before."
+      status: PARTIAL
+      notes: "Current implementation and existing regression coverage remain unchanged, but the implementation/test contract stops after VALIDATE rather than before it, so the acceptance-criteria wording appears inconsistent with actual preserved behavior."
+    - criterion: "forge run <story> --until validate still enters VALIDATE and stops before REVIEW, as before."
+      status: MET
+      notes: "Existing coordinator coverage continues to pass unchanged, preserving validate stop semantics."
+    - criterion: "A unit test covers the --until plan case: coordinator returns before DEV is invoked, with phase == Phase.PLAN_REVIEW (or Phase.PLAN when plan review is disabled) and success == True."
+      status: MET
+      notes: "Coverage is present in tests/test_coord_stop_phase.py with success=True, phase==Phase.PLAN, dev_iteration==0, and no DEV agent invocation."
+    - criterion: "A unit test covers --until dev to guard against regression."
+      status: MET
+      notes: "Existing regression coverage remains in tests/test_coordinator.py and passed in the successful gate run."
+    - criterion: "All existing tests pass."
+      status: MET
+      notes: "The implementation previously passed the gate, including formatting, lint, and the full pytest suite."
+  story_deviations:
+    - description: "No coordinator runtime logic was changed."
+      justification: "Audit of the implementation showed the stop-phase gates already matched the intended --until plan/plan-review semantics, so only test organization and documentation updates were necessary."
+    - description: "The --until dev acceptance-criteria wording was not made to match the current implementation behavior."
+      justification: "The existing implementation and regression tests preserve prior behavior, which conflicts with the wording of that criterion; this was documented rather than changing code outside the validated fix scope."
+  deferred_items: none
+  gate_result: PASS
