@@ -1051,8 +1051,6 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                _write_story_audit(config, task, result)
-
                 spec_cost = result.state.total_cost
                 icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)

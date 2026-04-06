@@ -961,10 +961,11 @@ class TestParallelMergeOrderingParallelMode:
 
         audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
-        assert audit["outcome"]["success"] is False
-        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+        assert audit["outcome"]["success"] is True
+        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge-pr"
         assert audit["merge"]["merged"] is False
         assert audit["error"] == "gh pr merge failed: branch protection"
@@ -1090,10 +1091,11 @@ class TestParallelMergeOrderingParallelMode:
 
         audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
-        assert audit["outcome"]["success"] is False
-        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+        assert audit["outcome"]["success"] is True
+        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge"
         assert audit["merge"]["merged"] is False
         assert audit["error"] == "git merge failed: conflict in src/foo.py"
