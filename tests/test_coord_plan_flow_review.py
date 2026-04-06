@@ -99,6 +99,53 @@ def _make_ntfy_plan_review_config(
 # ── TestPlanReview ────────────────────────────────────────────────────
 
 
+def test_plan_phase_cleans_stale_plan_files_before_new_attempt(tmp_path):
+    config = _make_plan_review_config(tmp_path, enabled=False)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    stale_plan = workspace / ".forge" / "plan.md"
+    stale_plan.parent.mkdir(parents=True, exist_ok=True)
+    stale_plan.write_text("stale plan", encoding="utf-8")
+    legacy_plan = workspace / "forge_plan.md"
+    legacy_plan.write_text("legacy stale plan", encoding="utf-8")
+    traces_dir = workspace / ".forge" / "traces"
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    stale_trace = traces_dir / "plan-attempt-0-approved.txt"
+    stale_trace.write_text("old approved plan", encoding="utf-8")
+
+    with (
+        patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None)),
+        patch(
+            "theforge.coordinator.review_pool.run_agent_pool",
+            return_value=[
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ],
+        ),
+        patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+        patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+        patch("theforge.coordinator.util._run_shell") as mock_shell,
+    ):
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_plan_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nFresh plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        result = run_task(config, task, interactive=False)
+
+    assert result.success is True
+    assert stale_plan.read_text(encoding="utf-8") == "# Plan\n\nFresh plan."
+    assert not legacy_plan.exists()
+    assert not stale_trace.exists()
+
+
 class TestPlanReview:
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
     @patch("theforge.coordinator.plan_flow._plan_review_interactive")

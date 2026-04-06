@@ -88,6 +88,18 @@ def _ensure_runners() -> None:
         run_agent_pool = _r.run_agent_pool
 
 
+def _clean_stale_plan_files(workspace_path: Path) -> None:
+    """Remove stale plan artifacts before starting a fresh PLAN phase."""
+    for plan_path in plan_paths(workspace_path):
+        if plan_path.exists():
+            plan_path.unlink()
+
+    traces_dir = workspace_path / ".forge" / "traces"
+    if traces_dir.exists():
+        for stale_trace in traces_dir.glob("plan-attempt-*.txt"):
+            stale_trace.unlink()
+
+
 def _run_plan_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -115,6 +127,9 @@ def _run_plan_phase(
         early (plan failure, review abandon, escalation).
     """
     _ensure_runners()
+
+    if plan_path is None:
+        _clean_stale_plan_files(workspace_path)
 
     # ── SPEC VALIDATION ───────────────────────────────────────────────
     _should_validate_spec = (
