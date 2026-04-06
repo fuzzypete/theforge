@@ -176,6 +176,16 @@ def test_is_branch_merged_ff_with_audit_approve(tmp_path: Path) -> None:
     assert result is True
 
 
+def test_is_branch_merged_squash_merge_with_audit_approve(tmp_path: Path) -> None:
+    """After squash merge (same topology as empty branch), audit trail APPROVE → True."""
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_ff),
+        patch("theforge.sprint.dag.has_review_approve", return_value=True),
+    ):
+        result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
+    assert result is True
+
+
 def test_is_branch_merged_ff_no_audit(tmp_path: Path) -> None:
     """After FF merge (branch = base tip), no audit trail entry → False (fresh branch)."""
     with (

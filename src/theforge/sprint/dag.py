@@ -37,19 +37,26 @@ def _is_branch_merged(
 ) -> bool:
     """Return True if branch has been merged into base_branch.
 
-    Two detection paths handle the two merge strategies theforge uses:
+    Three detection paths handle the merge strategies theforge uses:
 
     1. Regular merge commit (git merge --no-edit fallback):
        --is-ancestor passes AND branch..base_branch count > 0 (base advanced
-       past the branch tip via a merge commit).
+       past the branch tip via a merge commit) AND base_branch..branch count > 0
+       (the branch had unique commits before merge).
 
     2. Fast-forward merge (git merge --ff-only, preferred):
        After an FF merge, branch and base point at the same commit, so
-       branch..base_branch count == 0.  This is indistinguishable from a branch
-       created at the current base HEAD using git state alone.  When slug is
-       provided, the audit trail (has_review_approve) acts as the tiebreaker:
-       a story that ran through the pipeline has an APPROVE record; a freshly
-       created branch with no work does not.
+       branch..base_branch count == 0.
+
+    3. Squash merge (configured default):
+       The feature branch tip remains an ancestor of base because it was based
+       on base, but the squash commit on base is a new commit with no parent
+       relationship to the branch. Git topology alone therefore looks identical
+       to an empty/stale branch: branch..base_branch count == 0 and
+       base_branch..branch count == 0. When slug is provided, the audit trail
+       (has_review_approve) acts as the tiebreaker: a story that ran through
+       the pipeline has an APPROVE record; a freshly created branch with no work
+       does not.
 
     A branch that was merely created at base HEAD (count == 0, no audit entry)
     correctly returns False.

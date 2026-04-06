@@ -155,9 +155,8 @@ def _write_sprint_audit(
     with open(audit_path, "w", encoding="utf-8") as f:
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Append to history log (JSONL, never overwritten).
-    history_path = audits_dir / "history.jsonl"
     try:
-        with open(history_path, "a", encoding="utf-8") as f:
+        with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(audit, default=str) + "\n")
     except OSError:
         pass
@@ -286,9 +285,21 @@ def _write_story_audit(
             yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
         _log(f"Per-story audit written: {audit_path}")
 
+    try:
+        audit_data = generate_audit_log(config, task, result)
+    except Exception:
+        return
+
+    audits_dir = config.project_root / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(audits_dir / "history.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(audit_data, default=str) + "\n")
+    except OSError:
+        pass
+
     if result.state.log_dir is not None:
         try:
-            audit_data = generate_audit_log(config, task, result)
             _story_audit_path = result.state.log_dir / "audit.yaml"
             _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
             with open(_story_audit_path, "w", encoding="utf-8") as f:

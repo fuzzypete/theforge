@@ -687,3 +687,29 @@ class TestAuditStartStopPhase:
 
         assert audit["outcome"]["start_phase"] is None
         assert audit["outcome"]["stop_phase"] is None
+
+
+class TestSprintStoryAuditHistory:
+    def test_write_story_audit_appends_history_jsonl(self, tmp_path: Path) -> None:
+        from theforge.sprint.audit import _write_story_audit
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        state.log_dir = tmp_path / ".forge" / "logs" / task.slug
+        state.workspace_path = tmp_path / task.slug
+        state.workspace_path.mkdir(parents=True)
+        state.branch_name = f"forge/{task.slug}"
+        result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+
+        _write_story_audit(config, task, result)
+
+        history_path = tmp_path / ".forge" / "audits" / "history.jsonl"
+        assert history_path.exists()
+        records = [
+            json.loads(line)
+            for line in history_path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        assert len(records) == 1
+        assert records[0]["task"]["slug"] == task.slug
