@@ -312,8 +312,9 @@ def test_explicit_override():
     assert decision.planner.model in ("haiku", "sonnet", "opus")
 
 
-def test_agent_to_profile_preserves_api_fallback_for_adaptive_cli_agents():
+def test_agent_to_profile_preserves_api_fallback_for_adaptive_cli_agents(monkeypatch):
     """Adaptive assignment must preserve CLI fallback metadata on synthesized profiles."""
+    monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
     agents = [
         AgentDef(
             name="codex-dev",
