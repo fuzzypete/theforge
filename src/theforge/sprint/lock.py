@@ -7,6 +7,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from theforge.pid import _is_pid_alive
+
 
 class SprintConflictError(Exception):
     """Raised when a sprint conflicts with an already-running sprint."""
@@ -14,19 +16,6 @@ class SprintConflictError(Exception):
     def __init__(self, conflicting_slugs: list[str]) -> None:
         self.conflicting_slugs = conflicting_slugs
         super().__init__(f"Stories already running: {', '.join(conflicting_slugs)}")
-
-
-def _is_pid_alive(pid: int) -> bool:
-    """Return True when *pid* refers to a running process."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return True
-    return True
 
 
 def _read_lock_pid(fd) -> int | None:
