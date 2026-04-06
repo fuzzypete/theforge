@@ -477,6 +477,34 @@ class TestComplexityAdaptation:
         assert adapted.dev_profile.model == "opus"
         assert adapted.dev_profile.cli == "claude"
 
+    def test_large_api_dev_uses_provider_model_registry_match(self, tmp_path):
+        """large complexity ranks API profiles by provider/model instead of defaulting."""
+        config = _make_smart_config(tmp_path)
+        api_dev = replace(
+            config.dev_profile,
+            cli=None,
+            provider="openai",
+            model="gpt-5.4",
+        )
+        api_review = replace(
+            config.review_pool[0],
+            cli=None,
+            provider="anthropic",
+            model="opus",
+        )
+        reviewer = replace(
+            config.review_pool[1],
+            cli=None,
+            provider="openai",
+            model="gpt-5.4",
+        )
+        api_config = replace(config, dev_profile=api_dev, review_pool=[api_review, reviewer])
+
+        adapted = _apply_complexity_adaptation(api_config, "large")
+
+        assert adapted.dev_profile.model == "opus"
+        assert adapted.dev_profile.cli == "claude"
+
     def test_complexity_ignored_with_explicit_profiles(self, tmp_path):
         """No smart_config_models → complexity is a no-op."""
         config = _make_config(tmp_path)  # classic config, smart_config_models=None

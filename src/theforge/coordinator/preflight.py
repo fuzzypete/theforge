@@ -190,18 +190,27 @@ def _parse_preflight_sufficiency(output: str) -> str:
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
     """Return (cost_rank, capability) for a profile using the model registry.
 
+    CLI profiles match by cli+model. API profiles match by provider+model against
+    the registry key because registry entries are keyed by provider/model while
+    storing the corresponding CLI transport.
+
     Falls back to (2, 5) for unknown models.
     """
-    for info in MODEL_REGISTRY.values():
-        if info.cli == profile.cli and info.model == profile.model:
-            return info.cost_rank, info.capability
-    return 2, 5
+    registry_key = _find_registry_key_for_profile(profile)
+    if registry_key is None:
+        return 2, 5
+    info = MODEL_REGISTRY[registry_key]
+    return info.cost_rank, info.capability
 
 
 def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
     """Return the MODEL_REGISTRY key for a profile, or None if unknown."""
     for key, info in MODEL_REGISTRY.items():
-        if info.cli == profile.cli and info.model == profile.model:
+        if profile.cli is not None:
+            if info.cli == profile.cli and info.model == profile.model:
+                return key
+            continue
+        if profile.provider is not None and key == f"{profile.provider}/{profile.model}":
             return key
     return None
 
