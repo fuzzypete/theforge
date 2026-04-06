@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -437,6 +439,33 @@ def _make_worker_phase_fn(
     return _update
 
 
+def _poll_queued_pr(pr_url: str, project_root: Path, timeout_seconds: int) -> dict[str, str]:
+    """Poll GitHub until a queued PR is merged, closed, or times out."""
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            proc = subprocess.run(
+                ["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
+                capture_output=True,
+                text=True,
+                cwd=str(project_root),
+                timeout=30,
+            )
+        except Exception:
+            return {"status": "timeout"}
+
+        if proc.returncode == 0:
+            state = proc.stdout.strip()
+            if state == "MERGED":
+                return {"status": "merged"}
+            if state == "CLOSED":
+                return {"status": "closed"}
+
+        if time.monotonic() >= deadline:
+            return {"status": "timeout"}
+        time.sleep(30)
+
+
 def _classify_and_record(
     task: TaskStory,
     result: CoordinatorResult,
@@ -456,7 +485,8 @@ def _classify_and_record(
     else:
         delta_failed = 1
 
-    # DAG: mark_complete (satisfies deps) only when merged or ALREADY_DONE
+    # DAG: mark_complete (satisfies deps) only when actually merged or ALREADY_DONE.
+    # Queued auto-merges report merged=False, so they stay blocked until polling confirms MERGED.
     if preflight_verdict == "ALREADY_DONE" or (
         result.merge is not None and result.merge.get("merged", False)
     ):
@@ -693,6 +723,7 @@ def run_sprint(
     worker_phases: dict[str, str] = {}
     phase_lock = threading.Lock()
     pending_merges: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
+    queued_prs: dict[str, tuple[TaskStory, CoordinatorResult, str]] = {}
     _submission_counter = [0]  # mutable for closure capture; counts submitted stories
 
     # Overlap detection state (plan gates)
@@ -707,6 +738,43 @@ def run_sprint(
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
+                blocked_by_queued = [dep for dep in task.depends_on if dep in queued_prs]
+                if blocked_by_queued:
+                    dependency_failed = False
+                    for dep in blocked_by_queued:
+                        dep_task, dep_result, dep_pr_url = queued_prs[dep]
+                        poll_result = _poll_queued_pr(
+                            dep_pr_url,
+                            config.project_root,
+                            config.workspace.ci_check_timeout_seconds,
+                        )
+                        if poll_result["status"] == "merged":
+                            merged_slugs.add(dep)
+                            dag.mark_complete(dep)
+                            del queued_prs[dep]
+                            _write_story_audit(config, dep_task, dep_result)
+                        else:
+                            dep_result.success = False
+                            dep_result.phase = Phase.ESCALATE
+                            dep_result.state.phase = Phase.ESCALATE
+                            dep_result.state.error = (
+                                f"Queued PR {poll_result['status']}: {dep_pr_url}"
+                            )
+                            specs_succeeded -= 1
+                            specs_failed += 1
+                            dag.mark_skipped(dep)
+                            del queued_prs[dep]
+                            _write_story_audit(config, dep_task, dep_result)
+                            _log(
+                                f"✗ {dep}: queued PR {poll_result['status']} "
+                                "before dependent dispatch"
+                            )
+                            dependency_failed = True
+                    if dependency_failed:
+                        continue
+                    if any(dep in queued_prs for dep in task.depends_on):
+                        continue
+
                 # Cap concurrent submissions at max_parallel
                 if len(active) >= max_parallel:
                     break
@@ -1014,6 +1082,8 @@ def run_sprint(
                                     )
                                     result.merge = merge_info
                                     if merge_info.get("merged"):
+                                        # Only actual merges satisfy DAG dependencies;
+                                        # queued auto-merges wait for polling.
                                         merged_slugs.add(slug)
                                         dag.mark_complete(slug)
                                         if not merge_info.get("auto_merge_queued", False):
@@ -1043,6 +1113,12 @@ def run_sprint(
                                                 f"INFO {slug}: PR auto-merge queued; "
                                                 "skipping CI gate until GitHub lands the merge"
                                             )
+                                    elif merge_info.get("merge_queued"):
+                                        queued_prs[slug] = (task, result, merge_info["pr_url"])
+                                        _log(
+                                            f"INFO {slug}: PR auto-merge queued; "
+                                            "waiting for GitHub to report MERGED"
+                                        )
                                     else:
                                         result.success = False
                                         result.phase = Phase.ESCALATE
@@ -1071,8 +1147,8 @@ def run_sprint(
                                 )
                                 result.merge = merge_info
                                 if merge_info.get("merged"):
+                                    # Re-classify in DAG only after an actual merge lands.
                                     merged_slugs.add(slug)
-                                    # Re-classify in DAG since we now know it merged
                                     dag.mark_complete(slug)
                                 else:
                                     result.success = False
@@ -1097,6 +1173,28 @@ def run_sprint(
                                 specs_skipped += 1
                                 _log(f"SKIPPED {t.slug} ({stopped_reason})")
                         pending_merges.clear()
+
+    if queued_prs:
+        for slug, (task, result, pr_url) in list(queued_prs.items()):
+            poll_result = _poll_queued_pr(
+                pr_url,
+                config.project_root,
+                config.workspace.ci_check_timeout_seconds,
+            )
+            if poll_result["status"] == "merged":
+                merged_slugs.add(slug)
+                dag.mark_complete(slug)
+            else:
+                result.success = False
+                result.phase = Phase.ESCALATE
+                result.state.phase = Phase.ESCALATE
+                result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
+                specs_succeeded -= 1
+                specs_failed += 1
+                dag.mark_skipped(slug)
+                _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
+            _write_story_audit(config, task, result)
+            del queued_prs[slug]
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")

@@ -408,7 +408,7 @@ class TestMergePrFunction:
         assert result["success"] is False
         assert result["merged"] is False
         assert "branch protection" in result["error"]
-        assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 1}
+        assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 2}
 
     def test_auto_flag_passed_to_gh_merge(self, tmp_path: Path) -> None:
         """Verify --auto is passed so branch protection can queue the merge."""
@@ -443,7 +443,7 @@ class TestMergePrFunction:
             _merge_pr(config, task, "forge/test-task", review, state)
 
         assert gh_calls
-        assert all("--auto" in c for c in gh_calls)
+        assert all("--auto" not in c for c in gh_calls)
 
     def test_merge_strategy_squash_passed_to_gh(self, tmp_path: Path) -> None:
         """Verify --squash is passed to gh pr merge."""
@@ -528,8 +528,17 @@ class TestMergePrFunction:
         def _fake_run(cmd, **kwargs):
             if isinstance(cmd, list):
                 commands.append(cmd)
-                if cmd[:3] == ["gh", "pr", "merge"]:
-                    return _make_subprocess_result(0, stdout="Auto-merge enabled for pull request")
+                if cmd[:4] == [
+                    "gh",
+                    "pr",
+                    "merge",
+                    "https://github.com/fuzzypete/theforge/pull/queued",
+                ]:
+                    if "--auto" in cmd:
+                        return _make_subprocess_result(0)
+                    return _make_subprocess_result(1, stderr="required status checks must pass")
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return _make_subprocess_result(0, stdout="", stderr="OPEN")
             return _make_subprocess_result(0)
 
         with (
@@ -547,7 +556,8 @@ class TestMergePrFunction:
             result = _merge_pr(config, task, "forge/test-task", review, state)
 
         assert result["success"] is True
-        assert result["merged"] is True
+        assert result["merged"] is False
+        assert result["merge_queued"] is True
         assert ["git", "push", "origin", "--delete", "forge/test-task"] not in commands
 
     def test_immediate_merge_still_deletes_remote_branch(self, tmp_path: Path) -> None:
@@ -586,6 +596,64 @@ class TestMergePrFunction:
         assert result["success"] is True
         assert result["merged"] is True
         assert ["git", "push", "origin", "--delete", "forge/test-task"] in commands
+
+    def test_branch_protection_fallback_immediate_merge(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                if "--auto" in cmd:
+                    return _make_subprocess_result(0)
+                return _make_subprocess_result(1, stderr="required status checks must pass")
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _make_subprocess_result(0, stdout="MERGED")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+        assert result["success"] is True
+        assert result["merged"] is True
+        assert result["merge_queued"] is False
+
+    def test_branch_protection_fallback_queued(self, tmp_path: Path) -> None:
+        result = self._run_merge_pr(
+            tmp_path,
+            gh_merge_results=[
+                _make_subprocess_result(1, stderr="protected branch hook declined"),
+                _make_subprocess_result(0),
+                _make_subprocess_result(0, stdout="", stderr="OPEN"),
+            ],
+        )
+        assert result["success"] is True
+        assert result["merged"] is False
+        assert result["merge_queued"] is True
+        assert result["auto_merge_queued"] is True
+
+    def test_non_protection_failure_returns_fail_without_auto(self, tmp_path: Path) -> None:
+        result = self._run_merge_pr(
+            tmp_path,
+            gh_merge_results=[_make_subprocess_result(1, stderr="authentication failed")],
+        )
+        assert result["success"] is False
+        assert result["merged"] is False
+        assert result["merge_queued"] is False
 
     def test_delete_branch_not_passed_to_gh(self, tmp_path: Path) -> None:
         """gh pr merge avoids local cleanup flags that trip worktree constraints."""
@@ -1335,3 +1403,47 @@ class TestFastForwardAfterMerge:
         assert any(cmd[:4] == ["git", "worktree", "remove", "--force"] for cmd in cleanup_calls)
         assert any(cmd[:3] == ["git", "branch", "-D"] for cmd in cleanup_calls)
         assert any(cmd[:4] == ["git", "push", "origin", "--delete"] for cmd in cleanup_calls)
+
+    def test_finalize_approve_keeps_done_for_merge_queued(self, tmp_path: Path) -> None:
+        import time
+
+        from theforge.coordinator.completion import _finalize_approve
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = CoordinatorState()
+        state.phase = Phase.REVIEW
+
+        with patch(
+            "theforge.coordinator.completion._merge_pr",
+            return_value={
+                "action": "merge-pr",
+                "pr_url": "https://github.com/x/y/pull/6",
+                "merged": False,
+                "merge_queued": True,
+                "auto_merge_queued": True,
+                "success": True,
+                "error": None,
+            },
+        ):
+            result = _finalize_approve(
+                state,
+                config,
+                task,
+                review,
+                tmp_path,
+                "forge/test-task",
+                time.monotonic(),
+                auto_merge=False,
+                notify=False,
+                logger=None,
+                review_cost=0.5,
+                review_elapsed=1.0,
+                message="done. ",
+            )
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.merge["merge_queued"] is True

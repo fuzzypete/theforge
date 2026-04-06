@@ -1291,3 +1291,132 @@ def test_write_sprint_summary_records_ci_break_slug(tmp_path: Path) -> None:
 
     summary = __import__("yaml").safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
     assert summary["sprint"]["ci_break_slug"] == "story-123"
+
+
+class TestQueuedMergePolling:
+    def test_poll_queued_pr_merged(self, tmp_path: Path) -> None:
+        from theforge.sprint.runner import _poll_queued_pr
+
+        states = ["OPEN", "OPEN", "MERGED"]
+
+        def _fake_run(cmd, **kwargs):
+            return MagicMock(returncode=0, stdout=states.pop(0), stderr="")
+
+        with (
+            patch("theforge.sprint.runner.subprocess.run", side_effect=_fake_run),
+            patch("theforge.sprint.runner.time.sleep"),
+        ):
+            assert _poll_queued_pr("https://github.com/x/y/pull/1", tmp_path, 90) == {
+                "status": "merged"
+            }
+
+    def test_poll_queued_pr_closed(self, tmp_path: Path) -> None:
+        from theforge.sprint.runner import _poll_queued_pr
+
+        with patch(
+            "theforge.sprint.runner.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="CLOSED", stderr=""),
+        ):
+            assert _poll_queued_pr("https://github.com/x/y/pull/1", tmp_path, 90) == {
+                "status": "closed"
+            }
+
+    def test_poll_queued_pr_timeout(self, tmp_path: Path) -> None:
+        from theforge.sprint.runner import _poll_queued_pr
+
+        monotonic_values = iter([0, 1, 31, 61])
+        with (
+            patch(
+                "theforge.sprint.runner.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="OPEN", stderr=""),
+            ),
+            patch("theforge.sprint.runner.time.sleep"),
+            patch(
+                "theforge.sprint.runner.time.monotonic", side_effect=lambda: next(monotonic_values)
+            ),
+        ):
+            assert _poll_queued_pr("https://github.com/x/y/pull/1", tmp_path, 60) == {
+                "status": "timeout"
+            }
+
+    def test_merge_queued_does_not_mark_complete_immediately(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+                ci_check_timeout_seconds=60,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result) as mock_run,
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/x/y/pull/7",
+                    "merged": False,
+                    "merge_queued": True,
+                    "auto_merge_queued": True,
+                    "success": True,
+                    "error": None,
+                },
+            ),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                side_effect=[{"status": "timeout"}],
+            ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert mock_run.call_count == 1
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
