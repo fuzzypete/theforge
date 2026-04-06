@@ -302,10 +302,13 @@ def _triage_spec(
     # Pass slug so _is_branch_merged can use the audit trail as a tiebreaker
     # for fast-forward merges where branch and base land on the same commit.
     if _is_branch_merged(branch, base_branch, project_root, slug=slug):
+        merged_reason = f"already merged to {base_branch}"
+        if has_review_approve(project_root, slug, base_branch, branch):
+            merged_reason = f"prior APPROVE in audit trail; already merged to {base_branch}"
         return StoryTriage(
             story_path=story_path,
             action="skip_merged",
-            reason=f"already merged to {base_branch}",
+            reason=merged_reason,
             worktree_path=None,
             slug=slug,
         )
