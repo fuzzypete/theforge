@@ -1,0 +1,30 @@
+dev_notes: |
+  summary: "Added pre-merge dirty-worktree cleanup by introducing _commit_dirty_worktree in gate.py and calling it from _finalize_approve before merge handling. The helper inspects git status --porcelain, warns about untracked files without staging them, stages only tracked dirty files parsed via the existing helper, and commits them with a dedicated pre-merge cleanup message. Added focused tests for tracked dirty changes, clean no-op behavior, and untracked-only warnings."
+  commits:
+    - sha: "75af619"
+      message: "feat(coordinator): commit dirty worktree before merge"
+  acceptance_criteria:
+    - criterion: "Tracked modified/added/deleted files are committed before merge in _finalize_approve"
+      status: MET
+      notes: "_finalize_approve now calls _commit_dirty_worktree before merge handling, and the helper stages tracked dirty files from git status porcelain output and commits them."
+    - criterion: "Untracked files are logged as warnings but not auto-added"
+      status: MET
+      notes: "The helper extracts ?? entries, logs a warning listing them, and excludes them from staging by relying on _parse_dirty_files."
+    - criterion: "The commit message clearly identifies these as pre-merge cleanup"
+      status: MET
+      notes: "Tracked dirty files are committed with the message 'chore: commit remaining worktree changes before merge'."
+    - criterion: "If git status is clean, no commit is created (no empty commits)"
+      status: MET
+      notes: "The helper returns immediately when no tracked dirty files are present, so no git add or git commit runs for a clean worktree."
+    - criterion: "Existing auto-commit of fmt side-effects in VALIDATE is unchanged"
+      status: MET
+      notes: "The existing _auto_commit_side_effects implementation was left untouched."
+    - criterion: "Tests cover: dirty worktree committed, clean worktree no-op, untracked files warned but not added"
+      status: MET
+      notes: "Added tests/test_coord_gate_premerge_commit.py covering all three scenarios."
+  story_deviations:
+    - description: "_commit_dirty_worktree is invoked for all _finalize_approve paths, including merge-pr and none, matching the implementation plan's insertion point and ensuring cleanup before any approval-time merge workflow."
+      justification: "This follows the chosen insertion point in _finalize_approve so tracked worktree changes are consistently committed before approval-time merge handling."
+  deferred_items: none
+  gate_result: PASS
+gate_decision: PASS
