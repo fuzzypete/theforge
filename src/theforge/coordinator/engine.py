@@ -128,21 +128,37 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
     ``patch('theforge.coordinator._run_shell')`` intercepts calls made
     directly within this module.  Sub-modules (coord_workspace, coord_gate)
     call coord_util._run_shell; patch that symbol when testing those paths.
+
+    On timeout, kills the entire process group so child processes don't
+    outlive the shell and consume unbounded memory.
     """
+    import os  # noqa: PLC0415
+
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(cwd),
+        start_new_session=True,
+    )
     try:
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=str(cwd),
-            timeout=timeout,
-        )
-        output = (proc.stdout + proc.stderr).strip()
+        stdout, stderr = proc.communicate(timeout=timeout)
+        output = (stdout + stderr).strip()
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         return False, f"ERROR: {e}"
 
 

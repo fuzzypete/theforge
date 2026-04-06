@@ -163,6 +163,10 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - New coordinator behaviour → add a `tests/test_coord_*.py` file matching the phase
 - New runner behaviour → `tests/test_runner_*.py`
 - Mock subprocess; never invoke real agent CLIs in tests
+- **Never use `fcntl.flock` in tests that also use `threading`.** pytest runs with
+  `-n auto --dist worksteal` (xdist), which forks worker processes. A forked worker
+  inherits open file descriptors with held locks, causing sibling threads to block
+  indefinitely — deadlock, memory balloon, and eventual OOM. Mock the lock instead.
 
 ## Cutting a Release
 
