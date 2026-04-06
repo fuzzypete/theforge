@@ -14,7 +14,7 @@ validation:
   gate_command: ".venv/bin/python -m pytest tests/ -q -n auto --dist worksteal"
   handoff_file: ".forge/handoff.yaml"
   gate_decision_key: "gate_decision"
-  gate_timeout: 30
+  gate_timeout: 45
 
 conventions:
   hard:

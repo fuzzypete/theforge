@@ -102,16 +102,19 @@ def _run_shell(
     On timeout, kills the entire process group so child processes (e.g.
     pytest-xdist workers) don't outlive the shell and consume unbounded memory.
     """
-    proc = subprocess.Popen(
-        cmd,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=str(cwd),
-        env=env if env is not None else os.environ.copy(),
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(cwd),
+            env=env if env is not None else os.environ.copy(),
+            start_new_session=True,
+        )
+    except Exception as e:
+        return False, f"ERROR: {e}"
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()

@@ -134,15 +134,18 @@ def _run_shell(cmd: str, cwd: Path, timeout: int = 120) -> tuple[bool, str]:
     """
     import os  # noqa: PLC0415
 
-    proc = subprocess.Popen(
-        cmd,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=str(cwd),
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=str(cwd),
+            start_new_session=True,
+        )
+    except Exception as e:
+        return False, f"ERROR: {e}"
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()
