@@ -94,19 +94,17 @@ def _is_branch_merged(
                     # Regular merge: base has moved past branch and branch had
                     # unique work of its own.
                     return True
-                # ahead_count > 0 with no unique commits is ambiguous in git state
-                # alone: it can be an abandoned empty branch or a regular merge
-                # commit whose branch tip is already reachable from base. Use the
-                # audit trail as the tiebreaker when the slug is known.
-                if slug is not None:
-                    return has_review_approve(project_root, slug, base_branch, branch)
-                return False
-            # Fast-forward merge: branch and base at the same tip (count == 0).
-            # Fall back to the audit trail when the slug is known.
-            if slug is not None:
-                return has_review_approve(project_root, slug, base_branch, branch)
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
+
+    # Fast-forward merges at the same tip and squash merges both need the audit
+    # trail fallback. In real squash merges, --is-ancestor returns non-zero, so
+    # this check must live outside the topology-success branch above.
+    if slug is not None:
+        try:
+            return has_review_approve(project_root, slug, base_branch, branch)
+        except Exception:
+            return False
     return False
 
 

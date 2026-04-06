@@ -177,9 +177,9 @@ def test_is_branch_merged_ff_with_audit_approve(tmp_path: Path) -> None:
 
 
 def test_is_branch_merged_squash_merge_with_audit_approve(tmp_path: Path) -> None:
-    """After squash merge (same topology as empty branch), audit trail APPROVE → True."""
+    """Squash merges still resolve via audit trail when git topology is not ancestor."""
     with (
-        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_ff),
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor),
         patch("theforge.sprint.dag.has_review_approve", return_value=True),
     ):
         result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
@@ -263,9 +263,12 @@ def test_is_branch_merged_stale_empty_branch(tmp_path: Path) -> None:
     assert result is False
 
 
-def test_is_branch_merged_not_ancestor(tmp_path: Path) -> None:
-    """Branch not an ancestor of base → False."""
-    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor):
+def test_is_branch_merged_not_ancestor_without_audit(tmp_path: Path) -> None:
+    """Branch not an ancestor of base with no APPROVE audit stays unmerged."""
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_git_not_ancestor),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
         result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
     assert result is False
 

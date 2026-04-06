@@ -287,7 +287,8 @@ def _write_story_audit(
 
     try:
         audit_data = generate_audit_log(config, task, result)
-    except Exception:
+    except Exception as exc:
+        _log(f"Warning: failed to generate story audit log for {task.slug}: {exc}")
         return
 
     audits_dir = config.project_root / ".forge" / "audits"
