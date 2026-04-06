@@ -46,6 +46,22 @@ def _resolve_setup_command(cmd: str) -> str:
     return cmd.replace("{forge_python}", shlex.quote(sys.executable))
 
 
+def _read_last_setup_command(workspace_path: Path) -> str | None:
+    """Read the last setup_command run in this workspace, if any."""
+    path = workspace_path / ".forge" / "last_setup_command"
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
+def _write_last_setup_command(workspace_path: Path, cmd: str) -> None:
+    """Persist the last setup_command run in this workspace."""
+    forge_dir = workspace_path / ".forge"
+    forge_dir.mkdir(parents=True, exist_ok=True)
+    (forge_dir / "last_setup_command").write_text(cmd, encoding="utf-8")
+
+
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
     """Run workspace setup, always running pip install even if .venv exists.
 
@@ -60,6 +76,10 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
 
     Falls back to running setup_command verbatim when neither pattern matches.
     """
+    last_setup_command = _read_last_setup_command(workspace_path)
+    if last_setup_command is not None and last_setup_command != setup_command:
+        _cu._log("⚠ WORKSPACE  setup_command changed — re-running install")
+
     # --- template form: match before substitution ---
     m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
     if m:
@@ -68,19 +88,28 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
         ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
         if not ok:
             return ok, out
-        return _cu._run_shell(install_cmd, workspace_path)
+        ok, out = _cu._run_shell(install_cmd, workspace_path)
+        if ok:
+            _write_last_setup_command(workspace_path, setup_command)
+        return ok, out
 
     # --- legacy form: resolve then match ---
     cmd = _resolve_setup_command(setup_command)
     m = _VENV_GUARD_RE.search(cmd)
     if not m:
-        return _cu._run_shell(cmd, workspace_path)
+        ok, out = _cu._run_shell(cmd, workspace_path)
+        if ok:
+            _write_last_setup_command(workspace_path, setup_command)
+        return ok, out
     python_exe = m.group(1)
     install_cmd = m.group(2).strip()
     ok, out = _cu._run_shell(f"test -d .venv || {python_exe} -m venv .venv", workspace_path)
     if not ok:
         return ok, out
-    return _cu._run_shell(install_cmd, workspace_path)
+    ok, out = _cu._run_shell(install_cmd, workspace_path)
+    if ok:
+        _write_last_setup_command(workspace_path, setup_command)
+    return ok, out
 
 
 def _resolve_merge_conflicts(
@@ -378,7 +407,7 @@ def _check_behind_origin(config: ForgeConfig) -> None:
         _cu._log(f"ℹ WORKSPACE  {base_branch} is {count} commit(s) behind origin/{base_branch}")
 
 
-_FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml")
+_FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/last_setup_command")
 
 
 def _deindex_forge_artifacts(workspace_path: Path) -> None:
@@ -446,6 +475,11 @@ def _create_workspace(
             _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
             if not no_pull:
                 _check_behind_origin(config)
+            if config.workspace.setup_command:
+                _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
+                ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
+                if not ok_s:
+                    return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path)
             return workspace_path, branch_name, None
 
