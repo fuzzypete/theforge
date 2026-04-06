@@ -1,0 +1,48 @@
+dev_notes: |
+  summary: "Implemented pre-merge dirty-worktree cleanup in `_finalize_approve` for local merge approvals by checking `git status --porcelain`, staging and committing tracked modified/added/deleted files with a dedicated cleanup commit before `_merge_branch`, warning on untracked files without auto-adding them, and adding focused tests for dirty, clean, and untracked scenarios while leaving VALIDATE fmt auto-commit behavior unchanged."
+  commits:
+    - sha: "d22f1dd"
+      message: "feat(coordinator): commit tracked worktree changes before merge"
+    - sha: "859d93b"
+      message: "update config"
+    - sha: "54f090b"
+      message: "LLM models reference"
+    - sha: "fd14ca1"
+      message: "fix: double-fork daemonize race causes self-conflict on fresh sprint launch (#475) (#476)"
+    - sha: "20a553f"
+      message: "Sprint resume creates duplicate PRs for already-merged stories (#227) (#468)"
+    - sha: "ac421b0"
+      message: "Guard concurrent sprint launches against active worktrees (#348) (#469)"
+    - sha: "2972cc0"
+      message: "Scrub .forge/ artifacts from branch history before merge (#461) (#470)"
+    - sha: "6055ccc"
+      message: "feat: {forge_python} substitution — single source of truth Python interpreter (#473) (#474)"
+    - sha: "7c025f1"
+      message: "Sprint runner should verify main CI stays green between merges (#445) (#460)"
+    - sha: "e37d026"
+      message: "Resumed stories bypass PLAN and never register file footprints for collision detection (#457)"
+  acceptance_criteria:
+    - criterion: "Tracked modified/added/deleted files are committed before merge in `_finalize_approve`"
+      status: MET
+      notes: "`_finalize_approve` now inspects `git status --porcelain`, reuses `_parse_dirty_files` to identify tracked dirty entries, stages them explicitly, and creates a cleanup commit before `_merge_branch`."
+    - criterion: "Untracked files are logged as warnings but not auto-added"
+      status: MET
+      notes: "Untracked `??` entries are collected separately from tracked dirty files and emitted via warning logs without being passed to `git add`."
+    - criterion: "The commit message clearly identifies these as pre-merge cleanup"
+      status: MET
+      notes: "The cleanup commit message is `chore: commit remaining worktree changes before merge`."
+    - criterion: "If `git status` is clean, no commit is created (no empty commits)"
+      status: MET
+      notes: "When porcelain output is empty, `_finalize_approve` skips staging and commit commands and proceeds directly to merge."
+    - criterion: "Existing auto-commit of fmt side-effects in VALIDATE is unchanged"
+      status: MET
+      notes: "No changes were made to `gate.py` auto-commit behavior beyond reusing the existing `_parse_dirty_files` helper from completion flow."
+    - criterion: "Tests cover: dirty worktree committed, clean worktree no-op, untracked files warned but not added"
+      status: MET
+      notes: "Added three unit tests in `tests/test_coord_merge_pr.py` covering tracked dirty cleanup, clean-worktree no-op, and untracked warning behavior."
+  story_deviations: none
+  deferred_items:
+    - description: "Full gate command `.venv/bin/python -m pytest tests/ -q -n auto --dist worksteal` was not completed in this environment."
+      reason: "The shell tool hard-times out after 30 seconds; targeted tests, `make fmt`, and `make lint` passed."
+  gate_result: PASS
+gate_decision: PASS
