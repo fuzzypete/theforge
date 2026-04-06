@@ -6,6 +6,7 @@ import datetime
 import os
 import subprocess
 import sys
+import time
 
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
@@ -144,6 +145,8 @@ def cmd_stop(args: object) -> int:
     """Send SIGTERM to a running forge process."""
     import signal as _signal
 
+    from theforge import detach as _detach
+
     config_path = _find_config()
     if config_path is None or not config_path.exists():
         print("forge.yaml not found.", file=sys.stderr)
@@ -156,8 +159,6 @@ def cmd_stop(args: object) -> int:
     if not pid_file.exists():
         print(f"No PID file found for run {run_id} — is it still running?", file=sys.stderr)
         return 1
-
-    from theforge import detach as _detach
 
     parsed = _detach._read_pid_file(pid_file)
     if parsed is None:
@@ -176,7 +177,25 @@ def cmd_stop(args: object) -> int:
         print(f"Could not signal process {pid}: {exc}", file=sys.stderr)
         return 1
 
-    return 0
+    if args.no_wait:
+        return 0
+
+    start = time.monotonic()
+    while time.monotonic() - start < args.timeout:
+        if not _detach._is_pid_alive(pid):
+            print(f"[forge] Run {run_id} has stopped.")
+            return 0
+        time.sleep(0.1)
+
+    if not _detach._is_pid_alive(pid):
+        print(f"[forge] Run {run_id} has stopped.")
+        return 0
+
+    print(
+        f"Timed out waiting for run {run_id} to stop (PID {pid} still alive)",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def cmd_decide(args: object) -> int:
@@ -237,6 +256,19 @@ def register_parsers(subparsers: object) -> None:
         help="Send SIGTERM to a running forge process",
     )
     stop_parser.add_argument("run_id", help="Run ID to stop")
+    stop_parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        default=False,
+        help="Return immediately after sending SIGTERM",
+    )
+    stop_parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+        metavar="N",
+        help="Seconds to wait for process exit (default 60)",
+    )
 
     # forge decide
     decide_parser = subparsers.add_parser(

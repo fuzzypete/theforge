@@ -652,7 +652,7 @@ class TestCmdStop:
         forge_yaml = tmp_path / "forge.yaml"
         forge_yaml.write_text("project:\n  root: .\n")
         config = _make_forge_config(tmp_path)
-        args = argparse.Namespace(run_id=run_id)
+        args = argparse.Namespace(run_id=run_id, no_wait=True, timeout=60)
 
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
@@ -664,6 +664,86 @@ class TestCmdStop:
         assert result == 0
         mock_kill.assert_called_once_with(target_pid, _signal.SIGTERM)
 
+    def test_blocks_until_process_dies(self, tmp_path):
+        """forge stop waits for the process to exit before returning 0."""
+        from theforge.cli import cmd_stop
+
+        run_id = "abc123"
+        target_pid = 54321
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.pid").write_text(f"{target_pid}\nmy-slug\n")
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, no_wait=False, timeout=60)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.os.kill"),
+            patch("theforge.cli.status.time.sleep") as mock_sleep,
+            patch("theforge.detach._is_pid_alive", side_effect=[True, False]),
+        ):
+            result = cmd_stop(args)
+
+        assert result == 0
+        mock_sleep.assert_called_once_with(0.1)
+
+    def test_timeout_returns_nonzero(self, tmp_path):
+        """forge stop returns 1 when the process does not exit before timeout."""
+        from theforge.cli import cmd_stop
+
+        run_id = "abc123"
+        target_pid = 54321
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.pid").write_text(f"{target_pid}\nmy-slug\n")
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, no_wait=False, timeout=60)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.os.kill"),
+            patch("theforge.cli.status.time.sleep"),
+            patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.0, 61.0]),
+            patch("theforge.detach._is_pid_alive", return_value=True),
+        ):
+            result = cmd_stop(args)
+
+        assert result == 1
+
+    def test_no_wait_skips_polling(self, tmp_path):
+        """forge stop --no-wait returns immediately without polling."""
+        from theforge.cli import cmd_stop
+
+        run_id = "abc123"
+        target_pid = 54321
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.pid").write_text(f"{target_pid}\nmy-slug\n")
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, no_wait=True, timeout=60)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.os.kill"),
+            patch("theforge.detach._is_pid_alive") as mock_is_alive,
+        ):
+            result = cmd_stop(args)
+
+        assert result == 0
+        mock_is_alive.assert_not_called()
+
     def test_returns_error_when_no_pid_file(self, tmp_path):
         """forge stop returns 1 when no PID file found."""
         from theforge.cli import cmd_stop
@@ -671,7 +751,7 @@ class TestCmdStop:
         forge_yaml = tmp_path / "forge.yaml"
         forge_yaml.write_text("project:\n  root: .\n")
         config = _make_forge_config(tmp_path)
-        args = argparse.Namespace(run_id="nosuchrun")
+        args = argparse.Namespace(run_id="nosuchrun", no_wait=False, timeout=60)
 
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
