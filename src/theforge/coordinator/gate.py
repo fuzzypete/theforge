@@ -62,6 +62,48 @@ def _auto_commit_side_effects(workspace_path: Path, files: list[str]) -> bool:
         return False
 
 
+def _commit_dirty_worktree(workspace_path: Path) -> None:
+    """Commit tracked dirty worktree changes before merge.
+
+    Warns about untracked files but does not stage them. No-op when the
+    worktree has no tracked dirty files.
+    """
+    ok, output = _cu._run_shell("git status --porcelain", workspace_path)
+    if not ok:
+        _cu._log(f"Pre-merge cleanup: git status failed: {output}")
+        return
+
+    untracked = [line[3:].strip() for line in output.splitlines() if line[:2] == "??"]
+    if untracked:
+        _cu._log(
+            "Warning: untracked files remain in worktree and will not be auto-committed: "
+            + ", ".join(untracked)
+        )
+
+    dirty_files = _parse_dirty_files(output)
+    if not dirty_files:
+        return
+
+    try:
+        quoted = " ".join(shlex.quote(f) for f in dirty_files)
+        add_ok, add_out = _cu._run_shell(f"git add -- {quoted}", workspace_path)
+        if not add_ok:
+            _cu._log(f"Pre-merge cleanup: git add failed: {add_out}")
+            return
+        commit_ok, commit_out = _cu._run_shell(
+            'git commit -m "chore: commit remaining worktree changes before merge"',
+            workspace_path,
+        )
+        if not commit_ok:
+            _cu._log(f"Pre-merge cleanup: git commit failed: {commit_out}")
+            return
+        _cu._log(
+            "Pre-merge cleanup: committed tracked worktree changes: " + ", ".join(dirty_files)
+        )
+    except Exception as e:  # noqa: BLE001
+        _cu._log(f"Pre-merge cleanup: unexpected error: {e}")
+
+
 def _is_gate_skip(gate_override: str | None) -> bool:
     """Return True if the gate_override value means 'skip the gate entirely'."""
     return isinstance(gate_override, str) and gate_override.lower() == "none"

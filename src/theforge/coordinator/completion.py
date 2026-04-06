@@ -12,6 +12,7 @@ from theforge.config import ForgeConfig
 from theforge.review import ReviewResult
 from theforge.task import TaskStory
 
+from .gate import _commit_dirty_worktree
 from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
@@ -581,6 +582,8 @@ def _finalize_approve(
 
     # Resolve effective on_approve: CLI --auto-merge flag forces "merge"
     effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
+
+    _commit_dirty_worktree(workspace_path)
 
     if effective_on_approve == "merge":
         merge_info = _merge_branch(
