@@ -149,7 +149,7 @@ class TestTriageSpec:
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
-        assert "stale" in triage.reason or "0 commits" in triage.reason or "HEAD" in triage.reason
+        assert triage.reason == "branch is at main HEAD with 0 commits ahead"
 
     def test_triage_worktree_with_passing_gate(self, tmp_path: Path) -> None:
         """Worktree exists, commits ahead, gate passes → review."""
@@ -279,7 +279,7 @@ class TestTriageSpec:
             triage = _triage_spec("feature-a.md", config, tmp_path)
 
         assert triage.action == "full"
-        assert "stale" in triage.reason or "0 commits" in triage.reason or "HEAD" in triage.reason
+        assert triage.reason == "no worktree found"
 
     def test_triage_same_tip_missing_worktree_with_prior_approve_skips_when_squash_merged(
         self, tmp_path: Path
