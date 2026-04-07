@@ -169,6 +169,35 @@ findings:
     assert result.findings[0].category == "requirement"
 
 
+def test_parse_category_normalization():
+    # [P2] Regression test
+    output = """\
+```yaml
+verdict: WARN
+findings:
+  - category: Scope
+    description: "Case test"
+```
+"""
+    result = _parse_validation_output(output)
+    assert result.findings[0].category == "scope"
+
+
+def test_parse_malformed_split_suggestion_handled():
+    # [P1] Regression test: scalar instead of dict
+    output = """\
+```yaml
+verdict: WARN
+findings:
+  - category: scope
+    description: "Malformed split"
+    split_suggestion: "should be a dict"
+```
+"""
+    result = _parse_validation_output(output)
+    assert result.findings[0].split_suggestion is None
+
+
 # ── Tests: _make_fast_profile ─────────────────────────────────────────
 
 

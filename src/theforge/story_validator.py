@@ -137,14 +137,22 @@ def _parse_validation_output(output: str) -> StoryValidationResult:
     for f_data in data.get("findings", []):
         if not isinstance(f_data, dict):
             continue
-        category = f_data.get("category", "requirement")
+
+        # [P2] Normalize category case: Scope -> scope
+        category = str(f_data.get("category", "requirement")).lower()
         if category not in _KNOWN_CATEGORIES:
             category = "requirement"
+
+        # [P1] Fail-safe split_suggestion: must be a dict or None
+        split_suggestion = f_data.get("split_suggestion")
+        if split_suggestion is not None and not isinstance(split_suggestion, dict):
+            split_suggestion = None
+
         findings.append(
             StoryValidationFinding(
                 category=category,
                 description=f_data.get("description", "No description provided"),
-                split_suggestion=f_data.get("split_suggestion"),
+                split_suggestion=split_suggestion,
             )
         )
 
