@@ -174,10 +174,15 @@ findings:
 
 def test_make_fast_profile_opus_substituted():
     """opus model should be replaced with sonnet."""
-    from dataclasses import replace
-
     from theforge.config import ModelProfile
-    profile = ModelProfile(name="test", cli="claude", model="opus-something")
+    profile = ModelProfile(
+        name="test",
+        cli="claude",
+        model="opus-something",
+        budget_usd=1.0,
+        timeout_seconds=60,
+        allowed_tools=(),
+    )
     fast = _make_fast_profile(profile)
     assert "sonnet" in fast.model
 
@@ -185,6 +190,13 @@ def test_make_fast_profile_opus_substituted():
 def test_make_fast_profile_non_opus_preserved():
     """non-opus models should be left alone."""
     from theforge.config import ModelProfile
-    profile = ModelProfile(name="test", cli="claude", model="sonnet-something")
+    profile = ModelProfile(
+        name="test",
+        cli="claude",
+        model="sonnet-something",
+        budget_usd=1.0,
+        timeout_seconds=60,
+        allowed_tools=(),
+    )
     fast = _make_fast_profile(profile)
     assert fast.model == "sonnet-something"
