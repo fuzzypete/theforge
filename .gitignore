@@ -27,6 +27,7 @@ htmlcov/
 # But hooks are project config — track them
 !.forge/hooks/
 !.forge/hooks/**
+!.forge/.env.example
 # Legacy root-level artifacts (ignore if leftover)
 forge_ideation_audit.yaml
 sprint-audit.yaml

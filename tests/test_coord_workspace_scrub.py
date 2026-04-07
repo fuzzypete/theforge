@@ -32,7 +32,9 @@ def _init_repo(tmp_path: Path) -> tuple[Path, str]:
     # Mirror the real project's .gitignore: .forge/ entirely ignored.
     # Tracked .forge/ files (hooks, .env.example) are force-added because the
     # parent-dir rule prevents negation overrides in practice.
-    (repo / ".gitignore").write_text(".forge/\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(
+        ".forge/*\n!.forge/hooks/\n!.forge/hooks/**\n!.forge/.env.example\n", encoding="utf-8"
+    )
     (repo / "README.md").write_text("base\n", encoding="utf-8")
     _git(repo, "add", ".gitignore", "README.md")
     _git(repo, "commit", "-m", "base")
@@ -142,7 +144,7 @@ def test_scrub_rebase_failure_is_silent(tmp_path):
     def side_effect(cmd, cwd, **kwargs):
         if cmd == f"git log --format=%H origin/{base_branch}..HEAD":
             return True, "abc123"
-        if cmd == f"git ls-tree -r --name-only origin/{base_branch} -- .forge/":
+        if cmd == "git check-ignore -q -- .forge/handoff.yaml":
             return True, ""
         if cmd == "git diff-tree --no-commit-id -r --name-only abc123":
             return True, ".forge/handoff.yaml"

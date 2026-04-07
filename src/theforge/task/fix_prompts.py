@@ -74,11 +74,8 @@ def build_handoff_fix_prompt(
 
         1. Open `{handoff_file}` and fix ONLY the `dev_notes` field.
         2. Do NOT change any code. Do NOT re-run the gate.
-        3. Commit the fix:
-           ```bash
-           git add {handoff_file}
-           git commit -m "fix({task.slug}): rewrite dev handoff to match schema"
-           ```
+        3. Write the updated handoff file to disk and stop.
+           Do NOT run `git add` or `git commit` for `{handoff_file}`.
     """)
 
 
