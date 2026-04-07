@@ -64,8 +64,8 @@ class ContextPack:
     dropped: tuple[ContextManifestEntry, ...]
     budget: int
     line_count: int
-    phase: str
-    structural_index_git_sha: str | None
+    phase: str = ""
+    structural_index_git_sha: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +167,7 @@ class ContextAssembler:
                 included=True,
                 reason=item.reason,
                 score=item.score,
+                item_type="invariant" if item.required else "advisory",
             )
             for item in included_items
         )
@@ -179,6 +180,8 @@ class ContextAssembler:
                 included=False,
                 reason=item.reason,
                 score=item.score,
+                item_type="invariant" if item.required else "advisory",
+                drop_reason="budget exceeded",
             )
             for item in dropped_items
         )
