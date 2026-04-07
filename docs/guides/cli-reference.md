@@ -52,6 +52,7 @@ forge run <story-file> [flags]
 | `--max-cycles <N>` | Cap review→dev cycles for this run |
 | `--dev-model <provider/model@base_url>` | Override the dev model for one run |
 | `--plan-model <provider/model>` | Override the plan model for one run |
+| `--base-branch <branch>` | Override the target base branch for this run |
 | `--fg` | Run in the foreground instead of detaching |
 | `--no-pull` | Skip `git pull --ff-only` before fresh worktree creation |
 
@@ -126,8 +127,11 @@ manifest argument is optional when using `--milestone` or `--label`.
 | `--resume` | Auto-triage each story and resume from the correct phase |
 | `--milestone <name>` | Run all open issues in a GitHub milestone (requires `--budget`) |
 | `--label <name>` | Run all open issues with a GitHub label (requires `--budget`) |
-| `--budget <usd>` | Budget ceiling in USD — required when using `--milestone` or `--label` |
+| `--issues <N,M,...>` | Run specific issues by number without a label or manifest |
+| `--budget <usd>` | Budget ceiling in USD — required when using `--milestone`, `--label`, or `--issues` |
 | `--name <name>` | Override the sprint name (default: milestone or label value) |
+| `--parallel <N>` | Run up to N stories concurrently (default: 1) |
+| `--base-branch <branch>` | Override the target base branch for this run |
 | `--config <path>` | Path to `forge.yaml` |
 | `--no-notify` | Suppress notifications |
 | `--detach` | Queue the sprint on a running daemon and return immediately |
