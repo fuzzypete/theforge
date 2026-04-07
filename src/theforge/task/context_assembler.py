@@ -14,6 +14,7 @@ _PHASE_TO_BUDGET_ATTR = {
     "preflight": "preflight_budget",
     "plan": "plan_budget",
     "dev": "dev_budget",
+    "review": "dev_budget",
 }
 
 _INDEX_CANDIDATES = (
@@ -298,6 +299,10 @@ class ContextAssembler:
         score += len(story_terms & text_terms)
         if phase in text.lower():
             score += 5
+        if phase == "review" and any(
+            term in text.lower() for term in ("review", "correctness", "edge", "pattern")
+        ):
+            score += 3
         return score
 
 

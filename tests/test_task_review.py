@@ -597,3 +597,33 @@ class TestNotesConventionInReviewPrompt:
         assert "Notes" in prompt
         assert "stale or wrong" in prompt
         assert "NOT acceptance criteria" in prompt
+
+
+def test_review_prompt_includes_repository_context_pack(review_task):
+    from theforge.task.context_assembler import ContextManifestEntry, ContextPack
+
+    prompt = build_review_prompt(
+        review_task,
+        **_REVIEW_COMMON_KWARGS,
+        assembled_context=ContextPack(
+            content="## Context\n\n- review the touched modules first",
+            included=(
+                ContextManifestEntry(
+                    source="src/theforge/task/CLAUDE.md",
+                    kind="claude_advisory",
+                    required=False,
+                    lines=2,
+                    included=True,
+                    reason="review context",
+                    score=1,
+                ),
+            ),
+            dropped=(),
+            budget=10,
+            line_count=2,
+            phase="review",
+        ),
+    )
+
+    assert "Repository Context Pack" in prompt
+    assert "review the touched modules first" in prompt

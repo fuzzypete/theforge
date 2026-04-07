@@ -25,7 +25,7 @@ from theforge.review import (
     parse_review_output,
 )
 from theforge.sessions import save_sessions
-from theforge.task import TaskStory, build_review_prompt
+from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -176,6 +176,13 @@ def _run_review_pool(
             handoff_commit_warning=handoff_commit_warning,
         )
 
+        review_context = ContextAssembler.from_config(config).assemble(
+            phase="review",
+            story_text=story_content,
+            file_list=state.preflight_likely_files or None,
+        )
+        state.context_manifests.append({"phase": "review", "manifest": review_context})
+
         review_prompts = (
             [
                 build_review_prompt(
@@ -194,6 +201,7 @@ def _run_review_pool(
                     dev_notes=dev_notes,
                     cycle_history=state.cycle_history if state.cycle_history else None,
                     conventions=config.conventions_soft,
+                    assembled_context=review_context,
                 )
                 for p in pool
             ]
@@ -213,6 +221,7 @@ def _run_review_pool(
                 dev_notes=dev_notes,
                 cycle_history=state.cycle_history if state.cycle_history else None,
                 conventions=config.conventions_soft,
+                assembled_context=review_context,
             )
         )
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in pool]}")
