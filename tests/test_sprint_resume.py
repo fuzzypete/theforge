@@ -580,6 +580,76 @@ class TestResumeSprintIntegration:
         mock_task.assert_not_called()
         assert result.specs_succeeded == 1
 
+    def test_resume_sprint_passes_cached_preflight_to_resumed_entrypoints(
+        self, tmp_path: Path
+    ) -> None:
+        """Resume mode forwards cached sprint preflight state into review/dev entry points."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+        config = _make_config(tmp_path)
+
+        review_worktree = tmp_path / "feature-a"
+        review_worktree.mkdir()
+        dev_worktree = tmp_path / "feature-b"
+        dev_worktree.mkdir()
+
+        review_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="review",
+            reason="gate passes",
+            worktree_path=review_worktree,
+        )
+        dev_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="dev",
+            reason="gate fails",
+            worktree_path=dev_worktree,
+        )
+
+        review_cached = CoordinatorState(
+            preflight_verdict="PROCEED",
+            preflight_reason="cached review",
+            preflight_likely_files=["src/review.py"],
+        )
+        review_cached.run_id = "run-review"
+        dev_cached = CoordinatorState(
+            preflight_verdict="PROCEED",
+            preflight_reason="cached dev",
+            preflight_likely_files=["src/dev.py"],
+        )
+        dev_cached.run_id = "run-dev"
+
+        def triage_side_effect(spec_path, config, project_root, *, task=None):
+            if "feature-a" in spec_path:
+                return review_triage
+            return dev_triage
+
+        def batch_preflight_side_effect(tasks, *_args, **_kwargs):
+            return {
+                "feature-a": review_cached,
+                "feature-b": dev_cached,
+            }
+
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
+            with patch(
+                "theforge.sprint.runner.run_batch_preflight",
+                side_effect=batch_preflight_side_effect,
+            ):
+                with patch(
+                    "theforge.sprint.runner.run_from_review", return_value=coord_result
+                ) as mock_rev:
+                    with patch(
+                        "theforge.sprint.runner.run_from_dev", return_value=coord_result
+                    ) as mock_dev:
+                        result = run_sprint(config, manifest_path, resume=True)
+
+        assert result.specs_succeeded == 2
+        assert mock_rev.call_args.kwargs["cached_preflight_state"] is review_cached
+        assert mock_dev.call_args.kwargs["cached_preflight_state"] is dev_cached
+
     def test_resume_cost_continuity(self, tmp_path: Path) -> None:
         """Prior sprint cost is carried forward into total_cost_usd."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")

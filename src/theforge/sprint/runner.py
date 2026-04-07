@@ -293,6 +293,7 @@ def _run_fresh(
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
         no_pull=no_pull,
+        cached_preflight_state=(preflight_states or {}).get(task.slug),
     )
 
 
@@ -343,6 +344,7 @@ def _run_single_story(
                     sprint_name=sprint_name,
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
+                    cached_preflight_state=(preflight_states or {}).get(task.slug),
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -356,6 +358,7 @@ def _run_single_story(
                     sprint_name=sprint_name,
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
+                    cached_preflight_state=(preflight_states or {}).get(task.slug),
                 )
             else:
                 result = _run_fresh(
