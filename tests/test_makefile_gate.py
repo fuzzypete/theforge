@@ -7,7 +7,7 @@ def test_gate_runs_index_before_pytest() -> None:
     gate_end = makefile.index("\n\ngate-serial:")
     gate_block = makefile[gate_start:gate_end]
 
-    index_cmd = "PYTHONPATH=src python -m theforge.cli.main index"
+    index_cmd = "forge index"
     pytest_cmd = "PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal"
 
     assert index_cmd in gate_block
