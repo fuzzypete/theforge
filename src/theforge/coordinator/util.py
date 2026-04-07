@@ -94,12 +94,20 @@ def resolve_timeout(
     return base
 
 
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    """Best-effort kill for a spawned shell process group."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
 def _run_shell(
     cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
 ) -> tuple[bool, str]:
     """Run a shell command. Returns (success, combined output).
 
-    On timeout, kills the entire process group so child processes (e.g.
+    On abnormal exit, kills the entire process group so child processes (e.g.
     pytest-xdist workers) don't outlive the shell and consume unbounded memory.
     """
     try:
@@ -120,15 +128,18 @@ def _run_shell(
         output = (stdout + stderr).strip()
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _kill_process_group(proc)
         proc.wait()
         return False, f"TIMEOUT after {timeout}s: {cmd}"
-    except Exception as e:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        return False, f"ERROR: {e}"
+    except BaseException:
+        _kill_process_group(proc)
+        proc.wait()
+        raise
+    finally:
+        for stream_name in ("stdout", "stderr"):
+            stream = getattr(proc, stream_name, None)
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
