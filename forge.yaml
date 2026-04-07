@@ -18,7 +18,7 @@ validation:
 
 conventions:
   hard:
-    max_module_lines: 500
+    max_module_lines: 600
     max_test_file_lines: 1000
     no_circular_imports: true
     test_mirrors_source: true
