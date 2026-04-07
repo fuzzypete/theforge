@@ -95,34 +95,43 @@ def _make_fast_profile(profile: Any) -> Any:
 
 
 def _extract_yaml_block(text: str) -> str | None:
-    """Extract first YAML block from text, or None if not found."""
-    match = re.search(r"```[yY][aA][mM][lL]\n(.*?)\n```", text, re.DOTALL)
+    \"\"\"Extract first YAML block from text, or None if not found.\"\"\"
+    # [P2] More tolerant: allow trailing whitespace after yaml marker
+    match = re.search(r"```[yY][aA][mM][lL][ \t]*\n(.*?)\n```", text, re.DOTALL)
     if match:
         return match.group(1)
     return None
 
 
 def _parse_validation_output(output: str) -> StoryValidationResult:
-    """Parse YAML block from model output."""
+    \"\"\"Parse YAML block from model output.\"\"\"
     yaml_text = _extract_yaml_block(output)
-    if not yaml_text:
-        # Fallback to loose parsing if no code block
-        try:
-            data = yaml.safe_load(output)
-        except Exception:
-            return StoryValidationResult(verdict="PASS")
-    else:
+    if yaml_text:
         try:
             data = yaml.safe_load(yaml_text)
         except Exception:
-            return StoryValidationResult(verdict="PASS")
+            return StoryValidationResult(verdict=\"PASS\")
+    else:
+        # [P2] Bare YAML fallback: try parsing whole output if no fence found
+        try:
+            data = yaml.safe_load(output)
+        except Exception:
+            # If full-text parse fails, try searching for verdict: pattern
+            # as a last-resort fallback for messy LLM output.
+            v_match = re.search(r\"^verdict:\s*(\w+)\", output, re.MULTILINE | re.IGNORECASE)
+            if v_match:
+                data = {\"verdict\": v_match.group(1)}
+            else:
+                return StoryValidationResult(verdict=\"PASS\")
 
     if not isinstance(data, dict):
-        return StoryValidationResult(verdict="PASS")
+        return StoryValidationResult(verdict=\"PASS\")
 
-    verdict = data.get("verdict", "PASS")
-    if verdict not in ("PASS", "WARN"):
-        verdict = "PASS"
+    # [P1] Normalize verdict case: warn -> WARN
+    verdict = str(data.get(\"verdict\", \"PASS\")).upper()
+    if verdict not in (\"PASS\", \"WARN\"):
+        verdict = \"PASS\"
+
 
     _KNOWN_CATEGORIES = {"contradiction", "internals", "ambiguity", "orphaned", "scope"}
     findings = []
