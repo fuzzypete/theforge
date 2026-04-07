@@ -82,6 +82,14 @@ def _normalize_commit_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _get_raw_commit_lines(workspace_path: Path, base_branch: str = "main") -> list[str]:
+    """Return raw one-line commits ahead of base branch without human-readable warnings."""
+    ok, log = _cu._run_shell(f"git log {base_branch}..HEAD --oneline --reverse", workspace_path)
+    if not ok or not log.strip():
+        return []
+    return _normalize_commit_lines(log)
+
+
 def _handoff_commit_lines(handoff: DevHandoff | None) -> list[str] | None:
     """Return normalized commit lines from parsed handoff, or None if unavailable."""
     if handoff is None or handoff.parse_errors:
@@ -104,7 +112,7 @@ def _get_handoff_commit_warning(
     if handoff_lines is None:
         return None
 
-    actual_lines = _normalize_commit_lines(_get_commit_log(workspace_path, base_branch))
+    actual_lines = _get_raw_commit_lines(workspace_path, base_branch)
     actual_set = set(actual_lines)
     handoff_set = set(handoff_lines)
 

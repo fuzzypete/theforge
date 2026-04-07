@@ -833,6 +833,14 @@ def _run_review_only_phase(
     handoff_commit_warning = _get_handoff_commit_warning(
         config, workspace_path, config.workspace.base_branch
     )
+    if logger:
+        logger._safe_emit(
+            "review_git_context",
+            base_branch=config.workspace.base_branch,
+            commit_log=commit_log,
+            diff_stat=diff_stat,
+            handoff_commit_warning=handoff_commit_warning,
+        )
     review_prompt = build_review_prompt(
         task,
         story_content=story_content,
@@ -870,6 +878,7 @@ def _run_review_only_phase(
         notify=notify,
         review_prompts=review_prompt,
         enforce_budgets=False,
+        logger=logger,
     )
     state.last_cycle_reviewer_results = _named_parsed
     _pool_elapsed = time.monotonic() - _pool_start

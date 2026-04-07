@@ -69,6 +69,26 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
 
 
+def _emit_review_git_context(
+    logger: StructuredLogger | None,
+    *,
+    base_branch: str,
+    commit_log: str,
+    diff_stat: str,
+    handoff_commit_warning: str | None,
+) -> None:
+    """Emit verified git metadata and handoff mismatch warnings to the audit trail."""
+    if logger is None:
+        return
+    logger._safe_emit(
+        "review_git_context",
+        base_branch=base_branch,
+        commit_log=commit_log,
+        diff_stat=diff_stat,
+        handoff_commit_warning=handoff_commit_warning,
+    )
+
+
 def _run_review_pool(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -145,6 +165,14 @@ def _run_review_pool(
         dev_notes = _get_dev_notes(config, workspace_path)
         handoff_commit_warning = _get_handoff_commit_warning(
             config, workspace_path, config.workspace.base_branch
+        )
+
+        _emit_review_git_context(
+            logger,
+            base_branch=config.workspace.base_branch,
+            commit_log=commit_log,
+            diff_stat=diff_stat,
+            handoff_commit_warning=handoff_commit_warning,
         )
 
         review_prompts = (
