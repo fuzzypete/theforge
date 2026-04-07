@@ -474,6 +474,7 @@ def _classify_and_record(
 ) -> tuple[int, int, int]:
     """Classify result and update DAG state. Returns (succeeded, failed, skipped) deltas."""
     preflight_verdict = result.state.preflight_verdict
+    landing_status = getattr(result, "landing_status", None)
     delta_succeeded = 0
     delta_failed = 0
     delta_skipped = 0
@@ -486,7 +487,7 @@ def _classify_and_record(
 
     if result.success:
         delta_succeeded = 1
-        if result.landing_status == "landed" or (
+        if landing_status == "landed" or (
             result.merge is not None and result.merge.get("merged", False)
         ):
             merged_slugs.add(task.slug)
@@ -1079,6 +1080,8 @@ def run_sprint(
                             if _attempt_integration(pending_slug, pending_task, pending_result):
                                 del pending_integration[pending_slug]
                                 changed = True
+                else:
+                    _write_story_audit(config, task, result)
 
                 # Fire StorySource lifecycle callbacks
                 ctx = slug_to_context.get(slug)
@@ -1146,6 +1149,8 @@ def run_sprint(
                 dag.mark_complete(slug)
                 result.landing_status = "landed"
             else:
+                specs_succeeded -= 1
+                specs_failed += 1
                 result.landing_status = "failed"
                 result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")

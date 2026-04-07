@@ -1422,8 +1422,8 @@ class TestQueuedMergePolling:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
-        assert sprint.specs_succeeded == 1
-        assert sprint.specs_failed == 0
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 1
 
 
