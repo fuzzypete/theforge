@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
+import pytest
 import yaml
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
@@ -875,5 +876,40 @@ def test_run_shell_timeout_ignores_missing_process_group(tmp_path):
 
     assert ok is False
     assert output == "TIMEOUT after 1s: pytest -n auto --dist worksteal"
+    mock_killpg.assert_not_called()
+    proc.wait.assert_called_once_with()
+
+
+def test_run_shell_kills_process_group_on_keyboard_interrupt(tmp_path):
+    proc = mock.MagicMock()
+    proc.pid = 4321
+    proc.communicate.side_effect = KeyboardInterrupt
+
+    with (
+        patch("theforge.coordinator.util.subprocess.Popen", return_value=proc),
+        patch("theforge.coordinator.util.os.getpgid", return_value=9876) as mock_getpgid,
+        patch("theforge.coordinator.util.os.killpg") as mock_killpg,
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            _cu._run_shell("pytest -n auto --dist worksteal", tmp_path, timeout=1)
+
+    mock_getpgid.assert_called_once_with(4321)
+    mock_killpg.assert_called_once_with(9876, signal.SIGKILL)
+    proc.wait.assert_called_once_with()
+
+
+def test_run_shell_keyboard_interrupt_ignores_missing_process_group(tmp_path):
+    proc = mock.MagicMock()
+    proc.pid = 4321
+    proc.communicate.side_effect = KeyboardInterrupt
+
+    with (
+        patch("theforge.coordinator.util.subprocess.Popen", return_value=proc),
+        patch("theforge.coordinator.util.os.getpgid", side_effect=ProcessLookupError),
+        patch("theforge.coordinator.util.os.killpg") as mock_killpg,
+    ):
+        with pytest.raises(KeyboardInterrupt):
+            _cu._run_shell("pytest -n auto --dist worksteal", tmp_path, timeout=1)
+
     mock_killpg.assert_not_called()
     proc.wait.assert_called_once_with()
