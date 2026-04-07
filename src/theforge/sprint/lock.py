@@ -5,6 +5,8 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from theforge.pid import _is_pid_alive
@@ -139,3 +141,49 @@ def release_story_locks(fds: list) -> None:
             fd.close()
         except Exception:
             pass
+
+
+@contextmanager
+def integration_lock(
+    forge_root: Path,
+    *,
+    timeout_seconds: float = 300.0,
+    poll_interval_seconds: float = 0.1,
+):
+    """Serialize branch integration operations across forge processes.
+
+    Uses a bounded non-blocking flock loop so a wedged peer process cannot
+    block integration forever. The lock file stores the owning PID for better
+    timeout diagnostics.
+    """
+    lock_path = forge_root / ".forge" / "merge.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    fd = open(lock_path, "a+")
+    acquired = False
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        owner_pid: int | None = None
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                fd.truncate(0)
+                fd.seek(0)
+                fd.write(str(os.getpid()))
+                fd.flush()
+                break
+            except BlockingIOError:
+                owner_pid = _read_lock_pid(fd)
+                if time.monotonic() >= deadline:
+                    owner_suffix = f" (held by pid {owner_pid})" if owner_pid is not None else ""
+                    raise TimeoutError(
+                        f"Timed out waiting for sprint integration lock{owner_suffix}"
+                    ) from None
+                time.sleep(poll_interval_seconds)
+        yield
+    finally:
+        try:
+            if acquired:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            fd.close()

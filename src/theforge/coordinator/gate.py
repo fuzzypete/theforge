@@ -154,8 +154,7 @@ def _run_gate_full(
     if output.startswith("TIMEOUT"):
         return (
             None,
-            f"Gate timed out (gate_timeout={config.validation.gate_timeout}s)."
-            " Consider increasing gate_timeout.",
+            f"Gate timed out (gate_timeout={gate_timeout}s). Consider increasing gate_timeout.",
             output_tail,
         )
     if output.startswith("ERROR:"):

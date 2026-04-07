@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 import subprocess
 import sys
@@ -35,6 +34,7 @@ from .dag import (
     resolve_satisfied_dependencies,
 )
 from .display import _print_worker_status, _story_header
+from .lock import integration_lock
 from .manifest import (
     ResolvedSprint,
     SprintResult,
@@ -474,26 +474,28 @@ def _classify_and_record(
 ) -> tuple[int, int, int]:
     """Classify result and update DAG state. Returns (succeeded, failed, skipped) deltas."""
     preflight_verdict = result.state.preflight_verdict
+    landing_status = getattr(result, "landing_status", None)
     delta_succeeded = 0
     delta_failed = 0
     delta_skipped = 0
 
     if preflight_verdict == "ALREADY_DONE":
         delta_skipped = 1
-    elif result.success:
-        delta_succeeded = 1
-    else:
-        delta_failed = 1
-
-    # DAG: mark_complete (satisfies deps) only when actually merged or ALREADY_DONE.
-    # Queued auto-merges report merged=False, so they stay blocked until polling confirms MERGED.
-    if preflight_verdict == "ALREADY_DONE" or (
-        result.merge is not None and result.merge.get("merged", False)
-    ):
         merged_slugs.add(task.slug)
         dag.mark_complete(task.slug)
+        return delta_succeeded, delta_failed, delta_skipped
+
+    if result.success:
+        delta_succeeded = 1
+        if landing_status == "landed" or (
+            result.merge is not None and result.merge.get("merged", False)
+        ):
+            merged_slugs.add(task.slug)
+            dag.mark_complete(task.slug)
+        else:
+            dag.mark_skipped(task.slug)
     else:
-        # Story finished but deps not satisfied for downstream scheduling
+        delta_failed = 1
         dag.mark_skipped(task.slug)
 
     return delta_succeeded, delta_failed, delta_skipped
@@ -684,6 +686,10 @@ def run_sprint(
     except ValueError as exc:
         raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
 
+    # Dependencies already satisfied outside this sprint still count as landed
+    # for deferred integration ordering.
+    merged_slugs.update(satisfied_slugs)
+
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
     if resume:
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
@@ -722,7 +728,7 @@ def run_sprint(
     batch_number = 0
     worker_phases: dict[str, str] = {}
     phase_lock = threading.Lock()
-    pending_merges: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
+    pending_integration: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
     queued_prs: dict[str, tuple[TaskStory, CoordinatorResult, str]] = {}
     _submission_counter = [0]  # mutable for closure capture; counts submitted stories
 
@@ -731,6 +737,85 @@ def run_sprint(
     plan_gates: dict[str, threading.Event] = {}  # slug -> gate for PLAN→DEV pause
     plan_done: dict[str, str] = {}  # slug -> workspace_path (set by phase callback)
     use_plan_gates = max_parallel > 1  # only for parallel mode
+
+    def _attempt_integration(
+        slug: str,
+        task: TaskStory,
+        result: CoordinatorResult,
+    ) -> bool:
+        nonlocal stopped_reason, ci_halt_slug
+
+        if not all(dep in merged_slugs for dep in task.depends_on):
+            result.landing_status = "pending_integration"
+            _write_story_audit(config, task, result)
+            return False
+
+        branch = config.workspace.branch_pattern.format(slug=slug)
+        wt = config.project_root / config.workspace.path_pattern.format(slug=slug)
+        with integration_lock(config.project_root):
+            if config.workspace.on_approve == "merge-pr":
+                from ..coordinator.completion import _merge_pr  # noqa: PLC0415
+
+                parsed_review = (
+                    result.state.review_results[-1] if result.state.review_results else None
+                )
+                if parsed_review is None:
+                    _log(f"WARN: no review result for {slug} — skipping merge-pr")
+                    result.landing_status = "failed"
+                    _write_story_audit(config, task, result)
+                    return True
+                merge_info = _merge_pr(config, task, branch, parsed_review, result.state)
+            else:
+                merge_info = _merge_branch(
+                    config.project_root,
+                    config.workspace.base_branch,
+                    branch,
+                    slug,
+                    wt,
+                    config=config,
+                    task_name=task.name,
+                )
+
+        result.merge = merge_info
+        if merge_info.get("merged"):
+            result.landing_status = "landed"
+            merged_slugs.add(slug)
+            dag.mark_complete(slug)
+            _write_story_audit(config, task, result)
+            if config.workspace.on_approve == "merge-pr" and not merge_info.get(
+                "auto_merge_queued", False
+            ):
+                ci_result = poll_required_checks(
+                    config.project_root,
+                    config.workspace.base_branch,
+                    config.workspace.ci_check_timeout_seconds,
+                )
+                if ci_result["status"] in {"fail", "timeout"}:
+                    failing = ", ".join(ci_result["failing_checks"]) or "pending required checks"
+                    stopped_reason = (
+                        "Required CI checks "
+                        f"{ci_result['status']} after merging {slug} "
+                        f"at {ci_result['sha']}: {failing}"
+                    )
+                    ci_halt_slug = slug
+                    _log(
+                        f"HALT {slug}: required CI checks {ci_result['status']} "
+                        f"for {ci_result['sha']} ({failing})"
+                    )
+            return True
+
+        if merge_info.get("merge_queued"):
+            queued_prs[slug] = (task, result, merge_info["pr_url"])
+            result.landing_status = "pending_integration"
+            _write_story_audit(config, task, result)
+            _log(f"INFO {slug}: PR auto-merge queued; waiting for GitHub to report MERGED")
+            return True
+
+        result.landing_status = "failed"
+        result.state.error = merge_info.get("error") or "integration failed"
+        _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
+        _write_story_audit(config, task, result)
+        return True
 
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
         while not dag.is_done():
@@ -754,15 +839,10 @@ def run_sprint(
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result)
                         else:
-                            dep_result.success = False
-                            dep_result.phase = Phase.ESCALATE
-                            dep_result.state.phase = Phase.ESCALATE
+                            dep_result.landing_status = "failed"
                             dep_result.state.error = (
                                 f"Queued PR {poll_result['status']}: {dep_pr_url}"
                             )
-                            specs_succeeded -= 1
-                            specs_failed += 1
-                            dag.mark_skipped(dep)
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result)
                             _log(
@@ -822,9 +902,6 @@ def run_sprint(
                     plan_gates[task.slug] = gate
 
                 worker_config = config
-                if max_parallel > 1 and config.workspace.on_approve == "merge-pr":
-                    deferred_ws = dataclasses.replace(config.workspace, on_approve="none")
-                    worker_config = dataclasses.replace(config, workspace=deferred_ws)
 
                 state_fn = _make_worker_phase_fn(
                     task.slug,
@@ -975,8 +1052,6 @@ def run_sprint(
                 spec_str = slug_to_spec[slug]
                 results.append((spec_str, result))
 
-                _write_story_audit(config, task, result)
-
                 spec_cost = result.state.total_cost
                 icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)
@@ -986,6 +1061,30 @@ def run_sprint(
                 specs_succeeded += ds
                 specs_failed += df
                 specs_skipped += dsk
+
+                # The scheduler thread is the sole owner of DAG/landing state.
+                # Workers only return CoordinatorResult objects; integration and
+                # dependency satisfaction happen here after futures complete.
+                needs_parallel_integration = max_parallel > 1 and (
+                    auto_merge
+                    or config.workspace.on_approve == "merge-pr"
+                    or slug in dependent_slugs
+                )
+                if needs_parallel_integration and result.success:
+                    integrated = _attempt_integration(slug, task, result)
+                    if not integrated:
+                        pending_integration[slug] = (task, result)
+                    changed = True
+                    while changed:
+                        changed = False
+                        for pending_slug, (pending_task, pending_result) in list(
+                            pending_integration.items()
+                        ):
+                            if _attempt_integration(pending_slug, pending_task, pending_result):
+                                del pending_integration[pending_slug]
+                                changed = True
+                else:
+                    _write_story_audit(config, task, result)
 
                 # Fire StorySource lifecycle callbacks
                 ctx = slug_to_context.get(slug)
@@ -1035,144 +1134,11 @@ def run_sprint(
                                 _log(f"SKIPPED {t.slug} ({stopped_reason})")
                         break
 
-                # In parallel mode, merge actions are serialized in the main thread.
-                needs_deferred_merge = (
-                    auto_merge
-                    or config.workspace.on_approve == "merge-pr"
-                    or slug in dependent_slugs
-                )
-                if max_parallel > 1 and needs_deferred_merge and result.success:
-                    pending_merges[slug] = (task, result)
-
                 _print_worker_status(active, worker_phases, dag, total)
 
             # ── Overlap detection: check plan gates ────────────────────
             if use_plan_gates:
                 _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
-
-            # Flush pending merges in dependency order (parallel mode only)
-            needs_flush = (
-                auto_merge or config.workspace.on_approve == "merge-pr" or bool(dependent_slugs)
-            )
-            if max_parallel > 1 and needs_flush and pending_merges:
-                changed = True
-                while changed:
-                    changed = False
-                    for slug, (task, result) in list(pending_merges.items()):
-                        if result.success and all(d in merged_slugs for d in task.depends_on):
-                            branch = config.workspace.branch_pattern.format(slug=slug)
-                            wt = config.project_root / config.workspace.path_pattern.format(
-                                slug=slug
-                            )
-                            if config.workspace.on_approve == "merge-pr":
-                                from ..coordinator.completion import _merge_pr  # noqa: PLC0415
-
-                                parsed_review = (
-                                    result.state.review_results[-1]
-                                    if result.state.review_results
-                                    else None
-                                )
-                                if parsed_review is not None:
-                                    merge_info = _merge_pr(
-                                        config,
-                                        task,
-                                        branch,
-                                        parsed_review,
-                                        result.state,
-                                    )
-                                    result.merge = merge_info
-                                    if merge_info.get("merged"):
-                                        # Only actual merges satisfy DAG dependencies;
-                                        # queued auto-merges wait for polling.
-                                        merged_slugs.add(slug)
-                                        dag.mark_complete(slug)
-                                        if not merge_info.get("auto_merge_queued", False):
-                                            ci_result = poll_required_checks(
-                                                config.project_root,
-                                                config.workspace.base_branch,
-                                                config.workspace.ci_check_timeout_seconds,
-                                            )
-                                            if ci_result["status"] in {"fail", "timeout"}:
-                                                failing = (
-                                                    ", ".join(ci_result["failing_checks"])
-                                                    or "pending required checks"
-                                                )
-                                                stopped_reason = (
-                                                    "Required CI checks "
-                                                    f"{ci_result['status']} after merging {slug} "
-                                                    f"at {ci_result['sha']}: {failing}"
-                                                )
-                                                ci_halt_slug = slug
-                                                _log(
-                                                    f"HALT {slug}: required CI checks "
-                                                    f"{ci_result['status']} for {ci_result['sha']}"
-                                                    f" ({failing})"
-                                                )
-                                        else:
-                                            _log(
-                                                f"INFO {slug}: PR auto-merge queued; "
-                                                "skipping CI gate until GitHub lands the merge"
-                                            )
-                                    elif merge_info.get("merge_queued"):
-                                        queued_prs[slug] = (task, result, merge_info["pr_url"])
-                                        _log(
-                                            f"INFO {slug}: PR auto-merge queued; "
-                                            "waiting for GitHub to report MERGED"
-                                        )
-                                    else:
-                                        result.success = False
-                                        result.phase = Phase.ESCALATE
-                                        result.state.phase = Phase.ESCALATE
-                                        result.state.error = (
-                                            merge_info.get("error") or "deferred merge-pr failed"
-                                        )
-                                        specs_succeeded -= 1
-                                        specs_failed += 1
-                                        _log(
-                                            f"✗ {slug}: deferred merge-pr failed:"
-                                            f" {merge_info.get('error')}"
-                                        )
-                                    _write_story_audit(config, task, result)
-                                else:
-                                    _log(f"WARN: no review result for {slug} — skipping merge-pr")
-                            else:
-                                merge_info = _merge_branch(
-                                    config.project_root,
-                                    config.workspace.base_branch,
-                                    branch,
-                                    slug,
-                                    wt,
-                                    config=config,
-                                    task_name=task.name,
-                                )
-                                result.merge = merge_info
-                                if merge_info.get("merged"):
-                                    # Re-classify in DAG only after an actual merge lands.
-                                    merged_slugs.add(slug)
-                                    dag.mark_complete(slug)
-                                else:
-                                    result.success = False
-                                    result.phase = Phase.ESCALATE
-                                    result.state.phase = Phase.ESCALATE
-                                    result.state.error = (
-                                        merge_info.get("error") or "deferred merge failed"
-                                    )
-                                    specs_succeeded -= 1
-                                    specs_failed += 1
-                                    _log(
-                                        f"✗ {slug}: deferred merge failed:"
-                                        f" {merge_info.get('error')}"
-                                    )
-                                    _write_story_audit(config, task, result)
-                            del pending_merges[slug]
-                            changed = True
-                    if stopped_reason is not None:
-                        for t in dag.ready():
-                            if t.slug not in active:
-                                dag.mark_skipped(t.slug)
-                                specs_skipped += 1
-                                _log(f"SKIPPED {t.slug} ({stopped_reason})")
-                        pending_merges.clear()
 
     if queued_prs:
         for slug, (task, result, pr_url) in list(queued_prs.items()):
@@ -1184,14 +1150,12 @@ def run_sprint(
             if poll_result["status"] == "merged":
                 merged_slugs.add(slug)
                 dag.mark_complete(slug)
+                result.landing_status = "landed"
             else:
-                result.success = False
-                result.phase = Phase.ESCALATE
-                result.state.phase = Phase.ESCALATE
-                result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
                 specs_succeeded -= 1
                 specs_failed += 1
-                dag.mark_skipped(slug)
+                result.landing_status = "failed"
+                result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _write_story_audit(config, task, result)
             del queued_prs[slug]

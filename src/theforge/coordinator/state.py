@@ -326,3 +326,4 @@ class CoordinatorResult:
     state: CoordinatorState
     message: str
     merge: dict | None = None
+    landing_status: str | None = None

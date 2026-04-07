@@ -8,10 +8,13 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from theforge.sprint.lock import (
     SprintConflictError,
     acquire_story_locks,
     check_active_worktrees,
+    integration_lock,
     release_story_locks,
 )
 
@@ -243,6 +246,32 @@ class TestSprintConflictError:
         msg = str(exc)
         assert "foo" in msg
         assert "bar" in msg
+
+
+class TestIntegrationLock:
+    def test_timeout_reports_owner_pid(self, tmp_path: Path) -> None:
+        """integration_lock times out instead of blocking forever."""
+        lock_path = tmp_path / ".forge" / "merge.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242", encoding="utf-8")
+
+        monotonic_values = iter([0.0, 0.0, 0.11])
+
+        with (
+            patch("theforge.sprint.lock.fcntl.flock", side_effect=BlockingIOError),
+            patch(
+                "theforge.sprint.lock.time.monotonic", side_effect=lambda: next(monotonic_values)
+            ),
+            patch("theforge.sprint.lock.time.sleep"),
+        ):
+            with patch("theforge.sprint.lock._read_lock_pid", return_value=424242):
+                with pytest.raises(TimeoutError, match="held by pid 424242"):
+                    with integration_lock(
+                        tmp_path,
+                        timeout_seconds=0.1,
+                        poll_interval_seconds=0.01,
+                    ):
+                        pass
 
 
 # ── Integration: cmd_sprint conflict check ───────────────────────────────

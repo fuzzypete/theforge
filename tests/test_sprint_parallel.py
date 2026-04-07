@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -23,6 +25,7 @@ from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phas
 from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
 from theforge.sprint.dag import StoryDAG, build_dag
+from theforge.sprint.lock import integration_lock
 from theforge.sprint.runner import _classify_and_record
 from theforge.task import TaskStory
 
@@ -424,7 +427,7 @@ class TestParallelIndependentStories:
 
 class TestParallelDependencyGating:
     def test_dependency_blocks_until_predecessor_completes(self, tmp_path: Path) -> None:
-        """Story B (depends on A) is skipped when A doesn't merge."""
+        """Story B is skipped when A cannot be landed for dependency satisfaction."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
         manifest_path = _make_manifest_parallel(
@@ -442,8 +445,8 @@ class TestParallelDependencyGating:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1  # only A ran
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
         assert sprint.specs_skipped == 1
 
     def test_dependency_satisfied_by_merge_unlocks_dependent(self, tmp_path: Path) -> None:
@@ -552,7 +555,7 @@ class TestClassifyAndRecord:
     """Unit tests for _classify_and_record helper."""
 
     def test_success_no_merge_skips_for_dag(self) -> None:
-        """Success without merge → specs_succeeded, dag.mark_skipped (not complete)."""
+        """Success without merge counts as finished but does not unlock dependents."""
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
@@ -565,7 +568,7 @@ class TestClassifyAndRecord:
         assert df == 0
         assert dsk == 0
         assert "a" not in merged_slugs
-        # B still not ready (a not completed)
+        # A should not be re-dispatched forever, and B must remain blocked.
         assert dag.ready() == []
 
     def test_success_with_merge_completes_for_dag(self) -> None:
@@ -886,7 +889,7 @@ class TestParallelMergeOrderingParallelMode:
         assert merge_calls.index("story-a") < merge_calls.index("story-b")
 
     def test_merge_pr_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
-        """Deferred merge-pr failures must update the final per-story audit."""
+        """Landing failures record failed integration without rewriting review success."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         (tmp_path / "story-a").mkdir()
         manifest_path = _make_manifest_parallel(
@@ -958,10 +961,11 @@ class TestParallelMergeOrderingParallelMode:
 
         audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
-        assert audit["outcome"]["success"] is False
-        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+        assert audit["outcome"]["success"] is True
+        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge-pr"
         assert audit["merge"]["merged"] is False
         assert audit["error"] == "gh pr merge failed: branch protection"
@@ -1047,7 +1051,7 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["merge"]["merged"] is True
 
     def test_deferred_local_merge_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
-        """Deferred local merge failures must update the final per-story audit."""
+        """Local landing failures record failed integration without rewriting review success."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         (tmp_path / "story-a").mkdir()
         manifest_path = _make_manifest_parallel(
@@ -1087,10 +1091,11 @@ class TestParallelMergeOrderingParallelMode:
 
         audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
-        assert audit["outcome"]["success"] is False
-        assert audit["outcome"]["final_phase"] == "ESCALATE"
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+        assert audit["outcome"]["success"] is True
+        assert audit["outcome"]["final_phase"] == "DONE"
+        assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge"
         assert audit["merge"]["merged"] is False
         assert audit["error"] == "git merge failed: conflict in src/foo.py"
@@ -1420,3 +1425,180 @@ class TestQueuedMergePolling:
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 1
+
+
+class TestImmediateIntegrationLanding:
+    def test_immediate_landing_on_approve(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        events: list[str] = []
+
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            events.append(f"run:{task.slug}")
+            return result_a if task.slug == "story-a" else result_b
+
+        def fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            events.append(f"merge:{slug}")
+            return {"merged": True, "success": True, "action": "merge"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 2
+        assert "merge:story-a" in events
+        assert events.index("run:story-a") < events.index("merge:story-a")
+
+    def test_dep_not_ready_yields_pending_integration(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        state_a = CoordinatorState()
+        state_a.preflight_verdict = "PROCEED"
+        state_a.preflight_result = MagicMock(cost_usd=1.0)
+        state_b = CoordinatorState()
+        state_b.preflight_verdict = "PROCEED"
+        state_b.preflight_result = MagicMock(cost_usd=1.0)
+        result_a = CoordinatorResult(True, Phase.DONE, state_a, "Done.")
+        result_b = CoordinatorResult(True, Phase.DONE, state_b, "Done.")
+
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            if task.slug == "story-a":
+                time.sleep(0.2)
+                return result_a
+            return result_b
+
+        merge_calls: list[str] = []
+
+        def fake_merge(project_root, base_branch, branch, slug, wt, **kwargs):  # noqa: ANN001
+            merge_calls.append(slug)
+            return {"merged": True, "success": True, "action": "merge"}
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 2
+        assert result_b.success is True
+        assert result_b.phase is Phase.DONE
+        assert result_b.landing_status == "landed"
+        assert merge_calls == ["story-a", "story-b"]
+
+    def test_landing_failure_does_not_rewrite_success(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_result = MagicMock(cost_usd=1.0)
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(True, Phase.DONE, state, "Done.")
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://example.test/pr/1",
+                    "merged": False,
+                    "merge_queued": False,
+                    "success": False,
+                    "error": "conflict",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
+        assert result.success is True
+        assert result.phase is Phase.DONE
+        assert result.landing_status == "failed"
+
+
+def test_integration_lock_serializes(tmp_path: Path) -> None:
+    entered: list[str] = []
+    exited: list[str] = []
+    overlap = [False]
+    inside = threading.Event()
+    release = threading.Event()
+
+    def worker(name: str) -> None:
+        with integration_lock(tmp_path):
+            if inside.is_set():
+                overlap[0] = True
+            inside.set()
+            entered.append(name)
+            if name == "first":
+                release.wait(timeout=2)
+            else:
+                exited.append(name)
+            inside.clear()
+        if name == "first":
+            exited.append(name)
+
+    first = threading.Thread(target=worker, args=("first",))
+    second = threading.Thread(target=worker, args=("second",))
+    first.start()
+    time.sleep(0.1)
+    second.start()
+    time.sleep(0.1)
+    assert entered == ["first"]
+    release.set()
+    first.join()
+    second.join()
+
+    assert overlap[0] is False
+    assert entered == ["first", "second"]
+    assert exited == ["first", "second"]
