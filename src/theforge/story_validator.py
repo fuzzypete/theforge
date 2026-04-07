@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import sys
+import threading
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,17 @@ import yaml
 
 # Lazy runner slot — None until first call; tests may replace with a mock.
 run_agent = None
+
+
+def _warn_story_validation_shape(event: str, **details: Any) -> None:
+    """Emit diagnostics for unexpected story validation shapes."""
+    lines = [f"[forge] WARNING: story validation {event}"]
+    for key, value in details.items():
+        lines.append(f"  {key}: {value}")
+    lines.append(f"  thread: {threading.current_thread().name}")
+    lines.append("  stack:")
+    lines.extend(f"    {line}" for line in traceback.format_stack(limit=8))
+    print("\n".join(lines), file=sys.stderr)
 
 
 def _ensure_runner() -> None:
@@ -126,6 +140,12 @@ class StoryValidationResult:
                 normalized.append(finding)
                 continue
             if isinstance(finding, dict):
+                _warn_story_validation_shape(
+                    "coercing raw dict finding",
+                    finding_type=type(finding).__name__,
+                    finding_module=type(finding).__module__,
+                    finding_repr=repr(finding)[:500],
+                )
                 normalized.append(
                     StoryValidationFinding(
                         category=finding.get("category", "requirement"),
@@ -133,6 +153,13 @@ class StoryValidationResult:
                         split_suggestion=finding.get("split_suggestion"),
                     )
                 )
+                continue
+            _warn_story_validation_shape(
+                "dropping unexpected finding",
+                finding_type=type(finding).__name__,
+                finding_module=type(finding).__module__,
+                finding_repr=repr(finding)[:500],
+            )
         self.findings = normalized
 
 
