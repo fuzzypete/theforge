@@ -89,6 +89,13 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     config = load_config(config_path)
+    if getattr(args, "base_branch", None):
+        import dataclasses
+
+        config = dataclasses.replace(
+            config,
+            workspace=dataclasses.replace(config.workspace, base_branch=args.base_branch),
+        )
 
     if getattr(args, "verbose", False):
         coordinator_set_log_level(LogLevel.VERBOSE)
@@ -400,6 +407,11 @@ def register_parser(subparsers: object) -> None:
         help="Path to sprint.yaml manifest (omit when using --milestone, --label, or --issues)",
     )
     sprint_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    sprint_parser.add_argument(
+        "--base-branch",
+        default=None,
+        help="Override workspace.base_branch for this sprint without editing forge.yaml",
+    )
 
     # ── GitHub query mode ────────────────────────────────────────────────
     sprint_parser.add_argument(

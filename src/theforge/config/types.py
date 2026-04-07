@@ -121,7 +121,7 @@ class ModelProfile:
 class WorkspaceConfig:
     """How to create isolated workspaces for agents."""
 
-    create_command: str  # shell command template, {slug} is replaced
+    create_command: str  # shell command template, {slug} and {base_branch} are replaced
     path_pattern: str  # path template, {slug} is replaced
     branch_pattern: str  # branch name template, {slug} is replaced
     base_branch: str = "main"  # base branch for diff comparison

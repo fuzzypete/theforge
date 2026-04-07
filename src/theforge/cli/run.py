@@ -72,6 +72,12 @@ def cmd_run(args: "argparse.Namespace") -> int:
 
     config = load_config(config_path)
 
+    if getattr(args, "base_branch", None):
+        config = dataclasses.replace(
+            config,
+            workspace=dataclasses.replace(config.workspace, base_branch=args.base_branch),
+        )
+
     # --dev-model override: provider/model@base_url
     if getattr(args, "dev_model", None):
         config = _apply_dev_model_override(config, args.dev_model)

@@ -158,7 +158,11 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
     print("DRY RUN — no agents will be invoked")
     print(f"{sep}\n")
 
-    print(f"Workspace command: {config.workspace.create_command.format(slug=task.slug)}")
+    workspace_command = config.workspace.create_command.format(
+        slug=task.slug,
+        base_branch=config.workspace.base_branch,
+    )
+    print(f"Workspace command: {workspace_command}")
     print(f"Workspace path:    {workspace_path}")
     print(f"Branch:            {branch_name}")
     print(f"Gate command:      {config.validation.gate_command}")
