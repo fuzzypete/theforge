@@ -220,6 +220,7 @@ class CoordinatorState:
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
     preflight_sufficiency: str | None = None  # "implementation_ready" | "needs_planning"
     preflight_work_type: str | None = None  # "feature" | "refactor" | "mechanical" | "bug"
+    preflight_bundle_candidate: bool = False
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
     preflight_likely_files: list[str] = field(default_factory=list)
     preflight_result: AgentResult | None = None
