@@ -22,7 +22,8 @@ test-parallel:
 
 # Gate: run tests and write .forge/handoff.yaml
 gate:
-	@mkdir -p .forge && \
+	@mkdir -p .forge/index .forge && \
+	forge index && \
 	PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal && \
 	python -c "\
 import yaml, pathlib; \
