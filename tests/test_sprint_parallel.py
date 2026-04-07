@@ -888,6 +888,86 @@ class TestParallelMergeOrderingParallelMode:
         # A must be merged before B (dependency order)
         assert merge_calls.index("story-a") < merge_calls.index("story-b")
 
+    def test_merge_pr_success_keeps_merge_true_when_force_push_refspec_missing(
+        self, tmp_path: Path
+    ) -> None:
+        """Merged PRs stay landed when post-merge force-push sees a deleted remote branch."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        (tmp_path / "story-a").mkdir()
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "none", "success": True, "error": None},
+        )
+
+        merge_info = {
+            "action": "merge-pr",
+            "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+            "merged": True,
+            "merge_queued": False,
+            "success": True,
+            "error": None,
+            "auto_merge_queued": False,
+        }
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch("theforge.coordinator.completion._merge_pr", return_value=merge_info),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path, auto_merge=True)
+
+        assert sprint.specs_succeeded == 1
+        audit = yaml.safe_load((tmp_path / "story-a" / ".forge" / "audit.yaml").read_text())
+        assert audit["merge"]["merged"] is True
+        assert audit["landing_status"] == "landed"
+        assert audit["error"] is None
+
     def test_merge_pr_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
         """Landing failures record failed integration without rewriting review success."""
         _make_spec_file(tmp_path, "Story A", "story-a")
