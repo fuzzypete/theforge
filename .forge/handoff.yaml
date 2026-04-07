@@ -1,25 +1,33 @@
 dev_notes: |
-  summary: "Updated make gate to invoke `forge index` before the pytest gate so successful gate runs refresh `.forge/index/modules.yaml` as part of the normal quality checkpoint. Added focused tests that exercise a representative gate recipe in a temporary repo, verifying the index step runs before tests and that the gate still reports failure when tests fail after a successful index regeneration. Formatting, linting, and the required pytest gate all passed; `make gate` itself currently fails in this branch because the repository does not yet expose a `forge index` CLI command, which matches the story note dependency."
+  summary: "Implemented a phase-aware ContextAssembler utility in the task subsystem that reads the structural index plus directory-level CLAUDE.md files, extracts invariant and advisory sections, scopes docs by planned file paths or preflight story-keyword matches, and assembles a deterministic bounded context pack with included/dropped manifest entries. Also added configurable default context budgets under forge.yaml's new context key, wired those defaults into typed config loading, and added focused tests covering invariant inclusion, advisory truncation/ranking, preflight keyword scoping, and config parsing."
   commits:
-    - sha: "dabec94"
-      message: "feat(gate): run forge index during make gate"
+    - sha: "5c534e9"
+      message: "feat(task): add phase-aware context assembler"
   acceptance_criteria:
-    - criterion: "make gate runs forge index before or after tests (order TBD by implementation)"
+    - criterion: "ContextAssembler accepts: phase name, story text, optional file list (from plan output), and budget (line count)"
       status: MET
-      notes: "`Makefile` now runs `forge index` before the pytest command in `gate`."
-    - criterion: "If the index is already current (matches HEAD commit), the step is a no-op"
+      notes: "ContextAssembler.assemble() accepts phase, story_text, optional file_list, and optional budget; phase defaults map to configured budgets when budget is omitted."
+    - criterion: "Assembler reads the structural index and directory-level CLAUDE.md files"
       status: MET
-      notes: "No extra logic was added in `make gate`; it delegates to `forge index`, so the command's existing diff-based skip behavior remains intact on no-change runs."
-    - criterion: "Gate still fails on test failures regardless of index status"
+      notes: "The assembler searches known structural-index locations and loads nearest touched-directory CLAUDE.md files up the directory chain."
+    - criterion: "Content marked as Invariants in directory CLAUDE.md files is always included when the scope touches that directory, regardless of budget"
       status: MET
-      notes: "Added a regression test covering successful index regeneration followed by failing tests; the gate recipe still takes the failure branch."
-    - criterion: ".forge/index/modules.yaml is up to date after a successful make gate"
+      notes: "Invariant sections are parsed separately and treated as required items that are included before budget truncation, even when they exceed the requested budget."
+    - criterion: "Advisory context is relevance-ranked and truncated to fit within budget"
       status: MET
-      notes: "The gate now invokes `forge index` before tests, and the added test verifies the index artifact is written before the gate completes successfully."
-  story_deviations:
-    - description: "Repository-level `make gate` execution currently fails because `forge index` is not yet an available CLI subcommand in this checkout, despite the story note saying this change depends on that command existing."
-      justification: "Documented because the implementation follows the requested wiring, but end-to-end invocation in this branch still depends on a separate CLI exposure change outside this story's code edits."
+      notes: "Non-invariant content is scored against story text and phase, sorted deterministically, and only included while budget remains; overflow items are recorded as dropped."
+    - criterion: "Budget defaults are configurable in forge.yaml under a `context:` key (e.g., `preflight_budget`, `plan_budget`, `dev_budget`)"
+      status: MET
+      notes: "Added ContextConfig to typed config, parsed context.* values in load_config(), and documented starter defaults in generate_default_config()."
+    - criterion: "Assembler returns a structured context pack (content + manifest of what was included/dropped)"
+      status: MET
+      notes: "ContextPack returns assembled content plus separate included and dropped manifest entries with source, kind, required flag, line counts, reasons, and scores."
+    - criterion: "Assembler is a utility callable by phase prompt builders, not a coordinator phase"
+      status: MET
+      notes: "Implemented under the task subsystem and exported from theforge.task; no coordinator phase or routing logic was introduced."
+  story_deviations: none
   deferred_items:
-    - description: "Expose the `forge index` CLI command in this repository so `make gate` can run end-to-end outside the isolated tests."
-      reason: "That dependency is not implemented in this checkout and was left for the upstream CLI work referenced by the story note."
+    - description: "Full gate command `.venv/bin/python -m pytest tests/ -q -n auto --dist worksteal` could not be observed to completion in this environment because the shell tool timed out after 30 seconds despite fmt/lint passing and targeted tests passing locally."
+      reason: "The shell environment enforced a 30-second timeout, so only partial local verification evidence was available for the full gate run."
   gate_result: PASS
+gate_decision: PASS
