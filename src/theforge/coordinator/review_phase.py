@@ -60,6 +60,7 @@ from .state import (
     CoordinatorState,
     Phase,
     ReviewCycleMetadata,
+    ReviewIterationTelemetry,
 )
 from .util import _fmt_duration, _log, _log_phase, _log_verbose
 
@@ -215,6 +216,46 @@ def _run_escalate_gate(
     # reject or any unrecognised decision
     state.escalate_decision = "reject"
     return _make_escalate_result()
+
+
+def _record_review_iteration_telemetry(
+    state: CoordinatorState,
+    parsed_review: ReviewResult,
+    *,
+    review_cost: float,
+    review_elapsed: float,
+    max_iterations: int,
+) -> None:
+    prior_ids = {
+        record.finding_id
+        for record in state.finding_registry
+        if record.cycle_first_seen < state.review_cycle
+    }
+    new_by_severity = {"P1": 0, "P2": 0}
+    repeated_by_severity = {"P1": 0, "P2": 0}
+    for record in state.finding_registry:
+        if record.cycle_last_seen != state.review_cycle:
+            continue
+        bucket = new_by_severity if record.finding_id not in prior_ids else repeated_by_severity
+        bucket[record.severity] = bucket.get(record.severity, 0) + 1
+    findings_by_severity = {
+        "P1": sum(1 for f in parsed_review.findings if f.severity == "P1"),
+        "P2": sum(1 for f in parsed_review.findings if f.severity == "P2"),
+    }
+    state.review_iteration_telemetry.append(
+        ReviewIterationTelemetry(
+            iteration=state.review_cycle,
+            max_iterations=max_iterations,
+            cost_usd=review_cost,
+            duration_s=review_elapsed,
+            verdict=parsed_review.verdict,
+            findings_by_severity=findings_by_severity,
+            new_findings_by_severity=new_by_severity,
+            repeated_findings_by_severity=repeated_by_severity,
+            novel_findings=sum(new_by_severity.values()),
+            restated_findings=sum(repeated_by_severity.values()),
+        )
+    )
 
 
 class _ReviewOutcome(Enum):
@@ -621,6 +662,13 @@ def _run_review_phase(
         state.surviving_families = []
 
     save_trajectory_state(workspace_path, state)
+    _record_review_iteration_telemetry(
+        state,
+        parsed_review,
+        review_cost=_review_cost,
+        review_elapsed=_review_elapsed,
+        max_iterations=config.retry.max_review_cycles,
+    )
 
     _log_review_findings(parsed_review, _p1_count, _p2_count, _review_cost, logger)
 

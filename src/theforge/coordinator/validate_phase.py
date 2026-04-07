@@ -12,6 +12,7 @@ from theforge.conventions import check_hard_conventions, new_hard_convention_vio
 from theforge.task import TaskStory
 
 from . import util as _cu
+from .dev_phase import record_dev_iteration_telemetry
 from .gate import _is_gate_skip, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
@@ -49,11 +50,13 @@ def _run_validate_phase(
     _gate_start = time.monotonic()
     gate_override = task.gate_override
     gate_output_tail: str = ""
+    gate_result_for_telemetry: str | None = None
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
         _log("  Gate: none (story override)")
         gate_decision: str | None = "PASS"
         gate_err: str | None = None
+        gate_result_for_telemetry = gate_decision
     else:
         if gate_override is not None:
             _log_phase(state.phase, "running gate... (override)")
@@ -63,6 +66,7 @@ def _run_validate_phase(
         gate_decision, gate_err, gate_output_tail = _run_gate_full(
             config, workspace_path, task=task, iter_num=state.dev_iteration
         )
+        gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)
     if logger:
@@ -74,6 +78,13 @@ def _run_validate_phase(
         )
 
     if gate_err:
+        record_dev_iteration_telemetry(
+            state,
+            workspace_path,
+            max_iterations=config.retry.max_dev_iterations,
+            gate_result=gate_result_for_telemetry,
+            gate_output_tail=gate_output_tail or gate_err,
+        )
         use_exit_code = not config.validation.handoff_file
         if use_exit_code:
             _log(f"✗ ESCALATE   {gate_err}")
@@ -213,6 +224,14 @@ def _run_validate_phase(
         return _ValidateOutcome.ESCALATE, CoordinatorResult(
             success=False, phase=state.phase, state=state, message=state.error
         )
+
+    record_dev_iteration_telemetry(
+        state,
+        workspace_path,
+        max_iterations=config.retry.max_dev_iterations,
+        gate_result=gate_decision,
+        gate_output_tail=gate_output_tail,
+    )
 
     # Hard convention checks (post-gate, only on PASS path)
     if config.conventions_hard is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+from collections.abc import Iterable
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from theforge.traces import write_trace
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
-from .state import CoordinatorResult, CoordinatorState, Phase
+from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase
 from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 
 # ── Lazy runner slot ──────────────────────────────────────────────────
@@ -28,6 +29,88 @@ from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 #   theforge.coordinator.dev_phase.log_agent_result — dev result logging
 run_agent = None
 log_agent_result = None
+
+
+def _extract_failed_tests(gate_output_tail: str) -> list[str]:
+    """Best-effort extraction of failing test identifiers from gate output."""
+    failed: list[str] = []
+    for raw_line in gate_output_tail.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith(("FAILED ", "ERROR ")):
+            candidate = line.split()[1].rstrip(":")
+            if candidate not in failed:
+                failed.append(candidate)
+        elif "::" in line and any(token in line.lower() for token in ("failed", "error")):
+            candidate = line.split()[0].rstrip(":")
+            if candidate not in failed:
+                failed.append(candidate)
+    return failed
+
+
+def _git_lines(workspace_path: Path, args: Iterable[str]) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    if proc.returncode not in (0, 1):
+        return []
+    return [
+        line.strip() for line in proc.stdout.decode(errors="replace").splitlines() if line.strip()
+    ]
+
+
+def record_dev_iteration_telemetry(
+    state: CoordinatorState,
+    workspace_path: Path,
+    *,
+    max_iterations: int,
+    gate_result: str | None,
+    gate_output_tail: str = "",
+) -> None:
+    """Capture per-iteration dev telemetry after validation completes."""
+    if not state.dev_results or not state.dev_durations:
+        return
+    iteration = state.dev_iteration
+    dev_result = state.dev_results[-1]
+    duration_s = state.dev_durations[-1]
+    baseline = state.last_dev_start_commit or "HEAD"
+    files_changed = _git_lines(workspace_path, ["diff", "--name-only", baseline, "HEAD"])
+    dirty_files = [
+        line.split(maxsplit=1)[-1]
+        for line in _git_lines(workspace_path, ["status", "--porcelain"])
+    ]
+    for dirty in dirty_files:
+        if dirty not in files_changed:
+            files_changed.append(dirty)
+
+    failed_tests = _extract_failed_tests(gate_output_tail)
+    prev_failed = (
+        state.dev_iteration_telemetry[-1].failed_tests if state.dev_iteration_telemetry else []
+    )
+    tests_fixed_count = len(set(prev_failed) - set(failed_tests)) if prev_failed else 0
+    meaningful_progress = bool(files_changed or tests_fixed_count > 0)
+    state.dev_iteration_telemetry.append(
+        DevIterationTelemetry(
+            iteration=iteration,
+            max_iterations=max_iterations,
+            cost_usd=dev_result.cost_usd,
+            duration_s=duration_s,
+            gate_result=gate_result,
+            failed_tests=failed_tests,
+            files_changed=files_changed,
+            files_changed_count=len(files_changed),
+            tests_fixed_count=tests_fixed_count,
+            meaningful_progress=meaningful_progress,
+        )
+    )
 
 
 def _still_open_p1s_for_dev_prompt(state: CoordinatorState) -> list:
