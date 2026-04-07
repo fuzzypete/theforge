@@ -469,8 +469,16 @@ def _merge_pr(
             )
             if push_proc.returncode != 0:
                 err = push_proc.stderr.strip() or push_proc.stdout.strip()
-                _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
-                return _fail(f"force-push after rebase failed: {err}", pr_url=pr_url)
+                err_lower = err.lower()
+                if "does not match any" in err_lower:
+                    _pr_log.info(
+                        "force-push skipped because remote branch %s is already gone: %s",
+                        branch_name,
+                        err,
+                    )
+                else:
+                    _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
+                    return _fail(f"force-push after rebase failed: {err}", pr_url=pr_url)
         except Exception as exc:
             _pr_log.warning("force-push failed: %s", exc)
             return _fail(f"force-push after rebase failed: {exc}", pr_url=pr_url)

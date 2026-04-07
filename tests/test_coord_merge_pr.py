@@ -133,6 +133,7 @@ class TestMergePrFunction:
         fetch_ok: bool = True,
         rebase_ok: bool = True,
         push_ok: bool = True,
+        push_stderr: str = "push error",
         create_pr_result: dict | None = None,
         gh_merge_ok: bool = True,
         gh_merge_results: list[MagicMock] | None = None,
@@ -173,7 +174,7 @@ class TestMergePrFunction:
             if "rebase" in cmd_str and "--abort" in cmd_str:
                 return _make_subprocess_result(0)
             if "push" in cmd_str and "-f" in cmd_str:
-                return _make_subprocess_result(0 if push_ok else 1, stderr="push error")
+                return _make_subprocess_result(0 if push_ok else 1, stderr=push_stderr)
             if "merge" in cmd_str and "ff-only" in cmd_str:
                 return _make_subprocess_result(0)
             return _make_subprocess_result(0)
@@ -231,6 +232,19 @@ class TestMergePrFunction:
         assert result["merged"] is False
         assert result["success"] is False
         assert "push" in result["error"].lower()
+
+    def test_push_missing_refspec_after_remote_branch_deleted_is_non_fatal(
+        self, tmp_path: Path
+    ) -> None:
+        result = self._run_merge_pr(
+            tmp_path,
+            push_ok=False,
+            push_stderr="error: src refspec forge/test-task does not match any",
+            gh_merge_ok=True,
+            gh_merge_results=[_make_subprocess_result(0)],
+        )
+        assert result["merged"] is True
+        assert result["success"] is True
 
     def test_pr_creation_failure_no_merge(self, tmp_path: Path) -> None:
         failed_pr = {"action": "pr", "pr_url": None, "success": False, "error": "gh auth failed"}
