@@ -97,7 +97,7 @@ echo "    pyproject.toml updated."
 # --- 6. Commit ---
 echo "==> Committing..."
 run git add CHANGELOG.md pyproject.toml
-run git commit -m "chore: release v$VERSION (#533)"
+run git commit -m "chore: release v$VERSION"
 
 # --- 7. Tag and push ---
 echo "==> Tagging and pushing..."
@@ -118,12 +118,12 @@ if [[ "$DRY_RUN" == false ]]; then
     sed -i '' "s/^version = \"$VERSION\"/version = \"$NEXT_DEV\"/" pyproject.toml
 fi
 run git add pyproject.toml
-run git commit -m "chore: begin v$NEXT_DEV development"
+run git commit -m "chore: begin v$NEXT_DEV development [skip ci]"
 run git push origin main
 
 # --- 10. GitHub Release ---
 echo "==> Creating GitHub release..."
-RELEASE_NOTES=$(awk "/^## \[$VERSION\]/,/^## \[/" CHANGELOG.md | head -n -1)
+RELEASE_NOTES=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
 run gh release create "v$VERSION" --repo fuzzypete/theforge \
     --title "v$VERSION" \
     --notes "$RELEASE_NOTES"
