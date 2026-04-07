@@ -62,15 +62,34 @@ Scope heuristics (not hard rules):
 Output ONLY a YAML block in this exact format (no other text):
 
 ```yaml
-verdict: PASS | WARN
+verdict: PASS
+findings: []
+```
+
+Or if issues are found:
+
+```yaml
+verdict: WARN
 findings:
-  - category: contradiction | internals | ambiguity | orphaned | scope
-    description: "Brief explanation of the issue"
-    split_suggestion:  # ONLY for category 'scope'
+  - category: requirement
+    description: "Clear description of the contradiction or issue"
+    split_suggestion: null
+  - category: scope
+    description: "The story covers 3 independent subsystems with no shared state"
+    split_suggestion:
       stories:
         - name: "Suggested sub-story name"
-          description: "Summary of what this sub-story covers"
+          acs:
+            - "Observable acceptance criterion"
 ```
+
+Rules:
+- verdict must be PASS or WARN
+- findings must be a list (empty for PASS)
+- category must be "requirement" or "scope"
+- split_suggestion is only for scope findings; set to null for requirement findings
+- Include split_suggestion only when you are confident the story should be split
+- Be conservative: only WARN when you have a clear, specific issue
 
 ## Story
 
@@ -89,7 +108,12 @@ class StoryValidationFinding:
     def __post_init__(self) -> None:
         """Normalize external inputs to the expected internal shape."""
         category = str(self.category).lower()
-        if category not in ("requirement", "scope", "contradiction", "internals", "ambiguity", "orphaned"):
+        if category in {"contradiction", "internals", "ambiguity", "orphaned"}:
+            category = "requirement"
+        if category not in (
+            "requirement",
+            "scope",
+        ):
             category = "requirement"
         self.category = category
         self.description = str(self.description)
@@ -156,7 +180,7 @@ def _extract_yaml_block(text: str) -> str | None:
     # [P2] More tolerant: allow trailing whitespace after yaml marker
     match = re.search(r"```[yY][aA][mM][lL][ \t]*\n(.*?)\n```", text, re.DOTALL)
     if match:
-        return match.group(1)
+        return match.group(1).strip()
     return None
 
 
@@ -169,27 +193,47 @@ def _parse_validation_output(output: str) -> StoryValidationResult:
         except Exception:
             return StoryValidationResult(verdict="PASS")
     else:
-        # [P2] Bare YAML fallback: try parsing whole output if no fence found
-        try:
-            data = yaml.safe_load(output)
-        except Exception:
+        v_match = re.search(r"^verdict:\s*(\w+)", output, re.MULTILINE | re.IGNORECASE)
+        bare_yaml = re.search(
+            r"(?mi)^(verdict:\s*\w+.*?)(?:\n\s*\n|\Z)",
+            output,
+            re.DOTALL,
+        )
+        if bare_yaml:
+            try:
+                data = yaml.safe_load(bare_yaml.group(1).strip())
+            except Exception:
+                if v_match:
+                    data = {"verdict": v_match.group(1)}
+                else:
+                    return StoryValidationResult(verdict="PASS")
+        else:
             # If full-text parse fails, try searching for verdict: pattern
             # as a last-resort fallback for messy LLM output.
-            v_match = re.search(r"^verdict:\s*(\w+)", output, re.MULTILINE | re.IGNORECASE)
             if v_match:
                 data = {"verdict": v_match.group(1)}
             else:
                 return StoryValidationResult(verdict="PASS")
 
     if not isinstance(data, dict):
-        return StoryValidationResult(verdict="PASS")
+        if v_match:
+            data = {"verdict": v_match.group(1)}
+        else:
+            return StoryValidationResult(verdict="PASS")
 
     # [P1] Normalize verdict case: warn -> WARN
     verdict = str(data.get("verdict", "PASS")).upper()
     if verdict not in ("PASS", "WARN"):
         verdict = "PASS"
 
-    _KNOWN_CATEGORIES = {"contradiction", "internals", "ambiguity", "orphaned", "scope"}
+    _KNOWN_CATEGORIES = {
+        "requirement",
+        "scope",
+        "contradiction",
+        "internals",
+        "ambiguity",
+        "orphaned",
+    }
     findings = []
     for f_data in data.get("findings", []):
         if not isinstance(f_data, dict):
@@ -242,18 +286,22 @@ def validate_story(
 
     fast_profile = _make_fast_profile(profile)
     # Give validation a short timeout — it's advisory only
-    fast_profile = dataclasses.replace(fast_profile, name='story-validator', timeout_seconds=120)
+    fast_profile = dataclasses.replace(
+        fast_profile,
+        name="story-validator",
+        timeout_seconds=120,
+    )
 
     prompt = _VALIDATION_PROMPT.format(story_content=story_content)
 
     try:
-        nonlocal_run_agent = runner or run_agent
-        if nonlocal_run_agent is None:
+        resolved_runner = runner or run_agent
+        if resolved_runner is None:
             _ensure_runner()
-            nonlocal_run_agent = run_agent
+            resolved_runner = run_agent
 
         t0 = time.monotonic()
-        agent_result = nonlocal_run_agent(
+        agent_result = resolved_runner(
             prompt=prompt,
             profile=fast_profile,
             working_dir=working_dir,

@@ -20,10 +20,11 @@ def _make_agent_result(output: str, cost_usd: float = 0.01) -> AgentResult:
     return AgentResult(
         success=True,
         output=output,
-        session_id="sess-123",
+        session_id=None,
         cost_usd=cost_usd,
         exit_code=0,
         raw={},
+        profile_name="spec-validator",
     )
 
 
@@ -33,10 +34,13 @@ def _make_agent_result(output: str, cost_usd: float = 0.01) -> AgentResult:
 def test_validate_story_pass():
     output = "```yaml\nverdict: PASS\nfindings: []\n```"
     with patch("theforge.story_validator.run_agent") as mock_run:
-        mock_run.return_value = _make_agent_result(output)
+        mock_run.return_value = _make_agent_result(output, cost_usd=0.005)
         result = validate_story("story content", DEFAULT_DEV_PROFILE, "working_dir")
         assert result.verdict == "PASS"
         assert len(result.findings) == 0
+        assert result.cost_usd == 0.005
+        assert result.duration_s is not None
+        mock_run.assert_called_once()
 
 
 def test_validate_story_warn():
@@ -53,7 +57,7 @@ findings:
         result = validate_story("story content", DEFAULT_DEV_PROFILE, "working_dir")
         assert result.verdict == "WARN"
         assert len(result.findings) == 1
-        assert result.findings[0].category == "contradiction"
+        assert result.findings[0].category == "requirement"
 
 
 def test_validate_story_fail_safe_on_exception():
@@ -185,6 +189,19 @@ findings:
     assert result.findings[0].category == "scope"
 
 
+def test_parse_expanded_requirement_category_maps_to_requirement():
+    output = """\
+```yaml
+verdict: WARN
+findings:
+  - category: Contradiction
+    description: "Case test"
+```
+"""
+    result = _parse_validation_output(output)
+    assert result.findings[0].category == "requirement"
+
+
 def test_parse_malformed_split_suggestion_handled():
     # [P1] Regression test: scalar instead of dict
     output = """\
@@ -228,12 +245,52 @@ def test_story_validation_result_coerces_dict_findings():
     assert len(result.findings) == 1
     assert isinstance(result.findings[0], StoryValidationFinding)
     assert result.findings[0].category == "scope"
+
+
+@patch("theforge.story_validator.run_agent")
+def test_validate_story_uses_fast_profile_for_opus(mock_run, tmp_path):
+    """Opus dev profile should be replaced with sonnet before invoking the runner."""
+    import dataclasses
+
+    mock_run.return_value = _make_agent_result("```yaml\nverdict: PASS\nfindings: []\n```")
+    opus_profile = dataclasses.replace(DEFAULT_DEV_PROFILE, model="opus")
+
+    validate_story(
+        story_content="# Spec",
+        profile=opus_profile,
+        working_dir=tmp_path,
+    )
+
+    called_profile = mock_run.call_args.kwargs["profile"]
+    assert called_profile.model == "sonnet"
+
+
+def test_make_fast_profile_opus_full_id_substituted():
+    """Full model IDs containing opus should be replaced with sonnet."""
+    import dataclasses
+
+    profile = dataclasses.replace(DEFAULT_DEV_PROFILE, model="claude-opus-4-6")
+    fast = _make_fast_profile(profile)
+    assert fast.model == "sonnet"
+
+
+def test_make_fast_profile_does_not_mutate_original():
+    """Original profile must be preserved."""
+    import dataclasses
+
+    profile = dataclasses.replace(DEFAULT_DEV_PROFILE, model="opus")
+    fast = _make_fast_profile(profile)
+    assert profile.model == "opus"
+    assert fast.model == "sonnet"
+
+
 # ── Tests: _make_fast_profile ─────────────────────────────────────────
 
 
 def test_make_fast_profile_opus_substituted():
     """opus model should be replaced with sonnet."""
     from theforge.config import ModelProfile
+
     profile = ModelProfile(
         name="test",
         cli="claude",
@@ -249,6 +306,7 @@ def test_make_fast_profile_opus_substituted():
 def test_make_fast_profile_non_opus_preserved():
     """non-opus models should be left alone."""
     from theforge.config import ModelProfile
+
     profile = ModelProfile(
         name="test",
         cli="claude",

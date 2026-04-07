@@ -367,7 +367,13 @@ class TestPlanPhaseTimeout:
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
         """PLAN phase profile uses timeout_large when complexity=large."""
-        plan = PlanConfig(enabled=True, timeout=600, timeout_medium=900, timeout_large=1800, validate_spec=False)
+        plan = PlanConfig(
+            enabled=True,
+            timeout=600,
+            timeout_medium=900,
+            timeout_large=1800,
+            validate_spec=False,
+        )
         config = _make_config(tmp_path, plan=plan)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -434,7 +440,13 @@ class TestPlanPhaseTimeout:
     ):
         """Complexity suffix appears in plan log even when override value equals base timeout."""
         base = 600
-        plan = PlanConfig(enabled=True, timeout=base, timeout_medium=base, timeout_large=base, validate_spec=False)
+        plan = PlanConfig(
+            enabled=True,
+            timeout=base,
+            timeout_medium=base,
+            timeout_large=base,
+            validate_spec=False,
+        )
         config = _make_config(tmp_path, plan=plan)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
