@@ -82,7 +82,7 @@ class TestConventionViolationRouting:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert mock_dev_prompt.call_count == config.retry.max_dev_iterations
+        assert mock_dev_prompt.call_count == 1
         mock_fix_prompt.assert_not_called()
         assert len(result.state.review_results) == config.retry.max_review_cycles
         convention_review = result.state.review_results[0]
