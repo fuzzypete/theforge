@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -82,20 +83,14 @@ def cmd_sprint(args: object) -> int:
 
     if config_path is None or not config_path.exists():
         print(
-            "forge.yaml not found. Run 'forge init' to create one, "
-            "or pass --config path/to/forge.yaml",
+            "forge.yaml not found. Run 'forge init' or pass --config path/to/forge.yaml",
             file=sys.stderr,
         )
         return 1
 
-    config = load_config(config_path)
-    if getattr(args, "base_branch", None):
-        import dataclasses
-
-        config = dataclasses.replace(
-            config,
-            workspace=dataclasses.replace(config.workspace, base_branch=args.base_branch),
-        )
+    config = _apply_base_branch_override(
+        load_config(config_path), getattr(args, "base_branch", None)
+    )
 
     if getattr(args, "verbose", False):
         coordinator_set_log_level(LogLevel.VERBOSE)
@@ -200,6 +195,15 @@ def cmd_sprint(args: object) -> int:
 
     _detach.remove_pid(run_id, config.project_root)
     return 0 if result.specs_failed == 0 else 1
+
+
+def _apply_base_branch_override(config: object, base_branch: str | None) -> object:
+    if not base_branch:
+        return config
+    return dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(config.workspace, base_branch=base_branch),
+    )
 
 
 def _acquire_launch_locks(
