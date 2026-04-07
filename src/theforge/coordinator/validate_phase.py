@@ -90,6 +90,13 @@ def _run_validate_phase(
             _log(f"✗ ESCALATE   {gate_err}")
             state.phase = Phase.ESCALATE
             state.error = gate_err
+            record_dev_iteration_telemetry(
+                state,
+                workspace_path,
+                max_iterations=config.retry.max_dev_iterations,
+                gate_result=gate_decision,
+                gate_output_tail=gate_output_tail,
+            )
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
                 logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
@@ -112,6 +119,13 @@ def _run_validate_phase(
         state.human_feedback = f"Gate validation failed: {gate_err}"
         state.retry_reason = "gate_fail"
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
+        record_dev_iteration_telemetry(
+            state,
+            workspace_path,
+            max_iterations=config.retry.max_dev_iterations,
+            gate_result=gate_decision,
+            gate_output_tail=gate_output_tail,
+        )
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
         return _ValidateOutcome.RETRY_DEV, None
@@ -172,13 +186,6 @@ def _run_validate_phase(
                         check=True,
                     )
                     _log(f"  Auto-committed dirty worktree: {commit_msg}")
-                    record_dev_iteration_telemetry(
-                        state,
-                        workspace_path,
-                        max_iterations=config.retry.max_dev_iterations,
-                        gate_result=gate_decision,
-                        gate_output_tail=gate_output_tail,
-                    )
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                     err_detail = getattr(exc, "stderr", b"").decode(errors="replace")[:200]
                     _log(f"  ⚠ Auto-commit failed: {err_detail}")
@@ -201,6 +208,13 @@ def _run_validate_phase(
             state.phase = Phase.ESCALATE
             state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
             _log(f"✗ ESCALATE   {state.error}")
+            record_dev_iteration_telemetry(
+                state,
+                workspace_path,
+                max_iterations=config.retry.max_dev_iterations,
+                gate_result=gate_decision,
+                gate_output_tail=gate_output_tail,
+            )
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
                 logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
@@ -219,6 +233,13 @@ def _run_validate_phase(
         state.retry_reason = "gate_fail"
         _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
         _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
+        record_dev_iteration_telemetry(
+            state,
+            workspace_path,
+            max_iterations=config.retry.max_dev_iterations,
+            gate_result=gate_decision,
+            gate_output_tail=gate_output_tail,
+        )
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
         return _ValidateOutcome.RETRY_DEV, None
