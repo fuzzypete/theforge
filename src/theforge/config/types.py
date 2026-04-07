@@ -204,6 +204,7 @@ class PlanConfig:
     timeout: int = 600
     timeout_medium: int | None = None  # override for medium complexity
     timeout_large: int | None = None  # override for large complexity
+    validate_spec: bool = True  # whether to run story_validator before planning
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,7 @@ import re
 import sys
 import threading
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -77,13 +78,9 @@ findings:
     description: "The story covers 3 independent subsystems with no shared state"
     split_suggestion:
       stories:
-        - name: "Story: Authentication flow"
+        - name: "Suggested sub-story name"
           acs:
-            - "User can log in with email/password"
-            - "User receives error on invalid credentials"
-        - name: "Story: Profile management"
-          acs:
-            - "User can update display name"
+            - "Observable acceptance criterion"
 ```
 
 Rules:
@@ -94,8 +91,7 @@ Rules:
 - Include split_suggestion only when you are confident the story should be split
 - Be conservative: only WARN when you have a clear, specific issue
 
----
-STORY:
+## Story
 
 {story_content}
 """
@@ -103,16 +99,21 @@ STORY:
 
 @dataclass
 class StoryValidationFinding:
-    """A single finding from story validation."""
+    """A single finding from the story validation check."""
 
-    category: str  # "requirement" | "scope"
+    category: str
     description: str
-    split_suggestion: dict[str, Any] | None = None  # {"stories": [...]} for scope findings
+    split_suggestion: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         """Normalize external inputs to the expected internal shape."""
         category = str(self.category).lower()
-        if category not in ("requirement", "scope"):
+        if category in {"contradiction", "internals", "ambiguity", "orphaned"}:
+            category = "requirement"
+        if category not in (
+            "requirement",
+            "scope",
+        ):
             category = "requirement"
         self.category = category
         self.description = str(self.description)
@@ -122,9 +123,9 @@ class StoryValidationFinding:
 
 @dataclass
 class StoryValidationResult:
-    """Result from story validation."""
+    """The result of a story validation check."""
 
-    verdict: str  # "PASS" | "WARN"
+    verdict: str = "PASS"  # PASS | WARN
     findings: list[StoryValidationFinding] = field(default_factory=list)
     cost_usd: float | None = None
     duration_s: float | None = None
@@ -163,82 +164,104 @@ class StoryValidationResult:
         self.findings = normalized
 
 
+def _make_fast_profile(profile: Any) -> Any:
+    """Return a fast model profile (sonnet) for advisory validation.
+
+    If the provided profile is already using a fast model (or anything not opus),
+    it is returned as-is.
+    """
+    if "opus" in profile.model.lower():
+        return dataclasses.replace(profile, model="sonnet")
+    return profile
+
+
 def _extract_yaml_block(text: str) -> str | None:
-    """Extract the first YAML code block from model output."""
-    # Look for ```yaml ... ``` block
-    match = re.search(r"```yaml\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    # Fallback: look for bare YAML starting with 'verdict:'
-    match = re.search(r"(verdict:\s*(PASS|WARN).*?)(?:\n\n|\Z)", text, re.DOTALL | re.IGNORECASE)
+    """Extract first YAML block from text, or None if not found."""
+    # [P2] More tolerant: allow trailing whitespace after yaml marker
+    match = re.search(r"```[yY][aA][mM][lL][ \t]*\n(.*?)\n```", text, re.DOTALL)
     if match:
         return match.group(1).strip()
     return None
 
 
 def _parse_validation_output(output: str) -> StoryValidationResult:
-    """Parse model output into a StoryValidationResult.
+    """Parse YAML block from model output."""
+    yaml_text = _extract_yaml_block(output)
+    v_match = None
+    if yaml_text:
+        try:
+            data = yaml.safe_load(yaml_text)
+        except Exception:
+            return StoryValidationResult(verdict="PASS")
+    else:
+        v_match = re.search(r"^verdict:\s*(\w+)", output, re.MULTILINE | re.IGNORECASE)
+        bare_yaml = re.search(
+            r"(?mi)^(verdict:\s*\w+.*?)(?:\n\s*\n|\Z)",
+            output,
+            re.DOTALL,
+        )
+        if bare_yaml:
+            try:
+                data = yaml.safe_load(bare_yaml.group(1).strip())
+            except Exception:
+                if v_match:
+                    data = {"verdict": v_match.group(1)}
+                else:
+                    return StoryValidationResult(verdict="PASS")
+        else:
+            # If full-text parse fails, try searching for verdict: pattern
+            # as a last-resort fallback for messy LLM output.
+            if v_match:
+                data = {"verdict": v_match.group(1)}
+            else:
+                return StoryValidationResult(verdict="PASS")
 
-    Fail-safe: any parse error returns PASS with no findings.
-    """
-    try:
-        yaml_text = _extract_yaml_block(output)
-        if yaml_text is None:
+    if not isinstance(data, dict):
+        if v_match:
+            data = {"verdict": v_match.group(1)}
+        else:
             return StoryValidationResult(verdict="PASS")
 
-        data = yaml.safe_load(yaml_text)
-        if not isinstance(data, dict):
-            return StoryValidationResult(verdict="PASS")
+    # [P1] Normalize verdict case: warn -> WARN
+    verdict = str(data.get("verdict", "PASS")).upper()
+    if verdict not in ("PASS", "WARN"):
+        verdict = "PASS"
 
-        verdict = str(data.get("verdict", "PASS")).upper()
-        if verdict not in ("PASS", "WARN"):
-            verdict = "PASS"
+    _KNOWN_CATEGORIES = {
+        "requirement",
+        "scope",
+        "contradiction",
+        "internals",
+        "ambiguity",
+        "orphaned",
+    }
+    findings = []
+    for f_data in data.get("findings", []):
+        if not isinstance(f_data, dict):
+            continue
 
-        raw_findings = data.get("findings") or []
-        if not isinstance(raw_findings, list):
-            return StoryValidationResult(verdict=verdict)
+        # [P2] Normalize category case: Scope -> scope
+        category = str(f_data.get("category", "requirement")).lower()
+        if category not in _KNOWN_CATEGORIES:
+            category = "requirement"
 
-        findings: list[StoryValidationFinding] = []
-        for item in raw_findings:
-            if not isinstance(item, dict):
-                continue
-            category = str(item.get("category", "requirement")).lower()
-            if category not in ("requirement", "scope"):
-                category = "requirement"
-            description = str(item.get("description", ""))
-            split_suggestion = item.get("split_suggestion")
-            # Normalize: null/None split_suggestion → None
-            if split_suggestion is not None and not isinstance(split_suggestion, dict):
-                split_suggestion = None
-            findings.append(
-                StoryValidationFinding(
-                    category=category,
-                    description=description,
-                    split_suggestion=split_suggestion,
-                )
+        # [P1] Fail-safe split_suggestion: must be a dict or None
+        split_suggestion = f_data.get("split_suggestion")
+        if split_suggestion is not None and not isinstance(split_suggestion, dict):
+            split_suggestion = None
+
+        findings.append(
+            StoryValidationFinding(
+                category=category,
+                description=f_data.get("description", "No description provided"),
+                split_suggestion=split_suggestion,
             )
+        )
 
-        return StoryValidationResult(verdict=verdict, findings=findings)
-
-    except Exception:  # noqa: BLE001
-        # Any parse failure is fail-safe: return PASS
-        return StoryValidationResult(verdict="PASS")
-
-
-def _make_fast_profile(profile: Any) -> Any:
-    """Return a copy of profile with the model forced to sonnet if it's opus.
-
-    Uses dataclasses.replace() since ModelProfile is frozen.
-    Matches 'opus' case-insensitively as a substring of the model string.
-    This works for both short names ('opus') and full model IDs ('claude-opus-4-6').
-    For API profiles with full model IDs like 'claude-opus-4-6', the substitution
-    sets model='sonnet' which is not a valid full model ID — this is acceptable
-    for the CLI-based dogfooding config; API profiles with full opus model IDs
-    are an unspecified edge case per the spec.
-    """
-    if "opus" in profile.model.lower():
-        return dataclasses.replace(profile, model="sonnet")
-    return profile
+    return StoryValidationResult(
+        verdict=verdict,
+        findings=findings,
+    )
 
 
 def validate_story(
@@ -246,6 +269,7 @@ def validate_story(
     profile: Any,
     working_dir: Path,
     secrets: dict[str, str] | None = None,
+    runner: Callable | None = None,
 ) -> StoryValidationResult:
     """Validate a story with a fast model call.
 
@@ -257,19 +281,28 @@ def validate_story(
         profile: ModelProfile to use (will be cloned with fast model).
         working_dir: Working directory for the agent subprocess.
         secrets: Optional secrets dict passed to run_agent.
+        runner: Optional agent runner to use.
     """
     import time
 
     fast_profile = _make_fast_profile(profile)
     # Give validation a short timeout — it's advisory only
-    fast_profile = dataclasses.replace(fast_profile, name="story-validator", timeout_seconds=120)
+    fast_profile = dataclasses.replace(
+        fast_profile,
+        name="story-validator",
+        timeout_seconds=120,
+    )
 
     prompt = _VALIDATION_PROMPT.format(story_content=story_content)
 
     try:
-        _ensure_runner()
+        resolved_runner = runner or run_agent
+        if resolved_runner is None:
+            _ensure_runner()
+            resolved_runner = run_agent
+
         t0 = time.monotonic()
-        agent_result = run_agent(
+        agent_result = resolved_runner(
             prompt=prompt,
             profile=fast_profile,
             working_dir=working_dir,

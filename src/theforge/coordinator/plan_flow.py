@@ -141,9 +141,11 @@ def _run_plan_phase(
     _should_validate_spec = (
         plan_path is None
         and config.plan.enabled
+        and config.plan.validate_spec
         and state.preflight_complexity in ("medium", "large")
         and state.preflight_sufficiency != "implementation_ready"
     )
+
     if _should_validate_spec:
         from theforge.story_validator import validate_story  # noqa: PLC0415
 
@@ -157,7 +159,9 @@ def _run_plan_phase(
             profile=_fast_profile,
             working_dir=workspace_path,
             secrets=config.secrets,
+            runner=run_agent,
         )
+
         state.story_validation_result = _sv_result
         if _sv_result.verdict == "WARN":
             _log("⚠  Story validation: WARN — review findings before planning")
