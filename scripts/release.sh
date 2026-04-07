@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# scripts/release.sh — cut a TheForge release
+#
+# Usage: scripts/release.sh [--dry-run] VERSION
+#   VERSION  The version to release, e.g. 0.5.0
+#
+# Follows the process documented in RELEASING.md.
+
+set -euo pipefail
+
+DRY_RUN=false
+VERSION=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=true ;;
+        *) VERSION="$arg" ;;
+    esac
+done
+
+if [[ -z "$VERSION" ]]; then
+    echo "Usage: scripts/release.sh [--dry-run] VERSION" >&2
+    exit 1
+fi
+
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "Error: VERSION must be X.Y.Z (got: $VERSION)" >&2
+    exit 1
+fi
+
+# Read current version from pyproject.toml
+CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+NEXT_DEV="$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0.dev0"}')"
+
+echo "Current version : $CURRENT_VERSION"
+echo "Releasing       : $VERSION"
+echo "Next dev        : $NEXT_DEV"
+echo "Dry run         : $DRY_RUN"
+echo ""
+
+run() {
+    echo "+ $*"
+    if [[ "$DRY_RUN" == false ]]; then
+        "$@"
+    fi
+}
+
+# --- 1. Verify milestone is complete ---
+echo "==> Checking milestone v$VERSION..."
+OPEN_ISSUES=$(gh issue list --repo fuzzypete/theforge --milestone "v$VERSION" --state open --json number --jq 'length')
+if [[ "$OPEN_ISSUES" != "0" ]]; then
+    echo "Error: $OPEN_ISSUES open issue(s) remain in milestone v$VERSION. Close them before releasing." >&2
+    gh issue list --repo fuzzypete/theforge --milestone "v$VERSION" --state open >&2
+    exit 1
+fi
+echo "    Milestone clean."
+
+# --- 2. Verify clean main ---
+echo "==> Verifying clean state..."
+run git checkout main
+run git pull --ff-only
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "Error: working tree is dirty. Commit or stash changes before releasing." >&2
+    exit 1
+fi
+
+# --- 3. Gate ---
+echo "==> Running gate..."
+run make gate
+
+# --- 4. Update CHANGELOG ---
+echo "==> Updating CHANGELOG..."
+TODAY=$(date +%Y-%m-%d)
+if [[ "$DRY_RUN" == false ]]; then
+    # Rename [Unreleased] → [VERSION] — DATE and add new [Unreleased] above
+    sed -i '' \
+        "s/^## \[Unreleased\]/## [$VERSION] — $TODAY/" \
+        CHANGELOG.md
+    # Insert new [Unreleased] section above the versioned one
+    sed -i '' \
+        "/^## \[$VERSION\]/i\\
+## [Unreleased]\\
+\\
+" \
+        CHANGELOG.md
+fi
+echo "    CHANGELOG updated."
+
+# --- 5. Bump version in pyproject.toml ---
+echo "==> Bumping version to $VERSION..."
+if [[ "$DRY_RUN" == false ]]; then
+    sed -i '' "s/^version = \"$CURRENT_VERSION\"/version = \"$VERSION\"/" pyproject.toml
+fi
+echo "    pyproject.toml updated."
+
+# --- 6. Commit ---
+echo "==> Committing..."
+run git add CHANGELOG.md pyproject.toml
+run git commit -m "chore: release v$VERSION"
+
+# --- 7. Tag and push ---
+echo "==> Tagging and pushing..."
+run git tag "v$VERSION"
+run git push origin main
+run git push origin "v$VERSION"
+
+# --- 8. Cut release branch ---
+echo "==> Creating release branch release/v$(echo "$VERSION" | cut -d. -f1,2)..."
+RELEASE_BRANCH="release/v$(echo "$VERSION" | cut -d. -f1,2)"
+run git checkout -b "$RELEASE_BRANCH"
+run git push origin "$RELEASE_BRANCH"
+run git checkout main
+
+# --- 9. Bump main to dev ---
+echo "==> Bumping main to $NEXT_DEV..."
+if [[ "$DRY_RUN" == false ]]; then
+    sed -i '' "s/^version = \"$VERSION\"/version = \"$NEXT_DEV\"/" pyproject.toml
+fi
+run git add pyproject.toml
+run git commit -m "chore: begin v$NEXT_DEV development [skip ci]"
+run git push origin main
+
+# --- 10. GitHub Release ---
+echo "==> Creating GitHub release..."
+RELEASE_NOTES=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+run gh release create "v$VERSION" --repo fuzzypete/theforge \
+    --title "v$VERSION" \
+    --notes "$RELEASE_NOTES"
+
+echo ""
+echo "Released v$VERSION."
