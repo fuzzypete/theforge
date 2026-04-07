@@ -61,6 +61,16 @@ closing the session without a handoff, leaves work unreviewed and untracked.
 
 ---
 
+## Directory-level guidance
+
+Directory-level `CLAUDE.md` files under `src/theforge/` provide subsystem-specific guidance for major areas of the codebase. Consult them before making changes in those directories, especially:
+- `coordinator/`
+- `runners/`
+- `sprint/`
+- `task/`
+- `config/`
+- `cli/`
+
 ## Architecture
 
 **The coordinator (not an LLM) makes all process decisions.** Every state transition
