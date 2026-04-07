@@ -33,6 +33,7 @@ from .profiles import (
 from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
+    ContextConfig,
     ForgeConfig,
     GithubConfig,
     HardConventionsConfig,
@@ -403,6 +404,13 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
     sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
 
+    context_data = raw.get("context", {})
+    context_cfg = ContextConfig(
+        preflight_budget=int(context_data.get("preflight_budget", ContextConfig.preflight_budget)),
+        plan_budget=int(context_data.get("plan_budget", ContextConfig.plan_budget)),
+        dev_budget=int(context_data.get("dev_budget", ContextConfig.dev_budget)),
+    )
+
     # Conventions config — soft
     conventions_soft_raw = raw.get("conventions", {}).get("soft", [])
     if not isinstance(conventions_soft_raw, list):
@@ -470,6 +478,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         log=log_cfg,
         hooks=hooks_cfg,
         sprint=sprint_cfg,
+        context=context_cfg,
         secrets=secrets,
         agents=agents_list,
         assignment=assignment_cfg,

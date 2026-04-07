@@ -11,7 +11,7 @@ import yaml
 
 from theforge.config import ForgeConfig
 from theforge.sessions import save_sessions
-from theforge.task import TaskStory, build_dev_prompt, build_fix_prompt
+from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
 
 from .gate import _is_gate_skip
@@ -156,6 +156,11 @@ def _run_dev_phase(
         state.dev_prompt_injected_finding_ids.append([r.finding_id for r in carry_forward_p1s])
         state.escalation_note = None  # consumed
     else:
+        dev_context = ContextAssembler.from_config(config).assemble(
+            phase="dev",
+            story_text=story_content,
+            file_list=state.preflight_likely_files or None,
+        )
         prompt = build_dev_prompt(
             task,
             workspace_path=workspace_path,
@@ -176,6 +181,7 @@ def _run_dev_phase(
             handoff_file=config.validation.handoff_file,
             preflight_sufficiency=state.preflight_sufficiency,
             conventions=config.conventions_soft,
+            assembled_context=dev_context,
         )
         state.dev_prompt_injected_finding_ids.append([])
         state.escalation_note = None  # consumed

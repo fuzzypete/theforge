@@ -284,6 +284,15 @@ class HooksConfig:
 
 
 @dataclass(frozen=True)
+class ContextConfig:
+    """Default line budgets for phase-aware context assembly."""
+
+    preflight_budget: int = 200
+    plan_budget: int = 120
+    dev_budget: int = 80
+
+
+@dataclass(frozen=True)
 class SprintConfig:
     """Project-level sprint defaults from forge.yaml."""
 
@@ -322,6 +331,7 @@ class ForgeConfig:
     log: LogConfig = field(default_factory=LogConfig)
     hooks: HooksConfig | None = None
     sprint: SprintConfig = field(default_factory=SprintConfig)
+    context: ContextConfig = field(default_factory=ContextConfig)
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)

@@ -127,3 +127,36 @@ class TestPlanObedienceFraming:
             # preflight_sufficiency intentionally omitted
         )
         assert "Follow it closely" in prompt
+
+
+def test_dev_prompt_includes_repository_context_pack(tmp_path):
+    task = _make_task(tmp_path)
+    from theforge.task.context_assembler import ContextManifestEntry, ContextPack
+
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        story_content="# Spec",
+        gate_command="make gate",
+        assembled_context=ContextPack(
+            content="## Invariants\n\n- keep it deterministic",
+            included=(
+                ContextManifestEntry(
+                    source="src/example/CLAUDE.md",
+                    kind="claude_invariants",
+                    required=True,
+                    lines=2,
+                    included=True,
+                    reason="invariants",
+                    score=0,
+                ),
+            ),
+            dropped=(),
+            budget=10,
+            line_count=2,
+        ),
+    )
+
+    assert "Repository Context Pack" in prompt
+    assert "keep it deterministic" in prompt

@@ -1,6 +1,7 @@
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
+from .context_assembler import ContextPack
 from .conventions import render_conventions_block
 from .plan_parser import PlanData
 from .story import TaskStory
@@ -13,6 +14,7 @@ def build_preflight_prompt(
     task: TaskStory,
     *,
     story_content: str,
+    assembled_context: ContextPack | None = None,
 ) -> str:
     """Build the preflight check prompt.
 
@@ -22,6 +24,17 @@ def build_preflight_prompt(
     This is a one-shot classification call — the agent outputs a structured
     YAML verdict, not code.
     """
+    context_section = ""
+    if assembled_context and assembled_context.content:
+        context_section = dedent(f"""\
+
+            ## Repository Context Pack
+
+            Use this curated repository context before exploring additional files.
+
+            {assembled_context.content}
+        """)
+
     return dedent(f"""\
         You are a preflight validator for **{task.name}**.
 
@@ -33,7 +46,7 @@ def build_preflight_prompt(
 
         ## Spec
 
-        {story_content}
+        {story_content}{context_section}
 
         ## Classification
 
@@ -320,6 +333,7 @@ def build_plan_prompt(
     *,
     story_content: str,
     preflight_output: str | None = None,
+    assembled_context: ContextPack | None = None,
     conventions: list[str] | None = None,
     work_type: str | None = None,
 ) -> str:
@@ -352,6 +366,17 @@ def build_plan_prompt(
             changes. The dev agent will discover those empirically.
         """).format(work_type=work_type)
 
+    context_section = ""
+    if assembled_context and assembled_context.content:
+        context_section = dedent(f"""\
+
+            ## Repository Context Pack
+
+            Use this curated repository context before exploring additional files.
+
+            {assembled_context.content}
+        """)
+
     return dedent(f"""\
         You are a planning agent for **{task.name}**.
 
@@ -364,7 +389,7 @@ def build_plan_prompt(
         ## Spec
 
         {story_content}
-        {preflight_section}{work_type_instruction}
+        {preflight_section}{context_section}{work_type_instruction}
         ## Output Format
 
         You MUST output ONLY a YAML block. No prose before or after.

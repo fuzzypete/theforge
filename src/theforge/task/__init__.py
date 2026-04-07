@@ -1,3 +1,9 @@
+from .context_assembler import (
+    ContextAssembler,
+    ContextBudgetConfig,
+    ContextManifestEntry,
+    ContextPack,
+)
 from .conventions import render_conventions_block
 from .dev_prompts import build_dev_prompt
 from .fix_prompts import build_fix_prompt, build_handoff_fix_prompt
@@ -14,6 +20,10 @@ from .story import (
 )
 
 __all__ = [
+    "ContextAssembler",
+    "ContextBudgetConfig",
+    "ContextManifestEntry",
+    "ContextPack",
     "render_conventions_block",
     "build_dev_prompt",
     "build_fix_prompt",

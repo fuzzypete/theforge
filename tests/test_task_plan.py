@@ -444,3 +444,65 @@ class TestParsePlanOutputYamlMarker:
         result = parse_plan_output(yaml_input)
         assert result is not None
         assert result["steps"][0]["description"] == "plain step"
+
+
+class TestPromptContextPack:
+    def test_preflight_prompt_includes_repository_context_pack(self, tmp_path):
+        from theforge.task.context_assembler import ContextManifestEntry, ContextPack
+        from theforge.task.plan_prompts import build_preflight_prompt
+
+        task = _make_task(tmp_path)
+        prompt = build_preflight_prompt(
+            task,
+            story_content="# Story",
+            assembled_context=ContextPack(
+                content="## Context\n\nRelevant module summary",
+                included=(
+                    ContextManifestEntry(
+                        source="src/example/CLAUDE.md",
+                        kind="claude_advisory",
+                        required=False,
+                        lines=2,
+                        included=True,
+                        reason="context",
+                        score=1,
+                    ),
+                ),
+                dropped=(),
+                budget=10,
+                line_count=2,
+            ),
+        )
+
+        assert "Repository Context Pack" in prompt
+        assert "Relevant module summary" in prompt
+
+    def test_plan_prompt_includes_repository_context_pack(self, tmp_path):
+        from theforge.task.context_assembler import ContextManifestEntry, ContextPack
+        from theforge.task.plan_prompts import build_plan_prompt
+
+        task = _make_task(tmp_path)
+        prompt = build_plan_prompt(
+            task,
+            story_content="# Story",
+            assembled_context=ContextPack(
+                content="## Context\n\nPlanner should inspect this module",
+                included=(
+                    ContextManifestEntry(
+                        source="src/example/CLAUDE.md",
+                        kind="claude_advisory",
+                        required=False,
+                        lines=2,
+                        included=True,
+                        reason="context",
+                        score=1,
+                    ),
+                ),
+                dropped=(),
+                budget=10,
+                line_count=2,
+            ),
+        )
+
+        assert "Repository Context Pack" in prompt
+        assert "Planner should inspect this module" in prompt
