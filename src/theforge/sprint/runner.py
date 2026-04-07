@@ -1062,12 +1062,15 @@ def run_sprint(
                 specs_failed += df
                 specs_skipped += dsk
 
-                needs_deferred_merge = (
+                # The scheduler thread is the sole owner of DAG/landing state.
+                # Workers only return CoordinatorResult objects; integration and
+                # dependency satisfaction happen here after futures complete.
+                needs_parallel_integration = max_parallel > 1 and (
                     auto_merge
                     or config.workspace.on_approve == "merge-pr"
                     or slug in dependent_slugs
                 )
-                if max_parallel > 1 and needs_deferred_merge and result.success:
+                if needs_parallel_integration and result.success:
                     integrated = _attempt_integration(slug, task, result)
                     if not integrated:
                         pending_integration[slug] = (task, result)
