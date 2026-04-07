@@ -396,6 +396,22 @@ class TestDeindexForgeArtifacts:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
+    def test_deletes_local_artifacts_after_deindex(self, mock_log, mock_shell, tmp_path):
+        """Local forge artifacts are deleted so reused worktrees cannot keep stale state."""
+        mock_shell.return_value = (True, "")
+
+        for artifact in _FORGE_ARTIFACTS:
+            artifact_path = tmp_path / artifact
+            artifact_path.parent.mkdir(parents=True, exist_ok=True)
+            artifact_path.write_text("stale\n", encoding="utf-8")
+
+        _deindex_forge_artifacts(tmp_path)
+
+        for artifact in _FORGE_ARTIFACTS:
+            assert not (tmp_path / artifact).exists()
+
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
     def test_runs_in_workspace_path(self, mock_log, mock_shell, tmp_path):
         """git rm runs with the workspace path as cwd."""
         mock_shell.return_value = (True, "")

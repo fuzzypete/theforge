@@ -411,13 +411,13 @@ _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/las
 
 
 def _deindex_forge_artifacts(workspace_path: Path) -> None:
-    """Remove .forge/handoff.yaml and .forge/trajectory.yaml from the git index.
+    """Remove transient .forge artifacts from git index and working tree.
 
-    Uses -f so removal succeeds even when the index entry has staged content that
-    differs from both HEAD and the working tree (the agent-misbehavior state described
-    in the story). Uses --ignore-unmatch so the call is a no-op when files are not
-    tracked. This prevents merge conflicts and dirty-worktree noise from gitignored
-    files that were previously committed or accidentally staged.
+    Uses -f so index removal succeeds even when the index entry has staged content
+    that differs from both HEAD and the working tree (the agent-misbehavior state
+    described in the story). Uses --ignore-unmatch so the call is a no-op when files
+    are not tracked. After deindexing, deletes the local artifact files so reused
+    worktrees cannot carry stale handoff or trajectory state forward.
 
     This helper is intentionally safe to run repeatedly at workspace setup, after the
     dev phase, and immediately before rebase/merge operations.
@@ -426,6 +426,13 @@ def _deindex_forge_artifacts(workspace_path: Path) -> None:
     ok, out = _cu._run_shell(f"git rm -f --cached --ignore-unmatch {files_arg}", workspace_path)
     if not ok:
         _cu._log(f"⚠ WORKSPACE  git rm --cached failed: {out.strip()}")
+
+    for artifact in _FORGE_ARTIFACTS:
+        artifact_path = workspace_path / artifact
+        try:
+            artifact_path.unlink(missing_ok=True)
+        except OSError as exc:
+            _cu._log(f"⚠ WORKSPACE  failed to delete {artifact}: {exc}")
 
 
 def pull_base_branch(config: ForgeConfig) -> bool:

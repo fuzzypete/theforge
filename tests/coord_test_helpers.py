@@ -156,7 +156,7 @@ def _handle_stale_check_cmd(cmd: str) -> tuple[bool, str] | None:
     if "rev-parse --abbrev-ref HEAD" in cmd:
         return (True, "forge/test-task")
     if "--oneline" in cmd and "git log" in cmd:
-        return (True, "abc123 a recent commit")
+        return (True, "abc1234 feat: implement")
     if "--format=%ct" in cmd:
         return (True, _RECENT_COMMIT_TS)
     return None

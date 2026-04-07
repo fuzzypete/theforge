@@ -330,7 +330,7 @@ class TestCoordinatorDevNotes:
     def test_review_prompt_warns_on_handoff_commit_mismatch(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Review prompt warns when handoff commit list disagrees with git log."""
+        """Review phase fails closed when handoff commit list disagrees with git log."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -391,18 +391,23 @@ class TestCoordinatorDevNotes:
 
         mock_pool.side_effect = pool_side_effect
 
-        result = run_task(config, task)
+        with patch(
+            "theforge.coordinator.review_pool._get_handoff_commit_warning",
+            return_value=(
+                "⚠ WARNING: Dev handoff commit list does not match verified git history.\n"
+                "Claims not found on branch:\n"
+                "- deadbee feat: imaginary commit"
+            ),
+        ):
+            try:
+                run_task(config, task)
+            except RuntimeError as exc:
+                result = exc
+            else:
+                raise AssertionError("expected RuntimeError")
 
-        assert result.success is True
-        assert any(
-            "Dev handoff commit list does not match verified git history" in p
-            for p in captured_prompts
-        )
-        assert any("deadbee feat: imaginary commit" in p for p in captured_prompts)
-        assert any("Claims not found on branch:" in p for p in captured_prompts)
-        assert any(
-            "Commits present on branch but omitted from handoff:" in p for p in captured_prompts
-        )
+        assert "Dev handoff commit list does not match verified git history" in str(result)
+        assert not captured_prompts
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -539,12 +544,12 @@ class TestCoordinatorDevHandoffValidation:
             'summary: "Implemented feature X with full test coverage."\n'
             "commits:\n"
             '  - sha: "abc1234"\n'
-            '    message: "feat(x): implement feature X"\n'
+            '    message: "feat: implement"\n'
             "acceptance_criteria:\n"
             '  - criterion: "Feature X works"\n'
             "    status: MET\n"
             '    notes: "Tested in test_x.py"\n'
-            "spec_deviations: none\n"
+            "story_deviations: none\n"
             "deferred_items: none\n"
             "gate_result: PASS\n"
         )
@@ -607,7 +612,7 @@ class TestCoordinatorDevHandoffValidation:
             '  - criterion: "It works"\n'
             "    status: MET\n"
             '    notes: "yes"\n'
-            "spec_deviations: none\n"
+            "story_deviations: none\n"
             "deferred_items: none\n"
             "gate_result: PASS\n"
         )
@@ -725,7 +730,7 @@ class TestCoordinatorDevHandoffValidation:
             '  - criterion: "It works"\n'
             "    status: MET\n"
             '    notes: "yes"\n'
-            "spec_deviations: none\n"
+            "story_deviations: none\n"
             "deferred_items: none\n"
             "gate_result: PASS\n"
         )

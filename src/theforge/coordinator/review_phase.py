@@ -883,6 +883,8 @@ def _run_review_only_phase(
     handoff_commit_warning = _get_handoff_commit_warning(
         config, workspace_path, config.workspace.base_branch
     )
+    if handoff_commit_warning:
+        raise RuntimeError(handoff_commit_warning)
     if logger:
         logger._safe_emit(
             "review_git_context",
