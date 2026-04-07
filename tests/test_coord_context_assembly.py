@@ -117,11 +117,25 @@ def test_run_task_invokes_context_assembler_for_all_phases(
         profile_name="preflight",
     )
     plan_output = (
-        "# Implementation Plan\n\n"
-        "## Step 1: Update code\n"
-        "- Files: `src/app.py`, `tests/test_app.py`\n\n"
-        "## Step 2: Follow-up\n"
-        "- Files: `src/app.py`, `docs/notes.md`\n"
+        "```yaml\n"
+        "plan:\n"
+        "  approach: Update app behavior and coverage.\n"
+        "  steps:\n"
+        "    - id: 1\n"
+        "      description: Update code\n"
+        "      files:\n"
+        "        - src/app.py\n"
+        "        - tests/test_app.py\n"
+        "      action: modify\n"
+        "      details: Implement the feature.\n"
+        "    - id: 2\n"
+        "      description: Follow-up\n"
+        "      files:\n"
+        "        - src/app.py\n"
+        "        - docs/notes.md\n"
+        "      action: modify\n"
+        "      details: Document the change.\n"
+        "```\n"
     )
     mock_plan.return_value = _make_agent_result(
         success=True,
@@ -154,5 +168,13 @@ def test_run_task_invokes_context_assembler_for_all_phases(
         "src/preflight_scope.py",
         "tests/test_preflight_scope.py",
     ]
-    assert _AssemblerSpy.calls[2]["file_list"] == []
-    assert _AssemblerSpy.calls[3]["file_list"] == []
+    assert _AssemblerSpy.calls[2]["file_list"] == [
+        "src/app.py",
+        "tests/test_app.py",
+        "docs/notes.md",
+    ]
+    assert _AssemblerSpy.calls[3]["file_list"] == [
+        "src/app.py",
+        "tests/test_app.py",
+        "docs/notes.md",
+    ]
