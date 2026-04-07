@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -130,6 +131,41 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
     telemetry = state.dev_iteration_telemetry[0]
     assert telemetry.gate_result == "PASS"
     assert telemetry.files_changed == ["src/example.py"]
+
+
+def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -> None:
+    config = dataclasses.replace(
+        _make_config(tmp_path),
+        validation=dataclasses.replace(_make_config(tmp_path).validation, handoff_file=None),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with patch(
+        "theforge.coordinator.validate_phase._run_gate_full",
+        return_value=(None, "gate crashed", "traceback tail"),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            dev_calls_this_cycle=1,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert result.message == "gate crashed"
+    assert len(state.dev_iteration_telemetry) == 1
+    telemetry = state.dev_iteration_telemetry[0]
+    assert telemetry.gate_result == "ERROR"
+    assert telemetry.failed_tests == []
 
 
 def _git(repo: Path, *args: str) -> str:
