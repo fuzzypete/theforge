@@ -427,7 +427,7 @@ class TestParallelIndependentStories:
 
 class TestParallelDependencyGating:
     def test_dependency_blocks_until_predecessor_completes(self, tmp_path: Path) -> None:
-        """Story B (depends on A) is skipped when A doesn't merge."""
+        """Story B is skipped when A cannot be landed for dependency satisfaction."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
         manifest_path = _make_manifest_parallel(
@@ -445,8 +445,8 @@ class TestParallelDependencyGating:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1  # only A ran
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
         assert sprint.specs_skipped == 1
 
     def test_dependency_satisfied_by_merge_unlocks_dependent(self, tmp_path: Path) -> None:
@@ -555,7 +555,7 @@ class TestClassifyAndRecord:
     """Unit tests for _classify_and_record helper."""
 
     def test_success_no_merge_skips_for_dag(self) -> None:
-        """Success without merge → specs_succeeded, dag.mark_skipped (not complete)."""
+        """Success without merge counts as finished but does not unlock dependents."""
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
@@ -568,8 +568,8 @@ class TestClassifyAndRecord:
         assert df == 0
         assert dsk == 0
         assert "a" not in merged_slugs
-        # A remains ready because successful-but-unlanded stories are pending integration.
-        assert {t.slug for t in dag.ready()} == {"a"}
+        # A should not be re-dispatched forever, and B must remain blocked.
+        assert dag.ready() == []
 
     def test_success_with_merge_completes_for_dag(self) -> None:
         """Success with merge → specs_succeeded, dag.mark_complete (unlocks deps)."""
@@ -1422,8 +1422,8 @@ class TestQueuedMergePolling:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1
-        assert sprint.specs_succeeded == 0
-        assert sprint.specs_failed == 1
+        assert sprint.specs_succeeded == 1
+        assert sprint.specs_failed == 0
         assert sprint.specs_skipped == 1
 
 

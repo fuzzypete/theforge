@@ -491,7 +491,7 @@ def _classify_and_record(
         ):
             merged_slugs.add(task.slug)
             dag.mark_complete(task.slug)
-        elif result.landing_status == "failed":
+        else:
             dag.mark_skipped(task.slug)
     else:
         delta_failed = 1
@@ -684,6 +684,10 @@ def run_sprint(
         dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
     except ValueError as exc:
         raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
+
+    # Dependencies already satisfied outside this sprint still count as landed
+    # for deferred integration ordering.
+    merged_slugs.update(satisfied_slugs)
 
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
     if resume:
