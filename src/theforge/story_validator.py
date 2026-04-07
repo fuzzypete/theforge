@@ -187,6 +187,7 @@ def _extract_yaml_block(text: str) -> str | None:
 def _parse_validation_output(output: str) -> StoryValidationResult:
     """Parse YAML block from model output."""
     yaml_text = _extract_yaml_block(output)
+    v_match = None
     if yaml_text:
         try:
             data = yaml.safe_load(yaml_text)

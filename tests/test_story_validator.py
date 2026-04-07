@@ -132,6 +132,12 @@ def test_parse_invalid_verdict_falls_back_to_pass():
     assert result.verdict == "PASS"
 
 
+def test_parse_fenced_non_dict_yaml_falls_back_to_pass():
+    output = "```yaml\n- not\n- a dict\n```"
+    result = _parse_validation_output(output)
+    assert result.verdict == "PASS"
+
+
 def test_parse_lowercase_verdict_normalized():
     # [P1] Regression test
     output = "```yaml\nverdict: warn\nfindings: []\n```"
