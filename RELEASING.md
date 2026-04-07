@@ -112,20 +112,18 @@ Make the fix, run `make gate`. Commit normally.
 
 ### 3. Forge the fix (optional but preferred)
 
-If the fix is non-trivial, use forge against the release branch. Create a
-`forge-release.yaml` (or copy `forge.yaml` and set `workspace.base_branch: release/vX.Y`):
+If the fix is non-trivial, use forge against the release branch. Ensure your
+`forge.yaml` uses `{base_branch}` in `workspace.create_command`, then override the
+base branch at invocation time:
 
 ```yaml
 workspace:
-  base_branch: release/vX.Y
-  create_command: "git worktree add .forge/worktrees/{slug} -b fix/{slug} release/vX.Y"
+  base_branch: main
+  create_command: "git worktree add .forge/worktrees/{slug} -b fix/{slug} {base_branch}"
   # ... rest of config
 ```
 
-Then: `forge sprint --config forge-release.yaml --milestone vX.Y.Z+1 --budget 20`
-
-> **Note:** `{base_branch}` substitution in `create_command` is a planned v0.5.0
-> improvement. Until then, set the branch explicitly in `create_command`.
+Then: `forge sprint --base-branch release/vX.Y --milestone vX.Y.Z+1 --budget 20`
 
 ### 4. PR and merge to release branch
 

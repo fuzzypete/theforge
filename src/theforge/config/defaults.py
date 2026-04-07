@@ -37,7 +37,7 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
 )
 
 DEFAULT_WORKSPACE = WorkspaceConfig(
-    create_command="git worktree add .forge/worktrees/{slug} -b forge/{slug} main",
+    create_command="git worktree add .forge/worktrees/{slug} -b forge/{slug} {base_branch}",
     path_pattern=".forge/worktrees/{slug}",
     branch_pattern="forge/{slug}",
 )
@@ -74,8 +74,8 @@ def generate_default_config() -> str:
 project: my-project
 
 workspace:
-  # Shell command to create an isolated workspace. {slug} is replaced.
-  create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
+  # Shell command to create an isolated workspace. {slug} and {base_branch} are replaced.
+  create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} {base_branch}"
   # Optional: run once in the new workspace after creation (e.g. install deps).
   # setup_command: "pip install -e ."
   path_pattern: ".forge/worktrees/{slug}"

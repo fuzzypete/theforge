@@ -459,7 +459,10 @@ def _create_workspace(
 ) -> tuple[Path | None, str | None, str | None]:
     """Create an isolated workspace. Returns (path, branch, error)."""
     slug = task.slug
-    cmd = config.workspace.create_command.format(slug=slug)
+    cmd = config.workspace.create_command.format(
+        slug=slug,
+        base_branch=config.workspace.base_branch,
+    )
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=slug)
     branch_name = config.workspace.branch_pattern.format(slug=slug)
 

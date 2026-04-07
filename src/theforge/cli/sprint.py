@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
@@ -82,13 +83,14 @@ def cmd_sprint(args: object) -> int:
 
     if config_path is None or not config_path.exists():
         print(
-            "forge.yaml not found. Run 'forge init' to create one, "
-            "or pass --config path/to/forge.yaml",
+            "forge.yaml not found. Run 'forge init' or pass --config path/to/forge.yaml",
             file=sys.stderr,
         )
         return 1
 
-    config = load_config(config_path)
+    config = apply_base_branch_override(
+        load_config(config_path), getattr(args, "base_branch", None)
+    )
 
     if getattr(args, "verbose", False):
         coordinator_set_log_level(LogLevel.VERBOSE)
@@ -400,6 +402,11 @@ def register_parser(subparsers: object) -> None:
         help="Path to sprint.yaml manifest (omit when using --milestone, --label, or --issues)",
     )
     sprint_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    sprint_parser.add_argument(
+        "--base-branch",
+        default=None,
+        help="Override workspace.base_branch for this sprint without editing forge.yaml",
+    )
 
     # ── GitHub query mode ────────────────────────────────────────────────
     sprint_parser.add_argument(
