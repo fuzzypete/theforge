@@ -81,6 +81,26 @@ def _write_sprint_audit(
                     cycle_entry["p2_count"] = sum(1 for f in r.findings if f.severity == "P2")
                 reviews_summary.append(cycle_entry)
 
+            dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+            review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+            dev_max = (
+                getattr(
+                    getattr(res.state, "dev_iteration_telemetry", [None])[0],
+                    "max_iterations",
+                    None,
+                )
+                if getattr(res.state, "dev_iteration_telemetry", [])
+                else None
+            )
+            review_max = (
+                getattr(
+                    getattr(res.state, "review_iteration_telemetry", [None])[0],
+                    "max_iterations",
+                    None,
+                )
+                if getattr(res.state, "review_iteration_telemetry", [])
+                else None
+            )
             entry: dict = {
                 "path": display_key,
                 "outcome": outcome,
@@ -95,6 +115,26 @@ def _write_sprint_audit(
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "merge": res.merge is not None and res.merge.get("merged", False),
+                "iteration_usage": {
+                    "dev": {
+                        "used": dev_used,
+                        "max": dev_max,
+                        "hit_limit": (dev_used >= dev_max)
+                        if dev_max is not None and dev_used > 0
+                        else False,
+                        "early_finish": (0 < dev_used < dev_max) if dev_max is not None else False,
+                    },
+                    "review": {
+                        "used": review_used,
+                        "max": review_max,
+                        "hit_limit": (review_used >= review_max)
+                        if review_max is not None and review_used > 0
+                        else False,
+                        "early_finish": (0 < review_used < review_max)
+                        if review_max is not None
+                        else False,
+                    },
+                },
                 "reviews": reviews_summary,
                 "depends_on": task.depends_on if task else [],
                 "inferred_dependencies": {
@@ -139,6 +179,33 @@ def _write_sprint_audit(
             }
         spec_entries.append(entry)
 
+    usage_distribution = []
+    for spec_str, res in result.results:
+        dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+        review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+        dev_max = (
+            getattr(
+                getattr(res.state, "dev_iteration_telemetry", [None])[0], "max_iterations", None
+            )
+            if getattr(res.state, "dev_iteration_telemetry", [])
+            else None
+        )
+        review_max = (
+            getattr(
+                getattr(res.state, "review_iteration_telemetry", [None])[0], "max_iterations", None
+            )
+            if getattr(res.state, "review_iteration_telemetry", [])
+            else None
+        )
+        usage_distribution.append(
+            {
+                "spec": spec_str,
+                "slug": slug_map.get(spec_str, Path(spec_str).stem),
+                "dev": {"used": dev_used, "max": dev_max},
+                "review": {"used": review_used, "max": review_max},
+            }
+        )
+
     audit = {
         "sprint": {
             "name": manifest.name,
@@ -157,6 +224,7 @@ def _write_sprint_audit(
             "ci_break_slug": ci_break_slug,
         },
         "specs": spec_entries,
+        "iteration_usage_distribution": usage_distribution,
     }
 
     audits_dir = project_root / ".forge" / "audits"
@@ -215,6 +283,26 @@ def _write_sprint_summary(
                 last_verdict = res.state.review_results[-1].verdict
             elif res.success:
                 last_verdict = "APPROVE"
+            dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+            review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+            dev_max = (
+                getattr(
+                    getattr(res.state, "dev_iteration_telemetry", [None])[0],
+                    "max_iterations",
+                    None,
+                )
+                if getattr(res.state, "dev_iteration_telemetry", [])
+                else None
+            )
+            review_max = (
+                getattr(
+                    getattr(res.state, "review_iteration_telemetry", [None])[0],
+                    "max_iterations",
+                    None,
+                )
+                if getattr(res.state, "review_iteration_telemetry", [])
+                else None
+            )
             entry: dict = {
                 "path": display_key,
                 "slug": slug,
@@ -231,6 +319,26 @@ def _write_sprint_summary(
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "merge": res.merge is not None and res.merge.get("merged", False),
+                "iteration_usage": {
+                    "dev": {
+                        "used": dev_used,
+                        "max": dev_max,
+                        "hit_limit": (dev_used >= dev_max)
+                        if dev_max is not None and dev_used > 0
+                        else False,
+                        "early_finish": (0 < dev_used < dev_max) if dev_max is not None else False,
+                    },
+                    "review": {
+                        "used": review_used,
+                        "max": review_max,
+                        "hit_limit": (review_used >= review_max)
+                        if review_max is not None and review_used > 0
+                        else False,
+                        "early_finish": (0 < review_used < review_max)
+                        if review_max is not None
+                        else False,
+                    },
+                },
             }
             if slug in story_times:
                 entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -251,6 +359,33 @@ def _write_sprint_summary(
             }
         spec_entries.append(entry)
 
+    usage_distribution = []
+    for spec_str, res in result.results:
+        dev_used = len(getattr(res.state, "dev_iteration_telemetry", []))
+        review_used = len(getattr(res.state, "review_iteration_telemetry", []))
+        dev_max = (
+            getattr(
+                getattr(res.state, "dev_iteration_telemetry", [None])[0], "max_iterations", None
+            )
+            if getattr(res.state, "dev_iteration_telemetry", [])
+            else None
+        )
+        review_max = (
+            getattr(
+                getattr(res.state, "review_iteration_telemetry", [None])[0], "max_iterations", None
+            )
+            if getattr(res.state, "review_iteration_telemetry", [])
+            else None
+        )
+        usage_distribution.append(
+            {
+                "spec": spec_str,
+                "slug": slug_map.get(spec_str, Path(spec_str).stem),
+                "dev": {"used": dev_used, "max": dev_max},
+                "review": {"used": review_used, "max": review_max},
+            }
+        )
+
     summary = {
         "sprint": {
             "name": manifest.name,
@@ -270,6 +405,7 @@ def _write_sprint_summary(
             "ci_break_slug": ci_break_slug,
         },
         "stories": spec_entries,
+        "iteration_usage_distribution": usage_distribution,
     }
 
     try:

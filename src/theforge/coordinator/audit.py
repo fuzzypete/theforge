@@ -221,6 +221,71 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     }
 
 
+def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig) -> dict:
+    dev_used = len(state.dev_iteration_telemetry)
+    dev_max = (
+        state.dev_iteration_telemetry[0].max_iterations
+        if state.dev_iteration_telemetry
+        else config.retry.max_dev_iterations
+    )
+    review_used = len(state.review_iteration_telemetry)
+    review_max = (
+        state.review_iteration_telemetry[0].max_iterations
+        if state.review_iteration_telemetry
+        else config.retry.max_review_cycles
+    )
+    return {
+        "dev": {
+            "used": dev_used,
+            "max": dev_max,
+            "hit_limit": dev_used >= dev_max and dev_used > 0,
+            "early_finish": 0 < dev_used < dev_max,
+        },
+        "review": {
+            "used": review_used,
+            "max": review_max,
+            "hit_limit": review_used >= review_max and review_used > 0,
+            "early_finish": 0 < review_used < review_max,
+        },
+    }
+
+
+def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
+    return [
+        {
+            "iteration": item.iteration,
+            "max_iterations": item.max_iterations,
+            "gate_result": item.gate_result,
+            "failed_tests": item.failed_tests,
+            "cost_usd": item.cost_usd,
+            "duration_s": round(item.duration_s, 2),
+            "meaningful_progress": item.meaningful_progress,
+            "files_changed": item.files_changed,
+            "files_changed_count": item.files_changed_count,
+            "tests_fixed_count": item.tests_fixed_count,
+        }
+        for item in state.dev_iteration_telemetry
+    ]
+
+
+def _serialize_review_iteration_metrics(state: CoordinatorState) -> list[dict]:
+    return [
+        {
+            "iteration": item.iteration,
+            "max_iterations": item.max_iterations,
+            "verdict": item.verdict,
+            "finding_counts": item.findings_by_severity,
+            "new_findings_by_severity": item.new_findings_by_severity,
+            "repeated_findings_by_severity": item.repeated_findings_by_severity,
+            "novel_findings": item.novel_findings,
+            "restated_findings": item.restated_findings,
+            "cost_usd": round(item.cost_usd, 6),
+            "duration_s": round(item.duration_s, 2),
+        }
+        for item in state.review_iteration_telemetry
+    ]
+
+
 def generate_audit_log(config: ForgeConfig, task: TaskStory, result: CoordinatorResult) -> dict:
     """Generate a structured audit log for the entire coordination run.
 
@@ -298,6 +363,9 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "review_cycles": state.review_cycle,
             "dev_iterations": state.dev_iteration,
             "gate_decisions": state.gate_decisions,
+            "dev_loop": _serialize_dev_iteration_metrics(state),
+            "review_loop": _serialize_review_iteration_metrics(state),
+            "usage_summary": _build_iteration_usage_summary(state, config),
         },
         "cost": {
             "total_usd": state.total_cost,

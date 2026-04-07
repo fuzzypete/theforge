@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from theforge.agent_types import AgentResult
@@ -116,6 +116,38 @@ class PlanFindingRecord:
     cycle_last_seen: int  # plan regen attempt index when last observed
     disposition: Literal["unresolved", "fixed", "new"]
     original_severity: str | None = None  # pre-corroboration severity; None = no downgrade
+
+
+@dataclass(frozen=True)
+class DevIterationTelemetry:
+    """Per-dev-iteration telemetry captured for audit output."""
+
+    iteration: int
+    max_iterations: int
+    cost_usd: float | None
+    duration_s: float
+    gate_result: str | None = None
+    failed_tests: list[str] = field(default_factory=list)
+    files_changed: list[str] = field(default_factory=list)
+    files_changed_count: int = 0
+    tests_fixed_count: int = 0
+    meaningful_progress: bool | None = None
+
+
+@dataclass(frozen=True)
+class ReviewIterationTelemetry:
+    """Per-review-cycle telemetry captured for audit output."""
+
+    iteration: int
+    max_iterations: int
+    cost_usd: float
+    duration_s: float
+    verdict: str
+    findings_by_severity: dict[str, int]
+    new_findings_by_severity: dict[str, int]
+    repeated_findings_by_severity: dict[str, int]
+    novel_findings: int
+    restated_findings: int
 
 
 @dataclass
@@ -230,7 +262,9 @@ class CoordinatorState:
     )  # (profile_name, ReviewResult) pairs from the most recent pool run
     finding_registry: list[FindingRecord] = field(default_factory=list)
     dev_prompt_injected_finding_ids: list[list[str]] = field(default_factory=list)
-    dev_handoff_snapshots: list[dict | None] = field(default_factory=list)
+    dev_handoff_snapshots: list[dict[str, Any] | None] = field(default_factory=list)
+    dev_iteration_telemetry: list[DevIterationTelemetry] = field(default_factory=list)
+    review_iteration_telemetry: list[ReviewIterationTelemetry] = field(default_factory=list)
     context_manifests: list[dict] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
     # Each entry is the parsed handoff-file dict, or None if absent/unparseable.
