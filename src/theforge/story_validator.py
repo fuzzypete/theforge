@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,141 +48,94 @@ Scope heuristics (not hard rules):
 Output ONLY a YAML block in this exact format (no other text):
 
 ```yaml
-verdict: PASS
-findings: []
-```
-
-Or if issues are found:
-
-```yaml
-verdict: WARN
+verdict: PASS | WARN
 findings:
-  - category: requirement
-    description: "Clear description of the contradiction or issue"
-    split_suggestion: null
-  - category: scope
-    description: "The story covers 3 independent subsystems with no shared state"
-    split_suggestion:
+  - category: contradiction | internals | ambiguity | orphaned | scope
+    description: "Brief explanation of the issue"
+    split_suggestion:  # ONLY for category 'scope'
       stories:
-        - name: "Story: Authentication flow"
-          acs:
-            - "User can log in with email/password"
-            - "User receives error on invalid credentials"
-        - name: "Story: Profile management"
-          acs:
-            - "User can update display name"
+        - name: "Suggested sub-story name"
+          description: "Summary of what this sub-story covers"
 ```
 
-Rules:
-- verdict must be PASS or WARN
-- findings must be a list (empty for PASS)
-- category must be "requirement" or "scope"
-- split_suggestion is only for scope findings; set to null for requirement findings
-- Include split_suggestion only when you are confident the story should be split
-- Be conservative: only WARN when you have a clear, specific issue
-
----
-STORY:
+## Story
 
 {story_content}
 """
 
 
-@dataclass
+@dataclass(frozen=True)
 class StoryValidationFinding:
-    """A single finding from story validation."""
+    """A single finding from the story validation check."""
 
-    category: str  # "requirement" | "scope"
+    category: str
     description: str
-    split_suggestion: dict[str, Any] | None = None  # {"stories": [...]} for scope findings
+    split_suggestion: dict[str, Any] | None = None
 
 
 @dataclass
 class StoryValidationResult:
-    """Result from story validation."""
+    """The result of a story validation check."""
 
-    verdict: str  # "PASS" | "WARN"
+    verdict: str = "PASS"  # PASS | WARN
     findings: list[StoryValidationFinding] = field(default_factory=list)
     cost_usd: float | None = None
     duration_s: float | None = None
 
 
-def _extract_yaml_block(text: str) -> str | None:
-    """Extract the first YAML code block from model output."""
-    # Look for ```yaml ... ``` block
-    match = re.search(r"```yaml\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    # Fallback: look for bare YAML starting with 'verdict:'
-    match = re.search(r"(verdict:\s*(PASS|WARN).*?)(?:\n\n|\Z)", text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    return None
-
-
-def _parse_validation_output(output: str) -> StoryValidationResult:
-    """Parse model output into a StoryValidationResult.
-
-    Fail-safe: any parse error returns PASS with no findings.
-    """
-    try:
-        yaml_text = _extract_yaml_block(output)
-        if yaml_text is None:
-            return StoryValidationResult(verdict="PASS")
-
-        data = yaml.safe_load(yaml_text)
-        if not isinstance(data, dict):
-            return StoryValidationResult(verdict="PASS")
-
-        verdict = str(data.get("verdict", "PASS")).upper()
-        if verdict not in ("PASS", "WARN"):
-            verdict = "PASS"
-
-        raw_findings = data.get("findings") or []
-        if not isinstance(raw_findings, list):
-            return StoryValidationResult(verdict=verdict)
-
-        findings: list[StoryValidationFinding] = []
-        for item in raw_findings:
-            if not isinstance(item, dict):
-                continue
-            category = str(item.get("category", "requirement")).lower()
-            if category not in ("requirement", "scope"):
-                category = "requirement"
-            description = str(item.get("description", ""))
-            split_suggestion = item.get("split_suggestion")
-            # Normalize: null/None split_suggestion → None
-            if split_suggestion is not None and not isinstance(split_suggestion, dict):
-                split_suggestion = None
-            findings.append(
-                StoryValidationFinding(
-                    category=category,
-                    description=description,
-                    split_suggestion=split_suggestion,
-                )
-            )
-
-        return StoryValidationResult(verdict=verdict, findings=findings)
-
-    except Exception:  # noqa: BLE001
-        # Any parse failure is fail-safe: return PASS
-        return StoryValidationResult(verdict="PASS")
-
-
 def _make_fast_profile(profile: Any) -> Any:
-    """Return a copy of profile with the model forced to sonnet if it's opus.
+    """Return a fast model profile (sonnet) for advisory validation.
 
-    Uses dataclasses.replace() since ModelProfile is frozen.
-    Matches 'opus' case-insensitively as a substring of the model string.
-    This works for both short names ('opus') and full model IDs ('claude-opus-4-6').
-    For API profiles with full model IDs like 'claude-opus-4-6', the substitution
-    sets model='sonnet' which is not a valid full model ID — this is acceptable
-    for the CLI-based dogfooding config; API profiles with full opus model IDs
-    are an unspecified edge case per the spec.
+    If the provided profile is already using a fast model (or anything not opus),
+    it is returned as-is.
     """
     if "opus" in profile.model.lower():
         return dataclasses.replace(profile, model="sonnet")
     return profile
+
+
+def _extract_yaml_block(text: str) -> str | None:
+    """Extract first YAML block from text, or None if not found."""
+    match = re.search(r"```yaml\n(.*?)\n```", text, re.DOTALL)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _parse_validation_output(output: str) -> StoryValidationResult:
+    """Parse YAML block from model output."""
+    yaml_text = _extract_yaml_block(output)
+    if not yaml_text:
+        # Fallback to loose parsing if no code block
+        try:
+            data = yaml.safe_load(output)
+        except Exception:
+            return StoryValidationResult(verdict="PASS")
+    else:
+        try:
+            data = yaml.safe_load(yaml_text)
+        except Exception:
+            return StoryValidationResult(verdict="PASS")
+
+    if not isinstance(data, dict):
+        return StoryValidationResult(verdict="PASS")
+
+    findings = []
+    for f_data in data.get("findings", []):
+        if not isinstance(f_data, dict):
+            continue
+        findings.append(
+            StoryValidationFinding(
+                category=f_data.get("category", "unknown"),
+                description=f_data.get("description", "No description provided"),
+                split_suggestion=f_data.get("split_suggestion"),
+            )
+        )
+
+    return StoryValidationResult(
+        verdict=data.get("verdict", "PASS"),
+        findings=findings,
+    )
 
 
 def validate_story(
@@ -189,6 +143,7 @@ def validate_story(
     profile: Any,
     working_dir: Path,
     secrets: dict[str, str] | None = None,
+    runner: Callable | None = None,
 ) -> StoryValidationResult:
     """Validate a story with a fast model call.
 
@@ -200,19 +155,24 @@ def validate_story(
         profile: ModelProfile to use (will be cloned with fast model).
         working_dir: Working directory for the agent subprocess.
         secrets: Optional secrets dict passed to run_agent.
+        runner: Optional agent runner to use.
     """
     import time
 
     fast_profile = _make_fast_profile(profile)
     # Give validation a short timeout — it's advisory only
-    fast_profile = dataclasses.replace(fast_profile, name="story-validator", timeout_seconds=120)
+    fast_profile = dataclasses.replace(fast_profile, name='story-validator', timeout_seconds=120)
 
     prompt = _VALIDATION_PROMPT.format(story_content=story_content)
 
     try:
-        _ensure_runner()
+        nonlocal_run_agent = runner or run_agent
+        if nonlocal_run_agent is None:
+            _ensure_runner()
+            nonlocal_run_agent = run_agent
+
         t0 = time.monotonic()
-        agent_result = run_agent(
+        agent_result = nonlocal_run_agent(
             prompt=prompt,
             profile=fast_profile,
             working_dir=working_dir,
