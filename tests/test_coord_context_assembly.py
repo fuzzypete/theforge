@@ -6,6 +6,7 @@ from tests.coord_test_helpers import (
     APPROVE_REVIEW,
     _make_agent_result,
     _make_config,
+    _make_plan_config,
     _make_task,
     _shell_with_gate,
 )
@@ -84,29 +85,17 @@ def test_review_pool_uses_plan_file_list_for_context(mock_pool, _mock_log, tmp_p
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.plan_flow.run_agent")
 @patch("theforge.coordinator.preflight_flow.run_agent")
 @patch("theforge.coordinator.dev_phase.run_agent")
 @patch("theforge.coordinator.util._run_shell")
 def test_run_task_invokes_context_assembler_for_all_phases(
-    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+    mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
 ):
-    config = _make_config(tmp_path)
+    config = _make_plan_config(tmp_path)
     task = _make_task(tmp_path)
     workspace = tmp_path / task.slug
     workspace.mkdir()
-    plan_path = tmp_path / "plan.md"
-    plan_path.write_text(
-        (
-            "```yaml\n"
-            "steps:\n"
-            "  - title: Update code\n"
-            "    files:\n"
-            "      - src/app.py\n"
-            "      - tests/test_app.py\n"
-            "```\n"
-        ),
-        encoding="utf-8",
-    )
 
     mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
     mock_preflight.return_value = _make_agent_result(
@@ -114,12 +103,30 @@ def test_run_task_invokes_context_assembler_for_all_phases(
         output=(
             "```yaml\n"
             "verdict: PROCEED\n"
-            "reason: ok\n"
+            "complexity: medium\n"
+            "reason: planning needed\n"
             "likely_files:\n"
             "  - src/preflight_scope.py\n"
+            "  - tests/test_preflight_scope.py\n"
+            "criteria_checked:\n"
+            "  - criterion: Feature X\n"
+            "    satisfied: false\n"
+            "    evidence: Not found in codebase\n"
             "```\n"
         ),
         profile_name="preflight",
+    )
+    plan_output = (
+        "# Implementation Plan\n\n"
+        "## Step 1: Update code\n"
+        "- Files: `src/app.py`, `tests/test_app.py`\n\n"
+        "## Step 2: Follow-up\n"
+        "- Files: `src/app.py`, `docs/notes.md`\n"
+    )
+    mock_plan.return_value = _make_agent_result(
+        success=True,
+        output=plan_output,
+        profile_name="plan",
     )
     mock_dev.return_value = _make_agent_result(success=True, output="Done.", profile_name="dev")
     mock_pool.return_value = [
@@ -133,10 +140,19 @@ def test_run_task_invokes_context_assembler_for_all_phases(
         patch("theforge.coordinator.dev_phase.ContextAssembler", _AssemblerSpy),
         patch("theforge.coordinator.review_pool.ContextAssembler", _AssemblerSpy, create=True),
     ):
-        result = run_task(config, task, plan_path=plan_path)
+        result = run_task(config, task)
 
     assert result.success is True
-    phases = [call["phase"] for call in _AssemblerSpy.calls]
-    assert phases == ["preflight", "dev", "review"]
-    assert _AssemblerSpy.calls[1]["file_list"] is None
-    assert _AssemblerSpy.calls[2]["file_list"] is None
+    assert [call["phase"] for call in _AssemblerSpy.calls] == [
+        "preflight",
+        "plan",
+        "dev",
+        "review",
+    ]
+    assert "file_list" not in _AssemblerSpy.calls[0]
+    assert _AssemblerSpy.calls[1]["file_list"] == [
+        "src/preflight_scope.py",
+        "tests/test_preflight_scope.py",
+    ]
+    assert _AssemblerSpy.calls[2]["file_list"] == []
+    assert _AssemblerSpy.calls[3]["file_list"] == []
