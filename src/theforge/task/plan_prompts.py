@@ -151,6 +151,8 @@ def build_preflight_prompt(
             description: "<what conflicts or is unclear>"
         warnings:
           - "<missing file path or other non-blocking advisory>"
+        likely_files:
+          - "<repo-relative file path likely to be edited if implementation proceeds>"
         criteria_checked:
           - criterion: "<acceptance criterion text>"
             satisfied: true | false
@@ -159,6 +161,8 @@ def build_preflight_prompt(
 
         Use `spec_issues: []` if the spec is clean.
         Use `warnings: []` if there are no non-blocking advisories.
+        Use `likely_files: []` when no likely edit targets can be identified.
+        Include repo-relative paths only; do not invent nonexistent files just to fill the list.
         Always include `sufficiency` and `sufficiency_reason` when verdict is PROCEED.
 
         ## Rules

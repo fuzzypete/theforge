@@ -6,36 +6,16 @@ labels: bug
 
 ## What happened
 
-<!-- A clear description of the bug -->
+<!-- Describe the observed behavior. Include evidence: log lines, audit trail
+     entries, run IDs, or error messages. -->
 
-## What I expected
+## What was expected
 
-<!-- What should have happened instead -->
+<!-- Describe the correct behavior. -->
 
-## Steps to reproduce
+## Evidence
 
-1.
-2.
-3.
-
-## Environment
-
-- **OS:** <!-- macOS / Linux / Windows -->
-- **Python:** <!-- e.g., 3.12.1 -->
-- **TheForge version:** <!-- `forge --version` or commit hash -->
-- **Provider(s):** <!-- Claude CLI, Codex CLI, OpenAI API, etc. -->
-
-## Configuration
-
-<!-- Paste relevant forge.yaml sections (redact API keys) -->
-
-```yaml
-
-```
-
-## Audit/log output
-
-<!-- If available, paste relevant sections from forge_audit.yaml or forge.log -->
+<!-- Paste relevant log output, audit YAML, or screenshots. -->
 
 ```
 

@@ -11,6 +11,7 @@ from theforge.cli import (
     daemon,
     hooks,
     ideate,
+    index,
     providers,
     review,
     run,
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.register_parser(subparsers)
     sprint.register_parser(subparsers)
     ideate.register_parser(subparsers)
+    index.register_parser(subparsers)
     providers.register_parser(subparsers)
     check_config.register_parser(subparsers)
     audit.register_parser(subparsers)
@@ -76,6 +78,7 @@ def main() -> None:
         "review": review.cmd_review,
         "sprint": sprint.cmd_sprint,
         "ideate": ideate.cmd_ideate,
+        "index": index.cmd_index,
         "check-providers": providers.cmd_check_providers,
         "check-config": check_config.cmd_check_config,
         "audit": audit.cmd_audit,

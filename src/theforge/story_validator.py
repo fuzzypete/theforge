@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import sys
+import threading
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +20,17 @@ import yaml
 
 # Lazy runner slot — None until first call; tests may replace with a mock.
 run_agent = None
+
+
+def _warn_story_validation_shape(event: str, **details: Any) -> None:
+    """Emit diagnostics for unexpected story validation shapes."""
+    lines = [f"[forge] WARNING: story validation {event}"]
+    for key, value in details.items():
+        lines.append(f"  {key}: {value}")
+    lines.append(f"  thread: {threading.current_thread().name}")
+    lines.append("  stack:")
+    lines.extend(f"    {line}" for line in traceback.format_stack(limit=8))
+    print("\n".join(lines), file=sys.stderr)
 
 
 def _ensure_runner() -> None:
@@ -64,13 +78,23 @@ findings:
 """
 
 
-@dataclass(frozen=True)
+@dataclass
 class StoryValidationFinding:
     """A single finding from the story validation check."""
 
     category: str
     description: str
     split_suggestion: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize external inputs to the expected internal shape."""
+        category = str(self.category).lower()
+        if category not in ("requirement", "scope", "contradiction", "internals", "ambiguity", "orphaned"):
+            category = "requirement"
+        self.category = category
+        self.description = str(self.description)
+        if self.split_suggestion is not None and not isinstance(self.split_suggestion, dict):
+            self.split_suggestion = None
 
 
 @dataclass
@@ -81,6 +105,39 @@ class StoryValidationResult:
     findings: list[StoryValidationFinding] = field(default_factory=list)
     cost_usd: float | None = None
     duration_s: float | None = None
+
+    def __post_init__(self) -> None:
+        """Coerce findings so downstream code can trust attribute access."""
+        verdict = str(self.verdict).upper()
+        self.verdict = verdict if verdict in ("PASS", "WARN") else "PASS"
+
+        normalized: list[StoryValidationFinding] = []
+        for finding in self.findings:
+            if isinstance(finding, StoryValidationFinding):
+                normalized.append(finding)
+                continue
+            if isinstance(finding, dict):
+                _warn_story_validation_shape(
+                    "coercing raw dict finding",
+                    finding_type=type(finding).__name__,
+                    finding_module=type(finding).__module__,
+                    finding_repr=repr(finding)[:500],
+                )
+                normalized.append(
+                    StoryValidationFinding(
+                        category=finding.get("category", "requirement"),
+                        description=finding.get("description", ""),
+                        split_suggestion=finding.get("split_suggestion"),
+                    )
+                )
+                continue
+            _warn_story_validation_shape(
+                "dropping unexpected finding",
+                finding_type=type(finding).__name__,
+                finding_module=type(finding).__module__,
+                finding_repr=repr(finding)[:500],
+            )
+        self.findings = normalized
 
 
 def _make_fast_profile(profile: Any) -> Any:

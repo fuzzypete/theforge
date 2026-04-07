@@ -8,6 +8,7 @@ from theforge.cli.audit import cmd_audit
 from theforge.cli.daemon import cmd_daemon
 from theforge.cli.hooks import cmd_init_hooks
 from theforge.cli.ideate import cmd_ideate
+from theforge.cli.index import cmd_index
 from theforge.cli.init_commands import (
     _ensure_gitignored,
     _generate_secrets_skeleton,
@@ -39,6 +40,7 @@ __all__ = [
     "cmd_daemon",
     "cmd_decide",
     "cmd_ideate",
+    "cmd_index",
     "cmd_init",
     "cmd_init_hooks",
     "cmd_logs",
