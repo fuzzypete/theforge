@@ -132,8 +132,8 @@ def build_review_prompt(
     *,
     story_content: str,
     commit_log: str,
-    diff_stat: str,
-    diff_content: str,
+    diff_stat: str = "",
+    diff_content: str = "",
     commit_diffs: str,
     workspace_path: str,
     branch: str,
@@ -294,7 +294,12 @@ def build_review_prompt(
         The full diffs are embedded above. Use Read/Bash/Glob tools only if you need
         to inspect surrounding context not shown in the diff. Worktree: {workspace_path}
 
-        Per-commit diffs (`git show`) for additional context:
+        Commit history:
+        ```
+        {commit_log}
+        ```
+
+        Full diffs:
         ```
         {commit_diffs}
         ```
