@@ -3,6 +3,12 @@
 TheForge is a deterministic multi-LLM development orchestrator. This file provides
 conventions for any Claude agent working in this codebase.
 
+Directory-level `CLAUDE.md` files under `src/theforge/` provide subsystem-local
+context. When working inside `coordinator/`, `runners/`, `sprint/`, `task/`,
+`config/`, or `cli/`, read the nearest local `CLAUDE.md` in addition to this
+root guide. Treat local `Invariants` sections as hard constraints and `Context`
+sections as navigational guidance.
+
 ---
 
 ## Current State — Start Here
