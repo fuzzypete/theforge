@@ -779,4 +779,8 @@ class TestCoordinatorDevHandoffValidation:
             "dev_notes field is missing or blank in .forge/handoff.yaml" in prompt
             for prompt in captured_fix_prompts
         )
-        assert any("git add .forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
+        assert any(
+            "Write the updated handoff file to disk and stop" in prompt
+            for prompt in captured_fix_prompts
+        )
+        assert not any("git add .forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
