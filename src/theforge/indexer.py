@@ -171,6 +171,8 @@ def generate_index(project_root: Path, now: datetime | None = None) -> dict[str,
         if prior and prior.get("interface_hash") == entry.interface_hash:
             reused = dict(prior)
             reused["imports"] = list(entry.imports)
+            reused["generated_at"] = entry.generated_at
+            reused["git_sha"] = entry.git_sha
             modules.append(reused)
             continue
         data = entry.to_dict()
