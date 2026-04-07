@@ -96,7 +96,7 @@ def _make_fast_profile(profile: Any) -> Any:
 
 def _extract_yaml_block(text: str) -> str | None:
     """Extract first YAML block from text, or None if not found."""
-    match = re.search(r"```yaml\n(.*?)\n```", text, re.DOTALL)
+    match = re.search(r"```[yY][aA][mM][lL]\n(.*?)\n```", text, re.DOTALL)
     if match:
         return match.group(1)
     return None
@@ -120,20 +120,28 @@ def _parse_validation_output(output: str) -> StoryValidationResult:
     if not isinstance(data, dict):
         return StoryValidationResult(verdict="PASS")
 
+    verdict = data.get("verdict", "PASS")
+    if verdict not in ("PASS", "WARN"):
+        verdict = "PASS"
+
+    _KNOWN_CATEGORIES = {"contradiction", "internals", "ambiguity", "orphaned", "scope"}
     findings = []
     for f_data in data.get("findings", []):
         if not isinstance(f_data, dict):
             continue
+        category = f_data.get("category", "requirement")
+        if category not in _KNOWN_CATEGORIES:
+            category = "requirement"
         findings.append(
             StoryValidationFinding(
-                category=f_data.get("category", "unknown"),
+                category=category,
                 description=f_data.get("description", "No description provided"),
                 split_suggestion=f_data.get("split_suggestion"),
             )
         )
 
     return StoryValidationResult(
-        verdict=data.get("verdict", "PASS"),
+        verdict=verdict,
         findings=findings,
     )
 
