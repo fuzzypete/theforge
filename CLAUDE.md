@@ -170,11 +170,15 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 
 ## Cutting a Release
 
-The full release process is documented in [`RELEASING.md`](RELEASING.md). Do not
-cut a release without reading it. Key points:
+The full release process is documented in [`RELEASING.md`](RELEASING.md). Use the
+script — do not run steps manually:
 
-- Update `CHANGELOG.md` (`[Unreleased]` → `[X.Y.Z] — date`)
-- Bump `pyproject.toml` version to match the tag
+```bash
+scripts/release.sh X.Y.Z          # release
+scripts/release.sh --dry-run X.Y.Z # preview
+```
+
+Key points:
 - Tag and push **before** bumping back to `X.Y.Z+1.dev0`
 - Hotfixes branch from `release/vX.Y`, not `main`
 

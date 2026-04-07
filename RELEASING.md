@@ -19,6 +19,26 @@ This document defines how TheForge releases are cut, maintained, and hotfixed.
 
 ## Cutting a new release
 
+Use the release script — it handles all steps automatically:
+
+```bash
+scripts/release.sh X.Y.Z
+```
+
+Use `--dry-run` to preview what it will do without making changes:
+
+```bash
+scripts/release.sh --dry-run X.Y.Z
+```
+
+The script: verifies the milestone is closed, runs `make gate`, updates
+CHANGELOG, bumps `pyproject.toml`, tags and pushes, cuts the release branch,
+bumps main to the next dev version, and creates the GitHub release.
+
+### Manual steps (reference)
+
+If you need to run steps individually:
+
 ### 1. Verify milestone is complete
 
 ```bash
@@ -85,8 +105,7 @@ git push origin main
 ```bash
 gh release create vX.Y.Z \
   --title "vX.Y.Z" \
-  --notes-from-tag \
-  --notes "$(awk '/^## \[X\.Y\.Z\]/,/^## \[/' CHANGELOG.md | head -n -1)"
+  --notes "$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)"
 ```
 
 Or create manually via GitHub UI using the CHANGELOG section as release notes.
