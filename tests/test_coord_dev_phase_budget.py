@@ -20,6 +20,7 @@ from coord_test_helpers import (
     _make_config,
     _make_task,
     _shell_with_gate,
+    _write_handoff,
 )
 
 from theforge.config import (
@@ -263,6 +264,145 @@ class TestCoordinatorDevNotes:
             f"dev_notes not found in any review prompt. Captured: {captured_prompts[:1]}"
         )
         assert any("## Developer Notes" in p for p in captured_prompts)
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_review_prompt_includes_verified_git_metadata(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Review prompt includes verified git log, diff stat, and diff content sections."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            if "git log" in cmd and "--oneline --reverse" in cmd:
+                return (True, "abc1234 feat: implement\ndef5678 test: add coverage")
+            if "git diff main --stat" in cmd:
+                return (True, " src/foo.py | 2 ++\n tests/test_foo.py | 4 ++++")
+            if cmd.strip() == "git diff main":
+                return (True, "diff --git a/src/foo.py b/src/foo.py\n+print('ok')")
+            if "git show abc1234" in cmd:
+                return (True, "commit abc1234\n...diff one...")
+            if "git show def5678" in cmd:
+                return (True, "commit def5678\n...diff two...")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        captured_prompts: list[str] = []
+
+        def pool_side_effect(**kwargs):
+            prompt = kwargs.get("prompt", "")
+            if isinstance(prompt, list):
+                captured_prompts.extend(prompt)
+            elif isinstance(prompt, str):
+                captured_prompts.append(prompt)
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert any("## Verified Git Metadata" in p for p in captured_prompts)
+        assert any("abc1234 feat: implement" in p for p in captured_prompts)
+        assert any("src/foo.py | 2 ++" in p for p in captured_prompts)
+        assert any("diff --git a/src/foo.py b/src/foo.py" in p for p in captured_prompts)
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_review_prompt_warns_on_handoff_commit_mismatch(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Review prompt warns when handoff commit list disagrees with git log."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mismatched_notes = (
+            'summary: "Implemented the feature."\n'
+            "commits:\n"
+            '  - sha: "deadbee"\n'
+            '    message: "feat: imaginary commit"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "It works"\n'
+            "    status: MET\n"
+            '    notes: "tested"\n'
+            "story_deviations: none\n"
+            "deferred_items: none\n"
+            "gate_result: PASS\n"
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                handoff = {
+                    "gate_decision": "PASS",
+                    "validation": {"make_fmt": {"status": "PASS"}},
+                    "scope_completed": ["test item"],
+                    "dev_notes": mismatched_notes,
+                }
+                (Path(cwd) / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
+                return (True, "OK")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            if "git log" in cmd and "--oneline --reverse" in cmd:
+                return (True, "abc1234 feat: real commit")
+            if "git diff main --stat" in cmd:
+                return (True, " src/foo.py | 1 +")
+            if cmd.strip() == "git diff main":
+                return (True, "diff --git a/src/foo.py b/src/foo.py")
+            if "git show abc1234" in cmd:
+                return (True, "commit abc1234\n...diff...")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+
+        captured_prompts: list[str] = []
+
+        def pool_side_effect(**kwargs):
+            prompt = kwargs.get("prompt", "")
+            if isinstance(prompt, list):
+                captured_prompts.extend(prompt)
+            elif isinstance(prompt, str):
+                captured_prompts.append(prompt)
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert any(
+            "Dev handoff commit list does not match verified git history" in p
+            for p in captured_prompts
+        )
+        assert any("deadbee feat: imaginary commit" in p for p in captured_prompts)
+        assert any("Claims not found on branch:" in p for p in captured_prompts)
+        assert any(
+            "Commits present on branch but omitted from handoff:" in p for p in captured_prompts
+        )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
