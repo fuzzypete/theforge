@@ -132,14 +132,18 @@ _VALID_DEV_NOTES = (
 
 
 def _write_handoff(
-    workspace: Path, decision: str = "PASS", handoff_file: str = "handoff.yaml"
+    workspace: Path,
+    decision: str = "PASS",
+    handoff_file: str = "handoff.yaml",
+    *,
+    dev_notes: str = _VALID_DEV_NOTES,
 ) -> None:
     """Write a minimal handoff file in the workspace with valid dev_notes."""
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
-        "dev_notes": _VALID_DEV_NOTES,
+        "dev_notes": dev_notes,
     }
     handoff_path = workspace / handoff_file
     handoff_path.parent.mkdir(parents=True, exist_ok=True)

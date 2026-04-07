@@ -25,6 +25,19 @@ from theforge.coordinator.util import resolve_timeout
 from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
+_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT = (
+    'summary: "Implemented the feature."\n'
+    "commits:\n"
+    '  - sha: "abc123"\n'
+    '    message: "a recent commit"\n'
+    "acceptance_criteria:\n"
+    '  - criterion: "It works"\n'
+    "    status: MET\n"
+    '    notes: "tested"\n'
+    "story_deviations: none\n"
+    "deferred_items: none\n"
+    "gate_result: PASS\n"
+)
 # ── resolve_timeout ────────────────────────────────────────────────────
 
 
@@ -77,13 +90,17 @@ _RECENT_COMMIT_TS = str(int(_time.time()) - 60)
 
 
 def _write_handoff(
-    workspace: Path, decision: str = "PASS", handoff_file: str = "handoff.yaml"
+    workspace: Path,
+    decision: str = "PASS",
+    handoff_file: str = "handoff.yaml",
+    *,
+    dev_notes: str = _VALID_DEV_NOTES,
 ) -> None:
     handoff = {
         "gate_decision": decision,
         "validation": {"make_fmt": {"status": "PASS"}},
         "scope_completed": ["test item"],
-        "dev_notes": _VALID_DEV_NOTES,
+        "dev_notes": dev_notes,
     }
     handoff_path = workspace / handoff_file
     handoff_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,7 +123,9 @@ def _shell_with_gate(workspace: Path, decision: str = "PASS"):
     def side_effect(cmd, cwd, **kwargs):
         if "gate" in cmd:
             if decision == "PASS":
-                _write_handoff(Path(cwd), decision)
+                _write_handoff(
+                    Path(cwd), decision, dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
                 return (True, "OK")
             else:
                 return (False, "FAIL: tests failed")
@@ -235,6 +254,77 @@ class TestDevPhaseTimeout:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        from coord_test_helpers import _write_handoff
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
+
+        def _side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                _write_handoff(
+                    Path(cwd), "PASS", dev_notes=_VALID_DEV_NOTES_MATCHING_RECENT_COMMIT
+                )
+                return (True, "OK")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kwargs)
+
+        mock_shell.side_effect = _side_effect
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _make_agent_result(
             output=PREFLIGHT_PROCEED_LARGE, cost_usd=0.05
