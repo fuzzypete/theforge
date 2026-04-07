@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scripts/release.sh — cut a TheForge release
 #
-# Usage: scripts/release.sh [--dry-run] VERSION
-#   VERSION  The version to release, e.g. 0.5.0
+# Usage: scripts/release.sh [--dry-run] [VERSION]
+#   VERSION  The version to release, e.g. 0.5.0 (default: pyproject.toml version minus .dev0)
 #
 # Follows the process documented in RELEASING.md.
 
@@ -21,18 +21,17 @@ for arg in "$@"; do
     esac
 done
 
+# Read current version from pyproject.toml
+CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+
 if [[ -z "$VERSION" ]]; then
-    echo "Usage: scripts/release.sh [--dry-run] VERSION" >&2
-    exit 1
+    VERSION="${CURRENT_VERSION%.dev0}"
 fi
 
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "Error: VERSION must be X.Y.Z (got: $VERSION)" >&2
     exit 1
 fi
-
-# Read current version from pyproject.toml
-CURRENT_VERSION=$(grep '^version' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
 NEXT_DEV="$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0.dev0"}')"
 
 echo "Current version : $CURRENT_VERSION"
