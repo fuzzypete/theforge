@@ -409,6 +409,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         preflight_budget=int(context_data.get("preflight_budget", ContextConfig.preflight_budget)),
         plan_budget=int(context_data.get("plan_budget", ContextConfig.plan_budget)),
         dev_budget=int(context_data.get("dev_budget", ContextConfig.dev_budget)),
+        review_budget=int(context_data.get("review_budget", ContextConfig.review_budget)),
     )
 
     # Conventions config — soft

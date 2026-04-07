@@ -109,6 +109,7 @@ context:
   preflight_budget: 200
   plan_budget: 120
   dev_budget: 80
+  review_budget: 80
 
 # Optional: same-provider API fallback when a CLI is rate-limited/unavailable.
 # provider_fallbacks:

@@ -2,6 +2,7 @@ from textwrap import dedent
 
 from theforge.coordinator.state import CycleHistory
 
+from .context_assembler import ContextPack
 from .conventions import render_conventions_block
 from .story import TaskStory
 
@@ -144,6 +145,7 @@ def build_review_prompt(
     dev_notes: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
     conventions: list[str] | None = None,
+    assembled_context: ContextPack | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -221,6 +223,17 @@ def build_review_prompt(
         else ""
     )
 
+    context_section = ""
+    if assembled_context and assembled_context.content:
+        context_section = dedent(f"""\
+
+            ## Repository Context Pack
+
+            Use this curated repository context before exploring additional files.
+
+            {assembled_context.content}
+        """)
+
     output_format_section = dedent("""\
         ## Output Format
 
@@ -265,7 +278,7 @@ def build_review_prompt(
         ## Spec
 
         {story_content}
-        {dev_notes_section}{render_conventions_block(conventions)}
+        {dev_notes_section}{context_section}{render_conventions_block(conventions)}
         ## Verified Git Metadata
 
         This section is coordinator-verified ground truth captured from git before review.

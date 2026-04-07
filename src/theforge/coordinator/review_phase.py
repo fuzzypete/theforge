@@ -10,6 +10,7 @@ from pathlib import Path
 
 from theforge import finding_classifier as _fc
 from theforge.config import MODEL_REGISTRY, ForgeConfig
+from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
     ReviewFinding,
     ReviewResult,
@@ -17,7 +18,7 @@ from theforge.review import (
     review_to_dev_handoff,
 )
 from theforge.review_finding_classifier import classify_families
-from theforge.task import TaskStory, build_review_prompt
+from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from .completion import _append_cycle_history, _finalize_approve
 from .logging import StructuredLogger
@@ -842,6 +843,12 @@ def _run_review_only_phase(
             diff_stat=diff_stat,
             handoff_commit_warning=handoff_commit_warning,
         )
+    review_context = ContextAssembler.from_config(config).assemble(
+        phase="review",
+        story_text=story_content,
+        file_list=plan_file_list(state.plan_structured) or None,
+    )
+    state.context_manifests.append({"phase": "review", "manifest": review_context})
     review_prompt = build_review_prompt(
         task,
         story_content=story_content,
@@ -857,6 +864,7 @@ def _run_review_only_phase(
         dev_notes=dev_notes,
         cycle_history=None,
         conventions=config.conventions_soft,
+        assembled_context=review_context,
     )
 
     meta = ReviewCycleMetadata(
