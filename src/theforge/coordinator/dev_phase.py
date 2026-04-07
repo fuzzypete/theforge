@@ -50,21 +50,13 @@ def _extract_failed_tests(gate_output_tail: str) -> list[str]:
 
 
 def _git_lines(workspace_path: Path, args: Iterable[str]) -> list[str]:
-    try:
-        proc = subprocess.run(
-            ["git", *args],
-            cwd=str(workspace_path),
-            capture_output=True,
-            timeout=10,
-            check=False,
-        )
-    except Exception:  # noqa: BLE001
+    from . import util as _cu
+
+    cmd = "git " + " ".join(str(arg) for arg in args)
+    ok, output = _cu._run_shell(cmd, workspace_path)
+    if not ok and not output:
         return []
-    if proc.returncode not in (0, 1):
-        return []
-    return [
-        line.strip() for line in proc.stdout.decode(errors="replace").splitlines() if line.strip()
-    ]
+    return [line.strip() for line in output.splitlines() if line.strip()]
 
 
 def record_dev_iteration_telemetry(

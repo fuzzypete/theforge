@@ -172,6 +172,13 @@ def _run_validate_phase(
                         check=True,
                     )
                     _log(f"  Auto-committed dirty worktree: {commit_msg}")
+                    record_dev_iteration_telemetry(
+                        state,
+                        workspace_path,
+                        max_iterations=config.retry.max_dev_iterations,
+                        gate_result=gate_decision,
+                        gate_output_tail=gate_output_tail,
+                    )
                 except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                     err_detail = getattr(exc, "stderr", b"").decode(errors="replace")[:200]
                     _log(f"  ⚠ Auto-commit failed: {err_detail}")
