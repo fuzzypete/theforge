@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -96,20 +97,38 @@ def resolve_timeout(
 def _run_shell(
     cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
 ) -> tuple[bool, str]:
-    """Run a shell command. Returns (success, combined output)."""
+    """Run a shell command. Returns (success, combined output).
+
+    On timeout, kills the entire process group so child processes (e.g.
+    pytest-xdist workers) don't outlive the shell and consume unbounded memory.
+    """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             shell=True,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             cwd=str(cwd),
-            timeout=timeout,
             env=env if env is not None else os.environ.copy(),
+            start_new_session=True,
         )
-        output = (proc.stdout + proc.stderr).strip()
+    except Exception as e:
+        return False, f"ERROR: {e}"
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        output = (stdout + stderr).strip()
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
         return False, f"TIMEOUT after {timeout}s: {cmd}"
     except Exception as e:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         return False, f"ERROR: {e}"
