@@ -263,7 +263,9 @@ def _coordinator_loop(
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
-            if _val_outcome == _ValidateOutcome.RETRY_DEV:
+            if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
+                pass
+            elif _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (
                     state.dev_results
                     and state.dev_results[-1].exit_code == -9
