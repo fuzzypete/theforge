@@ -93,7 +93,7 @@ class TestCoordinatorPromptRouting:
         classified = mock_fix_prompt.call_args.kwargs["classified_p1s"]
         assert len(classified) == 1
         assert classified[0].description == "Off by one"
-        assert result.state.dev_prompt_injected_finding_ids == [[], []]
+        assert result.state.dev_prompt_injected_finding_ids == [[], [classified[0].finding_id]]
 
     def test_carry_forward_excludes_findings_first_seen_in_current_review_cycle(self):
         """Only unresolved P1s from earlier cycles are injected as carry-forward context."""
@@ -135,6 +135,77 @@ class TestCoordinatorPromptRouting:
 
         assert _prior_open_p1s_for_dev_prompt(state) == [older_open]
         assert _current_cycle_p1s_for_dev_prompt(state) == [older_open, current_cycle]
+
+    @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_prompt_injection_audit_tracks_carry_forward_and_current_cycle_findings(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        """Fix-prompt audit records all finding IDs passed to the dev agent."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_fix_prompt.return_value = "fix prompt"
+
+        cycle_one_review = REQUEST_CHANGES_REVIEW
+        cycle_two_review = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Still needs work"
+findings:
+  - severity: P1
+    file: src/foo.py
+    line: 10
+    description: "Off by one"
+    suggestion: "Fix the boundary condition"
+  - severity: P1
+    file: src/bar.py
+    line: 20
+    description: "Missing validation"
+    suggestion: "Validate the input"
+story_compliance:
+  matches_spec: true
+test_coverage:
+  adequate: true
+```
+"""
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [
+                    _make_agent_result(
+                        success=True, output=cycle_one_review, profile_name="review"
+                    )
+                ]
+            return [
+                _make_agent_result(success=True, output=cycle_two_review, profile_name="review")
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        injected_ids = result.state.dev_prompt_injected_finding_ids
+        assert injected_ids[0] == []
+        assert len(injected_ids[1]) == 1
+        assert injected_ids[1][0] == result.state.finding_registry[0].finding_id
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
