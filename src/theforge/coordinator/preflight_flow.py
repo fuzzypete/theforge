@@ -110,6 +110,7 @@ def _run_preflight_phase(
         phase="preflight",
         story_text=story_content,
     )
+    state.context_manifests.append({"phase": "preflight", "manifest": preflight_context})
     preflight_prompt = build_preflight_prompt(
         task,
         story_content=story_content,

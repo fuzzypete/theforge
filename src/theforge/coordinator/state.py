@@ -231,6 +231,7 @@ class CoordinatorState:
     finding_registry: list[FindingRecord] = field(default_factory=list)
     dev_prompt_injected_finding_ids: list[list[str]] = field(default_factory=list)
     dev_handoff_snapshots: list[dict | None] = field(default_factory=list)
+    context_manifests: list[dict] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).
     # Each entry is the parsed handoff-file dict, or None if absent/unparseable.
     # Stable record of all findings across cycles, classified by finding_classifier

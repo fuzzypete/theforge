@@ -242,6 +242,35 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
     agents = build_agent_entries(state, config)
     reviews = build_reviews(state)
 
+    context_manifests = [
+        {
+            "phase": entry["phase"],
+            "context_budget": entry["manifest"].budget,
+            "git_sha": entry["manifest"].structural_index_git_sha,
+            "items_included": [
+                {
+                    "source_path": item.source,
+                    "kind": item.kind,
+                    "type": item.item_type,
+                    "reason": item.reason,
+                    "lines": item.lines,
+                }
+                for item in entry["manifest"].included
+            ],
+            "items_dropped": [
+                {
+                    "source_path": item.source,
+                    "kind": item.kind,
+                    "type": item.item_type,
+                    "reason": item.drop_reason or item.reason,
+                    "lines": item.lines,
+                }
+                for item in entry["manifest"].dropped
+            ],
+        }
+        for entry in state.context_manifests
+    ]
+
     return {
         "forge_version": "0.1.0",
         "task": {
@@ -291,6 +320,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             if state.preflight_verdict is not None
             else None
         ),
+        "context_manifests": context_manifests,
         "dev_handoffs": [
             {"iteration": i + 1, "handoff": snap}
             for i, snap in enumerate(state.dev_handoff_snapshots)

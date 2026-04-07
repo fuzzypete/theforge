@@ -127,3 +127,26 @@ def test_context_assembler_extracts_generic_paths_from_structural_index(tmp_path
     )
 
     assert any(entry.source == "app/services/payments/CLAUDE.md" for entry in pack.included)
+
+
+def test_context_manifest_records_types_drop_reason_and_git_sha(tmp_path: Path) -> None:
+    _write_file(
+        tmp_path / ".forge" / "STRUCTURAL_INDEX.md", "- src/theforge/task: task prompt builders\n"
+    )
+    _write_file(
+        tmp_path / "src" / "theforge" / "CLAUDE.md",
+        "# TheForge\n\n## Invariants\n\n- must keep\n\n## Context\n\nHelpful advisory line.\n",
+    )
+
+    assembler = ContextAssembler(tmp_path)
+    pack = assembler.assemble(
+        phase="dev",
+        story_text="task prompt builders",
+        file_list=["src/theforge/task/dev_prompts.py"],
+        budget=2,
+    )
+
+    assert pack.phase == "dev"
+    assert any(entry.item_type == "invariant" for entry in pack.included)
+    assert any(entry.drop_reason == "budget exceeded" for entry in pack.dropped)
+    assert pack.structural_index_git_sha is None or isinstance(pack.structural_index_git_sha, str)
