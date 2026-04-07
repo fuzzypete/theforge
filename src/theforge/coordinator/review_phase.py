@@ -10,6 +10,7 @@ from pathlib import Path
 
 from theforge import finding_classifier as _fc
 from theforge.config import MODEL_REGISTRY, ForgeConfig
+from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
     ReviewFinding,
     ReviewResult,
@@ -845,7 +846,7 @@ def _run_review_only_phase(
     review_context = ContextAssembler.from_config(config).assemble(
         phase="review",
         story_text=story_content,
-        file_list=state.preflight_likely_files or None,
+        file_list=plan_file_list(state.plan_structured) or None,
     )
     state.context_manifests.append({"phase": "review", "manifest": review_context})
     review_prompt = build_review_prompt(

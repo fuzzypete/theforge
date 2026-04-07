@@ -290,6 +290,7 @@ class ContextConfig:
     preflight_budget: int = 200
     plan_budget: int = 120
     dev_budget: int = 80
+    review_budget: int = 80
 
 
 @dataclass(frozen=True)

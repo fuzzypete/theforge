@@ -14,7 +14,7 @@ _PHASE_TO_BUDGET_ATTR = {
     "preflight": "preflight_budget",
     "plan": "plan_budget",
     "dev": "dev_budget",
-    "review": "dev_budget",
+    "review": "review_budget",
 }
 
 _INDEX_CANDIDATES = (
@@ -32,6 +32,7 @@ class ContextBudgetConfig:
     preflight_budget: int = 200
     plan_budget: int = 120
     dev_budget: int = 80
+    review_budget: int = 80
 
 
 @dataclass(frozen=True)

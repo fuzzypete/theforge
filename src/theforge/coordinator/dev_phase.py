@@ -10,6 +10,7 @@ from pathlib import Path
 import yaml
 
 from theforge.config import ForgeConfig
+from theforge.coordinator.context_scope import plan_file_list
 from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
@@ -159,7 +160,7 @@ def _run_dev_phase(
         dev_context = ContextAssembler.from_config(config).assemble(
             phase="dev",
             story_text=story_content,
-            file_list=state.preflight_likely_files or None,
+            file_list=plan_file_list(state.plan_structured) or None,
         )
         state.context_manifests.append({"phase": "dev", "manifest": dev_context})
         prompt = build_dev_prompt(

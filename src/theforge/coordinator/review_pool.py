@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from theforge.config import ForgeConfig
+from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
     ReviewResult,
     _try_parse_review,
@@ -179,7 +180,7 @@ def _run_review_pool(
         review_context = ContextAssembler.from_config(config).assemble(
             phase="review",
             story_text=story_content,
-            file_list=state.preflight_likely_files or None,
+            file_list=plan_file_list(state.plan_structured) or None,
         )
         state.context_manifests.append({"phase": "review", "manifest": review_context})
 

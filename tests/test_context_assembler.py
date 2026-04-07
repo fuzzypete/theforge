@@ -97,6 +97,7 @@ context:
   preflight_budget: 321
   plan_budget: 123
   dev_budget: 45
+  review_budget: 67
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -107,6 +108,7 @@ context:
     assert config.context.preflight_budget == 321
     assert config.context.plan_budget == 123
     assert config.context.dev_budget == 45
+    assert config.context.review_budget == 67
 
 
 def test_context_assembler_extracts_generic_paths_from_structural_index(tmp_path: Path) -> None:
@@ -152,10 +154,10 @@ def test_context_manifest_records_types_drop_reason_and_git_sha(tmp_path: Path) 
     assert pack.structural_index_git_sha is None or isinstance(pack.structural_index_git_sha, str)
 
 
-def test_context_assembler_uses_dev_budget_for_review_phase(tmp_path: Path) -> None:
+def test_context_assembler_uses_review_budget_for_review_phase(tmp_path: Path) -> None:
     assembler = ContextAssembler(tmp_path)
 
     pack = assembler.assemble(phase="review", story_text="review prompt builders")
 
     assert pack.phase == "review"
-    assert pack.budget == assembler.budgets.dev_budget
+    assert pack.budget == assembler.budgets.review_budget
