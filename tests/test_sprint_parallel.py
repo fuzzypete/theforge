@@ -1344,12 +1344,11 @@ class TestQueuedMergePolling:
                 "status": "timeout"
             }
 
-    def test_merge_queued_does_not_mark_complete_immediately(self, tmp_path: Path) -> None:
+    def test_merge_queued_timeout_escalates_during_wrap_up(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
-        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
         manifest_path = _make_manifest_parallel(
             tmp_path,
-            ["story-a.md", "story-b.md"],
+            ["story-a.md"],
             budget=10.0,
             max_parallel=2,
         )
@@ -1392,7 +1391,7 @@ class TestQueuedMergePolling:
         )
 
         with (
-            patch("theforge.sprint.runner.run_task", return_value=result) as mock_run,
+            patch("theforge.sprint.runner.run_task", return_value=result),
             patch(
                 "theforge.coordinator.completion._merge_pr",
                 return_value={
@@ -1407,8 +1406,8 @@ class TestQueuedMergePolling:
             ),
             patch(
                 "theforge.sprint.runner._poll_queued_pr",
-                side_effect=[{"status": "timeout"}],
-            ),
+                return_value={"status": "timeout"},
+            ) as mock_poll,
             patch(
                 "theforge.sprint.runner.poll_required_checks",
                 return_value={
@@ -1421,10 +1420,123 @@ class TestQueuedMergePolling:
         ):
             sprint = run_sprint(config, manifest_path)
 
-        assert mock_run.call_count == 1
+        assert mock_poll.call_args.args == (
+            "https://github.com/x/y/pull/7",
+            tmp_path,
+            60,
+        )
+        assert result.landing_status == "failed"
+        assert result.state.error == "Queued PR timeout: https://github.com/x/y/pull/7"
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
-        assert sprint.specs_skipped == 1
+        assert sprint.specs_skipped == 0
+
+    def test_independent_story_runs_while_merge_is_queued(self, tmp_path: Path) -> None:
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+                ci_check_timeout_seconds=60,
+            ),
+        )
+
+        queued_result = _make_coordinator_result(success=True, cost=1.0)
+        queued_result.state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        landed_result = _make_coordinator_result(success=True, cost=1.0)
+        landed_result.state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        events: list[str] = []
+
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            events.append(f"run:{task.slug}")
+            if task.slug == "story-a":
+                time.sleep(0.2)
+                return queued_result
+            return landed_result
+
+        def fake_merge_pr(config, task, branch, parsed_review, state):  # noqa: ANN001
+            events.append(f"merge:{task.slug}")
+            if task.slug == "story-a":
+                return {
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/x/y/pull/7",
+                    "merged": False,
+                    "merge_queued": True,
+                    "auto_merge_queued": True,
+                    "success": True,
+                    "error": None,
+                }
+            return {
+                "action": "merge-pr",
+                "pr_url": "https://github.com/x/y/pull/8",
+                "merged": True,
+                "merge_queued": False,
+                "auto_merge_queued": False,
+                "success": True,
+                "error": None,
+            }
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.coordinator.completion._merge_pr", side_effect=fake_merge_pr),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                return_value={"status": "merged"},
+            ) as mock_poll,
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_failed == 0
+        assert events.index("run:story-b") < events.index("merge:story-a")
+        assert landed_result.landing_status == "landed"
+        assert queued_result.landing_status == "landed"
+        assert mock_poll.call_count == 1
 
 
 class TestImmediateIntegrationLanding:
