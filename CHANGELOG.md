@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-04-07
+
+### Added
+
+- **`forge sprint --issues N,M,...`:** run a specific list of issues without a label or milestone manifest (#415)
+- **`--base-branch` override:** target a release or feature branch per-run; `{base_branch}` substitution in `workspace.create_command` eliminates the need for per-branch config files (#534)
+- **Immediate parallel merge landing:** stories merge as they complete in parallel sprints via an integration lock — no more waiting for the slowest worker (#526)
+- **Commit-centric review:** reviewer reads `git log` + `git show` for the worktree branch rather than file diffs, matching the PR-review mental model (#429)
+- **Native GitHub integration:** first-class PR, issue, and review support in the sprint runner (#427)
+- **Provider fallback:** automatic CLI → API fallback for the same provider (e.g. Codex CLI → OpenAI API) when the CLI is unavailable (#402)
+- **Cascading P1 escalation:** a new P1 in the same file/function as a prior P1 is treated as persistent, not novel (#401)
+- **Unresolved P1s carried forward:** surviving P1 findings are injected verbatim into the next dev prompt (#397)
+- **Preflight collision detection:** preflight emits `likely_files`; the sprint runner uses these to detect parallel-worker file conflicts before they happen (#413)
+- **Per-run reviewer demotion:** a reviewer that repeatedly fails to produce parseable output is demoted for the remainder of that run (#426)
+- **`forge stop` waits by default:** blocks until the daemon exits rather than returning immediately (#515)
+- **Parallel log prefixing:** `forge logs` prefixes each line with the story slug in parallel mode (#433)
+- **CI verification between merges:** sprint runner checks that main CI stays green before landing the next story (#460)
+- **`{forge_python}` substitution:** single source of truth for the Python interpreter in forge commands (#474)
+- **`scripts/release.sh`:** scripted release process — milestone check, gate, CHANGELOG, tag, release branch, dev bump, GitHub release (#533)
+
+### Fixed
+
+- **Handoff integrity:** coordinator verifies dev self-reported handoffs against actual worktree changes; supplements missing fields (#528)
+- **Sprint resume duplicate PRs:** resume no longer opens a second PR for stories already merged (#468)
+- **Daemonize race:** double-fork race condition caused a fresh sprint launch to conflict with itself (#476)
+- **Dev retry without verification:** dev retry now requires actual worktree changes, not just a self-reported handoff (#450)
+- **Parallel merge race:** base branch modified mid-sprint no longer causes merge-pr to target a stale ref (#399)
+- **Sprint worker exceptions swallowed:** worker failures now surface as ESCALATE with a full error in the audit trail (#393)
+- **Resumed stories skip collision detection:** resumed stories now re-register file footprints before re-entering the plan phase (#457)
+- **Gate timeout orphans:** killing the gate process group on timeout cleans up pytest worker processes (#530, #525)
+- **Worktree resume hygiene:** config is synced from repo root and stale plan files are removed on resume (#522)
+- **Sprint run.log coherence:** run.log is truncated on restart rather than appended — each run produces a single coherent record (#452)
+- **merge-pr branch protection:** merge-pr uses `--auto` flag to respect branch protection rules (#449)
+- **Preflight invalid verdict passthrough:** preflight returning a non-PROCEED verdict no longer silently falls through with empty `likely_files` (#447)
+- **Stale lock cleanup hardening:** lock files store the owning PID; stale locks from dead processes are cleared on next sprint resume (#519)
+- **Rebase resumed worktrees:** resumed worktrees are rebased onto the current base branch before dev begins (#517)
+- **Rerun workspace setup on reused worktrees:** workspace setup is repeated when a worktree is reused, preventing stale state (#516)
+- **Merge fallback detection via audit trail:** sprint triage detects squash-merge fallbacks from the audit trail rather than branch presence (#514)
+- **Duplicate PR guard uses `mergedAt`:** coordinator uses `mergedAt` (not `merged`) to guard against duplicate PRs after auto-merge (#513)
+- **Preflight API profile matching:** preflight now matches API profiles in the model registry correctly (#512)
+- **Queued auto-merge treated as pending:** a PR with queued auto-merge is no longer counted as merged when scheduling dependents (#511)
+- **`--until plan` flag enforcement:** `forge run --until plan` now stops at the correct phase boundary (#520)
+- **Parallel sys.path leakage:** parallel sprint workers no longer inherit the project root on `sys.path`, preventing import collisions (#451)
+- **Sprint triage false-positive SKIP MERGED:** triage no longer marks an empty or stale worktree branch as already merged (#409, #404)
+- **`.forge/` artifacts scrubbed from branch history:** handoff and plan files are de-indexed before merge so they never appear in main's history (#470)
+- **Concurrent sprint guard:** a second `forge sprint` launch against an active worktree is rejected immediately (#469)
+- **Sprint run.log coherence in parallel mode:** stderr tee race in parallel workers is fixed (#431)
+- **Plan reviewer failure surfaced:** empty output from a plan reviewer agent is now recorded as a finding in the audit, not silently ignored (#430)
+- **Adapter schema finalization scoped correctly:** review-schema finalization is skipped for preflight and dev phases (#455)
+- **Gemini finalization with `response_schema`:** Gemini no longer applies `response_schema` during plain-text ideation runs (#390)
+- **Missing and stale fields in sprint/story audit output** (#529)
+
 ## [0.4.1] — 2026-04-04
 
 ### Fixed

@@ -8,6 +8,9 @@
 
 set -euo pipefail
 
+# Ensure Homebrew bin is on PATH (Apple Silicon default location)
+export PATH="/opt/homebrew/bin:$PATH"
+
 DRY_RUN=false
 VERSION=""
 
