@@ -247,6 +247,100 @@ test_coverage:
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_prompt_injection_audit_tracks_carry_forward_and_current_cycle_findings(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        tmp_path,
+    ):
+        """Audit trail records both carry-forward and current-cycle P1 finding IDs."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+
+        first_review = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Need fixes"
+findings:
+  - id: carry-forward-p1
+    severity: P1
+    file: src/older.py
+    line: 9
+    description: "Older unresolved issue"
+    suggestion: "Fix older issue"
+story_compliance:
+  matches_spec: true
+test_coverage:
+  adequate: true
+```
+"""
+        second_review = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Still needs fixes"
+findings:
+  - id: carry-forward-p1
+    severity: P1
+    file: src/older.py
+    line: 9
+    description: "Older unresolved issue"
+    suggestion: "Fix older issue"
+  - id: current-cycle-p1
+    severity: P1
+    file: src/current.py
+    line: 11
+    description: "Current cycle issue"
+    suggestion: "Fix current issue"
+story_compliance:
+  matches_spec: true
+test_coverage:
+  adequate: true
+```
+"""
+
+        call_count = {"pool": 0}
+
+        def pool_side_effect(**kwargs):
+            call_count["pool"] += 1
+            if call_count["pool"] == 1:
+                return [
+                    _make_agent_result(success=True, output=first_review, profile_name="review")
+                ]
+            if call_count["pool"] == 2:
+                return [
+                    _make_agent_result(success=True, output=second_review, profile_name="review")
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.dev_prompt_injected_finding_ids == [
+            [],
+            ["carry-forward-p1"],
+            ["carry-forward-p1", "current-cycle-p1"],
+        ]
+
+    @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
     @patch("theforge.coordinator.review_phase._human_review")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
