@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -70,7 +70,7 @@ def _ensure_runners() -> None:
 
 
 def _emit_review_git_context(
-    logger: StructuredLogger | None,
+    logger: Any | None,
     *,
     base_branch: str,
     commit_log: str,
@@ -103,6 +103,7 @@ def _run_review_pool(
     enforce_budgets: bool = True,
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
+    logger: Any | None = None,
 ) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 

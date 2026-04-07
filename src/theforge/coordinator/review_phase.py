@@ -486,6 +486,7 @@ def _run_review_phase(
         notify=notify,
         pool_attempt=0,
         max_review_parse_retries=max_parse_retries,
+        logger=logger,
     )
     state.last_cycle_reviewer_results = _named_parsed
 
