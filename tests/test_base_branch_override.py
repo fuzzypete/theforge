@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from coord_test_helpers import _make_config, _make_task
 
+from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.run import cmd_run
 from theforge.cli.sprint import cmd_sprint
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
@@ -16,6 +17,25 @@ def _stub_result() -> CoordinatorResult:
     return CoordinatorResult(
         success=True, phase=Phase.DONE, state=CoordinatorState(), message="ok"
     )
+
+
+def test_apply_base_branch_override_returns_original_config_without_override(
+    tmp_path: Path,
+) -> None:
+    config = _make_config(tmp_path)
+
+    updated = apply_base_branch_override(config, None)
+
+    assert updated is config
+
+
+def test_apply_base_branch_override_updates_workspace_base_branch(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+
+    updated = apply_base_branch_override(config, "release/v0.4")
+
+    assert updated.workspace.base_branch == "release/v0.4"
+    assert config.workspace.base_branch == "main"
 
 
 def test_create_workspace_substitutes_base_branch(tmp_path: Path) -> None:

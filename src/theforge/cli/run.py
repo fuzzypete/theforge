@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from theforge.artifacts import PLAN_PATH, resolve_handoff_path, resolve_plan_path
+from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import (
     _SECRETS_FILE,
     _apply_dev_model_override,
@@ -70,13 +71,9 @@ def cmd_run(args: "argparse.Namespace") -> int:
     except (OSError, FileNotFoundError):
         pass  # not a git repo or git not installed — ignore
 
-    config = load_config(config_path)
-
-    if getattr(args, "base_branch", None):
-        config = dataclasses.replace(
-            config,
-            workspace=dataclasses.replace(config.workspace, base_branch=args.base_branch),
-        )
+    config = apply_base_branch_override(
+        load_config(config_path), getattr(args, "base_branch", None)
+    )
 
     # --dev-model override: provider/model@base_url
     if getattr(args, "dev_model", None):
@@ -312,6 +309,11 @@ def register_parser(subparsers: object) -> None:
     run_parser.add_argument("story", help="Path to the story file")
     run_parser.add_argument("--slug", help="Workspace slug (default: story filename stem)")
     run_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
+    run_parser.add_argument(
+        "--base-branch",
+        default=None,
+        help="Override workspace.base_branch for this run without editing forge.yaml",
+    )
     run_parser.add_argument(
         "--dry-run",
         action="store_true",

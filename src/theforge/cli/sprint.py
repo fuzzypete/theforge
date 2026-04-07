@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import dataclasses
 import sys
 from pathlib import Path
 
+from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
@@ -88,7 +88,7 @@ def cmd_sprint(args: object) -> int:
         )
         return 1
 
-    config = _apply_base_branch_override(
+    config = apply_base_branch_override(
         load_config(config_path), getattr(args, "base_branch", None)
     )
 
@@ -195,15 +195,6 @@ def cmd_sprint(args: object) -> int:
 
     _detach.remove_pid(run_id, config.project_root)
     return 0 if result.specs_failed == 0 else 1
-
-
-def _apply_base_branch_override(config: object, base_branch: str | None) -> object:
-    if not base_branch:
-        return config
-    return dataclasses.replace(
-        config,
-        workspace=dataclasses.replace(config.workspace, base_branch=base_branch),
-    )
 
 
 def _acquire_launch_locks(
