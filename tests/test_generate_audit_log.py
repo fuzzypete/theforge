@@ -593,3 +593,49 @@ class TestPhasesBlock:
 
         for key in ("preflight", "plan", "plan_review", "dev", "validate", "review"):
             assert key in log["phases"], f"missing phase key: {key}"
+
+
+def test_generate_audit_log_includes_context_manifests(tmp_path: Path) -> None:
+    state = CoordinatorState()
+    from theforge.task import ContextManifestEntry, ContextPack
+
+    pack = ContextPack(
+        content="ctx",
+        included=(
+            ContextManifestEntry(
+                source="src/a.py",
+                kind="claude_invariants",
+                required=True,
+                lines=2,
+                included=True,
+                reason="invariants",
+                item_type="invariant",
+            ),
+        ),
+        dropped=(
+            ContextManifestEntry(
+                source="src/b.py",
+                kind="claude_advisory",
+                required=False,
+                lines=3,
+                included=False,
+                reason="advisory",
+                item_type="advisory",
+                drop_reason="out of scope",
+            ),
+        ),
+        budget=10,
+        line_count=2,
+        phase="dev",
+        structural_index_git_sha="abc123",
+    )
+    state.context_manifests.append({"phase": "dev", "manifest": pack})
+    result = _make_coordinator_result(state)
+    log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+    manifest = log["context_manifests"][0]
+    assert manifest["phase"] == "dev"
+    assert manifest["context_budget"] == 10
+    assert manifest["git_sha"] == "abc123"
+    assert manifest["items_included"][0]["type"] == "invariant"
+    assert manifest["items_dropped"][0]["reason"] == "out of scope"

@@ -161,6 +161,7 @@ def _run_dev_phase(
             story_text=story_content,
             file_list=state.preflight_likely_files or None,
         )
+        state.context_manifests.append({"phase": "dev", "manifest": dev_context})
         prompt = build_dev_prompt(
             task,
             workspace_path=workspace_path,

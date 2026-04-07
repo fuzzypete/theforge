@@ -243,6 +243,7 @@ def _run_plan_phase(
         file_list=state.preflight_likely_files or None,
     )
 
+    state.context_manifests.append({"phase": "plan", "manifest": plan_context})
     plan_prompt = build_plan_prompt(
         task,
         story_content=story_content,

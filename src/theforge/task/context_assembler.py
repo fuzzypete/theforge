@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,6 +53,8 @@ class ContextManifestEntry:
     included: bool
     reason: str
     score: int = 0
+    item_type: str = "advisory"
+    drop_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,8 @@ class ContextPack:
     dropped: tuple[ContextManifestEntry, ...]
     budget: int
     line_count: int
+    phase: str
+    structural_index_git_sha: str | None
 
 
 @dataclass(frozen=True)
@@ -183,6 +188,10 @@ class ContextAssembler:
             dropped=dropped_manifest,
             budget=effective_budget,
             line_count=_count_lines(content),
+            phase=normalized_phase,
+            structural_index_git_sha=self._structural_index_git_sha(structural_index[0])
+            if structural_index
+            else None,
         )
 
     def default_budget_for_phase(self, phase: str) -> int:
@@ -190,6 +199,23 @@ class ContextAssembler:
         if attr is None:
             raise ValueError(f"Unknown phase {phase!r}")
         return getattr(self.budgets, attr)
+
+    def _structural_index_git_sha(self, rel_path: Path) -> str | None:
+        try:
+            result = subprocess.run(
+                ["git", "log", "-n", "1", "--format=%H", "--", str(rel_path)],
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        sha = result.stdout.strip()
+        return sha or None
 
     def _read_structural_index(self) -> tuple[Path, int, str] | None:
         for candidate in _INDEX_CANDIDATES:
