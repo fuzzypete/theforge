@@ -181,6 +181,8 @@ class TestMergePrFunction:
 
         def _fake_gh_run(cmd, **kwargs):
             cmd_str = " ".join(cmd) if isinstance(cmd, list) else cmd
+            if "gh" in cmd_str and "pr" in cmd_str and "list" in cmd_str:
+                return _make_subprocess_result(0, stdout="[]")
             if "gh" in cmd_str and "pr" in cmd_str and "merge" in cmd_str:
                 if gh_merge_results is not None:
                     if gh_merge_results:
@@ -245,6 +247,50 @@ class TestMergePrFunction:
         )
         assert result["merged"] is True
         assert result["success"] is True
+
+    def test_already_merged_branch_skips_push_and_pr_recreation(self, tmp_path: Path) -> None:
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list):
+                calls.append(cmd)
+                if cmd[:3] == ["gh", "pr", "list"]:
+                    return _make_subprocess_result(
+                        0,
+                        stdout=(
+                            '[{"url": "https://github.com/fuzzypete/theforge/pull/42", '
+                            '"mergedAt": "2025-01-01T00:00:00Z"}]'
+                        ),
+                    )
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch("theforge.coordinator.completion._create_pr") as mock_create_pr,
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result == {
+            "action": "merge-pr",
+            "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+            "merged": True,
+            "merge_queued": False,
+            "auto_merge_queued": False,
+            "success": True,
+            "error": None,
+        }
+        mock_create_pr.assert_not_called()
+        assert calls[0][:3] == ["gh", "pr", "list"]
+        assert not any(cmd[:3] == ["git", "push", "-f"] for cmd in calls)
+        assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in calls)
 
     def test_pr_creation_failure_no_merge(self, tmp_path: Path) -> None:
         failed_pr = {"action": "pr", "pr_url": None, "success": False, "error": "gh auth failed"}
