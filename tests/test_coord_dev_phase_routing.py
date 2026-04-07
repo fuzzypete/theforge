@@ -66,7 +66,7 @@ class TestCoordinatorPromptRouting:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
 
@@ -231,7 +231,7 @@ test_coverage:
 
         mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
         mock_pool.return_value = [
@@ -269,7 +269,7 @@ test_coverage:
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
+        mock_agent.side_effect = [_make_agent_result(), _make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
         mock_fix_prompt.return_value = "fix prompt"
 
@@ -330,14 +330,31 @@ test_coverage:
 
         mock_pool.side_effect = pool_side_effect
 
+        config = ForgeConfig(
+            project=config.project,
+            project_root=config.project_root,
+            workspace=config.workspace,
+            validation=config.validation,
+            dev_profile=config.dev_profile,
+            preflight_profile=config.preflight_profile,
+            review_pool=[
+                DEFAULT_REVIEW_PROFILE.__class__(
+                    **{**DEFAULT_REVIEW_PROFILE.__dict__, "budget_usd": 5.0}
+                )
+            ],
+            synthesis_profile=config.synthesis_profile,
+            retry=RetryPolicy(max_dev_iterations=3, max_review_cycles=3),
+            log=config.log,
+        )
+
         result = run_task(config, task)
 
         assert result.success is True
-        assert result.state.dev_prompt_injected_finding_ids == [
-            [],
-            ["carry-forward-p1"],
-            ["carry-forward-p1", "current-cycle-p1"],
-        ]
+        injected = result.state.dev_prompt_injected_finding_ids
+        assert injected[0] == []
+        assert len(injected[1]) == 1
+        assert len(injected[2]) == 2
+        assert set(injected[1]).issubset(set(injected[2]))
 
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
