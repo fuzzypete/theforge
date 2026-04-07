@@ -46,7 +46,11 @@ def _extract_area_label(task: TaskStory) -> str | None:
 def build_bundle_hint(task: TaskStory, state: CoordinatorState) -> BundleHint:
     work_type = state.preflight_work_type
     complexity = state.preflight_complexity
-    bundle_candidate = bool(work_type in {"bug", "mechanical"} and complexity == "small")
+    bundle_candidate = bool(
+        state.preflight_bundle_candidate
+        and work_type in {"bug", "mechanical"}
+        and complexity == "small"
+    )
     return BundleHint(
         slug=task.slug,
         work_type=work_type,
@@ -66,6 +70,16 @@ def _tasks_overlap_by_signal(left: BundleHint, right: BundleHint) -> bool:
     if left.area is not None and left.area == right.area:
         return True
     return bool(set(left.likely_files) & set(right.likely_files))
+
+
+def _complexity_weight(complexity: str | None) -> int | None:
+    if complexity == "small":
+        return 1
+    if complexity == "medium":
+        return 2
+    if complexity == "large":
+        return 3
+    return None
 
 
 def compute_bundle_assignments(
@@ -96,7 +110,7 @@ def compute_bundle_assignments(
         hint = hints[task.slug]
         bundle = [task.slug]
         used.add(task.slug)
-        total_complexity = 1
+        total_complexity = _complexity_weight(hint.complexity) or 0
 
         for candidate in eligible:
             if candidate.slug in used:
@@ -104,7 +118,10 @@ def compute_bundle_assignments(
             candidate_hint = hints[candidate.slug]
             if candidate_hint.work_type != hint.work_type:
                 continue
-            if total_complexity + 1 > complexity_ceiling:
+            candidate_complexity = _complexity_weight(candidate_hint.complexity)
+            if candidate_complexity is None:
+                continue
+            if total_complexity + candidate_complexity > complexity_ceiling:
                 continue
             if not _tasks_overlap_by_signal(hint, candidate_hint):
                 continue
@@ -118,7 +135,7 @@ def compute_bundle_assignments(
                 continue
             bundle.append(candidate.slug)
             used.add(candidate.slug)
-            total_complexity += 1
+            total_complexity += candidate_complexity
 
         if len(bundle) > 1:
             bundles.append(bundle)

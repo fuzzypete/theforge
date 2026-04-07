@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from theforge.coordinator.state import CoordinatorState
-from theforge.sprint.collision import compute_synthetic_edges, inject_synthetic_deps
+from theforge.sprint.collision import (
+    compute_bundle_assignments,
+    compute_synthetic_edges,
+    inject_synthetic_deps,
+)
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.runner import _register_resumed_story_footprints
 from theforge.task import TaskStory
@@ -104,3 +108,82 @@ plan:
     _register_resumed_story_footprints(triages, preflight_states)
 
     assert preflight_states[slug].preflight_likely_files == ["src/foo.py", "tests/test_foo.py"]
+
+
+def test_compute_bundle_assignments_respects_preflight_bundle_candidate_false() -> None:
+    tasks = [
+        _task("story-12", 12),
+        _task("story-15", 15),
+    ]
+    tasks[0] = TaskStory(
+        name=tasks[0].name,
+        slug=tasks[0].slug,
+        story_path=tasks[0].story_path,
+        depends_on=tasks[0].depends_on,
+        github_issue=tasks[0].github_issue,
+        story_text="Area: api",
+    )
+    tasks[1] = TaskStory(
+        name=tasks[1].name,
+        slug=tasks[1].slug,
+        story_path=tasks[1].story_path,
+        depends_on=tasks[1].depends_on,
+        github_issue=tasks[1].github_issue,
+        story_text="Area: api",
+    )
+    states = {
+        "story-12": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_bundle_candidate=False,
+            preflight_likely_files=["src/api.py"],
+        ),
+        "story-15": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_bundle_candidate=True,
+            preflight_likely_files=["src/api.py"],
+        ),
+    }
+
+    assert compute_bundle_assignments(states, tasks) == []
+
+
+def test_compute_bundle_assignments_uses_complexity_weights_under_ceiling() -> None:
+    tasks = [
+        TaskStory(
+            name="story-12",
+            slug="story-12",
+            story_path=Path("stories/story-12.md"),
+            depends_on=[],
+            github_issue=12,
+            story_text="Area: api",
+        ),
+        TaskStory(
+            name="story-15",
+            slug="story-15",
+            story_path=Path("stories/story-15.md"),
+            depends_on=[],
+            github_issue=15,
+            story_text="Area: api",
+        ),
+    ]
+    states = {
+        "story-12": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_bundle_candidate=True,
+            preflight_likely_files=["src/api.py"],
+        ),
+        "story-15": CoordinatorState(
+            preflight_work_type="bug",
+            preflight_complexity="small",
+            preflight_bundle_candidate=True,
+            preflight_likely_files=["src/api.py"],
+        ),
+    }
+
+    assert compute_bundle_assignments(states, tasks, complexity_ceiling=2) == [
+        ["story-12", "story-15"]
+    ]
+    assert compute_bundle_assignments(states, tasks, complexity_ceiling=1) == []
