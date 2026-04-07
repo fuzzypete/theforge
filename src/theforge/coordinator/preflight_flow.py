@@ -27,7 +27,7 @@ import yaml
 
 from theforge.config import ForgeConfig
 from theforge.sprint.dag import _is_branch_merged
-from theforge.task import TaskStory, build_preflight_prompt
+from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
 
 from . import util as _cu
 from .audit import has_review_approve
@@ -106,7 +106,15 @@ def _run_preflight_phase(
     if logger:
         logger._safe_emit("phase_start", phase="PREFLIGHT", iteration=0)
 
-    preflight_prompt = build_preflight_prompt(task, story_content=story_content)
+    preflight_context = ContextAssembler.from_config(config).assemble(
+        phase="preflight",
+        story_text=story_content,
+    )
+    preflight_prompt = build_preflight_prompt(
+        task,
+        story_content=story_content,
+        assembled_context=preflight_context,
+    )
 
     _preflight_start = time.monotonic()
     preflight_result = run_agent(

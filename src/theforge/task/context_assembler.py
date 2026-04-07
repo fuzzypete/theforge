@@ -3,8 +3,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from theforge.config.types import ForgeConfig
+if TYPE_CHECKING:
+    from theforge.config.types import ForgeConfig
+
 
 _PHASE_TO_BUDGET_ATTR = {
     "preflight": "preflight_budget",
@@ -73,7 +76,7 @@ class ContextAssembler:
         self.budgets = budgets or ContextBudgetConfig()
 
     @classmethod
-    def from_config(cls, config: ForgeConfig) -> "ContextAssembler":
+    def from_config(cls, config: "ForgeConfig") -> "ContextAssembler":
         return cls(config.project_root, budgets=config.context)
 
     def assemble(
@@ -218,12 +221,9 @@ class ContextAssembler:
 
         story_terms = set(_tokenize(story_text))
         for line in structural_index[2].splitlines():
-            if "src/theforge/" not in line:
+            rel = _extract_index_path(line)
+            if rel is None:
                 continue
-            match = re.search(r"(src/theforge/[A-Za-z0-9_\-/]+)", line)
-            if not match:
-                continue
-            rel = Path(match.group(1))
             line_terms = set(_tokenize(line))
             if story_terms & line_terms:
                 touched.add(rel)
@@ -291,3 +291,16 @@ def _count_lines(text: str) -> int:
     if not text.strip():
         return 0
     return len(text.rstrip("\n").splitlines())
+
+
+def _extract_index_path(line: str) -> Path | None:
+    match = re.search(
+        r"(?P<path>(?:\.?[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+|(?:\.?[A-Za-z0-9_-]+/)+)", line
+    )
+    if not match:
+        return None
+    raw_path = match.group("path").rstrip(":,)")
+    rel = Path(raw_path)
+    if rel.is_absolute() or str(rel) in {".", ""}:
+        return None
+    return rel

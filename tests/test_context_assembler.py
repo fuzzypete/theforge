@@ -107,3 +107,23 @@ context:
     assert config.context.preflight_budget == 321
     assert config.context.plan_budget == 123
     assert config.context.dev_budget == 45
+
+
+def test_context_assembler_extracts_generic_paths_from_structural_index(tmp_path: Path) -> None:
+    _write_file(
+        tmp_path / ".forge" / "STRUCTURAL_INDEX.md",
+        "- app/services/payments/: payment orchestration and retries\n",
+    )
+    _write_file(
+        tmp_path / "app" / "services" / "payments" / "CLAUDE.md",
+        "# Payments\n\n## Context\n\nPayment orchestration lives here.\n",
+    )
+
+    assembler = ContextAssembler(tmp_path)
+    pack = assembler.assemble(
+        phase="preflight",
+        story_text="Need payment orchestration retries",
+        budget=50,
+    )
+
+    assert any(entry.source == "app/services/payments/CLAUDE.md" for entry in pack.included)

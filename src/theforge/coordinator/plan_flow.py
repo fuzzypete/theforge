@@ -38,7 +38,13 @@ from theforge.review import (
     plan_review_findings_to_text,
 )
 from theforge.sessions import save_sessions
-from theforge.task import TaskStory, build_plan_prompt, build_plan_review_prompt, parse_plan_output
+from theforge.task import (
+    ContextAssembler,
+    TaskStory,
+    build_plan_prompt,
+    build_plan_review_prompt,
+    parse_plan_output,
+)
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -231,12 +237,19 @@ def _run_plan_phase(
     _log_phase(state.phase, plan_profile.model)
     logger._safe_emit("phase_start", phase="PLAN", iteration=0)
 
+    plan_context = ContextAssembler.from_config(config).assemble(
+        phase="plan",
+        story_text=story_content,
+        file_list=state.preflight_likely_files or None,
+    )
+
     plan_prompt = build_plan_prompt(
         task,
         story_content=story_content,
         preflight_output=(
             preflight_result.output if preflight_result and preflight_result.success else None
         ),
+        assembled_context=plan_context,
         conventions=config.conventions_soft,
         work_type=state.preflight_work_type,
     )
