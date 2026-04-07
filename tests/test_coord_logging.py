@@ -755,3 +755,45 @@ class TestWorkerSlugContext:
         util._log("hello")
 
         assert "[forge] [my-story] hello" in capsys.readouterr().err
+
+
+def test_preflight_yaml_includes_branch_merged(tmp_path):
+    from unittest.mock import patch
+
+    import yaml as _yaml
+
+    from theforge.coordinator.preflight_flow import _run_preflight_phase
+    from theforge.coordinator.state import CoordinatorState
+
+    test_case = TestProjectLocalLogDir()
+    config = test_case._make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+    state = CoordinatorState(
+        log_dir=tmp_path / ".forge" / "logs" / task.slug, phase=Phase.PREFLIGHT
+    )
+
+    with (
+        patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
+        patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
+        patch(
+            "theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace, "PASS")
+        ),
+    ):
+        _run_preflight_phase(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            f"forge/{task.slug}",
+            notify=False,
+            logger=None,
+            task_start=0.0,
+            state_update_fn=None,
+            stop_phase=None,
+        )
+
+    data = _yaml.safe_load((state.log_dir / "preflight.yaml").read_text())
+    assert "branch_merged" in data

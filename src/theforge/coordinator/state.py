@@ -191,6 +191,9 @@ class CoordinatorState:
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
     preflight_likely_files: list[str] = field(default_factory=list)
     preflight_result: AgentResult | None = None
+    preflight_cached: bool = False
+    preflight_cached_from_run_id: str | None = None
+    preflight_cached_original_verdict: str | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
         None  # contents of the worktree plan file, passed to dev (raw string for audit)

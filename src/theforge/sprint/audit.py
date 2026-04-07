@@ -56,7 +56,11 @@ def _write_sprint_audit(
         task = tasks_by_slug.get(slug)
         if canonical_ref in results_by_spec:
             res = results_by_spec[canonical_ref]
-            preflight = res.state.preflight_verdict or "PROCEED"
+            preflight = (
+                "cached"
+                if getattr(res.state, "preflight_cached", False)
+                else (res.state.preflight_verdict or "PROCEED")
+            )
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
 
             # Build reviews summary for this spec
@@ -82,6 +86,12 @@ def _write_sprint_audit(
                 "outcome": outcome,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
+                "preflight_original_verdict": getattr(
+                    res.state, "preflight_cached_original_verdict", None
+                ),
+                "preflight_source_run_id": getattr(
+                    res.state, "preflight_cached_from_run_id", None
+                ),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "merge": res.merge is not None and res.merge.get("merged", False),
@@ -194,7 +204,11 @@ def _write_sprint_summary(
         slug = slug_map.get(canonical_ref, Path(canonical_ref).stem)
         if canonical_ref in results_by_spec:
             res = results_by_spec[canonical_ref]
-            preflight = res.state.preflight_verdict or "PROCEED"
+            preflight = (
+                "cached"
+                if getattr(res.state, "preflight_cached", False)
+                else (res.state.preflight_verdict or "PROCEED")
+            )
             outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else res.phase.name
             last_verdict = ""
             if res.state.review_results:
@@ -208,6 +222,12 @@ def _write_sprint_summary(
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),
                 "preflight": preflight,
+                "preflight_original_verdict": getattr(
+                    res.state, "preflight_cached_original_verdict", None
+                ),
+                "preflight_source_run_id": getattr(
+                    res.state, "preflight_cached_from_run_id", None
+                ),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "merge": res.merge is not None and res.merge.get("merged", False),

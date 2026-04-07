@@ -633,6 +633,9 @@ def run_task(
             state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
             state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
             state.preflight_duration_s = cached_preflight_state.preflight_duration_s
+            state.preflight_cached = True
+            state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
+            state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
             config = _apply_preflight_config(config, state)
             _pf_result = None
             _pf_already_done_loop = False
@@ -777,6 +780,7 @@ def _run_resume_coordinator(
     sprint_name: str | None,
     state_update_fn: "Callable[[dict], None] | None",
     no_pull: bool = False,
+    cached_preflight_state: CoordinatorState | None = None,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -799,6 +803,22 @@ def _run_resume_coordinator(
     state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
     prepend_worktree_src(workspace_path)
+
+    if cached_preflight_state is not None:
+        from .preflight import _apply_preflight_config  # noqa: PLC0415
+
+        state.preflight_verdict = cached_preflight_state.preflight_verdict
+        state.preflight_reason = cached_preflight_state.preflight_reason
+        state.preflight_complexity = cached_preflight_state.preflight_complexity
+        state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
+        state.preflight_work_type = cached_preflight_state.preflight_work_type
+        state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
+        state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
+        state.preflight_duration_s = cached_preflight_state.preflight_duration_s
+        state.preflight_cached = True
+        state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
+        state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
+        config = _apply_preflight_config(config, state)
 
     with _run_log_context(config, logger, task, state, _task_start):
         base_branch = config.workspace.base_branch
@@ -858,6 +878,7 @@ def run_from_review(
     sprint_name: str | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
+    cached_preflight_state: CoordinatorState | None = None,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -887,6 +908,7 @@ def run_from_review(
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
         no_pull=no_pull,
+        cached_preflight_state=cached_preflight_state,
     )
 
 
@@ -902,6 +924,7 @@ def run_from_dev(
     sprint_name: str | None = None,
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
+    cached_preflight_state: CoordinatorState | None = None,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -928,6 +951,7 @@ def run_from_dev(
         sprint_name=sprint_name,
         state_update_fn=state_update_fn,
         no_pull=no_pull,
+        cached_preflight_state=cached_preflight_state,
     )
 
 
