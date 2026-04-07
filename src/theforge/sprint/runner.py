@@ -1004,6 +1004,7 @@ def run_sprint(
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
                     results.append((spec_str, _timeout_result))
+                    _write_story_audit(config, slug_to_context[slug][0], _timeout_result)
                     dag.mark_skipped(slug)
                     specs_failed += 1
                 active.clear()

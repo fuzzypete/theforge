@@ -173,6 +173,14 @@ def _run_preflight_phase(
             cost_usd=preflight_result.cost_usd,
             duration_s=round(_preflight_elapsed, 2),
         )
+    branch_merged = None
+    if verdict == "ALREADY_DONE":
+        branch_merged = _is_branch_merged(
+            branch_name,
+            config.workspace.base_branch,
+            config.project_root,
+            slug=task.slug,
+        )
     _preflight_artifact = {
         "verdict": verdict,
         "reason": reason,
@@ -181,6 +189,7 @@ def _run_preflight_phase(
         "cost_usd": preflight_result.cost_usd,
         "duration_s": round(_preflight_elapsed, 2),
         "likely_files": state.preflight_likely_files,
+        "branch_merged": branch_merged,
     }
     _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
     _write_log_artifact(
@@ -204,11 +213,15 @@ def _run_preflight_phase(
 
     # ── ALREADY_DONE ──────────────────────────────────────────────────
     if verdict == "ALREADY_DONE":
-        branch_merged = _is_branch_merged(
-            branch_name,
-            config.workspace.base_branch,
-            config.project_root,
-            slug=task.slug,
+        branch_merged = (
+            branch_merged
+            if branch_merged is not None
+            else _is_branch_merged(
+                branch_name,
+                config.workspace.base_branch,
+                config.project_root,
+                slug=task.slug,
+            )
         )
         ok_log, log_out = _cu._run_shell(
             f"git log {config.workspace.base_branch}..{branch_name} --oneline",

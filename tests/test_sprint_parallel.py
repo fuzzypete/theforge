@@ -1714,3 +1714,51 @@ def test_integration_lock_serializes(tmp_path: Path) -> None:
     assert overlap[0] is False
     assert entered == ["first", "second"]
     assert exited == ["first", "second"]
+
+
+def test_write_sprint_summary_marks_cached_preflight(tmp_path):
+    import datetime as _dt
+
+    import yaml as _yaml
+
+    from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+    from theforge.sprint.audit import _write_sprint_summary
+    from theforge.sprint.manifest import SprintManifest, SprintResult
+
+    manifest = SprintManifest(name="demo-sprint", budget_usd=5.0, stories=["issue:123"])
+    state = CoordinatorState(
+        preflight_verdict="PROCEED",
+        preflight_cached=True,
+        preflight_cached_original_verdict="PROCEED",
+        preflight_cached_from_run_id="run-old",
+    )
+    result = SprintResult(
+        name="demo-sprint",
+        budget_usd=5.0,
+        results=[
+            (
+                "issue:123",
+                CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="ok"),
+            )
+        ],
+        total_cost_usd=0.0,
+        specs_total=1,
+        specs_succeeded=1,
+        specs_failed=0,
+        specs_skipped=0,
+    )
+    ts = _dt.datetime(2024, 1, 1, tzinfo=_dt.timezone.utc)
+    sprint_log_dir = tmp_path / ".forge" / "logs" / "demo-sprint"
+    _write_sprint_summary(
+        manifest,
+        result,
+        ["issue:123"],
+        ts,
+        ts,
+        0.0,
+        sprint_log_dir,
+        slug_map={"issue:123": "story-123"},
+    )
+    summary = _yaml.safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
+    story = summary["stories"][0]
+    assert story["preflight"] == "cached"

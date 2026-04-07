@@ -633,6 +633,9 @@ def run_task(
             state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
             state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
             state.preflight_duration_s = cached_preflight_state.preflight_duration_s
+            state.preflight_cached = True
+            state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
+            state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
             config = _apply_preflight_config(config, state)
             _pf_result = None
             _pf_already_done_loop = False
