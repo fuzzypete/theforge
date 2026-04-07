@@ -676,3 +676,25 @@ class TestOpenAIEndpointRouting:
         make_chat_finalizer.assert_called_once()
         make_responses.assert_not_called()
         make_responses_finalizer.assert_not_called()
+
+
+def test_estimate_cost_for_gpt_5_4_variants():
+    from theforge.runners.schema_utils import _estimate_cost
+
+    assert _estimate_cost("openai", "gpt-5.4", 1_500_000, 100_000) == pytest.approx(2.875)
+    assert _estimate_cost("openai", "gpt-5.4-mini", 1_000_000, 500_000) == pytest.approx(1.25)
+    assert _estimate_cost("openai", "gpt-5.4-pro", 1_000_000, 500_000) == pytest.approx(75.0)
+
+
+def test_estimate_cost_warns_once_for_unknown_model(caplog):
+    from theforge.runners import schema_utils
+
+    caplog.set_level("WARNING")
+    schema_utils._MISSING_PRICING_WARNED.clear()
+
+    assert schema_utils._estimate_cost("openai", "unknown-model", 100, 50) is None
+    assert schema_utils._estimate_cost("openai", "unknown-model", 200, 75) is None
+
+    warnings = [r.message for r in caplog.records if "Missing pricing entry" in r.message]
+    assert len(warnings) == 1
+    assert "unknown-model" in warnings[0]
