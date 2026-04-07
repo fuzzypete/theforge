@@ -1,0 +1,18 @@
+dev_notes: |
+  summary: "Updated dev-phase audit instrumentation so fix-prompt injections record every finding ID actually passed to the dev agent, not just carry-forward P1s. The implementation now unions carry-forward and current-cycle classified P1 finding IDs before storing `dev_prompt_injected_finding_ids`, and the routing tests were expanded to cover both the existing single-cycle regression and the multi-cycle carry-forward/current-cycle behavior."
+  commits:
+    - sha: "f278ad3"
+      message: "fix(audit): record all dev prompt finding ids"
+  acceptance_criteria:
+    - criterion: "The audit trail should accurately record all finding IDs that were passed to the dev prompt, including current-cycle findings."
+      status: MET
+      notes: "`_run_dev_phase()` now records the union of carry-forward and current-cycle P1 finding IDs when building the fix prompt."
+    - criterion: "The `dev_prompt_injected_finding_ids` field should reflect what the dev agent actually received."
+      status: MET
+      notes: "Coordinator routing tests assert the stored IDs match the findings supplied to `build_fix_prompt()` for review-change retries, including carry-forward plus current-cycle cases."
+  story_deviations: none
+  deferred_items:
+    - description: "Full gate execution observation"
+      reason: "The prior implementation notes indicate the full gate command could not be observed to completion because the tool runner enforces a 30s timeout; this handoff fix does not rerun the gate."
+  gate_result: PASS
+gate_decision: PASS

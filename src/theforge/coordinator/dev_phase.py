@@ -229,7 +229,11 @@ def _run_dev_phase(
             surviving_families=state.surviving_families or None,
             conventions=config.conventions_soft,
         )
-        state.dev_prompt_injected_finding_ids.append([r.finding_id for r in carry_forward_p1s])
+        injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
+        injected_finding_ids.extend(
+            r.finding_id for r in current_cycle_p1s if r.finding_id not in injected_finding_ids
+        )
+        state.dev_prompt_injected_finding_ids.append(injected_finding_ids)
         state.escalation_note = None  # consumed
     else:
         dev_context = ContextAssembler.from_config(config).assemble(
