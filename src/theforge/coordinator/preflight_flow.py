@@ -35,6 +35,7 @@ from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
     _apply_preflight_config,
+    _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
     _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
@@ -166,6 +167,9 @@ def _run_preflight_phase(
         work_type = _parse_preflight_work_type(preflight_result.output)
         state.preflight_work_type = work_type
         _log(f"  Work type: {work_type}")
+        bundle_candidate = _parse_preflight_bundle_candidate(preflight_result.output)
+        state.preflight_bundle_candidate = bundle_candidate
+        _log(f"  Bundle candidate: {bundle_candidate}")
     else:
         complexity = state.preflight_complexity
         _log(f"  Complexity: {complexity} (preflight failed — using fallback)")
@@ -198,6 +202,7 @@ def _run_preflight_phase(
         "cost_usd": preflight_result.cost_usd,
         "duration_s": round(_preflight_elapsed, 2),
         "likely_files": state.preflight_likely_files,
+        "bundle_candidate": state.preflight_bundle_candidate,
         "branch_merged": branch_merged,
     }
     _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")

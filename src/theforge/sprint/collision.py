@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from ..config import ForgeConfig
 from ..coordinator.engine import run_task
@@ -12,6 +12,118 @@ from ..task import TaskStory
 
 def _log(msg: str) -> None:
     print(f"[sprint] {msg}", file=sys.stderr, flush=True)
+
+
+@dataclass(frozen=True)
+class BundleHint:
+    """Deterministic bundling inputs derived from a task and its preflight state."""
+
+    slug: str
+    work_type: str | None
+    complexity: str | None
+    likely_files: tuple[str, ...]
+    bundle_candidate: bool
+    area: str | None
+
+
+def _normalize_area_label(area: str | None) -> str | None:
+    if area is None:
+        return None
+    normalized = area.strip().lower()
+    return normalized or None
+
+
+def _extract_area_label(task: TaskStory) -> str | None:
+    story_text = task.story_text or ""
+    for line in story_text.splitlines():
+        stripped = line.strip()
+        if not stripped.lower().startswith("area:"):
+            continue
+        return _normalize_area_label(stripped.split(":", 1)[1])
+    return None
+
+
+def build_bundle_hint(task: TaskStory, state: CoordinatorState) -> BundleHint:
+    work_type = state.preflight_work_type
+    complexity = state.preflight_complexity
+    bundle_candidate = bool(work_type in {"bug", "mechanical"} and complexity == "small")
+    return BundleHint(
+        slug=task.slug,
+        work_type=work_type,
+        complexity=complexity,
+        likely_files=tuple(sorted(set(state.preflight_likely_files))),
+        bundle_candidate=bundle_candidate,
+        area=_extract_area_label(task),
+    )
+
+
+def _bundle_sort_key(task: TaskStory) -> tuple[int, str]:
+    issue = task.github_issue
+    return (issue if issue is not None else sys.maxsize, task.slug)
+
+
+def _tasks_overlap_by_signal(left: BundleHint, right: BundleHint) -> bool:
+    if left.area is not None and left.area == right.area:
+        return True
+    return bool(set(left.likely_files) & set(right.likely_files))
+
+
+def compute_bundle_assignments(
+    preflight_states: dict[str, CoordinatorState],
+    tasks: list[TaskStory],
+    *,
+    complexity_ceiling: int = 5,
+) -> list[list[str]]:
+    task_by_slug = {task.slug: task for task in tasks}
+    hints = {
+        slug: build_bundle_hint(task_by_slug[slug], state)
+        for slug, state in preflight_states.items()
+        if slug in task_by_slug
+    }
+
+    eligible = [
+        task
+        for task in sorted(tasks, key=_bundle_sort_key)
+        if hints.get(task.slug) is not None and hints[task.slug].bundle_candidate
+    ]
+
+    bundles: list[list[str]] = []
+    used: set[str] = set()
+
+    for task in eligible:
+        if task.slug in used:
+            continue
+        hint = hints[task.slug]
+        bundle = [task.slug]
+        used.add(task.slug)
+        total_complexity = 1
+
+        for candidate in eligible:
+            if candidate.slug in used:
+                continue
+            candidate_hint = hints[candidate.slug]
+            if candidate_hint.work_type != hint.work_type:
+                continue
+            if total_complexity + 1 > complexity_ceiling:
+                continue
+            if not _tasks_overlap_by_signal(hint, candidate_hint):
+                continue
+            if task.slug in candidate.depends_on or candidate.slug in task.depends_on:
+                continue
+            if any(
+                existing in candidate.depends_on
+                or candidate.slug in task_by_slug[existing].depends_on
+                for existing in bundle
+            ):
+                continue
+            bundle.append(candidate.slug)
+            used.add(candidate.slug)
+            total_complexity += 1
+
+        if len(bundle) > 1:
+            bundles.append(bundle)
+
+    return bundles
 
 
 def run_batch_preflight(

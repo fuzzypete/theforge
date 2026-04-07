@@ -25,7 +25,12 @@ from ..coordinator.workspace import _merge_branch, pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .ci_checks import poll_required_checks
-from .collision import compute_synthetic_edges, inject_synthetic_deps, run_batch_preflight
+from .collision import (
+    compute_bundle_assignments,
+    compute_synthetic_edges,
+    inject_synthetic_deps,
+    run_batch_preflight,
+)
 from .dag import (
     StoryDAG,
     StoryTriage,
@@ -679,6 +684,9 @@ def run_sprint(
     )
     if resume:
         _register_resumed_story_footprints(triages, preflight_states)
+    bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)
+    if bundle_assignments:
+        _log(f"Computed deterministic bundles: {bundle_assignments}")
     synthetic_edges = compute_synthetic_edges(preflight_states, normalized.tasks)
     if synthetic_edges:
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")
