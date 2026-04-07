@@ -159,6 +159,18 @@ Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.
 - The primary term is "story" throughout the codebase. `TaskSpec` is a
   backward-compat alias for `TaskStory`; prefer `TaskStory` in new code.
 
+### Writing bug reports
+Bug reports contain exactly two things:
+
+1. **What happened** — the observed behavior, with evidence (log lines, audit
+   trail entries, run IDs).
+2. **What was expected** — the correct behavior.
+
+That's it. No acceptance criteria, no implementation hints, no file paths, no
+suggestions about which module or function to fix. The dev agent should discover
+the fix from the codebase. Over-constraining the report biases the agent toward
+a specific fix path that may not be the right one.
+
 ### Dogfooding config
 `forge.yaml` at the project root configures theforge to develop itself. Worktrees
 land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
