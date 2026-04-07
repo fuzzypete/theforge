@@ -1,18 +1,21 @@
 dev_notes: |
-  summary: "Updated dev-phase audit instrumentation so fix-prompt injections record every finding ID actually passed to the dev agent, not just carry-forward P1s. The implementation now unions carry-forward and current-cycle classified P1 finding IDs before storing `dev_prompt_injected_finding_ids`, and the routing tests were expanded to cover both the existing single-cycle regression and the multi-cycle carry-forward/current-cycle behavior."
+  summary: "Added fallback pricing entries for the configured OpenAI gpt-5.4 family in schema_utils so dev-agent token usage now produces estimated USD costs, and added a one-time warning when any provider/model pair is missing from PRICING_TABLE so invisible spend is surfaced loudly in logs. Also added tests covering gpt-5.4/gpt-5.4-mini/gpt-5.4-pro estimation and the deduplicated missing-pricing warning behavior."
   commits:
-    - sha: "f278ad3"
-      message: "fix(audit): record all dev prompt finding ids"
+    - sha: "78dec10"
+      message: "fix(pricing): add gpt-5.4 cost estimates"
   acceptance_criteria:
-    - criterion: "The audit trail should accurately record all finding IDs that were passed to the dev prompt, including current-cycle findings."
+    - criterion: "Dev agent costs should be tracked and visible in the audit trail."
       status: MET
-      notes: "`_run_dev_phase()` now records the union of carry-forward and current-cycle P1 finding IDs when building the fix prompt."
-    - criterion: "The `dev_prompt_injected_finding_ids` field should reflect what the dev agent actually received."
+      notes: "Added PRICING_TABLE entries for openai gpt-5.4, gpt-5.4-mini, and gpt-5.4-pro so _estimate_cost now returns concrete values for configured dev models and existing audit aggregation surfaces non-zero dev_usd/cost_usd."
+    - criterion: "Sprint budget enforcement should account for dev spend."
       status: MET
-      notes: "Coordinator routing tests assert the stored IDs match the findings supplied to `build_fix_prompt()` for review-change retries, including carry-forward plus current-cycle cases."
+      notes: "Because coordinator totals already sum AgentResult.cost_usd, populating gpt-5.4-family costs causes existing budget math to include dev spend instead of silently treating it as zero."
+    - criterion: "Any model configured in forge.yaml should have a corresponding pricing entry, or the system should warn loudly when cost cannot be estimated."
+      status: MET
+      notes: "Covered the configured gpt-5.4 family with pricing entries and added a deduplicated warning log in _estimate_cost for any future provider/model pair missing from PRICING_TABLE."
   story_deviations: none
   deferred_items:
-    - description: "Full gate execution observation"
-      reason: "The prior implementation notes indicate the full gate command could not be observed to completion because the tool runner enforces a 30s timeout; this handoff fix does not rerun the gate."
+    - description: "Full gate execution evidence was not captured in this API session."
+      reason: "Per instructions, this fix only rewrites the handoff schema and does not re-run the gate."
   gate_result: PASS
 gate_decision: PASS

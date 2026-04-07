@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from theforge.agent_types import ModelUsage
 from theforge.schemas import review_json_schema
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     pass
@@ -61,6 +64,9 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("openai", "gpt-5.1-codex-mini"): (1.50, 6.00),
     ("openai", "gpt-5.1-codex"): (3.00, 12.00),
     ("openai", "gpt-5.1-codex-max"): (6.00, 24.00),
+    ("openai", "gpt-5.4-mini"): (0.25, 2.00),
+    ("openai", "gpt-5.4"): (1.25, 10.00),
+    ("openai", "gpt-5.4-pro"): (15.00, 120.00),
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
     ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
@@ -123,6 +129,9 @@ _MAX_MALFORMED = 3
 _DEFAULT_MAX_ITERATIONS = 50
 
 
+_MISSING_PRICING_WARNED: set[tuple[str, str]] = set()
+
+
 def _estimate_cost(
     provider: str,
     model: str,
@@ -134,6 +143,15 @@ def _estimate_cost(
     """Estimate cost from pricing table; returns None if model unknown."""
     price = PRICING_TABLE.get((provider, model))
     if price is None:
+        key = (provider, model)
+        if key not in _MISSING_PRICING_WARNED:
+            logger.warning(
+                "Missing pricing entry for provider=%s model=%s; cost cannot be estimated. "
+                "Add this model to PRICING_TABLE so audit and budget totals stay accurate.",
+                provider,
+                model,
+            )
+            _MISSING_PRICING_WARNED.add(key)
         return None
     billable_output_tokens = output_tokens + thinking_tokens
     return ((input_tokens / 1_000_000) * price[0]) + (
