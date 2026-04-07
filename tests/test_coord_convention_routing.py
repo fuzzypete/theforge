@@ -51,9 +51,15 @@ class TestConventionViolationRouting:
         mock_fix_prompt,
         tmp_path,
     ):
+        base_config = _make_config(tmp_path)
         config = dataclasses.replace(
-            _make_config(tmp_path),
+            base_config,
             conventions_hard=HardConventionsConfig(max_module_lines=500),
+            retry=base_config.retry.__class__(
+                max_dev_iterations=base_config.retry.max_dev_iterations,
+                max_review_cycles=1,
+                max_handoff_retries=base_config.retry.max_handoff_retries,
+            ),
         )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -63,7 +69,7 @@ class TestConventionViolationRouting:
         mock_fix_prompt.return_value = "fix prompt"
         mock_shell.side_effect = _shell_with_gate(workspace, decisions=["PASS"])
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.0)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
@@ -74,11 +80,19 @@ class TestConventionViolationRouting:
             mock_validate.return_value = (_ValidateOutcome.REVIEW_CONVENTION_BLOCK, None)
             result = run_task(config, task)
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert mock_dev_prompt.call_count == 1
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert mock_dev_prompt.call_count == config.retry.max_dev_iterations
         mock_fix_prompt.assert_not_called()
-        assert len(result.state.review_results) == 1
+        assert len(result.state.review_results) == config.retry.max_review_cycles
+        convention_review = result.state.review_results[0]
+        assert convention_review.verdict == "REQUEST_CHANGES"
+        assert any(f.severity == "P1" for f in convention_review.findings)
+        assert "Hard convention violation" in convention_review.findings[0].description
+        assert result.message == (
+            f"Review requested changes after {config.retry.max_review_cycles} cycles. "
+            f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+        )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -108,7 +122,7 @@ class TestConventionViolationRouting:
 
         mock_shell.side_effect = _shell_with_gate(workspace, decisions=["PASS"])
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.return_value = _make_agent_result(success=True, output="Done.")
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.0)
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]

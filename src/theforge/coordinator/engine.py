@@ -43,6 +43,7 @@ from theforge.artifacts import (
     resolve_handoff_path,
 )
 from theforge.config import ForgeConfig
+from theforge.review import ReviewFinding, ReviewResult
 from theforge.sessions import save_sessions
 from theforge.task import (
     TaskStory,
@@ -264,7 +265,37 @@ def _coordinator_loop(
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
             if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
-                pass
+                _convention_findings = [
+                    ReviewFinding(
+                        severity="P1",
+                        file=str(v.get("file", "")),
+                        line=None,
+                        description=(
+                            f"Hard convention violation [{v.get('rule', 'unknown')}] in "
+                            f"{v.get('file', 'unknown')}: {v.get('detail', '')}"
+                        ),
+                        suggestion="Resolve the hard convention violation before approval.",
+                    )
+                    for v in state.convention_violations
+                ]
+                state.review_cycle += 1
+                state.review_results.append(
+                    ReviewResult(
+                        verdict="REQUEST_CHANGES",
+                        summary=(
+                            "Hard convention violations detected after gate PASS; "
+                            "approval is blocked until they are fixed."
+                        ),
+                        findings=_convention_findings,
+                        story_matches=True,
+                        story_mismatches=[],
+                        test_adequate=True,
+                        test_gaps=[],
+                        parse_errors=[],
+                        raw_yaml={"source": "validate_convention_block"},
+                    )
+                )
+                continue
             elif _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (
                     state.dev_results
