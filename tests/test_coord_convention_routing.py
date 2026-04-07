@@ -9,7 +9,6 @@ from unittest.mock import patch
 
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
-    APPROVE_REVIEW,
     _make_agent_result,
     _make_config,
     _shell_with_gate,
@@ -70,9 +69,6 @@ class TestConventionViolationRouting:
         mock_shell.side_effect = _shell_with_gate(workspace, decisions=["PASS"])
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.0)
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
 
         with patch("theforge.coordinator.engine._run_validate_phase") as mock_validate:
             from theforge.coordinator.validate_phase import _ValidateOutcome
@@ -84,11 +80,16 @@ class TestConventionViolationRouting:
         assert result.phase == Phase.ESCALATE
         assert mock_dev_prompt.call_count == 1
         mock_fix_prompt.assert_not_called()
+        mock_pool.assert_not_called()
         assert len(result.state.review_results) == config.retry.max_review_cycles
         convention_review = result.state.review_results[0]
         assert convention_review.verdict == "REQUEST_CHANGES"
         assert any(f.severity == "P1" for f in convention_review.findings)
         assert "Hard convention violation" in convention_review.findings[0].description
+        assert convention_review.raw_yaml == {
+            "source": "validate_convention_block",
+            "convention_violations": [],
+        }
         assert result.message == (
             f"Review requested changes after {config.retry.max_review_cycles} cycles. "
             f"Max cycles ({config.retry.max_review_cycles}) exhausted."
@@ -123,9 +124,6 @@ class TestConventionViolationRouting:
         mock_shell.side_effect = _shell_with_gate(workspace, decisions=["PASS"])
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.0)
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
 
         with patch("theforge.coordinator.engine._run_validate_phase") as mock_validate:
             from theforge.coordinator.validate_phase import _ValidateOutcome
@@ -145,3 +143,20 @@ class TestConventionViolationRouting:
         assert result.phase == Phase.ESCALATE
         assert result.message == "Hard convention violations after 1 attempts"
         assert len(result.state.review_results) == 0
+
+
+def test_build_convention_blocking_review_injects_fallback_p1_when_details_missing() -> None:
+    state = CoordinatorState(convention_violations=[])
+
+    from theforge.coordinator.engine import _build_convention_blocking_review
+
+    review = _build_convention_blocking_review(state)
+
+    assert review.verdict == "REQUEST_CHANGES"
+    assert len(review.findings) == 1
+    assert review.findings[0].severity == "P1"
+    assert "no violation details were recorded" in review.findings[0].description.lower()
+    assert review.raw_yaml == {
+        "source": "validate_convention_block",
+        "convention_violations": [],
+    }
