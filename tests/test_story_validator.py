@@ -5,6 +5,8 @@ from unittest.mock import patch
 from theforge.config import DEFAULT_DEV_PROFILE
 from theforge.runners import AgentResult
 from theforge.story_validator import (
+    StoryValidationFinding,
+    StoryValidationResult,
     _extract_yaml_block,
     _make_fast_profile,
     _parse_validation_output,
@@ -151,6 +153,36 @@ findings:
     result = _parse_validation_output(output)
     assert result.verdict == "WARN"
     assert result.findings[0].category == "requirement"
+
+
+def test_story_validation_finding_normalizes_invalid_fields():
+    finding = StoryValidationFinding(
+        category="UNKNOWN",
+        description=123,
+        split_suggestion=["not", "a", "dict"],
+    )
+
+    assert finding.category == "requirement"
+    assert finding.description == "123"
+    assert finding.split_suggestion is None
+
+
+def test_story_validation_result_coerces_dict_findings():
+    result = StoryValidationResult(
+        verdict="warn",
+        findings=[
+            {
+                "category": "scope",
+                "description": "Split this story",
+                "split_suggestion": {"stories": [{"name": "A"}]},
+            }
+        ],
+    )
+
+    assert result.verdict == "WARN"
+    assert len(result.findings) == 1
+    assert isinstance(result.findings[0], StoryValidationFinding)
+    assert result.findings[0].category == "scope"
 
 
 # ── Tests: _make_fast_profile ─────────────────────────────────────────

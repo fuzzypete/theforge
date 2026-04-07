@@ -95,6 +95,16 @@ class StoryValidationFinding:
     description: str
     split_suggestion: dict[str, Any] | None = None  # {"stories": [...]} for scope findings
 
+    def __post_init__(self) -> None:
+        """Normalize external inputs to the expected internal shape."""
+        category = str(self.category).lower()
+        if category not in ("requirement", "scope"):
+            category = "requirement"
+        self.category = category
+        self.description = str(self.description)
+        if self.split_suggestion is not None and not isinstance(self.split_suggestion, dict):
+            self.split_suggestion = None
+
 
 @dataclass
 class StoryValidationResult:
@@ -104,6 +114,26 @@ class StoryValidationResult:
     findings: list[StoryValidationFinding] = field(default_factory=list)
     cost_usd: float | None = None
     duration_s: float | None = None
+
+    def __post_init__(self) -> None:
+        """Coerce findings so downstream code can trust attribute access."""
+        verdict = str(self.verdict).upper()
+        self.verdict = verdict if verdict in ("PASS", "WARN") else "PASS"
+
+        normalized: list[StoryValidationFinding] = []
+        for finding in self.findings:
+            if isinstance(finding, StoryValidationFinding):
+                normalized.append(finding)
+                continue
+            if isinstance(finding, dict):
+                normalized.append(
+                    StoryValidationFinding(
+                        category=finding.get("category", "requirement"),
+                        description=finding.get("description", ""),
+                        split_suggestion=finding.get("split_suggestion"),
+                    )
+                )
+        self.findings = normalized
 
 
 def _extract_yaml_block(text: str) -> str | None:
