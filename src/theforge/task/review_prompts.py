@@ -132,10 +132,13 @@ def build_review_prompt(
     *,
     story_content: str,
     commit_log: str,
+    diff_stat: str = "",
+    diff_content: str = "",
     commit_diffs: str,
     workspace_path: str,
     branch: str,
     handoff_content: str,
+    handoff_commit_warning: str | None = None,
     mode: str = "cli",
     review_role: str | None = None,
     dev_notes: str | None = None,
@@ -263,6 +266,28 @@ def build_review_prompt(
 
         {story_content}
         {dev_notes_section}{render_conventions_block(conventions)}
+        ## Verified Git Metadata
+
+        This section is coordinator-verified ground truth captured from git before review.
+        Treat it as authoritative over any self-reported handoff claims.
+
+        Verified commit log (`git log --oneline main..HEAD`):
+        ```
+        {commit_log}
+        ```
+
+        Verified diff stat (`git diff main --stat`):
+        ```
+        {diff_stat}
+        ```
+
+        Verified diff content (`git diff main`):
+        ```
+        {diff_content}
+        ```
+
+        {handoff_commit_warning or ""}
+
         ## Commits
 
         The following commits implement the spec on branch `{branch}`.

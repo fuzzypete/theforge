@@ -1,7 +1,12 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from theforge.coordinator.review_context import _get_commit_diffs, _get_commit_log
+from theforge.coordinator.review_context import (
+    _get_commit_diffs,
+    _get_commit_log,
+    _get_handoff_commit_warning,
+)
+from theforge.devhandoff import DevHandoff
 
 
 def test_get_commit_log_uses_oneline(tmp_path: Path) -> None:
@@ -44,3 +49,29 @@ def test_get_commit_diffs_truncates_total_output(tmp_path: Path) -> None:
     assert "first diff" in result
     assert "[... remaining 1 commits omitted — total diff too large ...]" in result
     assert "second diff is long" not in result
+
+
+def test_get_handoff_commit_warning_ignores_human_readable_commit_log_lines(
+    tmp_path: Path,
+) -> None:
+    handoff = DevHandoff(
+        summary="done",
+        commits=[{"sha": "abc123", "message": "feat: thing"}],
+        acceptance_criteria=[],
+        story_deviations=[],
+        deferred_items=[],
+        gate_result="PASS",
+        parse_errors=[],
+        raw={},
+    )
+
+    with (
+        patch("theforge.coordinator.review_context._parse_dev_handoff", return_value=handoff),
+        patch(
+            "theforge.coordinator.review_context._cu._run_shell",
+            return_value=(True, "abc123 feat: thing"),
+        ),
+    ):
+        result = _get_handoff_commit_warning(None, tmp_path, "main")
+
+    assert result is None

@@ -1,7 +1,7 @@
 """Helpers for gathering review context from a worktree.
 
-Provides commit-log, handoff content, and dev-notes extraction used by
-the review pool and entry points in engine.py.
+Provides verified git metadata, handoff content, and dev-notes extraction used
+by the review pool and entry points in engine.py.
 """
 
 from __future__ import annotations
@@ -49,6 +49,88 @@ def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
             "Run `git diff` and `git diff --cached` to see them."
         )
 
+    return "\n".join(parts)
+
+
+def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
+    """Get verified diff stat vs the base branch."""
+    ok, stat = _cu._run_shell(f"git diff {base_branch} --stat", workspace_path)
+    if ok and stat.strip():
+        return stat
+    return "(no files changed vs base branch)"
+
+
+def _get_diff_content(
+    workspace_path: Path,
+    base_branch: str = "main",
+    *,
+    max_chars: int = 300_000,
+) -> str:
+    """Get verified diff content vs the base branch, truncating when too large."""
+    ok, diff = _cu._run_shell(f"git diff {base_branch}", workspace_path)
+    if not ok and not diff.strip():
+        return "(failed to load git diff vs base branch)"
+    if not diff.strip():
+        return "(no diff vs base branch)"
+    if len(diff) <= max_chars:
+        return diff
+    return diff[:max_chars] + f"\n[... diff truncated at {max_chars} chars ...]"
+
+
+def _normalize_commit_lines(text: str) -> list[str]:
+    """Normalize git log text into comparable one-line commit entries."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _get_raw_commit_lines(workspace_path: Path, base_branch: str = "main") -> list[str]:
+    """Return raw one-line commits ahead of base branch without human-readable warnings."""
+    ok, log = _cu._run_shell(f"git log {base_branch}..HEAD --oneline --reverse", workspace_path)
+    if not ok or not log.strip():
+        return []
+    return _normalize_commit_lines(log)
+
+
+def _handoff_commit_lines(handoff: DevHandoff | None) -> list[str] | None:
+    """Return normalized commit lines from parsed handoff, or None if unavailable."""
+    if handoff is None or handoff.parse_errors:
+        return None
+    lines: list[str] = []
+    for commit in handoff.commits:
+        sha = commit.get("sha", "").strip()
+        message = commit.get("message", "").strip()
+        if sha and message:
+            lines.append(f"{sha} {message}")
+    return lines
+
+
+def _get_handoff_commit_warning(
+    config: ForgeConfig, workspace_path: Path, base_branch: str
+) -> str | None:
+    """Compare self-reported handoff commits to git log and return a warning if mismatched."""
+    handoff = _parse_dev_handoff(config, workspace_path)
+    handoff_lines = _handoff_commit_lines(handoff)
+    if handoff_lines is None:
+        return None
+
+    actual_lines = _get_raw_commit_lines(workspace_path, base_branch)
+    actual_set = set(actual_lines)
+    handoff_set = set(handoff_lines)
+
+    missing_from_branch = [line for line in handoff_lines if line not in actual_set]
+    omitted_from_handoff = [line for line in actual_lines if line not in handoff_set]
+
+    if not missing_from_branch and not omitted_from_handoff:
+        return None
+
+    parts = [
+        "⚠ WARNING: Dev handoff commit list does not match verified git history.",
+    ]
+    if missing_from_branch:
+        parts.append("Claims not found on branch:")
+        parts.extend(f"- {line}" for line in missing_from_branch)
+    if omitted_from_handoff:
+        parts.append("Commits present on branch but omitted from handoff:")
+        parts.extend(f"- {line}" for line in omitted_from_handoff)
     return "\n".join(parts)
 
 

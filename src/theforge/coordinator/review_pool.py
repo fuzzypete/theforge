@@ -12,7 +12,7 @@ from __future__ import annotations
 import dataclasses
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -34,6 +34,9 @@ from .review_context import (
     _get_commit_diffs,
     _get_commit_log,
     _get_dev_notes,
+    _get_diff_content,
+    _get_diff_stat,
+    _get_handoff_commit_warning,
     _get_handoff_content,
 )
 from .state import CoordinatorState, Phase, ReviewCycleMetadata
@@ -66,6 +69,26 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
 
 
+def _emit_review_git_context(
+    logger: Any | None,
+    *,
+    base_branch: str,
+    commit_log: str,
+    diff_stat: str,
+    handoff_commit_warning: str | None,
+) -> None:
+    """Emit verified git metadata and handoff mismatch warnings to the audit trail."""
+    if logger is None:
+        return
+    logger._safe_emit(
+        "review_git_context",
+        base_branch=base_branch,
+        commit_log=commit_log,
+        diff_stat=diff_stat,
+        handoff_commit_warning=handoff_commit_warning,
+    )
+
+
 def _run_review_pool(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -80,6 +103,7 @@ def _run_review_pool(
     enforce_budgets: bool = True,
     pool_attempt: int = 0,
     max_review_parse_retries: int = 0,
+    logger: Any | None = None,
 ) -> tuple[list, list, ReviewResult | None, list[ReviewResult], list[tuple[str, ReviewResult]]]:
     """Run the review pool and merge results.
 
@@ -135,9 +159,22 @@ def _run_review_pool(
 
     if review_prompts is None:
         commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
+        diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
+        diff_content = _get_diff_content(workspace_path, config.workspace.base_branch)
         commit_diffs = _get_commit_diffs(workspace_path, config.workspace.base_branch)
         handoff_content = _get_handoff_content(config, workspace_path)
         dev_notes = _get_dev_notes(config, workspace_path)
+        handoff_commit_warning = _get_handoff_commit_warning(
+            config, workspace_path, config.workspace.base_branch
+        )
+
+        _emit_review_git_context(
+            logger,
+            base_branch=config.workspace.base_branch,
+            commit_log=commit_log,
+            diff_stat=diff_stat,
+            handoff_commit_warning=handoff_commit_warning,
+        )
 
         review_prompts = (
             [
@@ -145,10 +182,13 @@ def _run_review_pool(
                     task,
                     story_content=story_content,
                     commit_log=commit_log,
+                    diff_stat=diff_stat,
+                    diff_content=diff_content,
                     commit_diffs=commit_diffs,
                     workspace_path=str(workspace_path),
                     branch=branch_name,
                     handoff_content=handoff_content,
+                    handoff_commit_warning=handoff_commit_warning,
                     mode=p.mode,
                     review_role=p.review_role,
                     dev_notes=dev_notes,
@@ -162,10 +202,13 @@ def _run_review_pool(
                 task,
                 story_content=story_content,
                 commit_log=commit_log,
+                diff_stat=diff_stat,
+                diff_content=diff_content,
                 commit_diffs=commit_diffs,
                 workspace_path=str(workspace_path),
                 branch=branch_name,
                 handoff_content=handoff_content,
+                handoff_commit_warning=handoff_commit_warning,
                 mode=pool[0].mode,
                 dev_notes=dev_notes,
                 cycle_history=state.cycle_history if state.cycle_history else None,

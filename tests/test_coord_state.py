@@ -389,6 +389,45 @@ class TestStructuredLoggingIntegration:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_review_git_context_event_fields(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        log_file = tmp_path / "forge.log"
+        config = self._make_logging_config(tmp_path, log_file)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="verdict: PROCEED\ncomplexity: small",
+            cost_usd=0.10,
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        lines = log_file.read_text().splitlines()
+        git_events = [
+            _json.loads(line)
+            for line in lines
+            if _json.loads(line)["event"] == "review_git_context"
+        ]
+        assert len(git_events) >= 1
+        ev = git_events[0]
+        assert ev["base_branch"] == "main"
+        assert "commit_log" in ev
+        assert "diff_stat" in ev
+        assert "handoff_commit_warning" in ev
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_escalate_event_emitted_on_gate_failure(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):

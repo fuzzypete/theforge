@@ -47,6 +47,9 @@ from .review_context import (
     _get_commit_diffs,
     _get_commit_log,
     _get_dev_notes,
+    _get_diff_content,
+    _get_diff_stat,
+    _get_handoff_commit_warning,
     _get_handoff_content,
 )
 from .review_pool import _run_review_pool
@@ -483,6 +486,7 @@ def _run_review_phase(
         notify=notify,
         pool_attempt=0,
         max_review_parse_retries=max_parse_retries,
+        logger=logger,
     )
     state.last_cycle_reviewer_results = _named_parsed
 
@@ -822,17 +826,33 @@ def _run_review_only_phase(
     _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
 
     commit_log = _get_commit_log(workspace_path, config.workspace.base_branch)
+    diff_stat = _get_diff_stat(workspace_path, config.workspace.base_branch)
+    diff_content = _get_diff_content(workspace_path, config.workspace.base_branch)
     commit_diffs = _get_commit_diffs(workspace_path, config.workspace.base_branch)
     handoff_content = _get_handoff_content(config, workspace_path)
     dev_notes = _get_dev_notes(config, workspace_path)
+    handoff_commit_warning = _get_handoff_commit_warning(
+        config, workspace_path, config.workspace.base_branch
+    )
+    if logger:
+        logger._safe_emit(
+            "review_git_context",
+            base_branch=config.workspace.base_branch,
+            commit_log=commit_log,
+            diff_stat=diff_stat,
+            handoff_commit_warning=handoff_commit_warning,
+        )
     review_prompt = build_review_prompt(
         task,
         story_content=story_content,
         commit_log=commit_log,
+        diff_stat=diff_stat,
+        diff_content=diff_content,
         commit_diffs=commit_diffs,
         workspace_path=str(workspace_path),
         branch=branch_name,
         handoff_content=handoff_content,
+        handoff_commit_warning=handoff_commit_warning,
         mode=config.review_pool[0].mode,
         dev_notes=dev_notes,
         cycle_history=None,
@@ -859,6 +879,7 @@ def _run_review_only_phase(
         notify=notify,
         review_prompts=review_prompt,
         enforce_budgets=False,
+        logger=logger,
     )
     state.last_cycle_reviewer_results = _named_parsed
     _pool_elapsed = time.monotonic() - _pool_start
