@@ -135,6 +135,78 @@ def parse_dev_handoff(dev_notes: str) -> DevHandoff:
     )
 
 
+def _normalize_story_text(text: str) -> str:
+    """Normalize story and handoff text for content-consistency checks."""
+    return " ".join(text.casefold().split())
+
+
+def _extract_story_acceptance_criteria(story_content: str) -> list[str]:
+    """Extract acceptance-criteria bullet text from a story document."""
+    lines = story_content.splitlines()
+    in_acceptance_section = False
+    criteria: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip().casefold()
+            if heading == "acceptance criteria":
+                in_acceptance_section = True
+                continue
+            if in_acceptance_section:
+                break
+            continue
+
+        if not in_acceptance_section:
+            continue
+
+        if stripped.startswith(("- ", "* ")):
+            criteria.append(stripped[2:].strip())
+
+    return criteria
+
+
+def check_handoff_story_consistency(handoff: DevHandoff, story_content: str) -> list[str]:
+    """Return content-consistency errors for a schema-valid handoff.
+
+    Reject handoffs whose reported acceptance criteria do not align with the
+    active story. A repaired handoff must describe the active story's
+    acceptance criteria, not merely contain text that appears somewhere in the
+    broader spec. Matching is whitespace- and case-insensitive so repaired
+    handoffs are judged on content rather than formatting differences.
+    """
+    if not handoff.acceptance_criteria:
+        return []
+
+    extracted_story_criteria = _extract_story_acceptance_criteria(story_content)
+    story_criteria = {
+        _normalize_story_text(criterion)
+        for criterion in extracted_story_criteria
+        if criterion.strip()
+    }
+    normalized_story_content = _normalize_story_text(story_content)
+
+    missing_criteria: list[str] = []
+    for ac in handoff.acceptance_criteria:
+        criterion = ac.get("criterion", "").strip()
+        normalized_criterion = _normalize_story_text(criterion)
+        if criterion and normalized_criterion not in story_criteria:
+            if extracted_story_criteria or normalized_criterion not in normalized_story_content:
+                missing_criteria.append(criterion)
+
+    if not missing_criteria:
+        return []
+
+    formatted_missing = "; ".join(f"'{criterion}'" for criterion in missing_criteria)
+    return [
+        "handoff acceptance_criteria appear inconsistent with the active story: "
+        f"criterion text not found in story acceptance criteria: {formatted_missing}"
+    ]
+
+
 def dev_handoff_to_reviewer_text(handoff: DevHandoff) -> str:
     """Format a validated DevHandoff as structured markdown for the reviewer.
 

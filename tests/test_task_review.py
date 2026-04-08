@@ -540,6 +540,20 @@ class TestBuildHandoffFixPrompt:
         assert "Do NOT change any code" in prompt
         assert "Do NOT re-run the gate" in prompt
 
+    def test_includes_active_story_when_provided(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_handoff_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test",
+            validation_errors=["criterion text not found in story acceptance criteria"],
+            story_content="# Story\n\n## Acceptance Criteria\n- Do the thing",
+        )
+        assert "## Active Story" in prompt
+        assert "criterion text not found in story acceptance criteria" in prompt
+        assert "- Do the thing" in prompt
+        assert "previous or unrelated story" in prompt
+
     def test_uses_configured_handoff_file(self, tmp_path: Path) -> None:
         task = _make_task(tmp_path)
         prompt = build_handoff_fix_prompt(

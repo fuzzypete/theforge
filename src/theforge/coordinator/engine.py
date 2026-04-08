@@ -43,6 +43,7 @@ from theforge.artifacts import (
     resolve_handoff_path,
 )
 from theforge.config import ForgeConfig
+from theforge.devhandoff import check_handoff_story_consistency
 from theforge.review import ReviewFinding, ReviewResult
 from theforge.sessions import save_sessions
 from theforge.task import (
@@ -368,20 +369,22 @@ def _coordinator_loop(
         # Validate structured dev handoff after gate passes.
         # Retry up to max_handoff_retries; if still invalid, proceed anyway.
         _handoff = _parse_dev_handoff(config, workspace_path)
-        if _handoff is not None and _handoff.parse_errors:
+        _handoff_errors = list(_handoff.parse_errors) if _handoff is not None else []
+        if _handoff is not None and _handoff_errors:
             _max_hf_retries = config.retry.max_handoff_retries
             for _hf_attempt in range(_max_hf_retries):
                 _log_verbose(
                     f"Dev handoff validation failed "
                     f"(attempt {_hf_attempt + 1}/{_max_hf_retries}): "
-                    f"{_handoff.parse_errors}"
+                    f"{_handoff_errors}"
                 )
                 _log(f"  ⚠ HANDOFF   invalid → retry {_hf_attempt + 1}/{_max_hf_retries}")
                 _hf_prompt = build_handoff_fix_prompt(
                     task,
                     workspace_path=workspace_path,
                     branch_name=branch_name,
-                    validation_errors=_handoff.parse_errors,
+                    validation_errors=_handoff_errors,
+                    story_content=story_content,
                     handoff_file=config.validation.handoff_file,
                 )
                 _hf_result = run_agent(
@@ -401,7 +404,14 @@ def _coordinator_loop(
                 )
                 log_agent_result(_hf_result, "DEV/handoff-fix")
                 _handoff = _parse_dev_handoff(config, workspace_path)
-                if _handoff is None or not _handoff.parse_errors:
+                _handoff_errors = []
+                if _handoff is not None:
+                    _handoff_errors.extend(_handoff.parse_errors)
+                    if not _handoff_errors:
+                        _handoff_errors.extend(
+                            check_handoff_story_consistency(_handoff, story_content)
+                        )
+                if _handoff is None or not _handoff_errors:
                     _log("  ✓ HANDOFF   valid")
                     break
             else:

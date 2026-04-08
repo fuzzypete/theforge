@@ -1,6 +1,11 @@
 """Tests for dev handoff schema validation, parsing, and formatting."""
 
-from theforge.devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
+from theforge.devhandoff import (
+    DevHandoff,
+    check_handoff_story_consistency,
+    dev_handoff_to_reviewer_text,
+    parse_dev_handoff,
+)
 from theforge.schemas import validate_dev_handoff
 
 # ── Schema validation ─────────────────────────────────────────────────
@@ -335,6 +340,163 @@ _VALID_YAML = (
     "deferred_items: none\n"
     "gate_result: PASS\n"
 )
+
+
+class TestCheckHandoffStoryConsistency:
+    def test_returns_empty_when_all_criteria_appear_in_story(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[
+                {"criterion": "Active criterion", "status": "MET", "notes": "done"},
+                {"criterion": "Another criterion", "status": "MET", "notes": "done"},
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\n## Acceptance Criteria\n- Active criterion\n- Another criterion\n",
+        )
+
+        assert errors == []
+
+    def test_ignores_case_and_whitespace_differences(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[
+                {"criterion": "Active   Criterion", "status": "MET", "notes": "done"},
+                {"criterion": "another criterion", "status": "MET", "notes": "done"},
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\n## Acceptance Criteria\n- active criterion\n- Another    criterion\n",
+        )
+
+        assert errors == []
+
+    def test_returns_error_when_no_criteria_appear_in_story(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[
+                {"criterion": "Wrong criterion", "status": "MET", "notes": "done"},
+                {"criterion": "Different story criterion", "status": "MET", "notes": "done"},
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\n## Acceptance Criteria\n- Active criterion\n- Another criterion\n",
+        )
+
+        assert errors
+        assert "inconsistent with the active story" in errors[0]
+
+    def test_returns_error_when_some_criteria_match_and_some_do_not(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[
+                {"criterion": "Active criterion", "status": "MET", "notes": "done"},
+                {"criterion": "Different story criterion", "status": "NOT_MET", "notes": "done"},
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\n## Acceptance Criteria\n- Active criterion\n- Another criterion\n",
+        )
+
+        assert errors
+        assert "Different story criterion" in errors[0]
+
+    def test_rejects_text_present_outside_acceptance_criteria_section(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[
+                {"criterion": "ContextAssembler integration", "status": "MET", "notes": "done"},
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\n"
+            "ContextAssembler integration belongs to another story.\n\n"
+            "## Acceptance Criteria\n"
+            "- Active criterion\n",
+        )
+
+        assert errors
+        assert "story acceptance criteria" in errors[0]
+
+    def test_falls_back_to_full_story_when_acceptance_section_missing(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[
+                {"criterion": "Active criterion", "status": "MET", "notes": "done"},
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\nThis story requires Active criterion before release.\n",
+        )
+
+        assert errors == []
+
+    def test_returns_empty_when_acceptance_criteria_is_empty(self):
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "feat: done"}],
+            acceptance_criteria=[],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        errors = check_handoff_story_consistency(
+            handoff,
+            "# Story\n\n## Acceptance Criteria\n- Active criterion\n",
+        )
+
+        assert errors == []
 
 
 class TestParseDevHandoff:

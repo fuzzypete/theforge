@@ -36,6 +36,7 @@ from theforge.config import (
 from theforge.coordinator.engine import run_from_review, run_task
 from theforge.coordinator.state import Phase
 from theforge.runners import AgentResult
+from theforge.task import TaskStory
 
 
 class TestCoordinatorBudgetEnforcement:
@@ -597,7 +598,12 @@ class TestCoordinatorDevHandoffValidation:
     ):
         """Invalid dev handoff triggers a handoff fix retry."""
         config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text(
+            "# Test Spec\n\n## Acceptance Criteria\n- It works\n",
+            encoding="utf-8",
+        )
+        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
@@ -717,7 +723,12 @@ class TestCoordinatorDevHandoffValidation:
                 handoff_file=".forge/handoff.yaml",
             ),
         )
-        task = _make_task(tmp_path)
+        spec = tmp_path / "spec.md"
+        spec.write_text(
+            "# Test Spec\n\n## Acceptance Criteria\n- It works\n",
+            encoding="utf-8",
+        )
+        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
@@ -789,3 +800,94 @@ class TestCoordinatorDevHandoffValidation:
             for prompt in captured_fix_prompts
         )
         assert not any("git add .forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.engine.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_repaired_handoff_with_wrong_story_content_triggers_retry(
+        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Schema-valid repaired handoff must still match the active story."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            validation=dataclasses.replace(
+                _make_config(tmp_path).validation,
+                handoff_file=".forge/handoff.yaml",
+            ),
+        )
+        spec = tmp_path / "spec.md"
+        spec.write_text(
+            "# Test Spec\n\n## Acceptance Criteria\n- Active criterion\n",
+            encoding="utf-8",
+        )
+        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        bad_notes = "just some unstructured text"
+        wrong_story_notes = (
+            'summary: "Implemented the thing."\n'
+            "commits:\n"
+            '  - sha: "abc1234"\n'
+            '    message: "feat: implement"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "Wrong criterion"\n'
+            "    status: MET\n"
+            '    notes: "yes"\n'
+            "story_deviations: none\n"
+            "deferred_items: none\n"
+            "gate_result: PASS\n"
+        )
+        good_notes = (
+            'summary: "Implemented the thing."\n'
+            "commits:\n"
+            '  - sha: "abc1234"\n'
+            '    message: "feat: implement"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "Active criterion"\n'
+            "    status: MET\n"
+            '    notes: "yes"\n'
+            "story_deviations: none\n"
+            "deferred_items: none\n"
+            "gate_result: PASS\n"
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "gate" in cmd:
+                self._make_structured_handoff(Path(cwd), bad_notes, ".forge/handoff.yaml")
+                return (True, "OK")
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+
+        captured_fix_prompts: list[str] = []
+        fix_call_idx = {"n": 0}
+
+        def engine_agent_side_effect(**kwargs):
+            fix_call_idx["n"] += 1
+            captured_fix_prompts.append(kwargs.get("prompt", ""))
+            notes = wrong_story_notes if fix_call_idx["n"] == 1 else good_notes
+            self._make_structured_handoff(workspace, notes, ".forge/handoff.yaml")
+            return _make_agent_result(success=True, output="Fixed handoff.")
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_engine_agent.side_effect = engine_agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert fix_call_idx["n"] == 2
+        assert any("## Active Story" in prompt for prompt in captured_fix_prompts)
+        assert any("Wrong criterion" in prompt for prompt in captured_fix_prompts)
+        assert any("- Active criterion" in prompt for prompt in captured_fix_prompts)
