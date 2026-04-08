@@ -405,7 +405,7 @@ class TestDeindexForgeArtifacts:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
             artifact_path.write_text("stale\n", encoding="utf-8")
 
-        _deindex_forge_artifacts(tmp_path)
+        _deindex_forge_artifacts(tmp_path, purge=True)
 
         for artifact in _FORGE_ARTIFACTS:
             assert not (tmp_path / artifact).exists()
@@ -457,7 +457,7 @@ def test_merge_branch_deindexes_workspace_before_merge(mock_shell, mock_deindex,
     )
 
     assert info["merged"] is True
-    mock_deindex.assert_called_once_with(workspace)
+    mock_deindex.assert_called_once_with(workspace, purge=True)
 
 
 class TestDeindexRunsOnAllReturnPaths:
@@ -486,7 +486,7 @@ class TestDeindexRunsOnAllReturnPaths:
         workspace_path, _, err = _create_workspace(config, task, no_pull=False)
 
         assert err is None
-        mock_deindex.assert_called_once_with(workspace_path)
+        mock_deindex.assert_called_once_with(workspace_path, purge=True)
 
     @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
     @patch("theforge.coordinator.workspace._cu._run_shell")
@@ -515,7 +515,7 @@ class TestDeindexRunsOnAllReturnPaths:
         workspace_path, _, err = _create_workspace(config, task, no_pull=True)
 
         assert err is None
-        mock_deindex.assert_called_once_with(workspace_path)
+        mock_deindex.assert_called_once_with(workspace_path, purge=True)
 
     @patch("theforge.coordinator.workspace._deindex_forge_artifacts")
     @patch("theforge.coordinator.workspace._cu._run_shell")
@@ -553,4 +553,4 @@ class TestDeindexRunsOnAllReturnPaths:
         workspace_path, _, err = _create_workspace(config, task, no_pull=False)
 
         assert err is None
-        mock_deindex.assert_called_once_with(workspace_path)
+        mock_deindex.assert_called_once_with(workspace_path, purge=True)

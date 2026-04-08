@@ -141,7 +141,7 @@ class TestCoordinatorPromptRouting:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dev_prompt_injection_audit_tracks_carry_forward_and_current_cycle_findings(
+    def test_dev_prompt_injection_audit_tracks_fix_prompt_finding_ids(
         self,
         mock_shell,
         mock_agent,
