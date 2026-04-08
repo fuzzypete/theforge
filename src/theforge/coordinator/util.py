@@ -128,9 +128,21 @@ def _run_shell(
         output = (stdout + stderr).strip()
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired:
+        # Drain whatever the process wrote before we kill it so callers
+        # (especially the gate) can show partial output to the dev agent.
+        partial_out = ""
+        try:
+            raw_out = proc.stdout.read() if proc.stdout else ""
+            raw_err = proc.stderr.read() if proc.stderr else ""
+            partial_out = (raw_out + raw_err).strip()
+        except Exception:  # noqa: BLE001
+            pass
         _kill_process_group(proc)
         proc.wait()
-        return False, f"TIMEOUT after {timeout}s: {cmd}"
+        header = f"TIMEOUT after {timeout}s: {cmd}"
+        if partial_out:
+            return False, f"{header}\n{partial_out}"
+        return False, header
     except BaseException:
         _kill_process_group(proc)
         proc.wait()

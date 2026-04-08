@@ -209,7 +209,7 @@ class TestExitCodeGateMode:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "infrastructure" in result.message.lower() or "timeout" in result.message.lower()
+        assert "infrastructure" in result.message.lower() or "timed out" in result.message.lower()
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
