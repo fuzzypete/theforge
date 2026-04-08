@@ -316,6 +316,22 @@ def _coordinator_loop(
             if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
                 state.review_cycle += 1
                 state.review_results.append(_build_convention_blocking_review(state))
+                if state.review_cycle >= config.retry.max_review_cycles:
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Convention violations persisted after {state.review_cycle} cycles. "
+                        f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+                    )
+                    _log(f"✗ ESCALATE   {state.error}")
+                    if logger:
+                        logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                        logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+                    return CoordinatorResult(
+                        success=False,
+                        phase=Phase.ESCALATE,
+                        state=state,
+                        message=state.error,
+                    )
                 continue
             elif _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (
