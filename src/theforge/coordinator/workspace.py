@@ -251,7 +251,7 @@ def _merge_branch(
         _cu._log(f"Auto-merge skipped: {info['error']}")
         return info
 
-    _deindex_forge_artifacts(workspace_path)
+    _deindex_forge_artifacts(workspace_path, purge=True)
 
     ok, out = _cu._run_shell(f"git checkout {base_branch}", project_root)
     if not ok:
@@ -410,22 +410,33 @@ def _check_behind_origin(config: ForgeConfig) -> None:
 _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/last_setup_command")
 
 
-def _deindex_forge_artifacts(workspace_path: Path) -> None:
-    """Remove .forge/handoff.yaml and .forge/trajectory.yaml from the git index.
+def _deindex_forge_artifacts(workspace_path: Path, *, purge: bool = False) -> None:
+    """Remove transient .forge artifacts from the git index.
 
-    Uses -f so removal succeeds even when the index entry has staged content that
-    differs from both HEAD and the working tree (the agent-misbehavior state described
-    in the story). Uses --ignore-unmatch so the call is a no-op when files are not
-    tracked. This prevents merge conflicts and dirty-worktree noise from gitignored
-    files that were previously committed or accidentally staged.
+    Uses -f so index removal succeeds even when the index entry has staged content
+    that differs from both HEAD and the working tree (the agent-misbehavior state
+    described in the story). Uses --ignore-unmatch so the call is a no-op when files
+    are not tracked.
 
-    This helper is intentionally safe to run repeatedly at workspace setup, after the
-    dev phase, and immediately before rebase/merge operations.
+    When ``purge=True``, also deletes the artifact files from disk so reused
+    worktrees cannot carry stale handoff or trajectory state forward.  Pass
+    ``purge=True`` only at workspace setup time — validate-phase callers must
+    leave the handoff on disk so the engine can read it after the gate.
+
+    This helper is intentionally safe to run repeatedly.
     """
     files_arg = " ".join(_FORGE_ARTIFACTS)
     ok, out = _cu._run_shell(f"git rm -f --cached --ignore-unmatch {files_arg}", workspace_path)
     if not ok:
         _cu._log(f"⚠ WORKSPACE  git rm --cached failed: {out.strip()}")
+
+    if purge:
+        for artifact in _FORGE_ARTIFACTS:
+            artifact_path = workspace_path / artifact
+            try:
+                artifact_path.unlink(missing_ok=True)
+            except OSError as exc:
+                _cu._log(f"⚠ WORKSPACE  failed to delete {artifact}: {exc}")
 
 
 def pull_base_branch(config: ForgeConfig) -> bool:
@@ -483,7 +494,7 @@ def _create_workspace(
                 ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
-            _deindex_forge_artifacts(workspace_path)
+            _deindex_forge_artifacts(workspace_path, purge=True)
             return workspace_path, branch_name, None
 
     if not no_pull:
@@ -512,7 +523,7 @@ def _create_workspace(
                     ok_s, out_s = _run_setup_split(config.workspace.setup_command, existing_wt)
                     if not ok_s:
                         return None, None, f"Workspace setup command failed: {out_s}"
-                _deindex_forge_artifacts(existing_wt)
+                _deindex_forge_artifacts(existing_wt, purge=True)
                 return existing_wt, branch_name, None
             else:
                 _cu._log("⚠ WORKSPACE  linked worktree directory missing — pruning")
@@ -539,7 +550,7 @@ def _create_workspace(
                 ok_s, out_s = _run_setup_split(config.workspace.setup_command, workspace_path)
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
-            _deindex_forge_artifacts(workspace_path)
+            _deindex_forge_artifacts(workspace_path, purge=True)
             return workspace_path, branch_name, None
         else:
             _cu._log(
@@ -566,5 +577,5 @@ def _create_workspace(
         if not ok:
             return None, None, f"Workspace setup command failed: {output}"
 
-    _deindex_forge_artifacts(workspace_path)
+    _deindex_forge_artifacts(workspace_path, purge=True)
     return workspace_path, branch_name, None

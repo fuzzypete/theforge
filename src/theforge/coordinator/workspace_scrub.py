@@ -17,11 +17,10 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
     Drops commits whose entire diff touches only .forge/ artifact paths and strips
     those paths from mixed commits via an automated interactive rebase.
 
-    Artifact detection is driven by ``git ls-tree origin/<base_branch> -- .forge/``:
-    any .forge/ path that is already tracked in the base branch is treated as an
-    intentional project file (hooks, .env.example, …) and is never touched.
-    Everything else under .forge/ that appears in a branch-only commit is considered
-    a runtime artifact and is eligible for scrubbing.
+    Artifact detection is driven by ``git check-ignore`` against the repository
+    ``.gitignore`` rules. Any ``.forge/`` path that Git considers ignored is treated
+    as a runtime artifact and is eligible for scrubbing. Paths exempted with ``!``
+    rules remain intentional project files and are never touched.
 
     Failures are logged as warnings but never raised so the dev flow remains automatic.
     """
@@ -34,13 +33,20 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
     if not commits:
         return
 
-    # Files tracked in the base branch are intentional project files — preserve them.
-    # Everything else under .forge/ that appears in a branch commit is a runtime artifact.
-    ok_tree, tree_out = _cu._run_shell(
-        f"git ls-tree -r --name-only origin/{base_branch} -- .forge/",
-        workspace_path,
-    )
-    tracked_in_base: set[str] = set(tree_out.splitlines()) if ok_tree else set()
+    artifact_cache: dict[str, bool] = {}
+
+    def is_forge_artifact(path: str) -> bool:
+        if not path.startswith(".forge/"):
+            return False
+        cached = artifact_cache.get(path)
+        if cached is not None:
+            return cached
+        ok_ignore, _ = _cu._run_shell(
+            f"git check-ignore -q --no-index -- {shlex.quote(path)}",
+            workspace_path,
+        )
+        artifact_cache[path] = ok_ignore
+        return ok_ignore
 
     forge_only: list[str] = []
     mixed: list[str] = []
@@ -55,12 +61,10 @@ def _scrub_forge_history(workspace_path: Path, branch_name: str, base_branch: st
         files = [line.strip() for line in diff_out.splitlines() if line.strip()]
         if not files:
             continue
-        artifact_files = [p for p in files if p.startswith(".forge/") and p not in tracked_in_base]
+        artifact_files = [p for p in files if is_forge_artifact(p)]
         if not artifact_files:
             continue
-        real_files = [
-            p for p in files if not (p.startswith(".forge/") and p not in tracked_in_base)
-        ]
+        real_files = [p for p in files if not is_forge_artifact(p)]
         if not real_files:
             forge_only.append(sha)
         else:

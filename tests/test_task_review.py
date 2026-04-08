@@ -551,7 +551,9 @@ class TestBuildHandoffFixPrompt:
             handoff_file=".forge/handoff.yaml",
         )
         assert ".forge/handoff.yaml" in prompt
-        assert "git add .forge/handoff.yaml" in prompt
+        assert "Write the updated handoff file to disk and stop" in prompt
+        assert "git add .forge/handoff.yaml" not in prompt
+        assert "git commit -m" not in prompt
 
 
 # ── Notes section convention tests ──────────────────────────────────────

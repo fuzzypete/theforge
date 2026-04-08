@@ -416,6 +416,55 @@ def _merge_pr(
         "required reviews",
     )
 
+    try:
+        merged_pr_proc = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch_name,
+                "--state",
+                "closed",
+                "--json",
+                "number,url,mergedAt",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=config.project_root,
+            timeout=30,
+        )
+        if merged_pr_proc.returncode == 0:
+            merged_prs = json.loads(merged_pr_proc.stdout or "[]")
+            merged_pr = next((pr for pr in merged_prs if pr.get("mergedAt")), None)
+            if merged_pr is not None:
+                pr_url = merged_pr.get("url")
+                _pr_log.info(
+                    "PR already merged for branch %s; skipping PR recreation and merge retry: %s",
+                    branch_name,
+                    pr_url,
+                )
+                _cleanup_after_merge(delete_remote_branch=False)
+                return {
+                    "action": "merge-pr",
+                    "pr_url": pr_url,
+                    "merged": True,
+                    "merge_queued": False,
+                    "auto_merge_queued": False,
+                    "success": True,
+                    "error": None,
+                }
+        else:
+            err = merged_pr_proc.stderr.strip() or merged_pr_proc.stdout.strip()
+            _pr_log.warning(
+                "Merged PR lookup failed for %s (gh exited %d): %s",
+                branch_name,
+                merged_pr_proc.returncode,
+                err,
+            )
+    except Exception as exc:
+        _pr_log.warning("Merged PR lookup failed for %s: %s", branch_name, exc)
+
     for attempt in range(MAX_MERGE_RETRIES):
         # Step 1: defensively scrub tracked forge artifacts before rebase.
         _deindex_forge_artifacts(push_cwd)
@@ -469,8 +518,16 @@ def _merge_pr(
             )
             if push_proc.returncode != 0:
                 err = push_proc.stderr.strip() or push_proc.stdout.strip()
-                _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
-                return _fail(f"force-push after rebase failed: {err}", pr_url=pr_url)
+                err_lower = err.lower()
+                if "does not match any" in err_lower:
+                    _pr_log.info(
+                        "force-push skipped because remote branch %s is already gone: %s",
+                        branch_name,
+                        err,
+                    )
+                else:
+                    _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
+                    return _fail(f"force-push after rebase failed: {err}", pr_url=pr_url)
         except Exception as exc:
             _pr_log.warning("force-push failed: %s", exc)
             return _fail(f"force-push after rebase failed: {exc}", pr_url=pr_url)

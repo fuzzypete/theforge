@@ -108,7 +108,7 @@ class TestCreateWorkspaceReuseRunsSetup:
         assert err is None
         assert workspace_path == workspace
         mock_setup.assert_called_once_with(config.workspace.setup_command, workspace)
-        mock_deindex.assert_called_once_with(workspace)
+        mock_deindex.assert_called_once_with(workspace, purge=True)
 
 
 def test_last_setup_command_is_deindexed_artifact():
