@@ -156,9 +156,11 @@ def _run_gate_full(
             None,
             (
                 f"Gate timed out after {gate_timeout}s."
-                " This usually means a test has an infinite loop, deadlock,"
-                " or blocking I/O. Check the partial output below for the"
-                " last test that was running."
+                " Your changes likely broke something — a test may be hanging"
+                " (infinite loop, deadlock, blocking I/O) or you may have"
+                " broken existing tests that now cause cascading failures."
+                f" Run `{gate_cmd}` yourself in the worktree, observe which"
+                " test hangs or fails, and fix it."
             ),
             output_tail,
         )
