@@ -127,18 +127,29 @@ def _run_shell(
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()
         return proc.returncode == 0, output
-    except subprocess.TimeoutExpired:
-        # Drain whatever the process wrote before we kill it so callers
-        # (especially the gate) can show partial output to the dev agent.
-        partial_out = ""
-        try:
-            raw_out = proc.stdout.read() if proc.stdout else ""
-            raw_err = proc.stderr.read() if proc.stderr else ""
-            partial_out = (raw_out + raw_err).strip()
-        except Exception:  # noqa: BLE001
-            pass
+    except subprocess.TimeoutExpired as te:
+        # Kill first, then drain — reading pipes while the process is
+        # still alive can block indefinitely (the process holds the
+        # write end open, so read() waits for EOF that never comes).
         _kill_process_group(proc)
         proc.wait()
+        # Collect partial output: TimeoutExpired may carry buffered
+        # data, and any remaining bytes are still in the kernel pipe
+        # buffer now that the write end is closed.
+        partial_out = ""
+        try:
+            chunks = []
+            if te.stdout:
+                chunks.append(te.stdout if isinstance(te.stdout, str) else te.stdout.decode(errors="replace"))
+            if te.stderr:
+                chunks.append(te.stderr if isinstance(te.stderr, str) else te.stderr.decode(errors="replace"))
+            if proc.stdout:
+                chunks.append(proc.stdout.read())
+            if proc.stderr:
+                chunks.append(proc.stderr.read())
+            partial_out = "".join(chunks).strip()
+        except Exception:  # noqa: BLE001
+            pass
         header = f"TIMEOUT after {timeout}s: {cmd}"
         if partial_out:
             return False, f"{header}\n{partial_out}"
