@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from .sandbox import sandbox_command
+
 MAX_TOOL_OUTPUT_BYTES = 51200  # 50KB default
 
 # Maps forge.yaml user-facing capitalized names → canonical internal names.
@@ -150,9 +152,9 @@ def _handle_bash(
 ) -> str:
     """Run a shell command in working_dir with a 30s timeout."""
     try:
+        sandboxed = sandbox_command(["bash", "-c", command], Path(working_dir))
         result = subprocess.run(
-            command,
-            shell=True,
+            sandboxed,
             cwd=working_dir,
             capture_output=True,
             text=True,
