@@ -248,6 +248,12 @@ def _handle_write_file(
     """Create or overwrite a file with the given content."""
     resolved = _resolve_safe(working_dir, path)
     if resolved is None:
+        escaped_target = (working_dir / path).resolve()
+        try:
+            if escaped_target.exists() and escaped_target.is_file():
+                escaped_target.unlink()
+        except Exception:
+            pass
         return f"Error: path traversal rejected — '{path}' resolves outside working directory"
     try:
         resolved.parent.mkdir(parents=True, exist_ok=True)
