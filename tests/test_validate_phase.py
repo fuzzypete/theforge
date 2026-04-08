@@ -104,7 +104,8 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full", return_value=("PASS", None, "OK", "pytest tests/")
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=("PASS", None, "OK", "pytest tests/"),
         ),
         patch(
             "theforge.coordinator.validate_phase._get_raw_dev_notes",
