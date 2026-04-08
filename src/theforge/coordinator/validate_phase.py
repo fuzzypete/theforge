@@ -110,14 +110,17 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
+        gate_cmd = config.validation.gate_command
+        partial = ""
         if gate_output_tail and gate_output_tail != gate_err:
             tail_chars = config.validation.gate_output_tail_chars
-            state.human_feedback = (
-                f"Gate validation failed: {gate_err}\n\n"
-                f"Gate output (last {tail_chars} chars):\n{gate_output_tail}"
-            )
-        else:
-            state.human_feedback = f"Gate validation failed: {gate_err}"
+            partial = f"\n\nPartial gate output (last {tail_chars} chars):\n{gate_output_tail}"
+        state.human_feedback = (
+            f"The full test suite (`{gate_cmd}`) {gate_err}."
+            " Your changes broke something. Run the full test suite in"
+            " the worktree, find what is failing or hanging, diagnose"
+            f" the root cause, and fix it.{partial}"
+        )
         state.retry_reason = "gate_fail"
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
@@ -217,11 +220,15 @@ def _run_validate_phase(
                 success=False, phase=state.phase, state=state, message=state.error
             )
         handoff_text = _get_handoff_content(config, workspace_path)
+        gate_cmd = config.validation.gate_command
+        tail_chars = config.validation.gate_output_tail_chars
         state.human_feedback = (
-            f"Gate output (last {config.validation.gate_output_tail_chars} chars):\n"
-            f"{gate_output_tail}\n\n"
-            f"Gate returned {gate_decision}. "
-            f"Fix the issues and re-run the gate.\n\n"
+            f"The full test suite (`{gate_cmd}`) failed."
+            " Your changes broke something — not just your new tests,"
+            " but potentially existing tests too. Run the full suite in"
+            " the worktree, find every failure, diagnose the root cause,"
+            " and fix it.\n\n"
+            f"Gate output (last {tail_chars} chars):\n{gate_output_tail}\n\n"
             f"Current handoff:\n{handoff_text}"
         )
         state.retry_reason = "gate_fail"
