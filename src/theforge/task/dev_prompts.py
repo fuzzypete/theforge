@@ -249,6 +249,9 @@ def build_dev_prompt(
 
         - Do NOT merge to main.
         - Do NOT leave uncommitted changes.
+        - Do NOT modify existing test files that are not directly related to
+          your story. If existing tests fail after your changes, your
+          implementation is wrong — fix your code, not the tests.
         - If you cannot finish, commit what you have and list blockers in
           `deferred_items`.
     """)
