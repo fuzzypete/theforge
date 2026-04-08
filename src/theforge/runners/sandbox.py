@@ -51,7 +51,6 @@ def _macos_profile(allowed_root: Path) -> str:
 (allow process-exec)
 (allow process-fork)
 (allow signal (target self))
-(allow file-read*)
 (allow file-write*
     (subpath "{escaped_root}")
     (subpath "/private/tmp")
@@ -120,7 +119,7 @@ def sandbox_command(cmd: list[str], allowed_root: Path) -> list[str]:
             return ["sandbox-exec", "-p", profile, *cmd]
         return cmd
     if _SYSTEM == "Linux":
-        if _sandbox_available("bwrap", ["bwrap", "--ro-bind", "/", "/", "true"]):
+        if _sandbox_available("bwrap", ("bwrap", "--ro-bind", "/", "/", "true")):
             return _linux_command(cmd, root)
         return cmd
     return cmd

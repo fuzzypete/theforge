@@ -222,9 +222,17 @@ def _handle_glob(
     """Find files matching a glob pattern within working_dir."""
     try:
         matches = sorted(working_dir.glob(pattern))
-        if not matches:
+        root = working_dir.resolve()
+        safe_matches = []
+        for match in matches:
+            try:
+                match.resolve().relative_to(root)
+            except ValueError:
+                continue
+            safe_matches.append(match)
+        if not safe_matches:
             return "(no matches)"
-        paths = [str(p.relative_to(working_dir)) for p in matches]
+        paths = [str(p.relative_to(working_dir)) for p in safe_matches]
         return truncate_output("\n".join(paths), max_bytes)
     except Exception as exc:
         return f"Error: {type(exc).__name__} — {exc}"

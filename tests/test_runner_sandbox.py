@@ -73,3 +73,28 @@ def test_bash_outside_allowed_root_rejected_when_sandbox_denies() -> None:
     ):
         output = _handle_bash(command="cat ../other/file", working_dir=Path("/tmp/worktree"))
     assert "PermissionError" in output
+
+
+def test_macos_profile_does_not_allow_global_reads(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _macos_profile
+
+    profile = _macos_profile(tmp_path)
+
+    assert "(allow file-read*)\n" not in profile
+    assert f'(subpath "{tmp_path.resolve()}")' in profile
+
+
+def test_sandbox_command_linux_probe_uses_hashable_cache_key(tmp_path: Path) -> None:
+    cmd = ["bash", "-c", "pwd"]
+
+    def fake_available(binary: str, probe_key: tuple[str, ...]) -> bool:
+        assert isinstance(probe_key, tuple)
+        return True
+
+    with (
+        patch("theforge.runners.sandbox._SYSTEM", "Linux"),
+        patch("theforge.runners.sandbox._sandbox_available", side_effect=fake_available),
+    ):
+        wrapped = sandbox_command(cmd, tmp_path)
+
+    assert wrapped[0] == "bwrap"
