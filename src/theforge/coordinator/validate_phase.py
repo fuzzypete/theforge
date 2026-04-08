@@ -118,17 +118,20 @@ def _run_validate_phase(
             _log(f"  Gate partial output captured ({len(gate_output_tail)} chars)")
         is_timeout = "timed out" in (gate_err or "").lower()
         if is_timeout:
+            debug_cmd = config.validation.gate_debug_command
+            if debug_cmd:
+                diag = f" To diagnose, run `{debug_cmd}` to isolate the hanging or failing test."
+            else:
+                diag = (
+                    f" Run `{gate_cmd}` yourself to reproduce, find"
+                    " what is hanging or failing, and isolate the test."
+                )
             state.human_feedback = (
                 f"The full test suite (`{gate_cmd}`) {gate_err}."
-                " Your changes caused a test to hang or the suite to take"
-                " too long. To diagnose:\n"
-                "1. Run `pytest tests/ -x -v -n 0` (single process, stop"
-                " at first failure) to find the hanging or failing test.\n"
-                "2. If that still hangs, run"
-                " `pytest tests/ -x -v -n 0 --timeout=10` to force-kill"
-                " any test that takes >10s — it will report the name.\n"
-                "3. Fix the root cause — do not increase timeouts.\n"
-                f"4. Then run the full suite (`{gate_cmd}`) to verify."
+                " Your changes caused a test to hang or the suite to"
+                f" take too long.{diag}"
+                " Fix the root cause — do not increase timeouts."
+                f" Then run the full suite (`{gate_cmd}`) to verify."
                 f"{partial}"
             )
         else:
