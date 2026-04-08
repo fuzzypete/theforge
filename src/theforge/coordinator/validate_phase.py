@@ -115,12 +115,27 @@ def _run_validate_phase(
         if gate_output_tail and gate_output_tail != gate_err:
             tail_chars = config.validation.gate_output_tail_chars
             partial = f"\n\nPartial gate output (last {tail_chars} chars):\n{gate_output_tail}"
-        state.human_feedback = (
-            f"The full test suite (`{gate_cmd}`) {gate_err}."
-            " Your changes broke something. Run the full test suite in"
-            " the worktree, find what is failing or hanging, diagnose"
-            f" the root cause, and fix it.{partial}"
-        )
+            _log(f"  Gate partial output captured ({len(gate_output_tail)} chars)")
+        is_timeout = "timed out" in (gate_err or "").lower()
+        if is_timeout:
+            state.human_feedback = (
+                f"The full test suite (`{gate_cmd}`) {gate_err}."
+                " Your changes caused a test to hang or the suite to take"
+                " too long. To diagnose:\n"
+                "1. Run `pytest tests/ -x -v` (single process, stop at"
+                " first failure) to find the hanging or failing test.\n"
+                "2. If a specific test hangs, run it in isolation to confirm.\n"
+                "3. Fix the root cause — do not increase timeouts.\n"
+                f"4. Then run the full suite (`{gate_cmd}`) to verify."
+                f"{partial}"
+            )
+        else:
+            state.human_feedback = (
+                f"The full test suite (`{gate_cmd}`) {gate_err}."
+                " Your changes broke something. Run the full test suite in"
+                " the worktree, find what is failing or hanging, diagnose"
+                f" the root cause, and fix it.{partial}"
+            )
         state.retry_reason = "gate_fail"
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
