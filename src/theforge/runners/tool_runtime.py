@@ -144,13 +144,16 @@ def _handle_read_file(
         return f"Error: {type(exc).__name__} — {exc}"
 
 
+_BASH_TIMEOUT = 120  # seconds; must be long enough for a full test suite run
+
+
 def _handle_bash(
     *,
     command: str,
     working_dir: Path,
     max_bytes: int = MAX_TOOL_OUTPUT_BYTES,
 ) -> str:
-    """Run a shell command in working_dir with a 30s timeout."""
+    """Run a shell command in working_dir with a timeout."""
     try:
         sandboxed = sandbox_command(["bash", "-c", command], Path(working_dir))
         result = subprocess.run(
@@ -158,13 +161,13 @@ def _handle_bash(
             cwd=working_dir,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=_BASH_TIMEOUT,
         )
         combined = result.stdout + result.stderr
         output = f"Exit code: {result.returncode}\n{combined}"
         return truncate_output(output, max_bytes)
     except subprocess.TimeoutExpired:
-        return "Error: command timed out after 30s"
+        return f"Error: command timed out after {_BASH_TIMEOUT}s"
     except Exception as exc:
         return f"Error: {type(exc).__name__} — {exc}"
 
@@ -331,9 +334,9 @@ TOOL_REGISTRY: dict[str, ToolDef] = {
         name="bash",
         description=(
             "Run a shell command in the working directory. "
-            "Timeout: 30s. Returns exit code, stdout, and stderr. "
+            "Timeout: 120s. Returns exit code, stdout, and stderr. "
             "Prefer read_file/grep/glob for inspection tasks. "
-            "Use for test discovery (pytest --co -q), git log, etc."
+            "Use for running tests, git commands, formatters, etc."
         ),
         parameters={
             "type": "object",
