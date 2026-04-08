@@ -25,6 +25,7 @@ from .workspace import _deindex_forge_artifacts
 class _ValidateOutcome(Enum):
     PASS = auto()
     RETRY_DEV = auto()
+    REVIEW_CONVENTION_BLOCK = auto()
     ESCALATE = auto()
 
 
@@ -287,7 +288,7 @@ def _run_validate_phase(
                 )
             if logger:
                 logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
-            return _ValidateOutcome.RETRY_DEV, None
+            return _ValidateOutcome.REVIEW_CONVENTION_BLOCK, None
         else:
             state.convention_violations = [
                 {
