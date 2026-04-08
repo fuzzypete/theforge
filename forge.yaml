@@ -3,7 +3,7 @@ project: theforge
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"
-  setup_command: "test -d .venv || ({forge_python} -m venv .venv && .venv/bin/pip install -e '.[all]' pytest pytest-xdist -q)"
+  setup_command: "test -d .venv || ({forge_python} -m venv .venv && .venv/bin/pip install -e '.[all]' pytest pytest-xdist pytest-timeout -q)"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
   on_approve: merge-pr

@@ -14,7 +14,7 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 google = ["google-genai>=1.0"]
 all = ["openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]
-dev = ["pytest", "pytest-xdist", "ruff"]
+dev = ["pytest", "pytest-xdist", "pytest-timeout", "ruff"]
 
 [project.scripts]
 forge = "theforge.cli:main"
@@ -26,7 +26,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
-addopts = "-n auto --dist worksteal"
+addopts = "-n auto --dist worksteal --timeout=10"
 
 [tool.ruff]
 target-version = "py311"
