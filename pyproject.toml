@@ -26,7 +26,7 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
-addopts = "-n auto --dist worksteal --timeout=10"
+addopts = "-n auto --dist worksteal"
 
 [tool.ruff]
 target-version = "py311"
