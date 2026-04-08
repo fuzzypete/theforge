@@ -43,6 +43,7 @@ from theforge.artifacts import (
     resolve_handoff_path,
 )
 from theforge.config import ForgeConfig
+from theforge.review import ReviewFinding, ReviewResult
 from theforge.sessions import save_sessions
 from theforge.task import (
     TaskStory,
@@ -118,6 +119,55 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
     if LogLevel is None:
         LogLevel = _r.LogLevel
+
+
+def _build_convention_blocking_review(state: CoordinatorState) -> ReviewResult:
+    """Create a synthetic blocking review result for hard convention violations."""
+    findings = [
+        ReviewFinding(
+            severity="P1",
+            file=str(violation.get("file", "")),
+            line=None,
+            description=(
+                f"Hard convention violation [{violation.get('rule', 'unknown')}] in "
+                f"{violation.get('file', 'unknown')}: {violation.get('detail', '')}"
+            ),
+            suggestion="Resolve the hard convention violation before approval.",
+        )
+        for violation in state.convention_violations
+    ]
+    if not findings:
+        findings = [
+            ReviewFinding(
+                severity="P1",
+                file="",
+                line=None,
+                description=(
+                    "Hard convention violations detected after gate PASS, but no violation "
+                    "details were recorded. Manual investigation required."
+                ),
+                suggestion=(
+                    "Inspect validate-phase convention logs and fix the blocking violation."
+                ),
+            )
+        ]
+    return ReviewResult(
+        verdict="REQUEST_CHANGES",
+        summary=(
+            "Hard convention violations detected after gate PASS; approval is blocked "
+            "until they are fixed."
+        ),
+        findings=findings,
+        story_matches=True,
+        story_mismatches=[],
+        test_adequate=True,
+        test_gaps=[],
+        parse_errors=[],
+        raw_yaml={
+            "source": "validate_convention_block",
+            "convention_violations": state.convention_violations,
+        },
+    )
 
 
 # ── Log-tee / SIGTERM context manager ────────────────────────────────
@@ -263,7 +313,27 @@ def _coordinator_loop(
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
-            if _val_outcome == _ValidateOutcome.RETRY_DEV:
+            if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
+                state.review_cycle += 1
+                state.review_results.append(_build_convention_blocking_review(state))
+                if state.review_cycle >= config.retry.max_review_cycles:
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Convention violations persisted after {state.review_cycle} cycles. "
+                        f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+                    )
+                    _log(f"✗ ESCALATE   {state.error}")
+                    if logger:
+                        logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                        logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+                    return CoordinatorResult(
+                        success=False,
+                        phase=Phase.ESCALATE,
+                        state=state,
+                        message=state.error,
+                    )
+                continue
+            elif _val_outcome == _ValidateOutcome.RETRY_DEV:
                 if (
                     state.dev_results
                     and state.dev_results[-1].exit_code == -9
