@@ -195,6 +195,10 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
   `-n auto --dist worksteal` (xdist), which forks worker processes. A forked worker
   inherits open file descriptors with held locks, causing sibling threads to block
   indefinitely — deadlock, memory balloon, and eventual OOM. Mock the lock instead.
+- **Never write tests that can hang.** No `while True`, no unbounded retry loops,
+  no `time.sleep()` longer than 1 second, no blocking I/O without a timeout, no
+  `threading.Event.wait()` without a timeout. Every test must complete in under 5
+  seconds. A hanging test kills the entire gate run for every story in the sprint.
 
 ## Cutting a Release
 

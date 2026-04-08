@@ -11,7 +11,7 @@ workspace:
   auto_push: true
 
 validation:
-  gate_command: ".venv/bin/python -m pytest tests/ -q -n auto --dist worksteal"
+  gate_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
   handoff_file: ".forge/handoff.yaml"
   gate_decision_key: "gate_decision"
   gate_timeout: 45
