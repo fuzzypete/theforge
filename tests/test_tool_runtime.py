@@ -242,6 +242,12 @@ class TestGlob:
         result = _handle_glob(pattern="**/*.py", working_dir=tmp_path)
         assert result.startswith("src/") or "src/file.py" in result
 
+    def test_rejects_matches_outside_working_dir(self, tmp_path):
+        outside = tmp_path.parent / "outside.py"
+        outside.touch()
+        result = _handle_glob(pattern="../*.py", working_dir=tmp_path)
+        assert result == "(no matches)"
+
 
 class TestWriteFile:
     def test_creates_new_file(self, tmp_path):

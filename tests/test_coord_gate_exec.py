@@ -244,7 +244,10 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.validate_phase.subprocess.run") as mock_subprocess:
+        with (
+            patch("theforge.coordinator.validate_phase.subprocess.run") as mock_subprocess,
+            patch("theforge.runners.sandbox._sandbox_available", return_value=False),
+        ):
             result = run_task(config, task)
 
         assert result.success is True
@@ -347,7 +350,10 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.validate_phase.subprocess.run") as mock_subprocess:
+        with (
+            patch("theforge.coordinator.validate_phase.subprocess.run") as mock_subprocess,
+            patch("theforge.runners.sandbox._sandbox_available", return_value=False),
+        ):
             result = run_task(config, task)
 
         assert result.success is True
@@ -468,7 +474,10 @@ class TestCoordinatorDirtyWorktree:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        with patch("theforge.coordinator.validate_phase.subprocess.run") as mock_subprocess:
+        with (
+            patch("theforge.coordinator.validate_phase.subprocess.run") as mock_subprocess,
+            patch("theforge.runners.sandbox._sandbox_available", return_value=False),
+        ):
             result = run_task(config, task)
 
         assert result.success is True

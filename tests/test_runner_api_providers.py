@@ -617,9 +617,13 @@ class TestWriteFileHandler:
     def test_write_rejects_path_traversal(self, tmp_path):
         from theforge.runners.tool_runtime import _handle_write_file
 
+        outside = tmp_path.parent / "outside.py"
+        if outside.exists():
+            outside.unlink()
+
         result = _handle_write_file(path="../outside.py", content="bad", working_dir=tmp_path)
         assert result.startswith("Error: path traversal rejected")
-        assert not (tmp_path.parent / "outside.py").exists()
+        assert not outside.exists()
 
 
 class TestEditFileHandler:

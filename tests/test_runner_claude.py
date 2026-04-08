@@ -153,9 +153,14 @@ class TestRunAgentClaude:
                 )
             ]
         )
-        with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
+        with (
+            patch(
+                "theforge.runners.runner_claude.sandbox_command", side_effect=lambda cmd, _: cmd
+            ),
+            patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen,
+        ):
             result = run_agent(
                 prompt="implement the thing",
                 profile=dev_profile,
