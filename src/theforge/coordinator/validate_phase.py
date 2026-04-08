@@ -64,7 +64,7 @@ def _run_validate_phase(
             _log(f"  Gate: {gate_override} (story override)")
         else:
             _log_phase(state.phase, "running gate...")
-        gate_decision, gate_err, gate_output_tail = _run_gate_full(
+        gate_decision, gate_err, gate_output_tail, resolved_gate_cmd = _run_gate_full(
             config, workspace_path, task=task, iter_num=state.dev_iteration
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
@@ -110,17 +110,37 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        gate_cmd = config.validation.gate_command
+        gate_cmd = resolved_gate_cmd
         partial = ""
         if gate_output_tail and gate_output_tail != gate_err:
             tail_chars = config.validation.gate_output_tail_chars
             partial = f"\n\nPartial gate output (last {tail_chars} chars):\n{gate_output_tail}"
-        state.human_feedback = (
-            f"The full test suite (`{gate_cmd}`) {gate_err}."
-            " Your changes broke something. Run the full test suite in"
-            " the worktree, find what is failing or hanging, diagnose"
-            f" the root cause, and fix it.{partial}"
-        )
+            _log(f"  Gate partial output captured ({len(gate_output_tail)} chars)")
+        is_timeout = "timed out" in (gate_err or "").lower()
+        if is_timeout:
+            debug_cmd = config.validation.gate_debug_command
+            if debug_cmd:
+                diag = f" To diagnose, run `{debug_cmd}` to isolate the hanging or failing test."
+            else:
+                diag = (
+                    f" Run `{gate_cmd}` yourself to reproduce, find"
+                    " what is hanging or failing, and isolate the test."
+                )
+            state.human_feedback = (
+                f"The full test suite (`{gate_cmd}`) {gate_err}."
+                " Your changes caused a test to hang or the suite to"
+                f" take too long.{diag}"
+                " Fix the root cause — do not increase timeouts."
+                f" Then run the full suite (`{gate_cmd}`) to verify."
+                f"{partial}"
+            )
+        else:
+            state.human_feedback = (
+                f"The full test suite (`{gate_cmd}`) {gate_err}."
+                " Your changes broke something. Run the full test suite in"
+                " the worktree, find what is failing or hanging, diagnose"
+                f" the root cause, and fix it.{partial}"
+            )
         state.retry_reason = "gate_fail"
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
@@ -220,7 +240,7 @@ def _run_validate_phase(
                 success=False, phase=state.phase, state=state, message=state.error
             )
         handoff_text = _get_handoff_content(config, workspace_path)
-        gate_cmd = config.validation.gate_command
+        gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
         state.human_feedback = (
             f"The full test suite (`{gate_cmd}`) failed."

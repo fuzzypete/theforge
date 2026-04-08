@@ -164,6 +164,9 @@ class ValidationConfig:
     gate_decision_key: str  # YAML key to read for pass/fail
     gate_timeout: int | None = None  # seconds; None = default 600
     gate_output_tail_chars: int = 2000  # chars of gate output to surface on FAIL
+    gate_debug_command: str | None = (
+        None  # diagnostic command on timeout (e.g. "pytest -x -v -n 0")
+    )
     pre_validate_command: str | None = None  # optional command run before dirty check
 
 

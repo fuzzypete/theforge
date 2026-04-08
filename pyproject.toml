@@ -14,7 +14,7 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 google = ["google-genai>=1.0"]
 all = ["openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]
-dev = ["pytest", "pytest-xdist", "ruff"]
+dev = ["pytest", "pytest-xdist", "pytest-timeout", "ruff"]
 
 [project.scripts]
 forge = "theforge.cli:main"
