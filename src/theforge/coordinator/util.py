@@ -138,11 +138,10 @@ def _run_shell(
         # buffer now that the write end is closed.
         partial_out = ""
         try:
-            chunks = []
-            if te.stdout:
-                chunks.append(te.stdout if isinstance(te.stdout, str) else te.stdout.decode(errors="replace"))
-            if te.stderr:
-                chunks.append(te.stderr if isinstance(te.stderr, str) else te.stderr.decode(errors="replace"))
+            chunks: list[str] = []
+            for raw in (te.stdout, te.stderr):
+                if raw:
+                    chunks.append(raw if isinstance(raw, str) else raw.decode(errors="replace"))
             if proc.stdout:
                 chunks.append(proc.stdout.read())
             if proc.stderr:

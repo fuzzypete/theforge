@@ -15,7 +15,13 @@ class TestRunShellTimeout:
     def test_timeout_preserves_partial_output(self, tmp_path: Path) -> None:
         """A process that prints then hangs should have its output captured."""
         # Print a marker, flush, then sleep forever.
-        cmd = "python3 -u -c \"import sys, time; sys.stdout.write('PARTIAL_MARKER\\n'); sys.stdout.flush(); time.sleep(300)\""
+        cmd = (
+            'python3 -u -c "'
+            "import sys, time; "
+            "sys.stdout.write('PARTIAL_MARKER\\n'); "
+            "sys.stdout.flush(); "
+            'time.sleep(300)"'
+        )
         ok, output = _run_shell(cmd, tmp_path, timeout=2)
 
         assert ok is False
@@ -25,7 +31,7 @@ class TestRunShellTimeout:
     def test_timeout_handler_does_not_block(self, tmp_path: Path) -> None:
         """The timeout path must return promptly — not block on pipe reads."""
         # Process that writes nothing and sleeps forever.
-        cmd = "python3 -c \"import time; time.sleep(300)\""
+        cmd = 'python3 -c "import time; time.sleep(300)"'
         start = time.monotonic()
         ok, output = _run_shell(cmd, tmp_path, timeout=1)
         elapsed = time.monotonic() - start
@@ -38,7 +44,7 @@ class TestRunShellTimeout:
 
     def test_timeout_prefix_format(self, tmp_path: Path) -> None:
         """Output must start with 'TIMEOUT after <N>s:' for gate.py sentinel."""
-        cmd = "python3 -c \"import time; time.sleep(300)\""
+        cmd = 'python3 -c "import time; time.sleep(300)"'
         ok, output = _run_shell(cmd, tmp_path, timeout=1)
 
         assert ok is False
@@ -47,7 +53,13 @@ class TestRunShellTimeout:
 
     def test_timeout_captures_stderr(self, tmp_path: Path) -> None:
         """Partial stderr should also be captured on timeout."""
-        cmd = "python3 -u -c \"import sys, time; sys.stderr.write('STDERR_MARKER\\n'); sys.stderr.flush(); time.sleep(300)\""
+        cmd = (
+            'python3 -u -c "'
+            "import sys, time; "
+            "sys.stderr.write('STDERR_MARKER\\n'); "
+            "sys.stderr.flush(); "
+            'time.sleep(300)"'
+        )
         ok, output = _run_shell(cmd, tmp_path, timeout=2)
 
         assert ok is False
