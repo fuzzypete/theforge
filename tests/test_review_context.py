@@ -4,6 +4,7 @@ from unittest.mock import patch
 from theforge.coordinator.review_context import (
     _get_commit_diffs,
     _get_commit_log,
+    _get_handoff_commit_mismatch,
     _get_handoff_commit_warning,
 )
 from theforge.devhandoff import DevHandoff
@@ -75,3 +76,30 @@ def test_get_handoff_commit_warning_ignores_human_readable_commit_log_lines(
         result = _get_handoff_commit_warning(None, tmp_path, "main")
 
     assert result is None
+
+
+def test_get_handoff_commit_mismatch_returns_details(tmp_path: Path) -> None:
+    handoff = DevHandoff(
+        summary="done",
+        commits=[{"sha": "deadbee", "message": "feat: imaginary commit"}],
+        acceptance_criteria=[],
+        story_deviations=[],
+        deferred_items=[],
+        gate_result="PASS",
+        parse_errors=[],
+        raw={},
+    )
+
+    with (
+        patch("theforge.coordinator.review_context._parse_dev_handoff", return_value=handoff),
+        patch(
+            "theforge.coordinator.review_context._cu._run_shell",
+            return_value=(True, "abc123 feat: real commit"),
+        ),
+    ):
+        result = _get_handoff_commit_mismatch(None, tmp_path, "main")
+
+    assert result is not None
+    assert result.startswith("Dev handoff commit list does not match verified git history.")
+    assert "deadbee feat: imaginary commit" in result
+    assert "abc123 feat: real commit" in result

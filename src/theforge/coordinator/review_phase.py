@@ -891,6 +891,8 @@ def _run_review_only_phase(
             diff_stat=diff_stat,
             handoff_commit_warning=handoff_commit_warning,
         )
+    if handoff_commit_warning:
+        raise RuntimeError(handoff_commit_warning)
     review_context = ContextAssembler.from_config(config).assemble(
         phase="review",
         story_text=story_content,

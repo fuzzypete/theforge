@@ -103,10 +103,10 @@ def _handoff_commit_lines(handoff: DevHandoff | None) -> list[str] | None:
     return lines
 
 
-def _get_handoff_commit_warning(
+def _get_handoff_commit_mismatch(
     config: ForgeConfig, workspace_path: Path, base_branch: str
 ) -> str | None:
-    """Compare self-reported handoff commits to git log and return a warning if mismatched."""
+    """Compare self-reported handoff commits to git log and return mismatch details."""
     handoff = _parse_dev_handoff(config, workspace_path)
     handoff_lines = _handoff_commit_lines(handoff)
     if handoff_lines is None:
@@ -123,7 +123,7 @@ def _get_handoff_commit_warning(
         return None
 
     parts = [
-        "⚠ WARNING: Dev handoff commit list does not match verified git history.",
+        "Dev handoff commit list does not match verified git history.",
     ]
     if missing_from_branch:
         parts.append("Claims not found on branch:")
@@ -132,6 +132,16 @@ def _get_handoff_commit_warning(
         parts.append("Commits present on branch but omitted from handoff:")
         parts.extend(f"- {line}" for line in omitted_from_handoff)
     return "\n".join(parts)
+
+
+def _get_handoff_commit_warning(
+    config: ForgeConfig, workspace_path: Path, base_branch: str
+) -> str | None:
+    """Compare self-reported handoff commits to git log and return a warning if mismatched."""
+    mismatch = _get_handoff_commit_mismatch(config, workspace_path, base_branch)
+    if mismatch is None:
+        return None
+    return f"⚠ WARNING: {mismatch}"
 
 
 def _get_handoff_content(config: ForgeConfig, workspace_path: Path) -> str:
