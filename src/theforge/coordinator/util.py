@@ -127,10 +127,32 @@ def _run_shell(
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()
         return proc.returncode == 0, output
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as te:
+        # Kill first, then drain — reading pipes while the process is
+        # still alive can block indefinitely (the process holds the
+        # write end open, so read() waits for EOF that never comes).
         _kill_process_group(proc)
         proc.wait()
-        return False, f"TIMEOUT after {timeout}s: {cmd}"
+        # Collect partial output: TimeoutExpired may carry buffered
+        # data, and any remaining bytes are still in the kernel pipe
+        # buffer now that the write end is closed.
+        partial_out = ""
+        try:
+            chunks: list[str] = []
+            for raw in (te.stdout, te.stderr):
+                if raw:
+                    chunks.append(raw if isinstance(raw, str) else raw.decode(errors="replace"))
+            if proc.stdout:
+                chunks.append(proc.stdout.read())
+            if proc.stderr:
+                chunks.append(proc.stderr.read())
+            partial_out = "".join(chunks).strip()
+        except Exception:  # noqa: BLE001
+            pass
+        header = f"TIMEOUT after {timeout}s: {cmd}"
+        if partial_out:
+            return False, f"{header}\n{partial_out}"
+        return False, header
     except BaseException:
         _kill_process_group(proc)
         proc.wait()

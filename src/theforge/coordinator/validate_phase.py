@@ -110,7 +110,14 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        state.human_feedback = f"Gate validation failed: {gate_err}"
+        if gate_output_tail and gate_output_tail != gate_err:
+            tail_chars = config.validation.gate_output_tail_chars
+            state.human_feedback = (
+                f"Gate validation failed: {gate_err}\n\n"
+                f"Gate output (last {tail_chars} chars):\n{gate_output_tail}"
+            )
+        else:
+            state.human_feedback = f"Gate validation failed: {gate_err}"
         state.retry_reason = "gate_fail"
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:

@@ -154,7 +154,12 @@ def _run_gate_full(
     if output.startswith("TIMEOUT"):
         return (
             None,
-            f"Gate timed out (gate_timeout={gate_timeout}s). Consider increasing gate_timeout.",
+            (
+                f"Gate timed out after {gate_timeout}s."
+                " This usually means a test has an infinite loop, deadlock,"
+                " or blocking I/O. Check the partial output below for the"
+                " last test that was running."
+            ),
             output_tail,
         )
     if output.startswith("ERROR:"):
