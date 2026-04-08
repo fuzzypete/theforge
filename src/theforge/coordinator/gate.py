@@ -120,8 +120,11 @@ def _run_gate_full(
     workspace_path: Path,
     task: TaskStory | None = None,
     iter_num: int | None = None,
-) -> tuple[str | None, str | None, str]:
-    """Run the gate command and read the decision. Returns (decision, error, output_tail)."""
+) -> tuple[str | None, str | None, str, str]:
+    """Run the gate command and read the decision.
+
+    Returns (decision, error, output_tail, resolved_gate_cmd).
+    """
     has_override = (
         task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
     )
@@ -156,9 +159,10 @@ def _run_gate_full(
             None,
             f"Gate timed out after {gate_timeout}s",
             output_tail,
+            gate_cmd,
         )
     if output.startswith("ERROR:"):
-        return None, f"Gate infrastructure error: {output[:300]}", output_tail
+        return None, f"Gate infrastructure error: {output[:300]}", output_tail, gate_cmd
 
     # Gate decision comes from exit code. Write it into handoff.yaml (merging, not
     # overwriting) so downstream validation sees gate_decision alongside dev notes.
@@ -167,11 +171,12 @@ def _run_gate_full(
         _write_gate_decision(config, workspace_path, decision)
     if not ok:
         _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
-    return decision, None, output_tail
+    return decision, None, output_tail, gate_cmd
 
 
 def _run_gate(
     config: ForgeConfig, workspace_path: Path, task: TaskStory | None = None
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command. Returns (decision, error, output_tail)."""
-    return _run_gate_full(config, workspace_path, task)
+    decision, error, output_tail, _resolved_cmd = _run_gate_full(config, workspace_path, task)
+    return decision, error, output_tail

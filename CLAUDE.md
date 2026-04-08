@@ -99,6 +99,21 @@ make test       # pytest tests/ -v
 make gate       # run tests + write handoff.yaml
 ```
 
+### Language and toolchain agnosticism
+TheForge is a generic orchestrator — it must work for Python, Node, Go, Java, Rust,
+or any other stack. Coordinator logic, prompt templates, task schemas, and CLI
+scaffolding must not assume a specific language, test framework, or build tool.
+
+- **No language-specific fields in shared data models.** `TaskStory`, `ForgeConfig`,
+  and coordinator state should not encode pytest, npm, go test, etc. as first-class
+  concepts. Use generic names (`test_target`, `gate_command`, `gate_debug_command`).
+- **No hardcoded tool commands in prompts.** Prompt templates should reference the
+  project's configured commands, not `make fmt`, `pytest`, or `npm test`.
+- **Stack-specific behavior belongs in `forge.yaml`.** Each project configures its
+  own gate command, debug command, setup command, etc. The coordinator just runs them.
+- **Self-hosting config is fine.** This repo's `forge.yaml`, `AGENTS.md`, and test
+  files are allowed to be Python-specific because this IS a Python project.
+
 ## Pipeline Phases
 
 ### Preflight is a reasoning task, not a cheap classifier

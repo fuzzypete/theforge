@@ -59,7 +59,7 @@ def test_run_validate_phase_records_failed_gate_iteration_telemetry(tmp_path: Pa
     with (
         patch(
             "theforge.coordinator.validate_phase._run_gate_full",
-            return_value=("FAIL", None, "FAILED tests/test_alpha.py::test_one"),
+            return_value=("FAIL", None, "FAILED tests/test_alpha.py::test_one", "pytest tests/"),
         ),
         patch(
             "theforge.coordinator.validate_phase._get_handoff_content",
@@ -104,7 +104,7 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
 
     with (
         patch(
-            "theforge.coordinator.validate_phase._run_gate_full", return_value=("PASS", None, "OK")
+            "theforge.coordinator.validate_phase._run_gate_full", return_value=("PASS", None, "OK", "pytest tests/")
         ),
         patch(
             "theforge.coordinator.validate_phase._get_raw_dev_notes",
@@ -146,7 +146,7 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
 
     with patch(
         "theforge.coordinator.validate_phase._run_gate_full",
-        return_value=(None, "gate crashed", "traceback tail"),
+        return_value=(None, "gate crashed", "traceback tail", "pytest tests/"),
     ):
         outcome, result = _run_validate_phase(
             state,

@@ -64,7 +64,7 @@ def _run_validate_phase(
             _log(f"  Gate: {gate_override} (story override)")
         else:
             _log_phase(state.phase, "running gate...")
-        gate_decision, gate_err, gate_output_tail = _run_gate_full(
+        gate_decision, gate_err, gate_output_tail, resolved_gate_cmd = _run_gate_full(
             config, workspace_path, task=task, iter_num=state.dev_iteration
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
@@ -110,7 +110,7 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        gate_cmd = config.validation.gate_command
+        gate_cmd = resolved_gate_cmd
         partial = ""
         if gate_output_tail and gate_output_tail != gate_err:
             tail_chars = config.validation.gate_output_tail_chars
@@ -240,7 +240,7 @@ def _run_validate_phase(
                 success=False, phase=state.phase, state=state, message=state.error
             )
         handoff_text = _get_handoff_content(config, workspace_path)
-        gate_cmd = config.validation.gate_command
+        gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
         state.human_feedback = (
             f"The full test suite (`{gate_cmd}`) failed."
