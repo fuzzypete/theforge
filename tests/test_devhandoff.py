@@ -170,7 +170,7 @@ class TestValidateDevHandoff:
         data = _valid_handoff()
         del data["gate_result"]
         errors = validate_dev_handoff(data)
-        assert any("gate_result" in e for e in errors)
+        assert errors == []
 
     def test_invalid_gate_result(self):
         data = _valid_handoff()
@@ -417,7 +417,6 @@ class TestParseDevHandoff:
         assert len(result.parse_errors) > 0
         assert any("commits" in e for e in result.parse_errors)
         assert any("acceptance_criteria" in e for e in result.parse_errors)
-        assert any("gate_result" in e for e in result.parse_errors)
 
     def test_parse_partial_criteria(self):
         text = (

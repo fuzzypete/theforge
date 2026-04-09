@@ -528,7 +528,6 @@ class TestBuildHandoffFixPrompt:
         assert "summary" in prompt
         assert "commits" in prompt
         assert "acceptance_criteria" in prompt
-        assert "gate_result" in prompt
 
     def test_instructs_no_code_changes(self, tmp_path: Path) -> None:
         task = _make_task(tmp_path)

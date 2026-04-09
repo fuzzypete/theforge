@@ -62,7 +62,6 @@ def build_handoff_fix_prompt(
           deferred_items:
             - description: "What was deferred"
               reason: "Why it was deferred"
-          gate_result: PASS
         ```
 
         Use `story_deviations: none` if you followed the spec exactly.
