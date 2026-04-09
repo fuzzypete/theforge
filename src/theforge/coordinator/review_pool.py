@@ -176,8 +176,6 @@ def _run_review_pool(
             diff_stat=diff_stat,
             handoff_commit_warning=handoff_commit_warning,
         )
-        if handoff_commit_warning:
-            raise RuntimeError(handoff_commit_warning)
 
         review_context = ContextAssembler.from_config(config).assemble(
             phase="review",

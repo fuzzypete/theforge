@@ -102,10 +102,10 @@ class TestReviewOnly:
     @patch("theforge.coordinator.review_phase._get_handoff_commit_warning")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.util._run_shell")
-    def test_review_only_emits_git_context_before_handoff_mismatch_failure(
+    def test_review_only_emits_git_context_and_continues_on_handoff_mismatch(
         self, mock_shell, mock_pool, mock_handoff_warning, tmp_path
     ):
-        """Review-only logs review_git_context before failing closed on handoff mismatch."""
+        """Review-only logs handoff mismatch warnings but still runs reviewers."""
         import json
 
         log_file = tmp_path / "forge.log"
@@ -124,13 +124,11 @@ class TestReviewOnly:
         ]
         mock_handoff_warning.return_value = "handoff commit mismatch"
 
-        try:
-            run_review_only(config, task, workspace)
-        except RuntimeError as exc:
-            assert "handoff commit mismatch" in str(exc)
-        else:
-            raise AssertionError("run_review_only should fail closed on handoff mismatch")
-        assert not mock_pool.called
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert mock_pool.called
 
         git_events = [
             json.loads(line)
