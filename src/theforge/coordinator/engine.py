@@ -370,6 +370,10 @@ def _coordinator_loop(
         # Retry up to max_handoff_retries; if still invalid, hard stop.
         _handoff = _parse_dev_handoff(config, workspace_path)
         _handoff_errors = list(_handoff.parse_errors) if _handoff is not None else []
+        if _handoff is not None and not _handoff_errors:
+            _handoff_errors.extend(
+                check_handoff_story_consistency(_handoff, story_content)
+            )
         if _handoff is not None and _handoff_errors:
             _max_hf_retries = config.retry.max_handoff_retries
             for _hf_attempt in range(_max_hf_retries):
@@ -424,6 +428,11 @@ def _coordinator_loop(
                 state.error_type = "invalid_dev_handoff"
                 state.escalate_reason = _handoff_reason
                 _log(f"  ✗ ESCALATE   {_handoff_reason}")
+                if logger:
+                    logger._safe_emit(
+                        "escalate", reason=_handoff_reason, phase="VALIDATE"
+                    )
+                _escalate_notify(task, state, notify, config)
                 return CoordinatorResult(
                     success=False,
                     phase=Phase.ESCALATE,
