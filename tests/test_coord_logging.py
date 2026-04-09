@@ -797,3 +797,4 @@ def test_preflight_yaml_includes_branch_merged(tmp_path):
 
     data = _yaml.safe_load((state.log_dir / "preflight.yaml").read_text())
     assert "branch_merged" in data
+    assert "evaluation_base_branch" in data
