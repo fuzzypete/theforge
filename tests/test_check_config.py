@@ -593,7 +593,10 @@ class TestCheckConfigSandboxReadiness:
             patch(
                 "theforge.cli.check_config.check_agent_auth",
                 side_effect=[
-                    (False, "workspace sandbox unavailable: sandbox-exec not usable; bash/tool effects will run unsandboxed"),
+                    (
+                        False,
+                        "workspace sandbox unavailable: sandbox-exec not usable; bash/tool effects will run unsandboxed",
+                    ),
                     (True, ""),
                     (True, ""),
                 ],

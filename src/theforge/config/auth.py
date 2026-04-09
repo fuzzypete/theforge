@@ -24,11 +24,12 @@ _LOCAL_PREFIXES = (
 def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
     """Return whether workspace-effect sandboxing is available for this profile.
 
-    Launcher startup is intentionally unsandboxed. This check only reports whether
-    runtime workspace effects (currently bash/tool execution) can still be confined
-    to the assigned working directory on platforms where sandboxing is supported.
+    Launcher startup is intentionally unsandboxed for external CLI agents. This
+    check only reports whether runtime workspace effects that still flow through
+    the forge tool runtime (currently API-provider bash/tool execution) can be
+    confined to the assigned working directory on supported platforms.
     """
-    if profile.mode != "cli":
+    if profile.mode != "api":
         return (True, "")
     if "bash" not in profile.allowed_tools:
         return (True, "")

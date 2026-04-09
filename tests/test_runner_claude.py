@@ -636,8 +636,12 @@ class TestRunAgentUnknownCli:
         assert result.profile_name == "dev"
 
 
-def test_claude_launcher_is_not_sandbox_wrapped(dev_profile: ModelProfile, tmp_path: Path) -> None:
+def test_claude_launcher_runs_direct_command(dev_profile: ModelProfile, tmp_path: Path) -> None:
     mock_proc = _make_stream_mock([_result_line(result="done")])
-    with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc) as mock_popen:
+    with patch(
+        "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+    ) as mock_popen:
         run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
     assert mock_popen.call_args[0][0][0] == "claude"
+    assert "sandbox-exec" not in mock_popen.call_args[0][0]
+    assert "bwrap" not in mock_popen.call_args[0][0]

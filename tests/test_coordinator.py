@@ -947,7 +947,7 @@ class TestStartupFailureEscalation:
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
-        assert "no agent available" in result.message
+        assert "agent launcher startup failed" in result.message
         # dev_agent called once; no VALIDATE or REVIEW
         assert mock_dev_agent.call_count == 1
         mock_pool.assert_not_called()

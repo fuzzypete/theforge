@@ -260,31 +260,54 @@ def test_synthesis_profile_missing_key_returns_false(monkeypatch):
     assert reason
 
 
-def test_cli_binary_present_but_workspace_sandbox_unavailable_reports_not_ready():
+def test_cli_binary_outside_system_paths_is_still_ready_when_present():
+    with (
+        patch("theforge.config.auth.shutil.which", return_value="/home/user/.local/bin/claude"),
+        patch(
+            "theforge.runners.sandbox.sandbox_command",
+            return_value=["sandbox-exec", "-p", "x", "true"],
+        ),
+    ):
+        ok, reason = check_agent_auth(_cli_profile("claude"))
+    assert ok
+    assert reason == ""
+
+
+def test_api_bash_profile_checks_workspace_sandbox_readiness(monkeypatch):
     profile = ModelProfile(
-        name="dev",
+        name="api-dev",
+        provider="openai",
+        model="gpt-4o",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("bash",),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    with patch(
+        "theforge.runners.sandbox.sandbox_command",
+        return_value=["sandbox-exec", "-p", "profile", "true"],
+    ):
+        ok, reason = check_agent_auth(profile, {})
+    assert ok is True
+    assert reason == ""
+
+
+def test_cli_bash_profile_does_not_report_workspace_sandbox_readiness():
+    profile = ModelProfile(
+        name="cli-dev",
         cli="claude",
-        provider=None,
         model="sonnet",
         budget_usd=1.0,
         timeout_seconds=300,
         allowed_tools=("bash",),
     )
     with (
-        patch("theforge.config.auth.shutil.which", return_value="/home/user/.local/bin/claude"),
-        patch("theforge.runners.sandbox.sandbox_command", return_value=["true"]),
-        patch("theforge.config.auth.platform.system", return_value="Darwin"),
+        patch("theforge.config.auth.shutil.which", return_value="/usr/bin/claude"),
+        patch(
+            "theforge.runners.sandbox.sandbox_command",
+            side_effect=AssertionError("should not probe"),
+        ),
     ):
-        ok, reason = check_agent_auth(profile)
-    assert not ok
-    assert "workspace sandbox unavailable" in reason
-
-
-def test_cli_binary_outside_system_paths_is_still_ready_when_present():
-    with (
-        patch("theforge.config.auth.shutil.which", return_value="/home/user/.local/bin/claude"),
-        patch("theforge.runners.sandbox.sandbox_command", return_value=["sandbox-exec", "-p", "x", "true"]),
-    ):
-        ok, reason = check_agent_auth(_cli_profile("claude"))
-    assert ok
+        ok, reason = check_agent_auth(profile, {})
+    assert ok is True
     assert reason == ""

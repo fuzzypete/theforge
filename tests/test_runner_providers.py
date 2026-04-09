@@ -467,14 +467,9 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with (
-            patch(
-                "theforge.runners.runner_gemini.sandbox_command", side_effect=lambda cmd, _: cmd
-            ),
-            patch(
-                "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
-            ) as mock_run,
-        ):
+        with patch(
+            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+        ) as mock_run:
             run_agent(prompt="review", profile=gemini_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -495,14 +490,9 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with (
-            patch(
-                "theforge.runners.runner_gemini.sandbox_command", side_effect=lambda cmd, _: cmd
-            ),
-            patch(
-                "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
-            ) as mock_run,
-        ):
+        with patch(
+            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+        ) as mock_run:
             run_agent(prompt="my prompt", profile=gemini_profile, working_dir=tmp_path)
 
         call_kwargs = mock_run.call_args[1]
