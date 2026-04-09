@@ -400,15 +400,14 @@ class TestCoordinatorDevNotes:
                 "- deadbee feat: imaginary commit"
             ),
         ):
-            try:
-                run_task(config, task)
-            except RuntimeError as exc:
-                result = exc
-            else:
-                raise AssertionError("expected RuntimeError")
+            result = run_task(config, task)
 
-        assert "Dev handoff commit list does not match verified git history" in str(result)
-        assert not captured_prompts
+        assert result.success is True
+        assert captured_prompts
+        assert any(
+            "Dev handoff commit list does not match verified git history" in prompt
+            for prompt in captured_prompts
+        )
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
