@@ -50,7 +50,8 @@ def _format_failed_test_feedback(gate_output_tail: str, workspace_path: Path) ->
     lines.extend(f"- {test_name}" for test_name in failed_tests)
     if existing_failures:
         lines.append(
-            "These are existing tests your changes broke — fix your implementation, do not edit these test files."
+            "These are existing tests your changes broke — "
+            "fix your implementation, do not edit these test files."
         )
     return "\n".join(lines), bool(existing_failures)
 

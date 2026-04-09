@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import platform
-from pathlib import Path
-
 import os
+import platform
 import shutil
+from pathlib import Path
 
 from .defaults import PROVIDER_API_KEY_MAP, SUPPORTED_CLIS
 from .types import SUPPORTED_PROVIDERS, ModelProfile
@@ -34,9 +33,9 @@ def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
     if "bash" not in profile.allowed_tools:
         return (True, "")
 
-    from theforge.runners.sandbox import sandbox_command
+    from theforge.runners.sandbox import workspace_effect_sandbox_command
 
-    probe = sandbox_command(["true"], Path.cwd())
+    probe = workspace_effect_sandbox_command(["true"], Path.cwd())
     if probe and probe[0] != "true":
         return (True, "")
 
@@ -44,12 +43,44 @@ def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
     if system == "Darwin":
         return (
             False,
-            "workspace sandbox unavailable: sandbox-exec not usable; bash/tool effects will run unsandboxed",
+            "workspace sandbox unavailable: sandbox-exec not usable; "
+            "bash/tool effects will run unsandboxed",
         )
     if system == "Linux":
         return (
             False,
-            "workspace sandbox unavailable: bwrap not usable; bash/tool effects will run unsandboxed",
+            "workspace sandbox unavailable: bwrap not usable; "
+            "bash/tool effects will run unsandboxed",
+        )
+    return (True, "")
+
+
+def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
+    """Return whether CLI launcher sandboxing can enforce the worktree boundary."""
+    if profile.mode != "cli":
+        return (True, "")
+
+    from theforge.runners.sandbox import launcher_command
+
+    binary = "npx" if profile.cli in _NPX_CLIS else profile.cli
+    if binary is None:
+        return (True, "")
+    probe = launcher_command([binary, "--version"], Path.cwd())
+    if probe and probe[0] != binary:
+        return (True, "")
+
+    system = platform.system()
+    if system == "Darwin":
+        return (
+            False,
+            "launcher sandbox unavailable: sandbox-exec not usable; "
+            "CLI filesystem isolation will not hold",
+        )
+    if system == "Linux":
+        return (
+            False,
+            "launcher sandbox unavailable: bwrap not usable; "
+            "CLI filesystem isolation will not hold",
         )
     return (True, "")
 
@@ -93,11 +124,11 @@ def check_agent_auth(
             ok = shutil.which("npx") is not None
             if not ok:
                 return (False, "npx not found in PATH")
-            return _sandbox_readiness(profile)
+            return _launcher_sandbox_readiness(profile)
         ok = shutil.which(profile.cli) is not None
         if not ok:
             return (False, f"{profile.cli!r} not found in PATH")
-        return _sandbox_readiness(profile)
+        return _launcher_sandbox_readiness(profile)
 
     # ── API profiles ──────────────────────────────────────────────────
     if profile.provider is not None:

@@ -58,7 +58,13 @@ def _neither_profile() -> ModelProfile:
 
 
 def test_cli_claude_binary_present():
-    with patch("theforge.config.auth.shutil.which", return_value="/usr/bin/claude"):
+    with (
+        patch("theforge.config.auth.shutil.which", return_value="/usr/bin/claude"),
+        patch(
+            "theforge.runners.sandbox.launcher_command",
+            return_value=["sandbox-exec", "-p", "profile", "claude", "--version"],
+        ),
+    ):
         ok, _ = check_agent_auth(_cli_profile("claude"))
         assert ok
 
@@ -78,7 +84,13 @@ def test_cli_codex_checks_npx_not_binary():
         calls.append(name)
         return "/usr/bin/npx" if name == "npx" else None
 
-    with patch("theforge.config.auth.shutil.which", side_effect=_which):
+    with (
+        patch("theforge.config.auth.shutil.which", side_effect=_which),
+        patch(
+            "theforge.runners.sandbox.launcher_command",
+            return_value=["bwrap", "npx", "--version"],
+        ),
+    ):
         result = check_agent_auth(_cli_profile("codex"))
 
     ok, _ = result
@@ -95,7 +107,13 @@ def test_cli_gemini_checks_npx_not_binary():
         calls.append(name)
         return "/usr/bin/npx" if name == "npx" else None
 
-    with patch("theforge.config.auth.shutil.which", side_effect=_which):
+    with (
+        patch("theforge.config.auth.shutil.which", side_effect=_which),
+        patch(
+            "theforge.runners.sandbox.launcher_command",
+            return_value=["bwrap", "npx", "--version"],
+        ),
+    ):
         result = check_agent_auth(_cli_profile("gemini"))
 
     ok, _ = result
@@ -264,7 +282,7 @@ def test_cli_binary_outside_system_paths_is_still_ready_when_present():
     with (
         patch("theforge.config.auth.shutil.which", return_value="/home/user/.local/bin/claude"),
         patch(
-            "theforge.runners.sandbox.sandbox_command",
+            "theforge.runners.sandbox.launcher_command",
             return_value=["sandbox-exec", "-p", "x", "true"],
         ),
     ):
@@ -284,7 +302,7 @@ def test_api_bash_profile_checks_workspace_sandbox_readiness(monkeypatch):
     )
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     with patch(
-        "theforge.runners.sandbox.sandbox_command",
+        "theforge.runners.sandbox.workspace_effect_sandbox_command",
         return_value=["sandbox-exec", "-p", "profile", "true"],
     ):
         ok, reason = check_agent_auth(profile, {})
@@ -304,10 +322,32 @@ def test_cli_bash_profile_does_not_report_workspace_sandbox_readiness():
     with (
         patch("theforge.config.auth.shutil.which", return_value="/usr/bin/claude"),
         patch(
-            "theforge.runners.sandbox.sandbox_command",
-            side_effect=AssertionError("should not probe"),
+            "theforge.runners.sandbox.launcher_command",
+            return_value=["sandbox-exec", "-p", "profile", "claude", "--version"],
         ),
     ):
         ok, reason = check_agent_auth(profile, {})
     assert ok is True
     assert reason == ""
+
+
+def test_cli_profile_reports_launcher_sandbox_unavailable() -> None:
+    profile = ModelProfile(
+        name="cli-dev",
+        cli="claude",
+        model="sonnet",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("bash",),
+    )
+    with (
+        patch("theforge.config.auth.shutil.which", return_value="/usr/bin/claude"),
+        patch(
+            "theforge.runners.sandbox.launcher_command",
+            return_value=["claude", "--version"],
+        ),
+        patch("theforge.config.auth.platform.system", return_value="Darwin"),
+    ):
+        ok, reason = check_agent_auth(profile, {})
+    assert ok is False
+    assert "launcher sandbox unavailable" in reason

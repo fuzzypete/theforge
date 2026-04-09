@@ -83,6 +83,7 @@ def _make_agent_result(
     session_id: str | None = "sess-1",
     cost_usd: float = 0.50,
     profile_name: str = "",
+    startup_failure: bool = False,
 ) -> AgentResult:
     return AgentResult(
         success=success,
@@ -92,6 +93,7 @@ def _make_agent_result(
         exit_code=0 if success else 1,
         raw={},
         profile_name=profile_name,
+        startup_failure=startup_failure,
     )
 
 

@@ -241,7 +241,8 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
             return_value=(
                 None,
                 "failed",
-                "FAILED tests/test_existing.py::test_breaks\nFAILED generated/test_new.py::test_agent",
+                "FAILED tests/test_existing.py::test_breaks\n"
+                "FAILED generated/test_new.py::test_agent",
                 "pytest tests/",
             ),
         ),
