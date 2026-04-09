@@ -133,6 +133,9 @@ def _run_shell(
         output = (stdout + stderr).strip()
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired as te:
+        # Kill the whole process group before draining pipes so grandchildren
+        # such as pytest-xdist workers cannot keep writing indefinitely after
+        # the shell itself has timed out.
         _kill_process_group(proc)
         proc.wait()
         partial_out = ""

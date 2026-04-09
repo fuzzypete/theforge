@@ -39,8 +39,6 @@ from theforge.coordinator.state import CoordinatorState, Phase
 
 
 class TestCoordinatorPreflight:
-    """Test the PREFLIGHT phase: classify spec before expensive dev cycles."""
-
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -121,8 +119,6 @@ class TestCoordinatorPreflight:
         assert captured["working_dir"] != workspace
         assert captured["exists"] is True
         mock_pool.assert_not_called()
-
-    """Test the PREFLIGHT phase: classify spec before expensive dev cycles."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")

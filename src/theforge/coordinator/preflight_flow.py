@@ -54,7 +54,7 @@ def _prepare_preflight_working_dir(
     project_root: Path, base_branch: str
 ) -> tuple[Path, Callable[[], None]]:
     """Materialize a clean baseline checkout for deterministic preflight evaluation."""
-    temp_dir = Path(tempfile.mkdtemp(prefix="forge-preflight-", dir=project_root))
+    temp_dir = Path(tempfile.mkdtemp(prefix="forge-preflight-"))
     git_dir = project_root / ".git"
     if not git_dir.exists():
         return temp_dir, lambda: shutil.rmtree(temp_dir, ignore_errors=True)
