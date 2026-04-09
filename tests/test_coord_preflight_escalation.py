@@ -476,3 +476,31 @@ class TestDevModelEscalationIntegration:
         assert "budget" in result.message.lower()
         # Escalation flag never set (budget guard fired first)
         assert result.state.dev_escalated is False
+
+
+def test_dev_startup_failure_message_mentions_launcher(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    startup_failure = _make_agent_result(
+        success=False,
+        output="ERROR: 'claude' CLI not found. Is it installed?",
+        startup_failure=True,
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace, "PASS")
+        ),
+        patch("theforge.coordinator.dev_phase.run_agent", return_value=startup_failure),
+        patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
+        patch("theforge.coordinator.plan_flow.run_agent"),
+        patch("theforge.coordinator.review_pool.run_agent_pool", return_value=[]),
+    ):
+        result = run_task(config, task)
+
+    assert result.success is False
+    assert result.phase == Phase.ESCALATE
+    assert "agent launcher startup failed" in result.message

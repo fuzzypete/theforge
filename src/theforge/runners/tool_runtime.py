@@ -168,6 +168,8 @@ def _handle_bash(
         return truncate_output(output, max_bytes)
     except subprocess.TimeoutExpired:
         return f"Error: command timed out after {_BASH_TIMEOUT}s"
+    except PermissionError as exc:
+        return f"Error: workspace sandbox violation — {type(exc).__name__} — {exc}"
     except Exception as exc:
         return f"Error: {type(exc).__name__} — {exc}"
 

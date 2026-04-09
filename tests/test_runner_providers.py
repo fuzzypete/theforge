@@ -469,7 +469,7 @@ class TestRunGemini:
         )
         with (
             patch(
-                "theforge.runners.runner_gemini.sandbox_command", side_effect=lambda cmd, _: cmd
+                "theforge.runners.runner_gemini.launcher_command", side_effect=lambda cmd, _: cmd
             ),
             patch(
                 "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
@@ -497,7 +497,7 @@ class TestRunGemini:
         )
         with (
             patch(
-                "theforge.runners.runner_gemini.sandbox_command", side_effect=lambda cmd, _: cmd
+                "theforge.runners.runner_gemini.launcher_command", side_effect=lambda cmd, _: cmd
             ),
             patch(
                 "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc

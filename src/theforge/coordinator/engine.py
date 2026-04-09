@@ -288,7 +288,7 @@ def _coordinator_loop(
                 _last = state.dev_results[-1]
                 _snippet = _last.output[:200] if _last.output else "(no output)"
                 state.phase = Phase.ESCALATE
-                state.error = f"DEV aborted: no agent available ({_snippet})"
+                state.error = f"DEV aborted: agent launcher startup failed: {_snippet}"
                 _log(f"✗ ESCALATE   {state.error}")
                 if logger:
                     logger._safe_emit("escalate", reason=state.error, phase="DEV")
