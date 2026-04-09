@@ -55,6 +55,10 @@ def test_run_validate_phase_records_failed_gate_iteration_telemetry(tmp_path: Pa
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(3.5)
     state.last_dev_start_commit = "HEAD"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "def test_one():\n    pass\n", encoding="utf-8"
+    )
 
     with (
         patch(
@@ -83,6 +87,7 @@ def test_run_validate_phase_records_failed_gate_iteration_telemetry(tmp_path: Pa
     telemetry = state.dev_iteration_telemetry[0]
     assert telemetry.gate_result == "FAIL"
     assert telemetry.failed_tests == ["tests/test_alpha.py::test_one"]
+    assert telemetry.existing_test_failures is True
 
 
 def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) -> None:
@@ -92,6 +97,10 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(2.0)
     state.last_dev_start_commit = "HEAD"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "def test_one():\n    pass\n", encoding="utf-8"
+    )
 
     def shell_side_effect(cmd, cwd, **kwargs):
         if cmd == "git status --porcelain":
@@ -144,6 +153,10 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.5)
     state.last_dev_start_commit = "HEAD"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "def test_one():\n    pass\n", encoding="utf-8"
+    )
 
     with patch(
         "theforge.coordinator.validate_phase._run_gate_full",
@@ -167,6 +180,7 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
     telemetry = state.dev_iteration_telemetry[0]
     assert telemetry.gate_result == "ERROR"
     assert telemetry.failed_tests == []
+    assert telemetry.existing_test_failures is False
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -189,6 +203,10 @@ def _write(path: Path, content: str) -> None:
 def test_format_failed_test_feedback_marks_existing_tests(tmp_path: Path) -> None:
     from theforge.coordinator.validate_phase import _format_failed_test_feedback
 
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_existing.py").write_text(
+        "def test_breaks():\n    pass\n", encoding="utf-8"
+    )
     feedback, existing = _format_failed_test_feedback(
         "FAILED tests/test_existing.py::test_breaks\nFAILED generated/test_new.py::test_agent",
         tmp_path,
@@ -208,6 +226,10 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.0)
     state.last_dev_start_commit = "HEAD"
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "def test_one():\n    pass\n", encoding="utf-8"
+    )
     (tmp_path / "generated").mkdir()
     (tmp_path / "generated" / "test_new.py").write_text(
         "def test_agent():\n    pass\n", encoding="utf-8"

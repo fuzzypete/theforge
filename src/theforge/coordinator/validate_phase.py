@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import time
 from enum import Enum, auto
@@ -29,6 +30,11 @@ class _ValidateOutcome(Enum):
     ESCALATE = auto()
 
 
+def _test_file_exists_in_head(workspace_path: Path, test_file: str) -> bool:
+    """Return whether the failing test file exists in the current checkout."""
+    return workspace_path.joinpath(test_file).is_file()
+
+
 def _format_failed_test_feedback(gate_output_tail: str, workspace_path: Path) -> tuple[str, bool]:
     """Return retry-feedback text for extracted failing tests and whether they are existing."""
     failed_tests = _extract_failed_tests(gate_output_tail)
@@ -38,7 +44,7 @@ def _format_failed_test_feedback(gate_output_tail: str, workspace_path: Path) ->
     existing_failures = [
         test_name
         for test_name in failed_tests
-        if not workspace_path.joinpath(test_name.split("::", 1)[0]).exists()
+        if _test_file_exists_in_head(workspace_path, test_name.split("::", 1)[0])
     ]
     lines = ["\n\nExtracted failing tests (best effort):"]
     lines.extend(f"- {test_name}" for test_name in failed_tests)
@@ -132,7 +138,9 @@ def _run_validate_phase(
             )
         gate_cmd = resolved_gate_cmd
         partial = ""
-        failed_test_feedback, _ = _format_failed_test_feedback(gate_output_tail, workspace_path)
+        failed_test_feedback, existing_test_failures = _format_failed_test_feedback(
+            gate_output_tail, workspace_path
+        )
         if gate_output_tail and gate_output_tail != gate_err:
             tail_chars = config.validation.gate_output_tail_chars
             partial = f"\n\nPartial gate output (last {tail_chars} chars):\n{gate_output_tail}"
@@ -165,6 +173,11 @@ def _run_validate_phase(
                 f"{partial}"
             )
         state.retry_reason = "gate_fail"
+        if state.dev_iteration_telemetry:
+            state.dev_iteration_telemetry[-1] = dataclasses.replace(
+                state.dev_iteration_telemetry[-1],
+                existing_test_failures=existing_test_failures,
+            )
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
@@ -265,7 +278,9 @@ def _run_validate_phase(
         handoff_text = _get_handoff_content(config, workspace_path)
         gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
-        failed_test_feedback, _ = _format_failed_test_feedback(gate_output_tail, workspace_path)
+        failed_test_feedback, existing_test_failures = _format_failed_test_feedback(
+            gate_output_tail, workspace_path
+        )
         state.human_feedback = (
             f"The full test suite (`{gate_cmd}`) failed."
             " Your changes broke something — not just your new tests,"
@@ -285,6 +300,11 @@ def _run_validate_phase(
             gate_result=gate_decision,
             gate_output_tail=gate_output_tail,
         )
+        if state.dev_iteration_telemetry:
+            state.dev_iteration_telemetry[-1] = dataclasses.replace(
+                state.dev_iteration_telemetry[-1],
+                existing_test_failures=existing_test_failures,
+            )
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
         return _ValidateOutcome.RETRY_DEV, None

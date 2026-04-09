@@ -128,6 +128,7 @@ class DevIterationTelemetry:
     duration_s: float
     gate_result: str | None = None
     failed_tests: list[str] = field(default_factory=list)
+    existing_test_failures: bool = False
     files_changed: list[str] = field(default_factory=list)
     files_changed_count: int = 0
     tests_fixed_count: int = 0
