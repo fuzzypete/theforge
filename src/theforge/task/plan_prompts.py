@@ -50,13 +50,14 @@ def build_preflight_prompt(
 
         ## Classification
 
-        Evaluate the spec against the current code and output ONE of these verdicts:
+        Evaluate the spec against the target baseline branch content
+        and output ONE of these verdicts:
 
         - **PROCEED** — The spec describes unfinished work. The acceptance criteria
           are clear, non-contradictory, and testable. Implementation should begin.
 
         - **ALREADY_DONE** — Every acceptance criterion is ALREADY satisfied by
-          the current code. You MUST verify each criterion individually.
+          the target baseline branch content. You MUST verify each criterion individually.
 
         - **BLOCKED** — The spec cannot be implemented as written. This includes:
           - References to functions or APIs that do not exist
@@ -72,6 +73,13 @@ def build_preflight_prompt(
         on disk, do NOT set verdict to BLOCKED for this reason alone. Instead,
         list the missing paths in the `warnings` field and proceed normally.
         The plan agent will discover the correct paths.
+
+        **Baseline for evaluation**: Use the configured target baseline branch as the
+        source of truth for ALREADY_DONE decisions, not branch-local or resumed
+        worktree changes. In this workspace flow, that baseline is
+        `config.workspace.base_branch` checked out from the project root
+        repository. Code that exists only in the current worktree is not proof
+        that the story is already implemented.
 
         ## Spec Quality Check
 
@@ -169,6 +177,8 @@ def build_preflight_prompt(
 
         - Check EVERY acceptance criterion individually. Do not shortcut.
         - "Related code exists" is NOT the same as "criterion is satisfied."
+        - Evaluate ALREADY_DONE against the configured baseline branch
+          content, not the resumed worktree contents.
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
         - If the spec has internal contradictions or untestable criteria, verdict is BLOCKED.
         - If the spec contains a **Notes** section, treat it as informal hints that

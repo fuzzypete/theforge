@@ -46,6 +46,54 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_preflight_already_done_prompt_targets_configured_base_branch(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Preflight prompt targets config.workspace.base_branch for ALREADY_DONE."""
+        config = replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                base_branch="release",
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured_prompt = {}
+
+        def preflight_side_effect(**kwargs):
+            captured_prompt["prompt"] = kwargs["prompt"]
+            return _make_agent_result(success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "git log release..forge/test-task --oneline" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.side_effect = preflight_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_verdict == "ALREADY_DONE"
+        prompt = captured_prompt["prompt"]
+        assert "configured target baseline branch" in prompt
+        assert "`config.workspace.base_branch`" in prompt
+        assert "not the resumed worktree contents" in prompt
+        mock_pool.assert_not_called()
+
+    """Test the PREFLIGHT phase: classify spec before expensive dev cycles."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_preflight_proceed_continues_to_dev(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
