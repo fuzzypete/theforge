@@ -229,7 +229,7 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py\n M src/theforge/config.py")
@@ -281,7 +281,7 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py")
@@ -335,7 +335,7 @@ class TestCoordinatorDirtyWorktree:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py")
@@ -377,7 +377,7 @@ class TestCoordinatorDirtyWorktree:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 # Only handoff.yaml is dirty — that's expected
@@ -412,7 +412,7 @@ class TestCoordinatorDirtyWorktree:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 # handoff.yaml is the only dirty file — should be filtered out
@@ -459,7 +459,7 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/ideate.py")
@@ -512,7 +512,7 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/ideate.py\n?? new_scratch.py")
@@ -556,7 +556,7 @@ class TestDevZeroChangeGuard:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")  # no dirty files
@@ -637,7 +637,7 @@ class TestDevZeroChangeGuard:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/config.py")
@@ -712,7 +712,7 @@ class TestDevZeroChangeGuard:
                     _write_handoff(Path(cwd), "FAIL")
                     return (True, "FAIL")
                 # Second gate: PASS
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "abc1234 feat: implement")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -788,7 +788,7 @@ class TestDevZeroChangeGuard:
                     _write_handoff(Path(cwd), "FAIL")
                     return (True, "FAIL")
                 # All others: PASS
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "abc1234 feat: implement")
             if "git status --porcelain" in cmd:
                 return (True, "")

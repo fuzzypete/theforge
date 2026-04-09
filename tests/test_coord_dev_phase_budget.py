@@ -220,18 +220,32 @@ class TestCoordinatorDevNotes:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        # Write handoff.yaml with dev_notes
+        # Write handoff.yaml with structured dev_notes containing the deviation
+        dev_notes_yaml = (
+            'summary: "I deviated from spec because it was better."\n'
+            "commits:\n"
+            '  - sha: "abc1234"\n'
+            '    message: "feat: implement"\n'
+            "acceptance_criteria:\n"
+            '  - criterion: "It works"\n'
+            "    status: MET\n"
+            '    notes: "tested"\n'
+            "story_deviations:\n"
+            '  - description: "I deviated from spec because it was better."\n'
+            '    justification: "Better approach"\n'
+            "deferred_items: none\n"
+            "gate_result: PASS\n"
+        )
         handoff = {
             "gate_decision": "PASS",
             "validation": {"make_fmt": {"status": "PASS"}},
             "scope_completed": ["test item"],
-            "dev_notes": "I deviated from spec because it was better.",
+            "dev_notes": dev_notes_yaml,
         }
         (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                # handoff.yaml already exists — gate re-writes it
                 (Path(cwd) / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
                 return (True, "OK")
             stale_resp = _handle_stale_check_cmd(cmd)
@@ -414,10 +428,10 @@ class TestCoordinatorDevNotes:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_dev_notes_fall_back_to_legacy_handoff(
+    def test_legacy_handoff_escalates_when_unfixable(
         self, mock_shell, mock_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Coordinator falls back to legacy handoff.yaml when configured .forge file is absent."""
+        """Unstructured dev_notes that can't be repaired escalate (hard stop)."""
         config = dataclasses.replace(
             _make_config(tmp_path),
             validation=dataclasses.replace(
@@ -448,25 +462,16 @@ class TestCoordinatorDevNotes:
         mock_shell.side_effect = shell_side_effect
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Unused.")
-        # handoff fix uses engine.run_agent (unstructured dev_notes trigger fix attempts)
         mock_engine_agent.return_value = _make_agent_result(success=True, output="Unused.")
-
-        captured_prompts: list[str] = []
-
-        def pool_side_effect(**kwargs):
-            prompt = kwargs.get("prompt", "")
-            if isinstance(prompt, list):
-                captured_prompts.extend(prompt)
-            elif isinstance(prompt, str):
-                captured_prompts.append(prompt)
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
 
         result = run_from_review(config, task, workspace)
 
-        assert result.success is True
-        assert any("Legacy root handoff content." in p for p in captured_prompts)
+        assert result.success is False
+        assert result.state.phase.name == "ESCALATE"
+        assert result.state.error_type == "invalid_dev_handoff"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
@@ -661,10 +666,10 @@ class TestCoordinatorDevHandoffValidation:
     @patch("theforge.coordinator.engine.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_invalid_handoff_proceeds_after_max_retries(
+    def test_invalid_handoff_escalates_after_max_retries(
         self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Invalid dev handoff proceeds to review after max retries exhausted."""
+        """Invalid dev handoff escalates after max retries exhausted."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -701,9 +706,11 @@ class TestCoordinatorDevHandoffValidation:
 
         result = run_task(config, task)
 
-        # Should still succeed (proceeds to review even with invalid handoff)
-        assert result.success is True
-        # max_handoff_retries (2 by default) — dev and preflight mocked separately
+        # Should escalate — invalid handoff is now a hard stop
+        assert result.success is False
+        assert result.state.phase.name == "ESCALATE"
+        assert result.state.error_type == "invalid_dev_handoff"
+        # max_handoff_retries (2 by default)
         assert hf_call_idx["n"] == 2
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")

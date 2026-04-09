@@ -64,7 +64,7 @@ class TestCoordinatorAutoMerge:
 
         def side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")  # clean
@@ -218,7 +218,7 @@ class TestCoordinatorAutoMerge:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -258,7 +258,7 @@ class TestCoordinatorAutoMerge:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 dirty_seen["n"] += 1
@@ -300,7 +300,7 @@ class TestCoordinatorAutoMerge:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -412,7 +412,7 @@ class TestCoordinatorAutoPush:
     def _shell_with_gate_and_merge(self, workspace: "Path"):
         def side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS", dev_notes="")
+                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
