@@ -197,7 +197,7 @@ def _parse_dev_handoff(config: ForgeConfig, workspace_path: Path) -> DevHandoff 
             acceptance_criteria=[],
             story_deviations=[],
             deferred_items=[],
-            gate_result="",
+            gate_result=None,
             parse_errors=[f"dev_notes field is missing or blank in {handoff_label}"],
             raw={},
         )

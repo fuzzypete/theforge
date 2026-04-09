@@ -502,7 +502,7 @@ class TestDevHandoffToReviewerText:
             acceptance_criteria=[],
             story_deviations=[],
             deferred_items=[],
-            gate_result="",
+            gate_result=None,
             parse_errors=[],
             raw={},
         )
