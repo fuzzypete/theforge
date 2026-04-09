@@ -68,7 +68,7 @@ def _path_parent_roots(path: Path) -> tuple[Path, ...]:
 
 def _layout_roots(allowed_root: Path) -> tuple[Path | None, Path | None]:
     root = allowed_root.resolve()
-    for candidate in (root.parent, *root.parents):
+    for candidate in root.parents:
         if candidate.name == "worktrees" and candidate.parent.name == ".forge":
             return (candidate.parent.parent.resolve(), candidate.resolve())
     return (None, None)
@@ -90,13 +90,13 @@ def _blocked_worktree_roots(allowed_root: Path) -> tuple[Path, ...]:
     return tuple(blocked)
 
 
+@lru_cache(maxsize=None)
 def _user_config_roots() -> tuple[Path, ...]:
     home = Path.home()
     candidates = [
         home / ".config",
         home / ".gitconfig",
         home / ".gitignore",
-        home / ".git-credentials",
         home / ".local",
         home / ".npm",
         home / ".pyenv",
@@ -104,13 +104,14 @@ def _user_config_roots() -> tuple[Path, ...]:
         home / ".claude",
         home / ".codex",
         home / ".gemini",
-        home / ".ssh",
+        home / ".ssh" / "known_hosts",
         home / "Library" / "Application Support",
         home / "Library" / "Preferences",
     ]
     return _unique_existing_paths(candidates)
 
 
+@lru_cache(maxsize=None)
 def _path_environment_roots() -> tuple[Path, ...]:
     roots: list[Path] = []
     for entry in os.environ.get("PATH", "").split(os.pathsep):
@@ -120,6 +121,7 @@ def _path_environment_roots() -> tuple[Path, ...]:
     return _unique_existing_paths(roots)
 
 
+@lru_cache(maxsize=None)
 def _toolchain_read_roots() -> tuple[Path, ...]:
     commands = ("bash", "sh", "python", "python3", "pytest", "git", "make", "ruff")
     roots: list[Path] = []
@@ -192,7 +194,7 @@ def _macos_profile(
 (allow process-exec)
 (allow process-fork)
 (allow signal (target self))
-{deny_block}(allow file-write*
+(allow file-write*
     (subpath "{escaped_root}")
     (subpath "/private/tmp")
     (subpath "/tmp")
@@ -201,7 +203,7 @@ def _macos_profile(
 (allow file-read*
 {read_rules}
 )
-'''
+{deny_block}'''
 
 
 def _linux_command(
@@ -302,6 +304,8 @@ def launcher_command(cmd: list[str], allowed_root: Path) -> list[str]:
             )
         return cmd
     return cmd
+
+    # Backward-compatible alias for existing tool-runtime callers.
 
 
 def sandbox_command(cmd: list[str], allowed_root: Path) -> list[str]:

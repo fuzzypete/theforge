@@ -173,5 +173,25 @@ def test_macos_profile_blocks_sibling_worktrees_but_keeps_project_root_readable(
 
     profile = _macos_profile(worktree, denied_read_roots=_blocked_worktree_roots(worktree))
 
-    assert f'(deny file-read*\n    (subpath "{sibling.resolve()}")' in profile
     assert f'(subpath "{tmp_path.resolve()}")' in profile
+    assert profile.index("(allow file-read*") < profile.index("(deny file-read*")
+    assert f'(subpath "{sibling.resolve()}")' in profile
+
+
+def test_user_config_roots_excludes_sensitive_credentials(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _user_config_roots
+
+    fake_home = tmp_path / "home"
+    (fake_home / ".ssh").mkdir(parents=True)
+    (fake_home / ".ssh" / "known_hosts").write_text("", encoding="utf-8")
+    (fake_home / ".gitconfig").write_text("", encoding="utf-8")
+    (fake_home / ".git-credentials").write_text("", encoding="utf-8")
+
+    _user_config_roots.cache_clear()
+    with patch("theforge.runners.sandbox.Path.home", return_value=fake_home):
+        roots = _user_config_roots()
+
+    assert fake_home / ".gitconfig" in roots
+    assert fake_home / ".ssh" / "known_hosts" in roots
+    assert fake_home / ".git-credentials" not in roots
+    assert fake_home / ".ssh" not in roots
