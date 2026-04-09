@@ -55,7 +55,7 @@ def build_bundle_hint(task: TaskStory, state: CoordinatorState) -> BundleHint:
         slug=task.slug,
         work_type=work_type,
         complexity=complexity,
-        likely_files=tuple(sorted(set(state.preflight_likely_files))),
+        likely_files=tuple(sorted(set(state.preflight_likely_files or []))),
         bundle_candidate=bundle_candidate,
         area=_extract_area_label(task),
     )
@@ -201,7 +201,7 @@ def compute_synthetic_edges(
     synthetic: dict[str, set[str]] = {}
 
     for slug, state in preflight_states.items():
-        for path in state.preflight_likely_files:
+        for path in state.preflight_likely_files or []:
             file_to_slugs.setdefault(path, []).append(slug)
 
     def _sort_key(slug: str) -> tuple[int, str]:

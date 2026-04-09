@@ -179,45 +179,43 @@ def _run_preflight_phase(
         verdict, reason = _parse_preflight_verdict(preflight_result.output)
     else:
         verdict, reason = (
-            "PROCEED",
-            f"Preflight agent failed (exit={preflight_result.exit_code}); proceeding anyway.",
+            "BLOCKED",
+            f"Preflight agent failed (exit={preflight_result.exit_code}); blocking execution.",
         )
-        state.preflight_complexity = "large"
-        state.preflight_sufficiency = "needs_planning"
-        state.preflight_work_type = "feature"
-        _log("  ⚠ PREFLIGHT failed — defaulting complexity to large")
+        _log("  ⚠ PREFLIGHT failed — blocking execution")
 
     state.preflight_verdict = verdict
     state.preflight_reason = reason
 
-    # ── Warnings parsing (non-blocking advisories) ─────────────────────
+    # ── Parsed preflight signals ────────────────────────────────────────
     if preflight_result.success:
         _warnings = _parse_preflight_warnings(preflight_result.output)
         state.preflight_warnings = _warnings
         _likely_files = _parse_preflight_likely_files(preflight_result.output)
-        state.preflight_likely_files = _likely_files
-        if _warnings:
-            _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
-        if _likely_files:
-            _log(f"  Likely files: {', '.join(_likely_files)}")
-
-    # ── Complexity parsing + adaptive model swapping ───────────────────
-    if preflight_result.success:
+        if _likely_files is not None:
+            state.preflight_likely_files = _likely_files
         complexity = _parse_preflight_complexity(preflight_result.output)
         state.preflight_complexity = complexity
-        _log(f"  Complexity: {complexity} (from preflight)")
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
         state.preflight_sufficiency = sufficiency
-        _log(f"  Sufficiency: {sufficiency}")
         work_type = _parse_preflight_work_type(preflight_result.output)
         state.preflight_work_type = work_type
-        _log(f"  Work type: {work_type}")
         bundle_candidate = _parse_preflight_bundle_candidate(preflight_result.output)
         state.preflight_bundle_candidate = bundle_candidate
+        _log(f"  Complexity: {complexity} (from preflight)")
+        _log(f"  Sufficiency: {sufficiency}")
+        _log(f"  Work type: {work_type}")
         _log(f"  Bundle candidate: {bundle_candidate}")
+        if _warnings:
+            _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
+        if _likely_files is not None:
+            _log(f"  Likely files: {', '.join(_likely_files)}")
     else:
-        complexity = state.preflight_complexity
-        _log(f"  Complexity: {complexity} (preflight failed — using fallback)")
+        complexity = state.preflight_complexity or "medium"
+        state.preflight_complexity = complexity
+        state.preflight_sufficiency = state.preflight_sufficiency or "needs_planning"
+        state.preflight_work_type = state.preflight_work_type or "feature"
+        state.preflight_bundle_candidate = False
 
     config = _apply_preflight_config(config, state, log=_log, log_verbose=_log_verbose)
 

@@ -221,10 +221,10 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_agent_failure_proceeds(
+    def test_preflight_agent_failure_blocks(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """If the preflight agent itself fails, fail-open to PROCEED."""
+        """If the preflight agent itself fails, execution is blocked."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -242,20 +242,21 @@ class TestCoordinatorPreflight:
 
         result = run_task(config, task)
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.state.preflight_verdict == "PROCEED"
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.preflight_verdict == "BLOCKED"
         assert "failed" in result.state.preflight_reason.lower()
+        assert len(result.state.dev_results) == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_unparseable_proceeds(
+    def test_preflight_unparseable_blocks(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """If preflight output is not valid YAML, fail-open to PROCEED."""
+        """If preflight output is not valid YAML, execution is blocked."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -275,9 +276,10 @@ class TestCoordinatorPreflight:
 
         result = run_task(config, task)
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.state.preflight_verdict == "PROCEED"
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert len(result.state.dev_results) == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -382,6 +384,27 @@ likely_files:
         assert len(result.state.preflight_warnings) == 2
         assert "src/theforge/old_module.py" in result.state.preflight_warnings[0]
         assert len(result.state.dev_results) == 1
+
+    def test_parse_preflight_likely_files_requires_explicit_field(self):
+        """Missing likely_files stays unknown instead of defaulting to zero-footprint."""
+        from coord_test_helpers import PREFLIGHT_PROCEED
+
+        from theforge.coordinator.preflight import _parse_preflight_likely_files
+
+        assert _parse_preflight_likely_files(PREFLIGHT_PROCEED) is None
+
+    def test_parse_preflight_likely_files_allows_explicit_zero_footprint(self):
+        """An explicit empty likely_files list is preserved as zero-footprint."""
+        from theforge.coordinator.preflight import _parse_preflight_likely_files
+
+        output = """```yaml
+verdict: PROCEED
+reason: \"No file edits expected.\"
+likely_files: []
+```
+"""
+
+        assert _parse_preflight_likely_files(output) == []
 
     def test_parse_preflight_warnings_extracts_paths(self):
         """_parse_preflight_warnings returns the warnings list from YAML."""
