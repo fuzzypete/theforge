@@ -153,14 +153,9 @@ class TestRunAgentClaude:
                 )
             ]
         )
-        with (
-            patch(
-                "theforge.runners.runner_claude.sandbox_command", side_effect=lambda cmd, _: cmd
-            ),
-            patch(
-                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-            ) as mock_popen,
-        ):
+        with patch(
+            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             result = run_agent(
                 prompt="implement the thing",
                 profile=dev_profile,
@@ -639,3 +634,10 @@ class TestRunAgentUnknownCli:
         assert "llama" in result.output
         assert result.exit_code == -1
         assert result.profile_name == "dev"
+
+
+def test_claude_launcher_is_not_sandbox_wrapped(dev_profile: ModelProfile, tmp_path: Path) -> None:
+    mock_proc = _make_stream_mock([_result_line(result="done")])
+    with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+    assert mock_popen.call_args[0][0][0] == "claude"

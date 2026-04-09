@@ -240,7 +240,7 @@ class TestCheckConfigWarnings:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
-        assert "✓ auth" in out
+        assert "✓ ready" in out
 
 
 class TestCheckConfigInvalidConfig:
@@ -582,3 +582,25 @@ class TestRegisterParser:
         register_parser(subparsers)
         args = parser.parse_args(["check-config", "/path/to/forge.yaml"])
         assert args.config == "/path/to/forge.yaml"
+
+
+class TestCheckConfigSandboxReadiness:
+    def test_workspace_sandbox_warning_is_reported(self, tmp_path: Path, capsys) -> None:
+        config = _make_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                side_effect=[
+                    (False, "workspace sandbox unavailable: sandbox-exec not usable; bash/tool effects will run unsandboxed"),
+                    (True, ""),
+                    (True, ""),
+                ],
+            ),
+        ):
+            exit_code = cmd_check_config(_make_args())
+        assert exit_code == 1
+        out = capsys.readouterr().out
+        assert "workspace sandbox unavailable" in out
+        assert "bash/tool effects will run unsandboxed" in out

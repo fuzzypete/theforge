@@ -76,7 +76,7 @@ def _run_gemini(
     _gemini_env = {**os.environ, **(secrets or {})}
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
-            sandbox_command(cmd, working_dir),
+            cmd,
             capture_output=True,
             text=True,
             cwd=str(working_dir),

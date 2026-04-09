@@ -1,10 +1,7 @@
-"""Unified auth resolution for TheForge model profiles.
-
-All runtime callers should use ``check_agent_auth`` instead of hand-rolling
-their own API-key or CLI-binary checks.
-"""
-
 from __future__ import annotations
+
+import platform
+from pathlib import Path
 
 import os
 import shutil
@@ -22,6 +19,38 @@ _LOCAL_PREFIXES = (
     "http://0.0.0.0",
     "http://[::1]",
 )
+
+
+def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
+    """Return whether workspace-effect sandboxing is available for this profile.
+
+    Launcher startup is intentionally unsandboxed. This check only reports whether
+    runtime workspace effects (currently bash/tool execution) can still be confined
+    to the assigned working directory on platforms where sandboxing is supported.
+    """
+    if profile.mode != "cli":
+        return (True, "")
+    if "bash" not in profile.allowed_tools:
+        return (True, "")
+
+    from theforge.runners.sandbox import sandbox_command
+
+    probe = sandbox_command(["true"], Path.cwd())
+    if probe and probe[0] != "true":
+        return (True, "")
+
+    system = platform.system()
+    if system == "Darwin":
+        return (
+            False,
+            "workspace sandbox unavailable: sandbox-exec not usable; bash/tool effects will run unsandboxed",
+        )
+    if system == "Linux":
+        return (
+            False,
+            "workspace sandbox unavailable: bwrap not usable; bash/tool effects will run unsandboxed",
+        )
+    return (True, "")
 
 
 def check_agent_auth(
@@ -61,9 +90,13 @@ def check_agent_auth(
             )
         if profile.cli in _NPX_CLIS:
             ok = shutil.which("npx") is not None
-            return (True, "") if ok else (False, "npx not found in PATH")
+            if not ok:
+                return (False, "npx not found in PATH")
+            return _sandbox_readiness(profile)
         ok = shutil.which(profile.cli) is not None
-        return (True, "") if ok else (False, f"{profile.cli!r} not found in PATH")
+        if not ok:
+            return (False, f"{profile.cli!r} not found in PATH")
+        return _sandbox_readiness(profile)
 
     # ── API profiles ──────────────────────────────────────────────────
     if profile.provider is not None:

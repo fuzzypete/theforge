@@ -258,3 +258,33 @@ def test_synthesis_profile_missing_key_returns_false(monkeypatch):
     ok, reason = check_agent_auth(synth, {})
     assert not ok
     assert reason
+
+
+def test_cli_binary_present_but_workspace_sandbox_unavailable_reports_not_ready():
+    profile = ModelProfile(
+        name="dev",
+        cli="claude",
+        provider=None,
+        model="sonnet",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("bash",),
+    )
+    with (
+        patch("theforge.config.auth.shutil.which", return_value="/home/user/.local/bin/claude"),
+        patch("theforge.runners.sandbox.sandbox_command", return_value=["true"]),
+        patch("theforge.config.auth.platform.system", return_value="Darwin"),
+    ):
+        ok, reason = check_agent_auth(profile)
+    assert not ok
+    assert "workspace sandbox unavailable" in reason
+
+
+def test_cli_binary_outside_system_paths_is_still_ready_when_present():
+    with (
+        patch("theforge.config.auth.shutil.which", return_value="/home/user/.local/bin/claude"),
+        patch("theforge.runners.sandbox.sandbox_command", return_value=["sandbox-exec", "-p", "x", "true"]),
+    ):
+        ok, reason = check_agent_auth(_cli_profile("claude"))
+    assert ok
+    assert reason == ""

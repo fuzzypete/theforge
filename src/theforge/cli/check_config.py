@@ -39,7 +39,7 @@ def _run_auth(
     results: AuthResults,
     secrets: dict[str, str],
 ) -> None:
-    """Check auth for *profile* and store under section-scoped key."""
+    """Check readiness for *profile* and store under section-scoped key."""
     key = _auth_key(section, profile.name)
     try:
         results[key] = check_agent_auth(profile, secrets)
@@ -92,7 +92,7 @@ def _format_config(
     ]:
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("phase", profile.name), (True, ""))
-        auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
+        auth_str = "  ✓ ready" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {label:<12}{transport:<30}  timeout={profile.timeout_seconds}s"
             f"  budget=${profile.budget_usd:.2f}{_thinking_budget_label(profile)}{auth_str}"
@@ -103,7 +103,7 @@ def _format_config(
     if config.plan.enabled:
         transport = _plan_transport_label(config.plan)
         ready, reason = auth_results.get(_auth_key("phase", "plan"), (True, ""))
-        auth_str = "  ✓ auth" if ready else f"  ✗ {reason}"
+        auth_str = "  ✓ ready" if ready else f"  ✗ {reason}"
         lines.append(
             f"  {'plan':<12}{transport:<30}  timeout={config.plan.timeout}s"
             f"  budget=${config.plan.budget_usd:.2f}{auth_str}"
@@ -117,7 +117,7 @@ def _format_config(
     for profile in config.review_pool:
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("review", profile.name), (True, ""))
-        auth_str = "✓ auth" if ready else f"✗ {reason}"
+        auth_str = "✓ ready" if ready else f"✗ {reason}"
         role_str = f"  role={profile.review_role}" if profile.review_role else ""
         lines.append(
             f"  {profile.name:<22}{transport:<30}{role_str}  budget=${profile.budget_usd:.2f}"
@@ -130,7 +130,7 @@ def _format_config(
         profile = config.synthesis_profile
         transport = _transport_label(profile)
         ready, reason = auth_results.get(_auth_key("synthesis", profile.name), (True, ""))
-        auth_str = "✓ auth" if ready else f"✗ {reason}"
+        auth_str = "✓ ready" if ready else f"✗ {reason}"
         lines.append(
             f"  {profile.name:<22}{transport:<30}  (synthesis)  budget=${profile.budget_usd:.2f}"
             f"{_thinking_budget_label(profile)}  {auth_str}"
@@ -145,7 +145,7 @@ def _format_config(
         for profile in config.plan_agent_review.profiles:
             transport = _transport_label(profile)
             ready, reason = auth_results.get(_auth_key("plan_review", profile.name), (True, ""))
-            auth_str = "✓ auth" if ready else f"✗ {reason}"
+            auth_str = "✓ ready" if ready else f"✗ {reason}"
             lines.append(
                 f"  {profile.name:<22}{transport:<30}  budget=${profile.budget_usd:.2f}"
                 f"{_thinking_budget_label(profile)}  {auth_str}"
@@ -161,7 +161,7 @@ def _format_config(
             transport = agent.cli if agent.cli is not None else (agent.provider or "?")
             transport_str = f"{transport} / {agent.model}"
             ready, reason = auth_results.get(_auth_key("agent", agent.name), (True, ""))
-            auth_str = "✓ auth" if ready else f"✗ {reason}"
+            auth_str = "✓ ready" if ready else f"✗ {reason}"
             lines.append(f"  {agent.name:<22}{transport_str:<30}  tier={agent.tier:<8}{auth_str}")
             if not ready:
                 warnings_list.append(f"{agent.name}: {reason} — will be skipped at runtime")
