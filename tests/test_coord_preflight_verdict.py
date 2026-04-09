@@ -39,7 +39,86 @@ from theforge.coordinator.state import CoordinatorState, Phase
 
 
 class TestCoordinatorPreflight:
-    """Test the PREFLIGHT phase: classify spec before expensive dev cycles."""
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_preflight_already_done_uses_clean_baseline_not_resumed_worktree(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Resumed-worktree-only implementation must not trigger ALREADY_DONE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        (workspace / "resumed_only.py").write_text("implemented = True\n", encoding="utf-8")
+
+        captured = {}
+
+        def preflight_side_effect(**kwargs):
+            working_dir = Path(kwargs["working_dir"])
+            captured["working_dir"] = working_dir
+            captured["has_resumed_only"] = (working_dir / "resumed_only.py").exists()
+            return _make_agent_result(success=True, output=_PREFLIGHT_RESULT.output, cost_usd=0.08)
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.side_effect = preflight_side_effect
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_verdict == "PROCEED"
+        assert captured["working_dir"] != workspace
+        assert captured["has_resumed_only"] is False
+        mock_pool.assert_called_once()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
+    def test_preflight_already_done_allows_clean_baseline_match(
+        self,
+        mock_approve,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """Baseline content satisfying the story may still return ALREADY_DONE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured = {}
+
+        def preflight_side_effect(**kwargs):
+            working_dir = Path(kwargs["working_dir"])
+            captured["working_dir"] = working_dir
+            captured["exists"] = working_dir.exists()
+            return _make_agent_result(success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08)
+
+        mock_shell.return_value = (True, "OK")
+        mock_preflight.side_effect = preflight_side_effect
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "ALREADY_DONE"
+        assert captured["working_dir"] != workspace
+        assert captured["exists"] is True
+        mock_pool.assert_not_called()
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")

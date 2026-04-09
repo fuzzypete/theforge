@@ -98,7 +98,12 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
     """Best-effort kill for a spawned shell process group."""
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except ProcessLookupError:
+        return
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.terminate()
+    except (ProcessLookupError, PermissionError):
         pass
 
 
@@ -128,14 +133,11 @@ def _run_shell(
         output = (stdout + stderr).strip()
         return proc.returncode == 0, output
     except subprocess.TimeoutExpired as te:
-        # Kill first, then drain — reading pipes while the process is
-        # still alive can block indefinitely (the process holds the
-        # write end open, so read() waits for EOF that never comes).
+        # Kill the whole process group before draining pipes so grandchildren
+        # such as pytest-xdist workers cannot keep writing indefinitely after
+        # the shell itself has timed out.
         _kill_process_group(proc)
         proc.wait()
-        # Collect partial output: TimeoutExpired may carry buffered
-        # data, and any remaining bytes are still in the kernel pipe
-        # buffer now that the write end is closed.
         partial_out = ""
         try:
             chunks: list[str] = []
@@ -147,7 +149,7 @@ def _run_shell(
             if proc.stderr:
                 chunks.append(proc.stderr.read())
             partial_out = "".join(chunks).strip()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         header = f"TIMEOUT after {timeout}s: {cmd}"
         if partial_out:

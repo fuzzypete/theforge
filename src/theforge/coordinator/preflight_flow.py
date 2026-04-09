@@ -18,6 +18,9 @@ Called from run_task(); returns (updated_config, result, already_done_loop):
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -45,6 +48,42 @@ from .preflight import (
 )
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
+
+
+def _prepare_preflight_working_dir(
+    project_root: Path, base_branch: str
+) -> tuple[Path, Callable[[], None]]:
+    """Materialize a clean baseline checkout for deterministic preflight evaluation."""
+    temp_dir = Path(tempfile.mkdtemp(prefix="forge-preflight-"))
+    git_dir = project_root / ".git"
+    if not git_dir.exists():
+        return temp_dir, lambda: shutil.rmtree(temp_dir, ignore_errors=True)
+
+    try:
+        archive = subprocess.run(
+            ["git", "archive", base_branch],
+            cwd=project_root,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["tar", "-xmf", "-"],
+            cwd=temp_dir,
+            input=archive.stdout,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except subprocess.CalledProcessError as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise RuntimeError(f"Failed to archive baseline branch {base_branch!r}") from exc
+
+    def cleanup() -> None:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    return temp_dir, cleanup
+
 
 if TYPE_CHECKING:
     from theforge.coordinator.logging import StructuredLogger
@@ -118,14 +157,20 @@ def _run_preflight_phase(
         assembled_context=preflight_context,
     )
 
-    _preflight_start = time.monotonic()
-    preflight_result = run_agent(
-        prompt=preflight_prompt,
-        profile=preflight_profile,
-        working_dir=workspace_path,
-        secrets=config.secrets,
+    baseline_working_dir, cleanup_preflight_dir = _prepare_preflight_working_dir(
+        config.project_root, config.workspace.base_branch
     )
-    _preflight_elapsed = time.monotonic() - _preflight_start
+    try:
+        _preflight_start = time.monotonic()
+        preflight_result = run_agent(
+            prompt=preflight_prompt,
+            profile=preflight_profile,
+            working_dir=baseline_working_dir,
+            secrets=config.secrets,
+        )
+        _preflight_elapsed = time.monotonic() - _preflight_start
+    finally:
+        cleanup_preflight_dir()
     state.preflight_duration_s = _preflight_elapsed
     state.preflight_result = preflight_result
     log_agent_result(preflight_result, "PREFLIGHT")
@@ -204,6 +249,7 @@ def _run_preflight_phase(
         "likely_files": state.preflight_likely_files,
         "bundle_candidate": state.preflight_bundle_candidate,
         "branch_merged": branch_merged,
+        "evaluation_base_branch": config.workspace.base_branch,
     }
     _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
     _write_log_artifact(

@@ -50,13 +50,14 @@ def build_preflight_prompt(
 
         ## Classification
 
-        Evaluate the spec against the current code and output ONE of these verdicts:
+        Evaluate the spec against the repository content you can inspect in the
+        provided working directory and output ONE of these verdicts:
 
         - **PROCEED** — The spec describes unfinished work. The acceptance criteria
           are clear, non-contradictory, and testable. Implementation should begin.
 
         - **ALREADY_DONE** — Every acceptance criterion is ALREADY satisfied by
-          the current code. You MUST verify each criterion individually.
+          the target baseline branch content. You MUST verify each criterion individually.
 
         - **BLOCKED** — The spec cannot be implemented as written. This includes:
           - References to functions or APIs that do not exist
@@ -169,6 +170,8 @@ def build_preflight_prompt(
 
         - Check EVERY acceptance criterion individually. Do not shortcut.
         - "Related code exists" is NOT the same as "criterion is satisfied."
+        - Evaluate ALREADY_DONE against the configured target baseline branch
+          content from `config.workspace.base_branch`, not the resumed worktree contents.
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
         - If the spec has internal contradictions or untestable criteria, verdict is BLOCKED.
         - If the spec contains a **Notes** section, treat it as informal hints that
