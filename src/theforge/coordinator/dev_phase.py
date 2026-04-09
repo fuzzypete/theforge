@@ -97,6 +97,7 @@ def record_dev_iteration_telemetry(
             duration_s=duration_s,
             gate_result=gate_result,
             failed_tests=failed_tests,
+            existing_test_failures=False,
             files_changed=files_changed,
             files_changed_count=len(files_changed),
             tests_fixed_count=tests_fixed_count,
