@@ -6,7 +6,7 @@ workspace:
   setup_command: "test -d .venv || ({forge_python} -m venv .venv && .venv/bin/pip install -e '.[all]' pytest pytest-xdist pytest-timeout -q)"
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "feat/{slug}"
-  on_approve: merge-pr
+  on_approve: none
   merge_strategy: squash
   auto_push: true
 
