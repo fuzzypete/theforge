@@ -24,7 +24,7 @@ class DevHandoff:
     acceptance_criteria: list[dict[str, str]]  # [{criterion, status, notes}]
     story_deviations: list[dict[str, str]]  # [{description, justification}]
     deferred_items: list[dict[str, str]]  # [{description, reason}]
-    gate_result: str | None  # agent-reported gate result (optional; coordinator state is authoritative)
+    gate_result: str | None  # optional agent value; coordinator state is authoritative
     parse_errors: list[str]  # non-empty if parsing/validation failed
     raw: dict  # the parsed YAML data
 

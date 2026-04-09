@@ -3,7 +3,6 @@ from __future__ import annotations
 from theforge.devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
 from theforge.schemas import validate_dev_handoff
 
-
 _VALID_YAML = (
     'summary: "Implemented the thing."\n'
     "commits:\n"
