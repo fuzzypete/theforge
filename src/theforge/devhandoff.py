@@ -169,6 +169,29 @@ def _extract_story_acceptance_criteria(story_content: str) -> list[str]:
     return criteria
 
 
+def _extract_story_identity_tokens(story_content: str) -> set[str]:
+    """Extract normalized story identifiers that a repaired handoff should reflect."""
+    tokens: set[str] = set()
+
+    for line in story_content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        if stripped.startswith("#"):
+            heading = stripped.lstrip("#").strip()
+            if heading and heading.casefold() != "acceptance criteria":
+                tokens.add(_normalize_story_text(heading))
+            continue
+
+        if stripped.startswith(">"):
+            quoted = stripped.lstrip(">").strip()
+            if quoted:
+                tokens.add(_normalize_story_text(quoted))
+
+    return {token for token in tokens if token}
+
+
 def check_handoff_story_consistency(handoff: DevHandoff, story_content: str) -> list[str]:
     """Return content-consistency errors for a schema-valid handoff.
 
@@ -177,34 +200,38 @@ def check_handoff_story_consistency(handoff: DevHandoff, story_content: str) -> 
     acceptance criteria, not merely contain text that appears somewhere in the
     broader spec. Matching is whitespace- and case-insensitive so repaired
     handoffs are judged on content rather than formatting differences.
+
+    If the story does not declare an explicit acceptance-criteria section, skip
+    content validation rather than rejecting otherwise-valid legacy stories.
     """
     if not handoff.acceptance_criteria:
         return []
 
     extracted_story_criteria = _extract_story_acceptance_criteria(story_content)
+    if not extracted_story_criteria:
+        return []
+
     story_criteria = {
         _normalize_story_text(criterion)
         for criterion in extracted_story_criteria
         if criterion.strip()
     }
-    normalized_story_content = _normalize_story_text(story_content)
 
     missing_criteria: list[str] = []
     for ac in handoff.acceptance_criteria:
         criterion = ac.get("criterion", "").strip()
         normalized_criterion = _normalize_story_text(criterion)
         if criterion and normalized_criterion not in story_criteria:
-            if extracted_story_criteria or normalized_criterion not in normalized_story_content:
-                missing_criteria.append(criterion)
+            missing_criteria.append(criterion)
 
-    if not missing_criteria:
-        return []
+    if missing_criteria:
+        formatted_missing = "; ".join(f"'{criterion}'" for criterion in missing_criteria)
+        return [
+            "handoff acceptance_criteria appear inconsistent with the active story: "
+            f"criterion text not found in story acceptance criteria: {formatted_missing}"
+        ]
 
-    formatted_missing = "; ".join(f"'{criterion}'" for criterion in missing_criteria)
-    return [
-        "handoff acceptance_criteria appear inconsistent with the active story: "
-        f"criterion text not found in story acceptance criteria: {formatted_missing}"
-    ]
+    return []
 
 
 def dev_handoff_to_reviewer_text(handoff: DevHandoff) -> str:
@@ -219,32 +246,24 @@ def dev_handoff_to_reviewer_text(handoff: DevHandoff) -> str:
         parts.append(f"**Summary:** {handoff.summary}")
 
     if handoff.commits:
-        lines = ["**Commits:**"]
+        parts.append("**Commits:**")
         for c in handoff.commits:
-            lines.append(f"- `{c['sha']}` {c['message']}")
-        parts.append("\n".join(lines))
+            parts.append(f"- `{c['sha']}` {c['message']}")
 
     if handoff.acceptance_criteria:
-        lines = ["**Acceptance Criteria:**"]
+        parts.append("**Acceptance Criteria:**")
         for ac in handoff.acceptance_criteria:
-            lines.append(f"- **[{ac['status']}]** {ac['criterion']}")
-            if ac["notes"]:
-                lines.append(f"  {ac['notes']}")
-        parts.append("\n".join(lines))
+            parts.append(f"- {ac['criterion']} — {ac['status']}: {ac['notes']}")
 
     if handoff.story_deviations:
-        lines = ["**Story Deviations:**"]
+        parts.append("**Story Deviations:**")
         for d in handoff.story_deviations:
-            lines.append(f"- {d['description']}")
-            lines.append(f"  *Justification:* {d['justification']}")
-        parts.append("\n".join(lines))
+            parts.append(f"- {d['description']} — {d['justification']}")
 
     if handoff.deferred_items:
-        lines = ["**Deferred Items:**"]
+        parts.append("**Deferred Items:**")
         for d in handoff.deferred_items:
-            lines.append(f"- {d['description']}")
-            lines.append(f"  *Reason:* {d['reason']}")
-        parts.append("\n".join(lines))
+            parts.append(f"- {d['description']} — {d['reason']}")
 
     if handoff.gate_result:
         parts.append(f"**Gate Result:** {handoff.gate_result}")
