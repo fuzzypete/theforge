@@ -351,3 +351,18 @@ def test_cli_profile_reports_launcher_sandbox_unavailable() -> None:
         ok, reason = check_agent_auth(profile, {})
     assert ok is False
     assert "launcher sandbox unavailable" in reason
+
+
+def test_cli_profile_can_skip_sandbox_readiness_for_auth_only() -> None:
+    profile = ModelProfile(
+        name="cli-dev",
+        cli="codex",
+        model="gpt-5.4",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("bash",),
+    )
+    with patch("theforge.config.auth.shutil.which", return_value="/usr/bin/npx"):
+        ok, reason = check_agent_auth(profile, {}, include_sandbox_readiness=False)
+    assert ok is True
+    assert reason == ""

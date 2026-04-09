@@ -88,6 +88,8 @@ def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
 def check_agent_auth(
     profile: ModelProfile,
     secrets: dict[str, str] | None = None,
+    *,
+    include_sandbox_readiness: bool = True,
 ) -> tuple[bool, str]:
     """Return ``(ready, reason)`` for *profile*.
 
@@ -124,11 +126,15 @@ def check_agent_auth(
             ok = shutil.which("npx") is not None
             if not ok:
                 return (False, "npx not found in PATH")
-            return _launcher_sandbox_readiness(profile)
+            if include_sandbox_readiness:
+                return _launcher_sandbox_readiness(profile)
+            return (True, "")
         ok = shutil.which(profile.cli) is not None
         if not ok:
             return (False, f"{profile.cli!r} not found in PATH")
-        return _launcher_sandbox_readiness(profile)
+        if include_sandbox_readiness:
+            return _launcher_sandbox_readiness(profile)
+        return (True, "")
 
     # ── API profiles ──────────────────────────────────────────────────
     if profile.provider is not None:
@@ -146,14 +152,24 @@ def check_agent_auth(
         # Google: check GOOGLE_API_KEY then GEMINI_API_KEY as fallback
         if profile.provider == "google":
             ok = bool(merged.get("GOOGLE_API_KEY") or merged.get("GEMINI_API_KEY"))
-            return (True, "") if ok else (False, "GOOGLE_API_KEY or GEMINI_API_KEY not set")
+            if not ok:
+                return (False, "GOOGLE_API_KEY or GEMINI_API_KEY not set")
+            if include_sandbox_readiness:
+                return _sandbox_readiness(profile)
+            return (True, "")
 
         # All other providers
         key_var = PROVIDER_API_KEY_MAP.get(profile.provider)
         if not key_var:
+            if include_sandbox_readiness:
+                return _sandbox_readiness(profile)
             return (True, "")
         ok = bool(merged.get(key_var))
-        return (True, "") if ok else (False, f"{key_var} not set")
+        if not ok:
+            return (False, f"{key_var} not set")
+        if include_sandbox_readiness:
+            return _sandbox_readiness(profile)
+        return (True, "")
 
     # Neither cli nor provider set
     raise ValueError(
