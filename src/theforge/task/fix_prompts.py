@@ -13,6 +13,7 @@ def build_handoff_fix_prompt(
     workspace_path: Path,
     branch_name: str,
     validation_errors: list[str],
+    story_content: str | None = None,
     handoff_file: str = "handoff.yaml",
 ) -> str:
     """Build a focused prompt to fix dev handoff formatting.
@@ -22,6 +23,18 @@ def build_handoff_fix_prompt(
     to rewrite dev_notes — not re-implement anything.
     """
     error_list = "\n".join(f"- {e}" for e in validation_errors)
+    story_section = ""
+    if story_content:
+        story_section = dedent(f"""\
+
+            ## Active Story
+
+            Use this story as the source of truth when rewriting `dev_notes`.
+            The repaired handoff must describe this story's acceptance criteria,
+            not text from a previous or unrelated story.
+
+            {story_content}
+        """)
 
     return dedent(f"""\
         You are fixing the dev handoff for **{task.name}**.
@@ -40,6 +53,7 @@ def build_handoff_fix_prompt(
         **Validation errors:**
 
         {error_list}
+{story_section}
 
         ## Required Format
 
