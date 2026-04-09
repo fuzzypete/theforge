@@ -24,7 +24,7 @@ class DevHandoff:
     acceptance_criteria: list[dict[str, str]]  # [{criterion, status, notes}]
     story_deviations: list[dict[str, str]]  # [{description, justification}]
     deferred_items: list[dict[str, str]]  # [{description, reason}]
-    gate_result: str  # "PASS" or "FAIL"
+    gate_result: str | None  # optional agent value; coordinator state is authoritative
     parse_errors: list[str]  # non-empty if parsing/validation failed
     raw: dict  # the parsed YAML data
 
@@ -43,7 +43,7 @@ def parse_dev_handoff(dev_notes: str) -> DevHandoff:
         acceptance_criteria=[],
         story_deviations=[],
         deferred_items=[],
-        gate_result="",
+        gate_result=None,
         parse_errors=[],
         raw={},
     )
@@ -129,7 +129,7 @@ def parse_dev_handoff(dev_notes: str) -> DevHandoff:
         acceptance_criteria=acceptance_criteria,
         story_deviations=story_deviations,
         deferred_items=deferred_items,
-        gate_result=str(data.get("gate_result", "")),
+        gate_result=(str(data["gate_result"]) if "gate_result" in data else None),
         parse_errors=schema_errors,
         raw=data,
     )
@@ -145,9 +145,6 @@ def dev_handoff_to_reviewer_text(handoff: DevHandoff) -> str:
 
     if handoff.summary:
         parts.append(f"**Summary:** {handoff.summary}")
-
-    if handoff.gate_result:
-        parts.append(f"**Gate Result:** {handoff.gate_result}")
 
     if handoff.commits:
         lines = ["**Commits:**"]
@@ -176,6 +173,9 @@ def dev_handoff_to_reviewer_text(handoff: DevHandoff) -> str:
             lines.append(f"- {d['description']}")
             lines.append(f"  *Reason:* {d['reason']}")
         parts.append("\n".join(lines))
+
+    if handoff.gate_result:
+        parts.append(f"**Gate Result:** {handoff.gate_result}")
 
     if not parts:
         return ""

@@ -57,7 +57,6 @@ class TestBuildDevPromptStructuredHandoff:
         assert "summary" in prompt
         assert "commits" in prompt
         assert "acceptance_criteria" in prompt
-        assert "gate_result" in prompt
         # Explains why structured handoff matters
         assert "your voice in the review" in prompt.lower()
 

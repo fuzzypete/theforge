@@ -164,7 +164,6 @@ def validate_dev_handoff(data: Any) -> list[str]:
     - acceptance_criteria: non-empty list of {criterion, status, notes}
     - story_deviations: list of {description, justification} or the string "none"
     - deferred_items: list of {description, reason} or the string "none"
-    - gate_result: "PASS" or "FAIL"
     """
     errors: list[str] = []
 
@@ -224,6 +223,15 @@ def validate_dev_handoff(data: Any) -> list[str]:
             if not isinstance(notes, str) or not notes.strip():
                 errors.append(f"acceptance_criteria[{i}].notes must be a non-empty string")
 
+    # ── gate_result (optional; coordinator is source of truth) ───────
+    gate_result = data.get("gate_result")
+    if gate_result is not None and (
+        not isinstance(gate_result, str) or gate_result not in VALID_GATE_RESULTS
+    ):
+        errors.append(
+            f"gate_result must be one of {VALID_GATE_RESULTS} when provided, got: {gate_result!r}"
+        )
+
     # ── story_deviations (accept spec_deviations for backward compat) ─
     deviations = (
         data.get("story_deviations") if "story_deviations" in data else data.get("spec_deviations")
@@ -267,11 +275,6 @@ def validate_dev_handoff(data: Any) -> list[str]:
                 errors.append(f"deferred_items[{i}].reason must be a non-empty string")
     else:
         errors.append("deferred_items must be a list or the string 'none'")
-
-    # ── gate_result ────────────────────────────────────────────────
-    gate_result = data.get("gate_result")
-    if gate_result not in VALID_GATE_RESULTS:
-        errors.append(f"gate_result must be one of {VALID_GATE_RESULTS}, got: {gate_result!r}")
 
     return errors
 

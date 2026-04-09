@@ -176,7 +176,9 @@ def build_dev_prompt(
             ```bash
             {gate_command}
             ```
-            Fix any failures. Do NOT declare success until the gate passes.
+            Full gate completion is a hard prerequisite for done. Fix any failures.
+            Do NOT declare success, write a completed handoff, or treat the task as
+            finished until the gate passes.
         """)
 
     return dedent(f"""\
@@ -212,7 +214,9 @@ def build_dev_prompt(
         1. Implement the spec. Write tests for new functionality.
         2. Run `make fmt` then `make lint`. Fix any failures.
         3. {gate_section}
-        4. Commit your changes (do NOT commit `{handoff_file}` — it is gitignored):
+        4. Only after the gate passes, commit your changes (do NOT commit `{
+        handoff_file
+    }` — it is gitignored):
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
@@ -235,7 +239,6 @@ def build_dev_prompt(
                  notes: "how it was met, or why not"
              story_deviations: none  # or list deviations with justification
              deferred_items: none   # or list with reason
-             gate_result: PASS
            ```
 
            List ALL commits (`git log --oneline`). List EVERY acceptance criterion.
