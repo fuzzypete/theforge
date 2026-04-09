@@ -351,13 +351,13 @@ def _coordinator_loop(
                     _set_timeout_resume(state, gate_result)
                 continue
 
-        if logger:
-            logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
         _skip_dev = False  # all subsequent iterations start at DEV
 
         # ── stop_phase gate ───────────────────────────────────
         if stop_phase is not None and stop_phase.value <= Phase.VALIDATE.value:
             state.phase = Phase.VALIDATE
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
             return CoordinatorResult(
                 success=True,
                 phase=Phase.VALIDATE,
@@ -439,6 +439,9 @@ def _coordinator_loop(
                     state=state,
                     message=_handoff_reason,
                 )
+
+        if logger:
+            logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
 
         # ── Persist handoff to logs ────────────────────────────
         if config.validation.handoff_file and state.log_dir is not None:
