@@ -192,8 +192,7 @@ def _run_preflight_phase(
         _warnings = _parse_preflight_warnings(preflight_result.output)
         state.preflight_warnings = _warnings
         _likely_files = _parse_preflight_likely_files(preflight_result.output)
-        if _likely_files is not None:
-            state.preflight_likely_files = _likely_files
+        state.preflight_likely_files = _likely_files
         complexity = _parse_preflight_complexity(preflight_result.output)
         state.preflight_complexity = complexity
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
