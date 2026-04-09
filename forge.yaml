@@ -70,8 +70,10 @@ profiles:
 # Plan uses Claude CLI directly on this machine
 plan:
   enabled: true
-  cli: claude
-  model: claude-sonnet-4-6
+  provider: openai
+  model: gpt-5.4
+  # cli: claude
+  # model: claude-sonnet-4-6
   budget_usd: 3.00
   timeout: 600
   timeout_medium: 900
@@ -80,9 +82,11 @@ plan:
 plan_agent_review:
   enabled: true
   pool:
-    - name: openai-plan-reviewer
-      provider: openai
-      model: gpt-5.4
+    - name: ds-plan-reviewer
+      # provider: openai
+      # model: gpt-5.4
+      provider: deepseek
+      model: deepseek-reasoner
       review_role: correctness
       budget_usd: 0.50
       timeout_seconds: 300
