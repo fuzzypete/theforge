@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import platform
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -195,3 +198,41 @@ def test_user_config_roots_excludes_sensitive_credentials(tmp_path: Path) -> Non
     assert fake_home / ".ssh" / "known_hosts" in roots
     assert fake_home / ".git-credentials" not in roots
     assert fake_home / ".ssh" not in roots
+
+
+@pytest.mark.skipif(platform.system() != "Darwin", reason="macOS-only sandbox-exec test")
+def test_macos_sandbox_profile_blocks_sibling_worktree_reads_in_practice(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _blocked_worktree_roots, _macos_profile
+
+    if shutil.which("sandbox-exec") is None:
+        pytest.skip("sandbox-exec unavailable")
+
+    worktree = tmp_path / ".forge" / "worktrees" / "issue-592"
+    sibling = tmp_path / ".forge" / "worktrees" / "issue-777"
+    worktree.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+
+    allowed_file = tmp_path / "shared-context.txt"
+    blocked_file = sibling / "secret.txt"
+    allowed_file.write_text("shared context\n", encoding="utf-8")
+    blocked_file.write_text("sibling secret\n", encoding="utf-8")
+
+    profile = _macos_profile(worktree, denied_read_roots=_blocked_worktree_roots(worktree))
+
+    allowed = subprocess.run(
+        ["sandbox-exec", "-p", profile, "cat", str(allowed_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    blocked = subprocess.run(
+        ["sandbox-exec", "-p", profile, "cat", str(blocked_file)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert allowed.returncode == 0
+    assert allowed.stdout == "shared context\n"
+    assert blocked.returncode != 0
+    assert "Operation not permitted" in blocked.stderr
