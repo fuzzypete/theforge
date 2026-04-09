@@ -244,7 +244,7 @@ def _run_plan_phase(
     plan_context = ContextAssembler.from_config(config).assemble(
         phase="plan",
         story_text=story_content,
-        file_list=state.preflight_likely_files or None,
+        file_list=state.preflight_likely_files,
     )
 
     state.context_manifests.append({"phase": "plan", "manifest": plan_context})

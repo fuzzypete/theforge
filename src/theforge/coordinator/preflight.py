@@ -20,9 +20,9 @@ _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
 def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     """Extract verdict and reason from preflight agent output.
 
-    Returns (verdict, reason). Parse failures still fail open to PROCEED, but
-    unrecognized verdict values are treated as BLOCKED because downstream
-    classifications from a confused preflight are unreliable.
+    Returns (verdict, reason). Parse failures and invalid verdicts are treated
+    as BLOCKED because downstream classifications from a confused preflight are
+    unreliable.
     """
     # Extract YAML block from markdown fences
     yaml_text = output
@@ -38,10 +38,10 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     try:
         parsed = yaml.safe_load(yaml_text)
     except yaml.YAMLError:
-        return "PROCEED", f"Failed to parse preflight YAML; proceeding anyway. Raw: {output[:200]}"
+        return "BLOCKED", f"Failed to parse preflight YAML; blocking. Raw: {output[:200]}"
 
     if not isinstance(parsed, dict):
-        return "PROCEED", "Preflight output is not a dict; proceeding anyway."
+        return "BLOCKED", "Preflight output is not a dict; blocking."
 
     verdict = str(parsed.get("verdict", "PROCEED")).upper()
     reason = str(parsed.get("reason", "(no reason provided)"))
@@ -133,8 +133,12 @@ def _parse_preflight_warnings(output: str) -> list[str]:
     return []
 
 
-def _parse_preflight_likely_files(output: str) -> list[str]:
-    """Extract likely_files list from preflight agent output. Returns [] if absent."""
+def _parse_preflight_likely_files(output: str) -> list[str] | None:
+    """Extract likely_files list from preflight agent output.
+
+    Returns None when the agent did not explicitly provide a valid list so that
+    zero-footprint remains an explicit assertion rather than a parser default.
+    """
     yaml_text = output
     if "```yaml" in output:
         start = output.index("```yaml") + len("```yaml")
@@ -148,13 +152,15 @@ def _parse_preflight_likely_files(output: str) -> list[str]:
     try:
         parsed = yaml.safe_load(yaml_text)
         if isinstance(parsed, dict):
-            raw = parsed.get("likely_files", [])
+            if "likely_files" not in parsed:
+                return None
+            raw = parsed.get("likely_files")
             if isinstance(raw, list):
                 return [str(path) for path in raw if path]
     except yaml.YAMLError:
         pass
 
-    return []
+    return None
 
 
 def _parse_preflight_complexity(output: str) -> str:

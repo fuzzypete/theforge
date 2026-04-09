@@ -21,7 +21,7 @@ class BundleHint:
     slug: str
     work_type: str | None
     complexity: str | None
-    likely_files: tuple[str, ...]
+    likely_files: tuple[str, ...] | None
     bundle_candidate: bool
     area: str | None
 
@@ -55,7 +55,11 @@ def build_bundle_hint(task: TaskStory, state: CoordinatorState) -> BundleHint:
         slug=task.slug,
         work_type=work_type,
         complexity=complexity,
-        likely_files=tuple(sorted(set(state.preflight_likely_files))),
+        likely_files=(
+            None
+            if state.preflight_likely_files is None
+            else tuple(sorted(set(state.preflight_likely_files)))
+        ),
         bundle_candidate=bundle_candidate,
         area=_extract_area_label(task),
     )
@@ -68,6 +72,8 @@ def _bundle_sort_key(task: TaskStory) -> tuple[int, str]:
 
 def _tasks_overlap_by_signal(left: BundleHint, right: BundleHint) -> bool:
     if left.area is not None and left.area == right.area:
+        return True
+    if left.likely_files is None or right.likely_files is None:
         return True
     return bool(set(left.likely_files) & set(right.likely_files))
 
@@ -177,7 +183,7 @@ def run_batch_preflight(
                     f"{task.slug}: {type(exc).__name__}: {exc}; "
                     "excluding from collision detection"
                 )
-                states[task.slug] = CoordinatorState(preflight_likely_files=[])
+                states[task.slug] = CoordinatorState(preflight_likely_files=None)
                 continue
 
             if not result.success:
@@ -185,7 +191,7 @@ def run_batch_preflight(
                     "WARNING: batch preflight returned failure for "
                     f"{task.slug}: {result.message}; excluding from collision detection"
                 )
-                states[task.slug] = CoordinatorState(preflight_likely_files=[])
+                states[task.slug] = CoordinatorState(preflight_likely_files=None)
                 continue
 
             states[task.slug] = result.state
@@ -201,6 +207,8 @@ def compute_synthetic_edges(
     synthetic: dict[str, set[str]] = {}
 
     for slug, state in preflight_states.items():
+        if state.preflight_likely_files is None:
+            continue
         for path in state.preflight_likely_files:
             file_to_slugs.setdefault(path, []).append(slug)
 

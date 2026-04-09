@@ -223,7 +223,7 @@ class CoordinatorState:
     preflight_work_type: str | None = None  # "feature" | "refactor" | "mechanical" | "bug"
     preflight_bundle_candidate: bool = False
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
-    preflight_likely_files: list[str] = field(default_factory=list)
+    preflight_likely_files: list[str] | None = None
     preflight_result: AgentResult | None = None
     preflight_cached: bool = False
     preflight_cached_from_run_id: str | None = None

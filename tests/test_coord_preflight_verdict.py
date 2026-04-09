@@ -221,10 +221,10 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_agent_failure_proceeds(
+    def test_preflight_agent_failure_blocks(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """If the preflight agent itself fails, fail-open to PROCEED."""
+        """If the preflight agent itself fails, execution is blocked."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -242,20 +242,21 @@ class TestCoordinatorPreflight:
 
         result = run_task(config, task)
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.state.preflight_verdict == "PROCEED"
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.preflight_verdict == "BLOCKED"
         assert "failed" in result.state.preflight_reason.lower()
+        assert len(result.state.dev_results) == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_unparseable_proceeds(
+    def test_preflight_unparseable_blocks(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """If preflight output is not valid YAML, fail-open to PROCEED."""
+        """If preflight output is not valid YAML, execution is blocked."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -275,9 +276,10 @@ class TestCoordinatorPreflight:
 
         result = run_task(config, task)
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.state.preflight_verdict == "PROCEED"
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.preflight_verdict == "BLOCKED"
+        assert len(result.state.dev_results) == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
@@ -382,6 +384,27 @@ likely_files:
         assert len(result.state.preflight_warnings) == 2
         assert "src/theforge/old_module.py" in result.state.preflight_warnings[0]
         assert len(result.state.dev_results) == 1
+
+    def test_parse_preflight_likely_files_requires_explicit_field(self):
+        """Missing likely_files stays unknown instead of defaulting to zero-footprint."""
+        from coord_test_helpers import PREFLIGHT_PROCEED
+
+        from theforge.coordinator.preflight import _parse_preflight_likely_files
+
+        assert _parse_preflight_likely_files(PREFLIGHT_PROCEED) is None
+
+    def test_parse_preflight_likely_files_allows_explicit_zero_footprint(self):
+        """An explicit empty likely_files list is preserved as zero-footprint."""
+        from theforge.coordinator.preflight import _parse_preflight_likely_files
+
+        output = """```yaml
+verdict: PROCEED
+reason: \"No file edits expected.\"
+likely_files: []
+```
+"""
+
+        assert _parse_preflight_likely_files(output) == []
 
     def test_parse_preflight_warnings_extracts_paths(self):
         """_parse_preflight_warnings returns the warnings list from YAML."""
@@ -836,3 +859,72 @@ criteria_checked: []
         assert result.state.dev_results[0].success  # dev ran normally
         # Pool called with original single reviewer (no synthesis was added)
         assert len(pool_profiles_used) == 1
+
+
+def test_preflight_missing_likely_files_preserved_as_unknown(tmp_path):
+    from theforge.sprint.collision import build_bundle_hint
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    with (
+        patch("theforge.coordinator.util._run_shell") as mock_shell,
+        patch("theforge.coordinator.dev_phase.run_agent") as mock_agent,
+        patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+        patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+        patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+    ):
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="""```yaml
+verdict: PROCEED
+reason: \"Need planning before implementation.\"
+complexity: small
+work_type: bug
+bundle_candidate: true
+criteria_checked: []
+```\n""",
+            cost_usd=0.05,
+            profile_name="review",
+        )
+        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+    assert result.success is True
+    assert result.state.preflight_likely_files is None
+
+    hint = build_bundle_hint(task, result.state)
+    assert hint.likely_files is None
+
+
+def test_collision_unknown_likely_files_not_treated_as_zero_footprint(tmp_path):
+    from theforge.coordinator.state import CoordinatorState
+    from theforge.sprint.collision import build_bundle_hint
+
+    task = _make_task(tmp_path)
+    unknown_state = CoordinatorState(
+        preflight_work_type="bug",
+        preflight_complexity="small",
+        preflight_bundle_candidate=True,
+        preflight_likely_files=None,
+    )
+    zero_state = CoordinatorState(
+        preflight_work_type="bug",
+        preflight_complexity="small",
+        preflight_bundle_candidate=True,
+        preflight_likely_files=[],
+    )
+
+    unknown_hint = build_bundle_hint(task, unknown_state)
+    zero_hint = build_bundle_hint(task, zero_state)
+
+    assert unknown_hint.likely_files is None
+    assert zero_hint.likely_files == ()

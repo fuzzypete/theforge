@@ -667,7 +667,11 @@ def run_task(
             state.preflight_work_type = cached_preflight_state.preflight_work_type
             state.preflight_bundle_candidate = cached_preflight_state.preflight_bundle_candidate
             state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
-            state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
+            state.preflight_likely_files = (
+                None
+                if cached_preflight_state.preflight_likely_files is None
+                else list(cached_preflight_state.preflight_likely_files)
+            )
             state.preflight_duration_s = cached_preflight_state.preflight_duration_s
             state.preflight_cached = True
             state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
