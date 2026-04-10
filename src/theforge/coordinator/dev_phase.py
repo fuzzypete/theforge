@@ -121,6 +121,7 @@ def record_dev_iteration_telemetry(
     max_iterations: int,
     gate_result: str | None,
     gate_output_tail: str = "",
+    is_timeout: bool = False,
 ) -> None:
     """Capture per-iteration dev telemetry after validation completes."""
     if not state.dev_results or not state.dev_durations:
@@ -153,6 +154,7 @@ def record_dev_iteration_telemetry(
             gate_result=gate_result,
             failed_tests=failed_tests,
             existing_test_failures=False,
+            is_timeout=is_timeout,
             files_changed=files_changed,
             files_changed_count=len(files_changed),
             tests_fixed_count=tests_fixed_count,

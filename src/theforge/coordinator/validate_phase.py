@@ -18,7 +18,7 @@ from .gate import _is_gate_skip, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import _get_handoff_content, _get_raw_dev_notes
-from .state import CoordinatorResult, CoordinatorState, Phase
+from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase
 from .util import _log, _log_phase, _log_verbose
 from .workspace import _deindex_forge_artifacts
 
@@ -28,6 +28,24 @@ class _ValidateOutcome(Enum):
     RETRY_DEV = auto()
     REVIEW_CONVENTION_BLOCK = auto()
     ESCALATE = auto()
+
+
+def _is_identical_failure(telemetry: list[DevIterationTelemetry]) -> bool:
+    """Return True if the last two recorded iterations share an identical failure signature.
+
+    Two failure signatures are identical when:
+    - Both iterations timed out, OR
+    - Both have the same non-empty set of failing tests.
+    """
+    if len(telemetry) < 2:
+        return False
+    prev = telemetry[-2]
+    curr = telemetry[-1]
+    if curr.is_timeout and prev.is_timeout:
+        return True
+    if curr.failed_tests and set(curr.failed_tests) == set(prev.failed_tests):
+        return True
+    return False
 
 
 def _test_file_exists_in_head(workspace_path: Path, test_file: str) -> bool:
@@ -114,12 +132,14 @@ def _run_validate_phase(
         )
 
     if gate_err:
+        is_timeout = "timed out" in (gate_err or "").lower()
         record_dev_iteration_telemetry(
             state,
             workspace_path,
             max_iterations=config.retry.max_dev_iterations,
             gate_result=gate_result_for_telemetry,
             gate_output_tail=gate_output_tail or gate_err,
+            is_timeout=is_timeout,
         )
         use_exit_code = not config.validation.handoff_file
         if use_exit_code:
@@ -154,7 +174,6 @@ def _run_validate_phase(
             tail_chars = config.validation.gate_output_tail_chars
             partial = f"\n\nPartial gate output (last {tail_chars} chars):\n{gate_output_tail}"
             _log(f"  Gate partial output captured ({len(gate_output_tail)} chars)")
-        is_timeout = "timed out" in (gate_err or "").lower()
         if is_timeout:
             debug_cmd = config.validation.gate_debug_command
             if debug_cmd:
@@ -186,6 +205,22 @@ def _run_validate_phase(
             state.dev_iteration_telemetry[-1] = dataclasses.replace(
                 state.dev_iteration_telemetry[-1],
                 existing_test_failures=existing_test_failures,
+            )
+        if _is_identical_failure(state.dev_iteration_telemetry):
+            remaining = config.retry.max_dev_iterations - dev_calls_this_cycle
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Identical gate failure on consecutive iterations"
+                f" (iteration {state.dev_iteration}): {gate_err}."
+                f" Remaining retry budget: {remaining}."
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+            _escalate_notify(task, state, notify, config)
+            return _ValidateOutcome.ESCALATE, CoordinatorResult(
+                success=False, phase=state.phase, state=state, message=state.error
             )
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
@@ -313,6 +348,22 @@ def _run_validate_phase(
             state.dev_iteration_telemetry[-1] = dataclasses.replace(
                 state.dev_iteration_telemetry[-1],
                 existing_test_failures=existing_test_failures,
+            )
+        if _is_identical_failure(state.dev_iteration_telemetry):
+            remaining = config.retry.max_dev_iterations - dev_calls_this_cycle
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Identical gate failure on consecutive iterations"
+                f" (iteration {state.dev_iteration}): gate returned {gate_decision}."
+                f" Remaining retry budget: {remaining}."
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+            _escalate_notify(task, state, notify, config)
+            return _ValidateOutcome.ESCALATE, CoordinatorResult(
+                success=False, phase=state.phase, state=state, message=state.error
             )
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
