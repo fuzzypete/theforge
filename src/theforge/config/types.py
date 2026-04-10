@@ -133,6 +133,8 @@ class WorkspaceConfig:
     pr_labels: tuple[str, ...] = ()  # labels to apply when on_approve="pr" or "merge-pr"
     pr_draft: bool = False  # create PR as draft when on_approve="pr"
     ci_check_timeout_seconds: int = 300  # bounded wait for required CI checks after merge
+    merge_wait_timeout_seconds: int = 3600  # bounded wait for queued merge-pr landing; expiry is
+    # fail-closed: story is marked failed and dependents remain blocked
 
 
 @dataclass(frozen=True)
