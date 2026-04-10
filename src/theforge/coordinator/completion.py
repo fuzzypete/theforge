@@ -674,37 +674,31 @@ def _append_cycle_history(state: CoordinatorState, parsed_review: ReviewResult) 
         state.cycle_history = state.cycle_history[-3:]
 
 
-def _finalize_approve(
-    state: CoordinatorState,
+def land_story(
     config: ForgeConfig,
     task: TaskStory,
-    parsed_review: ReviewResult,
-    workspace_path: Path,
     branch_name: str,
-    task_start: float,
+    workspace_path: Path,
+    parsed_review: "ReviewResult | None",
+    state: CoordinatorState,
+    effective_on_approve: str,
     *,
-    auto_merge: bool,
-    notify: bool,
-    logger: "StructuredLogger | None",
-    review_cost: float,
-    review_elapsed: float,
-    message: str,
+    logger: "StructuredLogger | None" = None,
     run_id: str = "",
-) -> CoordinatorResult:
-    """Set DONE, optionally merge, log, notify, return CoordinatorResult.
+) -> "tuple[dict, str]":
+    """Execute the actual merge/landing for an approved story.
 
-    Pass logger=None to suppress merge_result/phase_end logger events (interactive paths).
-    Pass logger=logger to emit them (non-interactive path).
+    Returns ``(merge_info, landing_status)``.
+
+    The caller is responsible for acquiring ``integration_lock`` when needed
+    (sprint scheduler path).  Single-story ``run_task`` calls this directly
+    without a lock because there is only one worker.
+
+    ``effective_on_approve`` must be ``"merge"`` or ``"merge-pr"``; callers
+    should not invoke this function for ``"pr"`` or ``"none"`` modes.
     """
-    state.phase = Phase.DONE
-    merge_info: dict | None = None
-    merge_suffix = ""
-    landing_status: str | None = None
-
-    # Resolve effective on_approve: CLI --auto-merge flag forces "merge"
-    effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
-
     if effective_on_approve == "merge":
+        # Pre-merge cleanup: commit any tracked dirty files in the worktree
         status_ok, status_out = _run_shell("git status --porcelain", workspace_path)
         if status_ok:
             tracked_dirty = _parse_dirty_files(status_out)
@@ -737,6 +731,7 @@ def _finalize_approve(
                 )
         else:
             _log(f"Warning: could not inspect worktree before merge: {status_out}")
+
         merge_info = _merge_branch(
             config.project_root,
             config.workspace.base_branch,
@@ -749,9 +744,7 @@ def _finalize_approve(
         )
         merge_info = dict(merge_info)
         merge_info["action"] = "merge"
-        merge_suffix = (
-            " Merged." if merge_info["merged"] else f" Merge failed: {merge_info['error']}"
-        )
+
         if merge_info["merged"] and task.story_path:
             _archive_story_to_done(task.story_path, config.project_root, commit=True)
         if logger:
@@ -774,14 +767,16 @@ def _finalize_approve(
                 logger,
                 secrets=config.secrets,
             )
+
+        landing_status = "landed" if merge_info["merged"] else "failed"
+        return merge_info, landing_status
+
     elif effective_on_approve == "merge-pr":
+        if parsed_review is None:
+            _log("WARN: land_story called for merge-pr but parsed_review is None — skipping")
+            return {"merged": False, "error": "no review result available"}, "failed"
+
         merge_info = _merge_pr(config, task, branch_name, parsed_review, state)
-        if merge_info["merged"]:
-            merge_suffix = f" PR merged: {merge_info['pr_url']}"
-        elif merge_info.get("merge_queued"):
-            merge_suffix = f" PR queued for auto-merge: {merge_info['pr_url']}"
-        else:
-            merge_suffix = f" merge-pr failed: {merge_info['error']}"
         if logger:
             logger._safe_emit(
                 "merge_result",
@@ -803,12 +798,59 @@ def _finalize_approve(
                 logger,
                 secrets=config.secrets,
             )
+
         if not merge_info["merged"] and not merge_info.get("merge_queued"):
             landing_status = "failed"
         elif merge_info.get("merge_queued"):
             landing_status = "pending_integration"
         else:
             landing_status = "landed"
+        return merge_info, landing_status
+
+    else:
+        raise ValueError(
+            f"land_story called for unsupported effective_on_approve={effective_on_approve!r}; "
+            "only 'merge' and 'merge-pr' are valid"
+        )
+
+
+def _finalize_approve(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    parsed_review: ReviewResult,
+    workspace_path: Path,
+    branch_name: str,
+    task_start: float,
+    *,
+    auto_merge: bool,
+    notify: bool,
+    logger: "StructuredLogger | None",
+    review_cost: float,
+    review_elapsed: float,
+    message: str,
+    run_id: str = "",
+) -> CoordinatorResult:
+    """Set DONE, mark landing pending, log, notify, return CoordinatorResult.
+
+    Merge/landing is deferred: callers (run_task for single-story, _attempt_integration
+    for sprint) invoke land_story() after this returns.
+
+    Pass logger=None to suppress phase_end logger events (interactive paths).
+    Pass logger=logger to emit them (non-interactive path).
+    """
+    state.phase = Phase.DONE
+    merge_info: dict | None = None
+    merge_suffix = ""
+    landing_status: str | None = None
+
+    # Resolve effective on_approve: CLI --auto-merge flag forces "merge"
+    effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
+
+    if effective_on_approve in ("merge", "merge-pr"):
+        # Defer to land_story() — no git operations here.
+        merge_info = {"action": effective_on_approve, "pending": True}
+        landing_status = "pending_integration"
     elif effective_on_approve == "pr":
         merge_info = _create_pr(config, task, branch_name, parsed_review, state)
         if merge_info.get("skipped"):

@@ -29,8 +29,10 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.completion import _finalize_approve
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.review import ReviewResult
 
 # ── Workspace failure ─────────────────────────────────────────────
 
@@ -536,3 +538,135 @@ class TestCoordinatorAutoPush:
         assert result.phase == Phase.DONE
         assert result.merge is not None
         assert result.merge["merged"] is True
+
+
+# ── _finalize_approve no-git contract ─────────────────────────────────
+
+
+class TestFinalizeApproveNoGit:
+    """_finalize_approve must never touch git for any on_approve mode.
+
+    All landing is deferred to land_story() / _attempt_integration.
+    """
+
+    def _make_parsed_review(self) -> ReviewResult:
+        return ReviewResult(
+            verdict="APPROVE",
+            summary="Looks good.",
+            findings=[],
+            story_matches=True,
+            story_mismatches=[],
+            test_adequate=True,
+            test_gaps=[],
+            parse_errors=[],
+            raw_yaml={},
+        )
+
+    @patch("theforge.coordinator.completion._run_shell")
+    def test_finalize_approve_merge_no_git_calls(self, mock_run_shell, tmp_path):
+        """auto_merge=True: _finalize_approve returns pending_integration, no git ops."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        parsed_review = self._make_parsed_review()
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        result = _finalize_approve(
+            state,
+            config,
+            task,
+            parsed_review,
+            workspace,
+            "forge/test-task",
+            0.0,
+            auto_merge=True,
+            notify=False,
+            logger=None,
+            review_cost=0.1,
+            review_elapsed=1.0,
+            message="Done. ",
+        )
+
+        assert result.success is True
+        assert result.landing_status == "pending_integration"
+        assert result.merge == {"action": "merge", "pending": True}
+        mock_run_shell.assert_not_called()
+
+    @patch("theforge.coordinator.completion._run_shell")
+    def test_finalize_approve_merge_pr_no_git_calls(self, mock_run_shell, tmp_path):
+        """on_approve=merge-pr: _finalize_approve returns pending_integration, no git ops."""
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        )
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        parsed_review = self._make_parsed_review()
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        result = _finalize_approve(
+            state,
+            config,
+            task,
+            parsed_review,
+            workspace,
+            "forge/test-task",
+            0.0,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+            review_cost=0.1,
+            review_elapsed=1.0,
+            message="Done. ",
+        )
+
+        assert result.success is True
+        assert result.landing_status == "pending_integration"
+        assert result.merge == {"action": "merge-pr", "pending": True}
+        mock_run_shell.assert_not_called()
+
+    @patch("theforge.coordinator.completion._run_shell")
+    def test_finalize_approve_none_no_git_merge_calls(self, mock_run_shell, tmp_path):
+        """on_approve=none: _finalize_approve sets no landing_status, no merge git ops."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        parsed_review = self._make_parsed_review()
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        result = _finalize_approve(
+            state,
+            config,
+            task,
+            parsed_review,
+            workspace,
+            "forge/test-task",
+            0.0,
+            auto_merge=False,
+            notify=False,
+            logger=None,
+            review_cost=0.1,
+            review_elapsed=1.0,
+            message="Done. ",
+        )
+
+        assert result.success is True
+        assert result.landing_status is None
+        assert result.merge is not None
+        assert result.merge["action"] == "none"
+        mock_run_shell.assert_not_called()

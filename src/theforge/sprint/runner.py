@@ -21,7 +21,7 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
-from ..coordinator.workspace import _merge_branch, pull_base_branch
+from ..coordinator.workspace import pull_base_branch
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .ci_checks import poll_required_checks
@@ -249,6 +249,7 @@ def _run_fresh(
             state_update_fn=state_update_fn,
             no_pull=no_pull,
             cached_preflight_state=(preflight_states or {}).get(task.slug),
+            defer_landing=True,
         )
 
     # Phase 1: run through PLAN only
@@ -264,6 +265,7 @@ def _run_fresh(
         no_pull=no_pull,
         stop_phase=Phase.PLAN_REVIEW,
         cached_preflight_state=(preflight_states or {}).get(task.slug),
+        defer_landing=True,
     )
 
     if not plan_result.success:
@@ -299,6 +301,7 @@ def _run_fresh(
         state_update_fn=state_update_fn,
         no_pull=no_pull,
         cached_preflight_state=(preflight_states or {}).get(task.slug),
+        defer_landing=True,
     )
 
 
@@ -350,6 +353,7 @@ def _run_single_story(
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
+                    defer_landing=True,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -364,6 +368,7 @@ def _run_single_story(
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
+                    defer_landing=True,
                 )
             else:
                 result = _run_fresh(
@@ -754,6 +759,14 @@ def run_sprint(
         task: TaskStory,
         result: CoordinatorResult,
     ) -> bool:
+        """Attempt to land an approved story under integration_lock.
+
+        Returns True when integration was attempted (success, failure, or queued).
+        Returns False when dependencies are unmet — caller should retry later.
+
+        This is the sole merge site for sprint execution.  Workers never merge;
+        they set landing_status="pending_integration" and return.
+        """
         nonlocal stopped_reason, ci_halt_slug
 
         if not all(dep in merged_slugs for dep in task.depends_on):
@@ -763,37 +776,46 @@ def run_sprint(
 
         branch = config.workspace.branch_pattern.format(slug=slug)
         wt = config.project_root / config.workspace.path_pattern.format(slug=slug)
-        with integration_lock(config.project_root):
-            if config.workspace.on_approve == "merge-pr":
-                from ..coordinator.completion import _merge_pr  # noqa: PLC0415
 
-                parsed_review = (
-                    result.state.review_results[-1] if result.state.review_results else None
-                )
-                if parsed_review is None:
-                    _log(f"WARN: no review result for {slug} — skipping merge-pr")
-                    result.landing_status = "failed"
-                    _write_story_audit(config, task, result)
-                    return True
-                merge_info = _merge_pr(config, task, branch, parsed_review, result.state)
-            else:
-                merge_info = _merge_branch(
-                    config.project_root,
-                    config.workspace.base_branch,
-                    branch,
-                    slug,
-                    wt,
-                    config=config,
-                    task_name=task.name,
-                )
+        # Read effective mode from the pending merge action stored by _finalize_approve.
+        # Falls back to config.workspace.on_approve for legacy/direct callers.
+        effective_on_approve = (result.merge or {}).get("action") or config.workspace.on_approve
+
+        story_logger = StructuredLogger(
+            run_id=_sprint_run_id,
+            project=config.project,
+            task=task.slug,
+            log_file=config.log.log_file,
+            enabled=config.log.enabled,
+            project_root=config.project_root,
+        )
+
+        with integration_lock(config.project_root):
+            from ..coordinator.completion import land_story  # noqa: PLC0415
+
+            parsed_review = (
+                result.state.review_results[-1] if result.state.review_results else None
+            )
+            merge_info, landing_status = land_story(
+                config,
+                task,
+                branch,
+                wt,
+                parsed_review,
+                result.state,
+                effective_on_approve,
+                logger=story_logger,
+                run_id=_sprint_run_id,
+            )
 
         result.merge = merge_info
+        result.landing_status = landing_status
+
         if merge_info.get("merged"):
-            result.landing_status = "landed"
             merged_slugs.add(slug)
             dag.mark_complete(slug)
             _write_story_audit(config, task, result)
-            if config.workspace.on_approve == "merge-pr" and not merge_info.get(
+            if effective_on_approve == "merge-pr" and not merge_info.get(
                 "auto_merge_queued", False
             ):
                 ci_result = poll_required_checks(
@@ -817,12 +839,10 @@ def run_sprint(
 
         if merge_info.get("merge_queued"):
             queued_prs[slug] = (task, result, merge_info["pr_url"])
-            result.landing_status = "pending_integration"
             _write_story_audit(config, task, result)
             _log(f"INFO {slug}: PR auto-merge queued; waiting for GitHub to report MERGED")
             return True
 
-        result.landing_status = "failed"
         result.state.error = merge_info.get("error") or "integration failed"
         _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
         _write_story_audit(config, task, result)
@@ -1074,15 +1094,21 @@ def run_sprint(
                 specs_failed += df
                 specs_skipped += dsk
 
+                # Dependent stories in parallel mode need scheduler-side local merge
+                # even when on_approve is "none" and auto_merge is False.
+                if (
+                    result.success
+                    and result.landing_status is None
+                    and max_parallel > 1
+                    and slug in dependent_slugs
+                ):
+                    result.landing_status = "pending_integration"
+                    result.merge = {**(result.merge or {}), "action": "merge", "pending": True}
+
                 # The scheduler thread is the sole owner of DAG/landing state.
-                # Workers only return CoordinatorResult objects; integration and
-                # dependency satisfaction happen here after futures complete.
-                needs_parallel_integration = max_parallel > 1 and (
-                    auto_merge
-                    or config.workspace.on_approve == "merge-pr"
-                    or slug in dependent_slugs
-                )
-                if needs_parallel_integration and result.success:
+                # Workers set landing_status="pending_integration" and return;
+                # _attempt_integration is the sole merge site for all sprint execution.
+                if result.success and result.landing_status == "pending_integration":
                     integrated = _attempt_integration(slug, task, result)
                     if not integrated:
                         pending_integration[slug] = (task, result)
@@ -1112,39 +1138,6 @@ def run_sprint(
                             source.on_escalate(task, result.state, config)
                         except Exception as exc:
                             _log(f"WARN on_escalate callback failed for {slug}: {exc}")
-
-                if (
-                    max_parallel == 1
-                    and config.workspace.on_approve == "merge-pr"
-                    and result.merge
-                    and result.merge.get("merged")
-                    and not result.merge.get("auto_merge_queued", False)
-                ):
-                    ci_result = poll_required_checks(
-                        config.project_root,
-                        config.workspace.base_branch,
-                        config.workspace.ci_check_timeout_seconds,
-                    )
-                    if ci_result["status"] in {"fail", "timeout"}:
-                        failing = (
-                            ", ".join(ci_result["failing_checks"]) or "pending required checks"
-                        )
-                        stopped_reason = (
-                            "Required CI checks "
-                            f"{ci_result['status']} after merging {slug} "
-                            f"at {ci_result['sha']}: {failing}"
-                        )
-                        ci_halt_slug = slug
-                        _log(
-                            f"HALT {slug}: required CI checks {ci_result['status']} "
-                            f"for {ci_result['sha']} ({failing})"
-                        )
-                        for t in dag.ready():
-                            if t.slug not in active:
-                                dag.mark_skipped(t.slug)
-                                specs_skipped += 1
-                                _log(f"SKIPPED {t.slug} ({stopped_reason})")
-                        break
 
                 _print_worker_status(active, worker_phases, dag, total)
 

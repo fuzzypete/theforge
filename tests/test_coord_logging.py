@@ -390,6 +390,7 @@ class TestProjectLocalLogDir:
             state = _state
             merge = None
             message = "done"
+            landing_status = None
 
         captured_kwargs: dict = {}
 
@@ -473,6 +474,7 @@ class TestProjectLocalLogDir:
                 phase = Phase.DONE
                 merge = None
                 message = "done"
+                landing_status = None
 
             fake_result = _FakeResult()
             fake_result.state = result_state
