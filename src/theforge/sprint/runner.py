@@ -249,6 +249,7 @@ def _run_fresh(
             state_update_fn=state_update_fn,
             no_pull=no_pull,
             cached_preflight_state=(preflight_states or {}).get(task.slug),
+            defer_landing=True,
         )
 
     # Phase 1: run through PLAN only
@@ -264,6 +265,7 @@ def _run_fresh(
         no_pull=no_pull,
         stop_phase=Phase.PLAN_REVIEW,
         cached_preflight_state=(preflight_states or {}).get(task.slug),
+        defer_landing=True,
     )
 
     if not plan_result.success:
@@ -299,6 +301,7 @@ def _run_fresh(
         state_update_fn=state_update_fn,
         no_pull=no_pull,
         cached_preflight_state=(preflight_states or {}).get(task.slug),
+        defer_landing=True,
     )
 
 
@@ -350,6 +353,7 @@ def _run_single_story(
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
+                    defer_landing=True,
                 )
             elif triage.action == "dev" and triage.worktree_path is not None:
                 result = run_from_dev(
@@ -364,6 +368,7 @@ def _run_single_story(
                     state_update_fn=state_update_fn,
                     no_pull=no_pull,
                     cached_preflight_state=(preflight_states or {}).get(task.slug),
+                    defer_landing=True,
                 )
             else:
                 result = _run_fresh(
@@ -776,6 +781,15 @@ def run_sprint(
         # Falls back to config.workspace.on_approve for legacy/direct callers.
         effective_on_approve = (result.merge or {}).get("action") or config.workspace.on_approve
 
+        story_logger = StructuredLogger(
+            run_id=_sprint_run_id,
+            project=config.project,
+            task=task.slug,
+            log_file=config.log.log_file,
+            enabled=config.log.enabled,
+            project_root=config.project_root,
+        )
+
         with integration_lock(config.project_root):
             from ..coordinator.completion import land_story  # noqa: PLC0415
 
@@ -790,6 +804,8 @@ def run_sprint(
                 parsed_review,
                 result.state,
                 effective_on_approve,
+                logger=story_logger,
+                run_id=_sprint_run_id,
             )
 
         result.merge = merge_info

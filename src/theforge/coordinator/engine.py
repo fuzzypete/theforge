@@ -508,6 +508,7 @@ def run_task(
     stop_phase: Phase | None = None,
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
+    defer_landing: bool = False,
 ) -> CoordinatorResult:
     """Execute the full coordinator state machine for a single task.
 
@@ -805,7 +806,9 @@ def run_task(
         # _finalize_approve defers all git operations and sets landing_status
         # = "pending_integration".  We perform the actual merge here, without
         # a lock, because single-story runs have exactly one worker.
-        if result.success and result.landing_status == "pending_integration":
+        # When defer_landing=True (sprint worker path), skip: the scheduler
+        # thread will call _attempt_integration under integration_lock.
+        if result.success and result.landing_status == "pending_integration" and not defer_landing:
             from .completion import land_story  # noqa: PLC0415
 
             _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
@@ -887,6 +890,7 @@ def _run_resume_coordinator(
     state_update_fn: "Callable[[dict], None] | None",
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
+    defer_landing: bool = False,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -960,7 +964,8 @@ def _run_resume_coordinator(
         )
 
         # ── Landing (single-story resume path) ───────────────────────
-        if result.success and result.landing_status == "pending_integration":
+        # Skip when defer_landing=True (sprint worker): scheduler handles it.
+        if result.success and result.landing_status == "pending_integration" and not defer_landing:
             from .completion import land_story  # noqa: PLC0415
 
             _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
@@ -1013,6 +1018,7 @@ def run_from_review(
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
+    defer_landing: bool = False,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1028,6 +1034,8 @@ def run_from_review(
         workspace_path: Path to the existing worktree.
         interactive: When True, pause at HUMAN_REVIEW for operator input.
         auto_merge: When True, merge the feature branch after APPROVE.
+        defer_landing: When True, skip the landing step and leave
+            landing_status="pending_integration" for the caller (sprint scheduler).
     """
     return _run_resume_coordinator(
         config,
@@ -1043,6 +1051,7 @@ def run_from_review(
         state_update_fn=state_update_fn,
         no_pull=no_pull,
         cached_preflight_state=cached_preflight_state,
+        defer_landing=defer_landing,
     )
 
 
@@ -1059,6 +1068,7 @@ def run_from_dev(
     state_update_fn: "Callable[[dict], None] | None" = None,
     no_pull: bool = False,
     cached_preflight_state: CoordinatorState | None = None,
+    defer_landing: bool = False,
 ) -> CoordinatorResult:
     """Start at DEV on an existing worktree, skipping WORKSPACE and PREFLIGHT.
 
@@ -1071,6 +1081,8 @@ def run_from_dev(
         workspace_path: Path to the existing worktree.
         interactive: When True, pause at HUMAN_REVIEW for operator input.
         auto_merge: When True, merge the feature branch after APPROVE.
+        defer_landing: When True, skip the landing step and leave
+            landing_status="pending_integration" for the caller (sprint scheduler).
     """
     return _run_resume_coordinator(
         config,
@@ -1086,6 +1098,7 @@ def run_from_dev(
         state_update_fn=state_update_fn,
         no_pull=no_pull,
         cached_preflight_state=cached_preflight_state,
+        defer_landing=defer_landing,
     )
 
 
