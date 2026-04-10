@@ -22,6 +22,7 @@ from coord_test_helpers import (
 
 from theforge.coordinator.dev_phase import (
     _git_status_porcelain_ignored,
+    _is_forge_artifact_status_line,
     _iter_sibling_worktrees,
 )
 from theforge.coordinator.engine import run_task
@@ -145,6 +146,56 @@ class TestGitStatusPorcelainIgnored:
         with patch("theforge.coordinator.dev_phase.subprocess.run", return_value=mock_proc):
             result = _git_status_porcelain_ignored(tmp_path)
         assert result == frozenset([" M src/foo.py", "?? bar.txt"])
+
+    def test_returns_forge_artifact_lines_unfiltered(self, tmp_path: Path) -> None:
+        """_git_status_porcelain_ignored returns raw lines; caller filters forge artifacts."""
+        output = " M src/foo.py\n!! .forge/plan.md\n!! build/leaked.o\n"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.stdout = output
+        with patch("theforge.coordinator.dev_phase.subprocess.run", return_value=mock_proc):
+            result = _git_status_porcelain_ignored(tmp_path)
+        # All non-blank lines returned; forge artifact filtering is the caller's job
+        assert result == frozenset([" M src/foo.py", "!! .forge/plan.md", "!! build/leaked.o"])
+
+
+# ── _is_forge_artifact_status_line ──────────────────────────────────
+
+
+class TestIsForgeArtifactStatusLine:
+    def test_forge_plan_md(self) -> None:
+        assert _is_forge_artifact_status_line("!! .forge/plan.md") is True
+
+    def test_forge_handoff_yaml(self) -> None:
+        assert _is_forge_artifact_status_line("!! .forge/handoff.yaml") is True
+
+    def test_forge_sessions_json(self) -> None:
+        assert _is_forge_artifact_status_line("!! .forge/sessions.json") is True
+
+    def test_forge_traces_directory(self) -> None:
+        """Directories are reported with trailing slash."""
+        assert _is_forge_artifact_status_line("!! .forge/traces/") is True
+
+    def test_forge_audit_yaml(self) -> None:
+        assert _is_forge_artifact_status_line("!! .forge/audit.yaml") is True
+
+    def test_forge_root_directory(self) -> None:
+        """Bare .forge entry (no trailing slash) is also excluded."""
+        assert _is_forge_artifact_status_line("!! .forge") is True
+
+    def test_src_file_not_artifact(self) -> None:
+        assert _is_forge_artifact_status_line("?? src/leaked.py") is False
+
+    def test_build_dir_not_artifact(self) -> None:
+        assert _is_forge_artifact_status_line("!! build/") is False
+
+    def test_modified_non_forge(self) -> None:
+        assert _is_forge_artifact_status_line(" M README.md") is False
+
+    def test_short_line_no_crash(self) -> None:
+        """Lines shorter than 3 chars do not raise."""
+        assert _is_forge_artifact_status_line("!!") is False
+        assert _is_forge_artifact_status_line("") is False
 
 
 # ── Escalation integration via run_task ─────────────────────────────
@@ -318,7 +369,7 @@ class TestSiblingWriteDetectorEscalation:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_sibling_ignored_file_write_escalates(
+    def test_sibling_forge_artifact_write_does_not_escalate(
         self,
         mock_shell,
         mock_dev_agent,
@@ -326,13 +377,77 @@ class TestSiblingWriteDetectorEscalation:
         mock_pool,
         tmp_path: Path,
     ) -> None:
-        """Ignored-file write in sibling (e.g. .forge/ artifact) → ESCALATE."""
+        """Forge-owned .forge/ artifact changes in sibling do NOT escalate.
+
+        Normal coordinator operation writes plan.md, sessions.json, handoff.yaml,
+        traces/, and audit.yaml under .forge/ in worktrees. These must not trigger
+        the sibling-write detector.
+        """
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
         sibling = tmp_path / ".forge" / "worktrees" / "issue-888"
+        sibling.mkdir(parents=True)
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_dev_agent.return_value = _make_agent_result()
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        # All .forge/ artifact forms that the coordinator writes
+        forge_artifact_lines = frozenset(
+            [
+                "!! .forge/plan.md",
+                "!! .forge/handoff.yaml",
+                "!! .forge/sessions.json",
+                "!! .forge/traces/",
+                "!! .forge/audit.yaml",
+            ]
+        )
+
+        call_n = {"n": 0}
+
+        def status_side_effect(path: Path) -> frozenset[str]:
+            if path.resolve() == sibling.resolve():
+                n = call_n["n"]
+                call_n["n"] += 1
+                # After dev runs, sibling has forge artifact writes — not escalatable
+                return frozenset() if n == 0 else forge_artifact_lines
+            return frozenset()
+
+        with patch(
+            "theforge.coordinator.dev_phase._git_status_porcelain_ignored",
+            side_effect=status_side_effect,
+        ):
+            result = run_task(config, task, notify=False)
+
+        assert result.state.phase != Phase.ESCALATE, (
+            f"Should not escalate on forge artifact writes, got: {result.message}"
+        )
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_sibling_non_forge_ignored_write_escalates(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_pool,
+        tmp_path: Path,
+    ) -> None:
+        """Ignored-file write outside .forge/ in sibling (e.g. build/) → ESCALATE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        sibling = tmp_path / ".forge" / "worktrees" / "issue-889"
         sibling.mkdir(parents=True)
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
@@ -347,8 +462,8 @@ class TestSiblingWriteDetectorEscalation:
                 call_n["n"] += 1
                 if n == 0:
                     return frozenset()
-                # Ignored-file write: .forge/handoff.yaml was created
-                return frozenset(["!! .forge/handoff.yaml"])
+                # Agent leaked a build artifact into sibling — should escalate
+                return frozenset(["!! build/leaked_output.o"])
             return frozenset()
 
         with patch(
