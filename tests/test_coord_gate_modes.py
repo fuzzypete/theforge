@@ -530,12 +530,14 @@ class TestGateOverride:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             called_cmds.append(cmd)
+            if "make lint" in cmd:
+                _write_handoff(Path(cwd), "PASS")
+                return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
             stale_resp = _handle_stale_check_cmd(cmd)
             if stale_resp is not None:
                 return stale_resp
-            # Custom gate succeeds with exit 0 (exit-code mode)
             return (True, "OK")
 
         mock_shell.side_effect = shell_side_effect

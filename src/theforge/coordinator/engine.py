@@ -351,13 +351,13 @@ def _coordinator_loop(
                     _set_timeout_resume(state, gate_result)
                 continue
 
-        if logger:
-            logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
         _skip_dev = False  # all subsequent iterations start at DEV
 
         # ── stop_phase gate ───────────────────────────────────
         if stop_phase is not None and stop_phase.value <= Phase.VALIDATE.value:
             state.phase = Phase.VALIDATE
+            if logger:
+                logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
             return CoordinatorResult(
                 success=True,
                 phase=Phase.VALIDATE,
@@ -367,9 +367,11 @@ def _coordinator_loop(
 
         # ── DEV HANDOFF VALIDATION ────────────────────────────
         # Validate structured dev handoff after gate passes.
-        # Retry up to max_handoff_retries; if still invalid, proceed anyway.
+        # Retry up to max_handoff_retries; if still invalid, hard stop.
         _handoff = _parse_dev_handoff(config, workspace_path)
         _handoff_errors = list(_handoff.parse_errors) if _handoff is not None else []
+        if _handoff is not None and not _handoff_errors:
+            _handoff_errors.extend(check_handoff_story_consistency(_handoff, story_content))
         if _handoff is not None and _handoff_errors:
             _max_hf_retries = config.retry.max_handoff_retries
             for _hf_attempt in range(_max_hf_retries):
@@ -415,7 +417,28 @@ def _coordinator_loop(
                     _log("  ✓ HANDOFF   valid")
                     break
             else:
-                _log("  ⚠ HANDOFF   still invalid after retries — proceeding anyway")
+                _handoff_reason = (
+                    f"Dev handoff remained invalid after "
+                    f"{_max_hf_retries} retries: {_handoff_errors}"
+                )
+                state.phase = Phase.ESCALATE
+                state.error = _handoff_reason
+                state.error_type = "invalid_dev_handoff"
+                state.escalate_reason = _handoff_reason
+                _log(f"  ✗ ESCALATE   {_handoff_reason}")
+                if logger:
+                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                    logger._safe_emit("escalate", reason=_handoff_reason, phase="VALIDATE")
+                _escalate_notify(task, state, notify, config)
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=_handoff_reason,
+                )
+
+        if logger:
+            logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
 
         # ── Persist handoff to logs ────────────────────────────
         if config.validation.handoff_file and state.log_dir is not None:
