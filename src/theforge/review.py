@@ -24,6 +24,7 @@ class ReviewFinding:
     line: int | None
     description: str
     suggestion: str | None
+    reviewers: tuple[str, ...] = ()  # reviewers who raised this finding (audit attribution)
 
 
 @dataclass(frozen=True)
@@ -586,6 +587,43 @@ def review_to_dev_handoff(result: ReviewResult) -> str:
     return "\n\n".join(parts)
 
 
+def _normalize_description(description: str) -> str:
+    """Normalize a finding description for duplicate detection: lowercase + stripped."""
+    return description.strip().lower()
+
+
+def _dedup_findings(reviewer_findings: list[tuple[str, ReviewFinding]]) -> list[ReviewFinding]:
+    """Deduplicate findings by (file, line, normalized description).
+
+    First occurrence of each unique (file, line, normalized_description) key wins
+    for all fields.  All reviewers who raised the same finding are collected into
+    the ``reviewers`` attribution tuple on the canonical finding.
+    """
+    seen_reviewers: dict[tuple[str, int | None, str], list[str]] = {}
+    canonical: dict[tuple[str, int | None, str], ReviewFinding] = {}
+
+    for reviewer_name, finding in reviewer_findings:
+        key = (finding.file, finding.line, _normalize_description(finding.description))
+        if key not in canonical:
+            canonical[key] = finding
+            seen_reviewers[key] = []
+        seen_reviewers[key].append(reviewer_name)
+
+    result: list[ReviewFinding] = []
+    for key, finding in canonical.items():
+        result.append(
+            ReviewFinding(
+                severity=finding.severity,
+                file=finding.file,
+                line=finding.line,
+                description=finding.description,
+                suggestion=finding.suggestion,
+                reviewers=tuple(seen_reviewers[key]),
+            )
+        )
+    return result
+
+
 def merge_review_results(results: list[ReviewResult], names: list[str]) -> ReviewResult:
     """Merge multiple ReviewResults into one without an LLM call.
 
@@ -594,7 +632,7 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
       so the parse-retry loop in coord_phases can fire.
     - Verdict: REQUEST_CHANGES if any valid reviewer says so, else APPROVE
     - Summary: one line per valid reviewer labelled by name
-    - Findings: union of all valid findings (preserves duplicates)
+    - Findings: union of all valid findings, deduplicated by (file, line, description)
     - story_matches: False if any valid reviewer says False
     - test_adequate: False if any valid reviewer says False
     """
@@ -634,9 +672,11 @@ def merge_review_results(results: list[ReviewResult], names: list[str]) -> Revie
     summary_parts = [f"[{name}] {r.summary}" for name, r in valid]
     summary = " | ".join(summary_parts)
 
-    all_findings: list[ReviewFinding] = []
-    for _, r in valid:
-        all_findings.extend(r.findings)
+    reviewer_findings: list[tuple[str, ReviewFinding]] = []
+    for name, r in valid:
+        for f in r.findings:
+            reviewer_findings.append((name, f))
+    all_findings = _dedup_findings(reviewer_findings)
 
     story_matches = all(r.story_matches for _, r in valid)
     story_mismatches: list[str] = []

@@ -77,6 +77,7 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
                     "file": f.file,
                     "line": f.line,
                     "description": f.description,
+                    "reviewers": list(f.reviewers),
                 }
                 for f in r.findings
             ]
