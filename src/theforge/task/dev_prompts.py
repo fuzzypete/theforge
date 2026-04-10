@@ -27,6 +27,7 @@ def build_dev_prompt(
     cycle_history: list[CycleHistory] | None = None,
     handoff_file: str = "handoff.yaml",
     preflight_sufficiency: str | None = None,
+    contract_change: bool = False,
     conventions: list[str] | None = None,
     assembled_context: ContextPack | None = None,
 ) -> str:
@@ -181,6 +182,19 @@ def build_dev_prompt(
             finished until the gate passes.
         """)
 
+    if contract_change:
+        test_rule = (
+            "- This story intentionally changes an existing behavioral contract.\n"
+            "  You MAY update test files that assert the old contract behavior.\n"
+            "  Do NOT modify tests unrelated to the contract change."
+        )
+    else:
+        test_rule = (
+            "- Do NOT modify existing test files that are not directly related to\n"
+            "  your story. If existing tests fail after your changes, your\n"
+            "  implementation is wrong — fix your code, not the tests."
+        )
+
     return dedent(f"""\
         You are implementing **{task.name}**.
 
@@ -252,9 +266,7 @@ def build_dev_prompt(
 
         - Do NOT merge to main.
         - Do NOT leave uncommitted changes.
-        - Do NOT modify existing test files that are not directly related to
-          your story. If existing tests fail after your changes, your
-          implementation is wrong — fix your code, not the tests.
+        {test_rule}
         - If you cannot finish, commit what you have and list blockers in
           `deferred_items`.
     """)

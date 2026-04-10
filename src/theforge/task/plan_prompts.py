@@ -144,6 +144,7 @@ def build_preflight_prompt(
         verdict: PROCEED | ALREADY_DONE | BLOCKED
         complexity: small | medium | large
         work_type: feature | refactor | mechanical | bug
+        contract_change: true | false
         reason: "<1-2 sentence explanation of your classification>"
         sufficiency: implementation_ready | needs_planning
         sufficiency_reason: "<1-2 sentence explanation of the sufficiency classification>"
@@ -165,6 +166,11 @@ def build_preflight_prompt(
         Use `likely_files: []` when no likely edit targets can be identified.
         Include repo-relative paths only; do not invent nonexistent files just to fill the list.
         Always include `sufficiency` and `sufficiency_reason` when verdict is PROCEED.
+        Set `contract_change: true` when the story explicitly changes an existing behavioral
+        contract — a previously tested behavior is intentionally being altered (e.g., changing
+        an error to an escalation, changing a return value, renaming a field). When true, the
+        dev agent is permitted to update test files that assert the old behavior. Set
+        `contract_change: false` (the default) for all other stories.
 
         ## Rules
 

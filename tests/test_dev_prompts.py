@@ -160,3 +160,35 @@ def test_dev_prompt_includes_repository_context_pack(tmp_path):
 
     assert "Repository Context Pack" in prompt
     assert "keep it deterministic" in prompt
+
+
+class TestContractChangeTestRule:
+    """Verify that the test-editing rule is conditional on contract_change."""
+
+    def _make_prompt(self, tmp_path: Path, *, contract_change: bool) -> str:
+        task = _make_task(tmp_path)
+        return build_dev_prompt(
+            task,
+            workspace_path=tmp_path,
+            branch_name="feat/test",
+            story_content="# Test\n\nDo something.",
+            gate_command="make test",
+            contract_change=contract_change,
+        )
+
+    def test_default_false_uses_strict_rule(self, tmp_path: Path) -> None:
+        prompt = self._make_prompt(tmp_path, contract_change=False)
+        assert "implementation is wrong" in prompt
+        assert "fix your code, not the tests" in prompt
+        assert "intentionally changes an existing behavioral contract" not in prompt
+
+    def test_contract_change_true_uses_permissive_rule(self, tmp_path: Path) -> None:
+        prompt = self._make_prompt(tmp_path, contract_change=True)
+        assert "intentionally changes an existing behavioral contract" in prompt
+        assert "You MAY update test files" in prompt
+        assert "implementation is wrong" not in prompt
+        assert "fix your code, not the tests" not in prompt
+
+    def test_contract_change_still_restricts_unrelated_tests(self, tmp_path: Path) -> None:
+        prompt = self._make_prompt(tmp_path, contract_change=True)
+        assert "Do NOT modify tests unrelated to the contract change" in prompt
