@@ -992,6 +992,26 @@ criteria_checked: []
         output = "verdict: PROCEED\ncontract_change: true\n"
         assert _parse_preflight_contract_change(output) is True
 
+    def test_string_false_does_not_become_true(self):
+        """Quoted 'false' must not be treated as truthy via bool()."""
+        output = 'contract_change: "false"\n'
+        assert _parse_preflight_contract_change(output) is False
+
+    def test_string_zero_does_not_become_true(self):
+        """Quoted '0' must not be treated as truthy via bool()."""
+        output = 'contract_change: "0"\n'
+        assert _parse_preflight_contract_change(output) is False
+
+    def test_string_true_is_accepted(self):
+        """Quoted 'true' (unusual but possible) should be accepted."""
+        output = 'contract_change: "true"\n'
+        assert _parse_preflight_contract_change(output) is True
+
+    def test_integer_one_does_not_become_true(self):
+        """Numeric 1 should not be accepted — only boolean True."""
+        output = "contract_change: 1\n"
+        assert _parse_preflight_contract_change(output) is False
+
 
 # ── Preflight prompt includes contract_change field ───────────────────
 
@@ -1045,3 +1065,65 @@ class TestPreflightPromptContractChange:
         assert audit["preflight"] is not None
         assert "contract_change" in audit["preflight"]
         assert audit["preflight"]["contract_change"] is True
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_contract_change_in_preflight_artifact(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """preflight.yaml artifact includes contract_change field."""
+        import dataclasses
+
+        import yaml as _yaml
+        from coord_test_helpers import _make_plan_config
+
+        from theforge.config import LogConfig
+
+        config = _make_plan_config(tmp_path)
+        config = dataclasses.replace(config, log=LogConfig(enabled=True))
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        _preflight_output = """\
+```yaml
+verdict: PROCEED
+complexity: small
+work_type: bug
+contract_change: true
+reason: "Changes the error-to-escalation contract."
+sufficiency: implementation_ready
+sufficiency_reason: "Spec is concrete."
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "ESCALATE instead of error"
+    satisfied: false
+    evidence: "Still returns error"
+```
+"""
+        preflight_result = _make_agent_result(
+            success=True, output=_preflight_output, cost_usd=0.03
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.30)
+
+        mock_preflight.return_value = preflight_result
+        mock_dev_agent.return_value = dev_result
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        log_dir = result.state.log_dir
+        assert log_dir is not None
+        preflight_yaml = log_dir / "preflight.yaml"
+        assert preflight_yaml.exists(), f"preflight.yaml not found in {log_dir}"
+        artifact = _yaml.safe_load(preflight_yaml.read_text(encoding="utf-8"))
+        assert "contract_change" in artifact
+        assert artifact["contract_change"] is True

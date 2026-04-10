@@ -78,7 +78,13 @@ def _parse_preflight_contract_change(output: str) -> bool:
     try:
         parsed = yaml.safe_load(yaml_text)
         if isinstance(parsed, dict):
-            return bool(parsed.get("contract_change", False))
+            raw = parsed.get("contract_change", False)
+            if isinstance(raw, bool):
+                return raw
+            # Normalize string representations; reject non-boolean values safely
+            if isinstance(raw, str) and raw.strip().lower() == "true":
+                return True
+            return False
     except yaml.YAMLError:
         pass
 

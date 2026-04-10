@@ -245,6 +245,7 @@ def _run_preflight_phase(
         "reason": reason,
         "complexity": state.preflight_complexity,
         "sufficiency": state.preflight_sufficiency,
+        "contract_change": state.preflight_contract_change,
         "cost_usd": preflight_result.cost_usd,
         "duration_s": round(_preflight_elapsed, 2),
         "likely_files": state.preflight_likely_files,
