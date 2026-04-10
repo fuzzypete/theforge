@@ -9,9 +9,10 @@ from unittest.mock import patch
 
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
-from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.state import CoordinatorState, DevIterationTelemetry
 from theforge.coordinator.validate_phase import (
     _get_convention_baseline_ref,
+    _is_identical_failure,
     _run_validate_phase,
     _ValidateOutcome,
 )
@@ -306,3 +307,209 @@ def test_format_failed_test_feedback_no_contract_change_uses_default_message(
     assert "These are existing tests your changes broke" in feedback
     assert "do not edit these test files" in feedback
     assert "old behavioral contract" not in feedback
+
+
+def _make_telemetry(**kwargs) -> DevIterationTelemetry:
+    defaults = dict(
+        iteration=1,
+        max_iterations=3,
+        cost_usd=0.5,
+        duration_s=10.0,
+        gate_result="FAIL",
+        failed_tests=[],
+        existing_test_failures=False,
+        is_timeout=False,
+        files_changed=[],
+        files_changed_count=0,
+        tests_fixed_count=0,
+        meaningful_progress=False,
+    )
+    defaults.update(kwargs)
+    return DevIterationTelemetry(**defaults)
+
+
+def test_is_identical_failure_returns_false_with_fewer_than_two_entries() -> None:
+    assert _is_identical_failure([]) is False
+    assert _is_identical_failure([_make_telemetry()]) is False
+
+
+def test_is_identical_failure_same_failing_tests_escalates() -> None:
+    prev = _make_telemetry(failed_tests=["tests/test_a.py::test_one"])
+    curr = _make_telemetry(failed_tests=["tests/test_a.py::test_one"])
+    assert _is_identical_failure([prev, curr]) is True
+
+
+def test_is_identical_failure_different_failing_tests_does_not_escalate() -> None:
+    prev = _make_telemetry(failed_tests=["tests/test_a.py::test_one"])
+    curr = _make_telemetry(failed_tests=["tests/test_b.py::test_two"])
+    assert _is_identical_failure([prev, curr]) is False
+
+
+def test_is_identical_failure_empty_failed_tests_does_not_escalate() -> None:
+    prev = _make_telemetry(failed_tests=[])
+    curr = _make_telemetry(failed_tests=[])
+    assert _is_identical_failure([prev, curr]) is False
+
+
+def test_is_identical_failure_both_timeout_escalates() -> None:
+    prev = _make_telemetry(is_timeout=True, gate_result="ERROR")
+    curr = _make_telemetry(is_timeout=True, gate_result="ERROR")
+    assert _is_identical_failure([prev, curr]) is True
+
+
+def test_is_identical_failure_only_one_timeout_does_not_escalate() -> None:
+    prev = _make_telemetry(is_timeout=True, gate_result="ERROR")
+    curr = _make_telemetry(is_timeout=False, gate_result="FAIL")
+    assert _is_identical_failure([prev, curr]) is False
+
+
+def test_is_identical_failure_checks_last_two_entries() -> None:
+    """Circuit breaker compares the final two entries, not just any two."""
+    old = _make_telemetry(iteration=1, failed_tests=["tests/test_a.py::test_one"])
+    prev = _make_telemetry(iteration=2, failed_tests=["tests/test_b.py::test_two"])
+    curr = _make_telemetry(iteration=3, failed_tests=["tests/test_b.py::test_two"])
+    assert _is_identical_failure([old, prev, curr]) is True
+
+
+def test_run_validate_phase_escalates_on_identical_gate_fail(tmp_path: Path) -> None:
+    """Circuit breaker escalates when consecutive FAIL iterations have the same test failures."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(2.0)
+    state.last_dev_start_commit = "HEAD"
+    # Seed prior iteration telemetry with identical failing test
+    state.dev_iteration_telemetry.append(
+        _make_telemetry(
+            iteration=1,
+            failed_tests=["tests/test_alpha.py::test_one"],
+        )
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "def test_one():\n    pass\n", encoding="utf-8"
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(
+                "FAIL",
+                None,
+                "FAILED tests/test_alpha.py::test_one",
+                "pytest tests/",
+            ),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: pending",
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            dev_calls_this_cycle=1,  # below max_dev_iterations so circuit breaker fires first
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert "Identical gate failure" in result.message
+    assert "Remaining retry budget:" in result.message
+
+
+def test_run_validate_phase_escalates_on_consecutive_timeouts(tmp_path: Path) -> None:
+    """Circuit breaker escalates when two consecutive gate errors are both timeouts."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(2.0)
+    state.last_dev_start_commit = "HEAD"
+    # Seed prior iteration telemetry with a timeout
+    state.dev_iteration_telemetry.append(
+        _make_telemetry(
+            iteration=1,
+            gate_result="ERROR",
+            is_timeout=True,
+        )
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(None, "gate timed out after 120s", "", "pytest tests/"),
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            dev_calls_this_cycle=1,  # below max_dev_iterations so circuit breaker fires first
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert "Identical gate failure" in result.message
+    assert "Remaining retry budget:" in result.message
+
+
+def test_run_validate_phase_retries_when_failures_differ(tmp_path: Path) -> None:
+    """Circuit breaker does not fire when failure signatures change between iterations."""
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2)
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(2.0)
+    state.last_dev_start_commit = "HEAD"
+    # Seed prior iteration telemetry with a different failing test
+    state.dev_iteration_telemetry.append(
+        _make_telemetry(
+            iteration=1,
+            failed_tests=["tests/test_alpha.py::test_one"],
+        )
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_alpha.py").write_text(
+        "def test_two():\n    pass\n", encoding="utf-8"
+    )
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(
+                "FAIL",
+                None,
+                "FAILED tests/test_alpha.py::test_two",
+                "pytest tests/",
+            ),
+        ),
+        patch(
+            "theforge.coordinator.validate_phase._get_handoff_content",
+            return_value="summary: pending",
+        ),
+        patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            dev_calls_this_cycle=1,  # below max_dev_iterations
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.RETRY_DEV
+    assert result is None
