@@ -204,6 +204,29 @@ def _run_preflight_phase(
         state.preflight_contract_change = contract_change
         bundle_candidate = _parse_preflight_bundle_candidate(preflight_result.output)
         state.preflight_bundle_candidate = bundle_candidate
+
+        # ── Deterministic contract-change policy ───────────────────────
+        # A contract change touches a shared interface field, prompt template
+        # string, or schema field. The blast radius (callers, parsers, templates,
+        # exact-string test assertions) cannot be safely enumerated by a dev agent
+        # within its iteration budget. Force needs_planning so the plan phase
+        # produces an exhaustive reference map before dev begins.
+        if contract_change and sufficiency == "implementation_ready":
+            sufficiency = "needs_planning"
+            state.preflight_sufficiency = sufficiency
+            _log(
+                "  ↑ contract_change=true: overriding sufficiency to needs_planning "
+                "(blast radius enumeration required)"
+            )
+        # Also ensure planning actually runs — plan phase is gated on medium/large.
+        if contract_change and complexity == "small":
+            complexity = "medium"
+            state.preflight_complexity = complexity
+            _log(
+                "  ↑ contract_change=true: upgrading complexity small→medium "
+                "(cross-cutting blast radius)"
+            )
+
         _log(f"  Complexity: {complexity} (from preflight)")
         _log(f"  Sufficiency: {sufficiency}")
         _log(f"  Work type: {work_type}")

@@ -341,3 +341,213 @@ class TestPreflightFailureSetsNeedsPlanning:
 
         # Sufficiency should default to needs_planning on preflight failure
         assert result.state.preflight_sufficiency == "needs_planning"
+
+
+# ── Contract-change override tests ────────────────────────────────────
+
+_PREFLIGHT_CONTRACT_CHANGE_SMALL_IMPL_READY = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Remove gate_result field from dev prompt output."
+sufficiency: implementation_ready
+sufficiency_reason: "Spec has detailed Notes with file paths."
+contract_change: true
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "gate_result removed from output"
+    satisfied: false
+    evidence: "Field still present"
+```
+"""
+
+_PREFLIGHT_NO_CONTRACT_CHANGE_IMPL_READY = """\
+```yaml
+verdict: PROCEED
+complexity: small
+reason: "Add a log message."
+sufficiency: implementation_ready
+sufficiency_reason: "Spec is very clear and narrow."
+contract_change: false
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "Log message added"
+    satisfied: false
+    evidence: "Not found"
+```
+"""
+
+_PREFLIGHT_CONTRACT_CHANGE_MEDIUM_NEEDS_PLANNING = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+reason: "Rename shared field across coordinator."
+sufficiency: needs_planning
+sufficiency_reason: "No Notes, approach unclear."
+contract_change: true
+spec_issues: []
+warnings: []
+criteria_checked:
+  - criterion: "Field renamed"
+    satisfied: false
+    evidence: "Not yet done"
+```
+"""
+
+
+class TestContractChangeOverridesState:
+    """Coordinator enforces needs_planning and medium complexity for contract changes."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_contract_change_impl_ready_overridden_to_needs_planning(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """contract_change=true + implementation_ready → coordinator forces needs_planning."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=_PREFLIGHT_CONTRACT_CHANGE_SMALL_IMPL_READY, cost_usd=0.05
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Plan\n\nStep 1: update all references.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        mock_preflight.return_value = preflight_result
+        results = [plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_dev_agent
+        mock_dev_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # Coordinator must have overridden to needs_planning
+        assert result.state.preflight_sufficiency == "needs_planning"
+        # Coordinator must have upgraded complexity so the plan phase can run
+        assert result.state.preflight_complexity == "medium"
+        # Plan agent must have run (contract change forces planning)
+        assert mock_dev_agent.call_count == 2
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_no_contract_change_impl_ready_not_overridden(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """contract_change=false + implementation_ready → no override; plan stays skipped."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True, output=_PREFLIGHT_NO_CONTRACT_CHANGE_IMPL_READY, cost_usd=0.05
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        mock_preflight.return_value = preflight_result
+        mock_dev_agent.return_value = dev_result
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        # No override — stays implementation_ready
+        assert result.state.preflight_sufficiency == "implementation_ready"
+        # Complexity unchanged
+        assert result.state.preflight_complexity == "small"
+        # Plan agent NOT called
+        assert mock_plan_agent.call_count == 0
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_contract_change_needs_planning_already_unchanged(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """contract_change=true + needs_planning already → no state change; plan runs."""
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_result = _make_agent_result(
+            success=True,
+            output=_PREFLIGHT_CONTRACT_CHANGE_MEDIUM_NEEDS_PLANNING,
+            cost_usd=0.05,
+        )
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Plan\n\nStep 1: enumerate references.",
+            cost_usd=0.10,
+        )
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
+
+        call_idx = {"n": 0}
+        mock_preflight.return_value = preflight_result
+        results = [plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_dev_agent
+        mock_dev_agent.side_effect = agent_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_sufficiency == "needs_planning"
+        assert result.state.preflight_complexity == "medium"
+        assert mock_dev_agent.call_count == 2
+
+
+class TestPreflightPromptContractChangeGuidance:
+    """Preflight prompt includes cross-cutting contract change guidance."""
+
+    def test_prompt_includes_contract_change_needs_planning_criteria(self, tmp_path: Path):
+        """build_preflight_prompt includes contract change as a needs_planning trigger."""
+        from theforge.task import build_preflight_prompt
+        from theforge.task.story import TaskStory
+
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n\nDo something.", encoding="utf-8")
+        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
+        prompt = build_preflight_prompt(task, story_content="# Test\n\nDo something.")
+        assert "contract change" in prompt.lower()
+        assert "blast radius" in prompt.lower()
+        assert "exact-string" in prompt.lower() or "exact-string" in prompt

@@ -1108,11 +1108,27 @@ criteria_checked:
         preflight_result = _make_agent_result(
             success=True, output=_preflight_output, cost_usd=0.03
         )
+        # contract_change=true forces complexity→medium and sufficiency→needs_planning,
+        # so the plan phase runs. Provide a plan result so the mock chain completes.
+        plan_result = _make_agent_result(
+            success=True,
+            output="# Plan\n\nStep 1: update all references.",
+            cost_usd=0.10,
+        )
         dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.30)
 
+        call_idx = {"n": 0}
         mock_preflight.return_value = preflight_result
-        mock_dev_agent.return_value = dev_result
+        results = [plan_result, dev_result]
+
+        def agent_side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_dev_agent
+        mock_dev_agent.side_effect = agent_side_effect
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]

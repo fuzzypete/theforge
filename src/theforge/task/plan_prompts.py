@@ -94,7 +94,10 @@ def build_preflight_prompt(
 
         When verdict is PROCEED, also assess the implementation complexity:
 
-        - **small**: Config change, typo fix, single-file edit, <50 lines changed
+        - **small**: Config change, typo fix, single-file edit, <50 lines changed.
+          Do NOT classify as small if the change touches a shared interface field,
+          prompt template string, or schema field — those have wide blast radius
+          across callers, tests, and exact-string assertions even when conceptually trivial.
         - **medium**: New feature, multi-file change, requires tests, 50–500 lines
         - **large**: Cross-cutting refactor, architectural change, >500 lines, many modules
 
@@ -134,6 +137,16 @@ def build_preflight_prompt(
         - Implementation approach is unclear or underspecified
         - Acceptance criteria describe HOW to implement rather than WHAT to observe
         - Spec lacks enough detail for a dev agent to proceed without a plan
+        - The story is a **contract change** — it removes, renames, or migrates a
+          field or function name that is part of a shared interface (coordinator-agent
+          output schema, prompt template field, review YAML field, config field).
+          These always need planning to enumerate the full blast radius: callers,
+          parsers, prompt templates, fix prompts, and exact-string test assertions
+          that reference the old name. The change may look trivial but the dev agent
+          cannot safely discover all references within its iteration budget.
+        - The story modifies a **prompt template string or field name** that is
+          likely referenced in exact-string test assertions (e.g., tests that assert
+          specific text appears in a generated prompt).
 
         ## Output Format
 
