@@ -986,7 +986,7 @@ class TestCoordinatorDevHandoffValidation:
     def test_invalid_handoff_escalate_emits_logger_event(
         self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """ESCALATE from invalid handoff emits phase_end(VALIDATE, escalate) then escalate event."""
+        """Invalid handoff emits phase_end(VALIDATE, escalate) before escalate event."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -1029,17 +1029,22 @@ class TestCoordinatorDevHandoffValidation:
         assert result.success is False
         assert result.state.phase.name == "ESCALATE"
         assert result.state.escalate_reason
-        assert "invalid" in result.state.escalate_reason.lower() or "retries" in result.state.escalate_reason
+        reason = result.state.escalate_reason
+        assert "invalid" in reason.lower() or "retries" in reason
 
         # Regression: invalid-handoff hard-stop must emit phase_end(VALIDATE, escalate)
         # before the escalate event, matching all other VALIDATE escalation paths.
         validate_events = [e for e in captured if e.get("phase") == "VALIDATE"]
         phase_end_ev = next(
-            (e for e in validate_events if e["event"] == "phase_end" and e.get("outcome") == "escalate"),
+            (
+                e
+                for e in validate_events
+                if e["event"] == "phase_end" and e.get("outcome") == "escalate"
+            ),
             None,
         )
         assert phase_end_ev is not None, (
-            "Expected phase_end(phase=VALIDATE, outcome=escalate) to be emitted on invalid-handoff ESCALATE; "
+            "Expected phase_end(phase=VALIDATE, outcome=escalate) on invalid-handoff ESCALATE; "
             f"VALIDATE events seen: {validate_events}"
         )
         escalate_ev = next(
@@ -1051,5 +1056,6 @@ class TestCoordinatorDevHandoffValidation:
         phase_end_idx = next(i for i, e in enumerate(captured) if e is phase_end_ev)
         escalate_idx = next(i for i, e in enumerate(captured) if e is escalate_ev)
         assert phase_end_idx < escalate_idx, (
-            f"phase_end must be emitted before escalate; phase_end at {phase_end_idx}, escalate at {escalate_idx}"
+            f"phase_end must precede escalate; "
+            f"phase_end at {phase_end_idx}, escalate at {escalate_idx}"
         )
