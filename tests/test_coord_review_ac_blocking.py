@@ -10,6 +10,7 @@ Covers: net_new_pass must not override P1s that violate acceptance criteria.
 from __future__ import annotations
 
 import dataclasses
+from pathlib import Path
 from unittest.mock import patch
 
 from coord_test_helpers import (
@@ -87,6 +88,20 @@ test_coverage:
 """
 
 
+def _in_process_worktree_eval(
+    workspace_path: Path, command: str, payload: dict, timeout: int = 120
+) -> dict:
+    """Run subprocess eval commands in-process for testing.
+
+    This replaces the real _run_worktree_eval which spawns a subprocess.
+    Running in-process allows test patches (e.g. theforge.finding_classifier._get_changed_files)
+    to remain effective during the evaluation.
+    """
+    from theforge.coordinator._subprocess_eval import _COMMANDS
+
+    return _COMMANDS[command](payload)
+
+
 class TestNetNewAcBlocking:
     """net_new_pass must not override P1s that violate acceptance criteria."""
 
@@ -106,13 +121,21 @@ class TestNetNewAcBlocking:
 
         return side_effect
 
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
     @patch("theforge.finding_classifier._get_changed_files")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_net_new_p1_with_matches_spec_false_blocks(
-        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
     ):
         """Net-new P1 from a reviewer who flagged matches_spec=false must block."""
         config = _make_config(tmp_path)  # max_review_cycles=2
@@ -134,13 +157,21 @@ class TestNetNewAcBlocking:
         assert result.phase == Phase.ESCALATE
         assert result.state.review_cycle == 2
 
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
     @patch("theforge.finding_classifier._get_changed_files")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_ac_blocking_audit_records_disposition(
-        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
     ):
         """Audit trail records AC-blocking findings with disposition ac_blocking, not net_new."""
         config = _make_config(tmp_path)  # max_review_cycles=2
@@ -169,13 +200,21 @@ class TestNetNewAcBlocking:
         non_blocking_ids = {r["finding_id"] for r in non_blocking}
         assert ac_blocking[0]["finding_id"] not in non_blocking_ids
 
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
     @patch("theforge.finding_classifier._get_changed_files")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_net_new_p1_with_matches_spec_true_does_not_block(
-        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
     ):
         """Net-new P1 where matches_spec=true passes via net_new_pass (no regression)."""
         config = _make_config(tmp_path)  # max_review_cycles=2
@@ -197,13 +236,21 @@ class TestNetNewAcBlocking:
         assert result.phase == Phase.DONE
         assert result.state.review_cycle == 2
 
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
     @patch("theforge.finding_classifier._get_changed_files")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_ac_blocking_finding_transitions_to_fixed(
-        self, mock_shell, mock_dev, mock_preflight, mock_pool, mock_changed_files, tmp_path
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
     ):
         """AC-blocking finding that disappears in a later cycle transitions to fixed."""
         # 3 cycles: cycle 1 (P1 blocks) → cycle 2 (AC-blocking net-new) → cycle 3 (APPROVE)

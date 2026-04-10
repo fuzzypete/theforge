@@ -8,7 +8,6 @@ from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
-from theforge import finding_classifier as _fc
 from theforge.config import MODEL_REGISTRY, ForgeConfig
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
@@ -17,7 +16,6 @@ from theforge.review import (
     _best_individual_result,
     review_to_dev_handoff,
 )
-from theforge.review_finding_classifier import classify_families
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from .completion import _append_cycle_history, _finalize_approve
@@ -58,11 +56,12 @@ from .run_setup import save_trajectory_state
 from .state import (
     CoordinatorResult,
     CoordinatorState,
+    FindingRecord,
     Phase,
     ReviewCycleMetadata,
     ReviewIterationTelemetry,
 )
-from .util import _fmt_duration, _log, _log_phase, _log_verbose
+from .util import _fmt_duration, _log, _log_phase, _log_verbose, _run_worktree_eval
 
 
 def _build_reviewer_verdicts(state: CoordinatorState) -> dict[str, str]:
@@ -566,21 +565,75 @@ def _run_review_phase(
         sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
     )
 
-    # ── Finding classification ─────────────────────────────────────────
-    # Call classifier for every cycle (cycle 1 finds are all net_new as baseline).
-    # Cycle 1 uses the traditional exit rule (any P1 blocks) because there is no
-    # prior registry to determine which findings are latent vs. real regressions.
-    # Cycle 2+: disposition-gated logic — only unresolved/regression/corroborated_new block.
-    _classified = _fc.update_finding_registry(
-        state=state,
-        cycle_results=state.last_cycle_reviewer_results,
-        workspace_path=workspace_path,
-        cycle_num=state.review_cycle,
-        prev_commit=state.last_dev_start_commit,
-    )
+    # ── Finding classification via worktree subprocess ────────────────────
+    # Run update_finding_registry in the worktree's Python environment so that
+    # self-hosting sprints evaluate the worktree's classifier, not the
+    # coordinator's own copy. sys.path is never mutated; isolation is via
+    # PYTHONPATH in the subprocess.
+    _fr_payload: dict = {
+        "finding_registry": [
+            {
+                "finding_id": r.finding_id,
+                "cycle_first_seen": r.cycle_first_seen,
+                "cycle_last_seen": r.cycle_last_seen,
+                "file": r.file,
+                "line": r.line,
+                "severity": r.severity,
+                "description": r.description,
+                "reporter": r.reporter,
+                "disposition": r.disposition,
+            }
+            for r in state.finding_registry
+        ],
+        "cycle_results": [
+            (
+                reviewer_name,
+                {
+                    "verdict": rr.verdict,
+                    "summary": rr.summary,
+                    "findings": [
+                        {
+                            "severity": f.severity,
+                            "file": f.file,
+                            "line": f.line,
+                            "description": f.description,
+                            "suggestion": f.suggestion,
+                        }
+                        for f in rr.findings
+                    ],
+                    "story_matches": rr.story_matches,
+                    "story_mismatches": rr.story_mismatches,
+                    "test_adequate": rr.test_adequate,
+                    "test_gaps": rr.test_gaps,
+                    "parse_errors": rr.parse_errors,
+                    "raw_yaml": rr.raw_yaml,
+                },
+            )
+            for reviewer_name, rr in state.last_cycle_reviewer_results
+        ],
+        "workspace_path": str(workspace_path),
+        "cycle_num": state.review_cycle,
+        "prev_commit": state.last_dev_start_commit
+        if isinstance(state.last_dev_start_commit, str)
+        else None,
+    }
+    _fr_result = _run_worktree_eval(workspace_path, "update_finding_registry", _fr_payload)
+    # Reconstruct state.finding_registry as FindingRecord objects with shared
+    # references so that AC-blocking disposition mutations below propagate
+    # correctly to the audit trail.
+    state.finding_registry = [FindingRecord(**r) for r in _fr_result["finding_registry"]]
+    _classified = [state.finding_registry[i] for i in _fr_result["classified_indices"]]
+
     if state.review_cycle >= 2:
-        _blocking_p1 = _fc.has_blocking_p1(_classified)
-        _nonblocking_p1s = _fc.net_new_p1s(_classified)
+        # has_blocking_p1 / net_new_p1s inlined to avoid importing theforge.finding_classifier.
+        # Logic is identical to the functions in finding_classifier.py.
+        _BLOCKING_DISPOSITIONS = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
+        _blocking_p1 = any(
+            r.severity == "P1" and r.disposition in _BLOCKING_DISPOSITIONS for r in _classified
+        )
+        _nonblocking_p1s = [
+            r for r in _classified if r.severity == "P1" and r.disposition == "net_new"
+        ]
         # AC-violation override: a net-new P1 from a reviewer who also flagged
         # matches_spec=false is not speculative — it asserts the story was not completed
         # correctly and must block regardless of its disposition classification.
@@ -615,7 +668,7 @@ def _run_review_phase(
         _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
 
-    # ── Trajectory classification ─────────────────────────────────────────
+    # ── Trajectory classification via worktree subprocess ─────────────────
     # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
     # Uses a dedicated monotonic counter (trajectory_cycle) that is never reset
     # or decremented by extend/reject/exhausted-gate paths — unlike review_cycle.
@@ -635,29 +688,27 @@ def _run_review_phase(
 
     # Classify families on cycle 2+ (need at least one prior cycle to match against)
     if state.trajectory_cycle >= 2:
-        # Reconstruct ReviewFinding objects from stored dicts for the matching machinery
-        _prior_rf: list[tuple[int, list[ReviewFinding]]] = [
-            (
-                cycle_num,
-                [
-                    ReviewFinding(
-                        severity=fd.get("severity", "P1"),
-                        file=fd.get("file", ""),
-                        line=fd.get("line"),
-                        description=fd.get("description", ""),
-                        suggestion=None,
-                    )
-                    for fd in findings
-                ],
-            )
-            for cycle_num, findings in state.review_cycle_findings[:-1]
-        ]
-        state.finding_trajectory, state.surviving_families = classify_families(
-            current_findings=list(parsed_review.findings),
-            current_cycle=state.trajectory_cycle,
-            trajectory_store=state.finding_trajectory,
-            prior_cycle_findings=_prior_rf,
-        )
+        _cf_payload: dict = {
+            "current_findings": [
+                {
+                    "severity": f.severity,
+                    "file": f.file,
+                    "line": f.line,
+                    "description": f.description,
+                    "suggestion": f.suggestion,
+                }
+                for f in parsed_review.findings
+            ],
+            "current_cycle": state.trajectory_cycle,
+            "trajectory_store": state.finding_trajectory,
+            # Pass stored dicts directly; subprocess eval handles missing suggestion
+            "prior_cycle_findings": [
+                (cycle_num, findings) for cycle_num, findings in state.review_cycle_findings[:-1]
+            ],
+        }
+        _cf_result = _run_worktree_eval(workspace_path, "classify_families", _cf_payload)
+        state.finding_trajectory = _cf_result["trajectory_store"]
+        state.surviving_families = _cf_result["surviving_families"]
     else:
         state.surviving_families = []
 

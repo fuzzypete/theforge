@@ -43,7 +43,6 @@ from theforge.artifacts import (
     resolve_handoff_path,
 )
 from theforge.config import ForgeConfig
-from theforge.devhandoff import check_handoff_story_consistency
 from theforge.review import ReviewFinding, ReviewResult
 from theforge.sessions import save_sessions
 from theforge.task import (
@@ -78,6 +77,7 @@ from .util import (
     _log,
     _log_phase,
     _log_verbose,
+    _run_worktree_eval,
 )
 from .workspace import _check_behind_origin, _create_workspace
 from .workspace_scrub import _scrub_forge_history
@@ -370,7 +370,15 @@ def _coordinator_loop(
         _handoff = _parse_dev_handoff(config, workspace_path)
         _handoff_errors = list(_handoff.parse_errors) if _handoff is not None else []
         if _handoff is not None and not _handoff_errors:
-            _handoff_errors.extend(check_handoff_story_consistency(_handoff, story_content))
+            _hc_result = _run_worktree_eval(
+                workspace_path,
+                "check_handoff_consistency",
+                {
+                    "acceptance_criteria": _handoff.acceptance_criteria,
+                    "story_content": story_content,
+                },
+            )
+            _handoff_errors.extend(_hc_result["errors"])
         if _handoff is not None and _handoff_errors:
             _max_hf_retries = config.retry.max_handoff_retries
             for _hf_attempt in range(_max_hf_retries):
@@ -409,9 +417,15 @@ def _coordinator_loop(
                 if _handoff is not None:
                     _handoff_errors.extend(_handoff.parse_errors)
                     if not _handoff_errors:
-                        _handoff_errors.extend(
-                            check_handoff_story_consistency(_handoff, story_content)
+                        _hc_result = _run_worktree_eval(
+                            workspace_path,
+                            "check_handoff_consistency",
+                            {
+                                "acceptance_criteria": _handoff.acceptance_criteria,
+                                "story_content": story_content,
+                            },
                         )
+                        _handoff_errors.extend(_hc_result["errors"])
                 if _handoff is None or not _handoff_errors:
                     _log("  ✓ HANDOFF   valid")
                     break
