@@ -817,6 +817,7 @@ class TestFinalizeApproveMergePr:
     """Test _finalize_approve routes merge-pr correctly."""
 
     def test_merge_pr_path_in_finalize_approve(self, tmp_path: Path) -> None:
+        """_finalize_approve defers landing — sets pending_integration, never calls _merge_pr."""
         from theforge.coordinator.completion import _finalize_approve
         from theforge.coordinator.state import CoordinatorState, Phase
 
@@ -829,13 +830,6 @@ class TestFinalizeApproveMergePr:
 
         with patch(
             "theforge.coordinator.completion._merge_pr",
-            return_value={
-                "action": "merge-pr",
-                "pr_url": "https://github.com/fuzzypete/theforge/pull/99",
-                "merged": True,
-                "success": True,
-                "error": None,
-            },
         ) as mock_merge_pr:
             result = _finalize_approve(
                 state,
@@ -856,11 +850,12 @@ class TestFinalizeApproveMergePr:
         assert result.success is True
         assert result.merge is not None
         assert result.merge["action"] == "merge-pr"
-        assert result.merge["merged"] is True
-        assert "PR merged" in result.message
-        mock_merge_pr.assert_called_once()
+        assert result.merge.get("pending") is True
+        assert result.landing_status == "pending_integration"
+        mock_merge_pr.assert_not_called()
 
     def test_merge_pr_failure_in_finalize_approve(self, tmp_path: Path) -> None:
+        """_finalize_approve defers landing — returns pending_integration, never fails."""
         from theforge.coordinator.completion import _finalize_approve
         from theforge.coordinator.state import CoordinatorState, Phase
 
@@ -871,37 +866,26 @@ class TestFinalizeApproveMergePr:
         state.phase = Phase.REVIEW
         import time
 
-        with patch(
-            "theforge.coordinator.completion._merge_pr",
-            return_value={
-                "action": "merge-pr",
-                "pr_url": None,
-                "merged": False,
-                "success": False,
-                "error": "gh auth failed",
-            },
-        ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=False,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
-            )
+        result = _finalize_approve(
+            state,
+            config,
+            task,
+            review,
+            tmp_path,
+            "forge/test-task",
+            time.monotonic(),
+            auto_merge=False,
+            notify=False,
+            logger=None,
+            review_cost=0.5,
+            review_elapsed=1.0,
+            message="done. ",
+        )
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert result.merge["merged"] is False
-        assert result.landing_status == "failed"
-        assert "merge-pr failed" in result.message
+        assert result.landing_status == "pending_integration"
+        assert result.merge == {"action": "merge-pr", "pending": True}
 
     def test_auto_merge_overrides_merge_pr(self, tmp_path: Path) -> None:
         """When auto_merge=True is passed, merge-pr config is overridden to use local merge."""
@@ -944,17 +928,16 @@ class TestFinalizeApproveMergePr:
 
 
 class TestPreMergeDirtyWorktreeCleanup:
-    def test_tracked_dirty_worktree_is_committed_before_merge(self, tmp_path: Path) -> None:
-        import time
+    """Pre-merge worktree cleanup lives in land_story(), not _finalize_approve()."""
 
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
+    def test_tracked_dirty_worktree_is_committed_before_merge(self, tmp_path: Path) -> None:
+        from theforge.coordinator.completion import land_story
+        from theforge.coordinator.state import CoordinatorState
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = CoordinatorState()
-        state.phase = Phase.REVIEW
 
         shell_calls: list[str] = []
 
@@ -975,23 +958,11 @@ class TestPreMergeDirtyWorktreeCleanup:
                 return_value={"merged": True, "error": None},
             ) as mock_merge_branch,
         ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=True,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
+            merge_info, landing_status = land_story(
+                config, task, "forge/test-task", tmp_path, review, state, "merge"
             )
 
-        assert result.success is True
+        assert landing_status == "landed"
         assert shell_calls == [
             "git status --porcelain",
             "git add -- tracked.py added.py removed.py",
@@ -1000,16 +971,13 @@ class TestPreMergeDirtyWorktreeCleanup:
         mock_merge_branch.assert_called_once()
 
     def test_clean_worktree_skips_pre_merge_commit(self, tmp_path: Path) -> None:
-        import time
-
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
+        from theforge.coordinator.completion import land_story
+        from theforge.coordinator.state import CoordinatorState
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = CoordinatorState()
-        state.phase = Phase.REVIEW
 
         shell_calls: list[str] = []
 
@@ -1026,37 +994,22 @@ class TestPreMergeDirtyWorktreeCleanup:
                 return_value={"merged": True, "error": None},
             ) as mock_merge_branch,
         ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=True,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
+            merge_info, landing_status = land_story(
+                config, task, "forge/test-task", tmp_path, review, state, "merge"
             )
 
-        assert result.success is True
+        assert landing_status == "landed"
         assert shell_calls == ["git status --porcelain"]
         mock_merge_branch.assert_called_once()
 
     def test_untracked_files_are_warned_but_not_added(self, tmp_path: Path) -> None:
-        import time
-
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
+        from theforge.coordinator.completion import land_story
+        from theforge.coordinator.state import CoordinatorState
 
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = CoordinatorState()
-        state.phase = Phase.REVIEW
 
         shell_calls: list[str] = []
         log_messages: list[str] = []
@@ -1079,23 +1032,11 @@ class TestPreMergeDirtyWorktreeCleanup:
                 return_value={"merged": True, "error": None},
             ),
         ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=True,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
+            merge_info, landing_status = land_story(
+                config, task, "forge/test-task", tmp_path, review, state, "merge"
             )
 
-        assert result.success is True
+        assert landing_status == "landed"
         assert shell_calls == [
             "git status --porcelain",
             "git add -- tracked.py",
@@ -1308,19 +1249,17 @@ class TestPrBodyContent:
 
 
 class TestMergePrEscalate:
-    """_finalize_approve preserves approval when merge-pr landing fails."""
+    """land_story() preserves approval when merge-pr landing fails."""
 
     def test_finalize_approve_escalates_on_merge_pr_failure(self, tmp_path: Path) -> None:
-        import time
-
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
+        """land_story returns landing_status='failed' when _merge_pr fails."""
+        from theforge.coordinator.completion import land_story
+        from theforge.coordinator.state import CoordinatorState
 
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = CoordinatorState()
-        state.phase = Phase.REVIEW
 
         with patch(
             "theforge.coordinator.completion._merge_pr",
@@ -1332,39 +1271,22 @@ class TestMergePrEscalate:
                 "error": "rebase conflict on main",
             },
         ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=False,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
+            merge_info, landing_status = land_story(
+                config, task, "forge/test-task", tmp_path, review, state, "merge-pr"
             )
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.merge["merged"] is False
-        assert result.landing_status == "failed"
-        assert state.phase == Phase.DONE
+        assert merge_info["merged"] is False
+        assert landing_status == "failed"
 
     def test_finalize_approve_done_on_merge_pr_success(self, tmp_path: Path) -> None:
-        import time
-
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
+        """land_story returns landing_status='landed' when _merge_pr succeeds."""
+        from theforge.coordinator.completion import land_story
+        from theforge.coordinator.state import CoordinatorState
 
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = CoordinatorState()
-        state.phase = Phase.REVIEW
 
         with patch(
             "theforge.coordinator.completion._merge_pr",
@@ -1376,25 +1298,12 @@ class TestMergePrEscalate:
                 "error": None,
             },
         ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=False,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
+            merge_info, landing_status = land_story(
+                config, task, "forge/test-task", tmp_path, review, state, "merge-pr"
             )
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.merge["merged"] is True
+        assert merge_info["merged"] is True
+        assert landing_status == "landed"
 
 
 # ── Config validation: merge_strategy ────────────────────────────
@@ -1519,16 +1428,14 @@ class TestFastForwardAfterMerge:
         assert any(cmd[:4] == ["git", "push", "origin", "--delete"] for cmd in cleanup_calls)
 
     def test_finalize_approve_keeps_done_for_merge_queued(self, tmp_path: Path) -> None:
-        import time
-
-        from theforge.coordinator.completion import _finalize_approve
-        from theforge.coordinator.state import CoordinatorState, Phase
+        """land_story returns landing_status='pending_integration' when PR merge is queued."""
+        from theforge.coordinator.completion import land_story
+        from theforge.coordinator.state import CoordinatorState
 
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
         state = CoordinatorState()
-        state.phase = Phase.REVIEW
 
         with patch(
             "theforge.coordinator.completion._merge_pr",
@@ -1542,22 +1449,9 @@ class TestFastForwardAfterMerge:
                 "error": None,
             },
         ):
-            result = _finalize_approve(
-                state,
-                config,
-                task,
-                review,
-                tmp_path,
-                "forge/test-task",
-                time.monotonic(),
-                auto_merge=False,
-                notify=False,
-                logger=None,
-                review_cost=0.5,
-                review_elapsed=1.0,
-                message="done. ",
+            merge_info, landing_status = land_story(
+                config, task, "forge/test-task", tmp_path, review, state, "merge-pr"
             )
 
-        assert result.success is True
-        assert result.phase == Phase.DONE
-        assert result.merge["merge_queued"] is True
+        assert merge_info["merge_queued"] is True
+        assert landing_status == "pending_integration"

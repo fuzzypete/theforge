@@ -800,6 +800,36 @@ def run_task(
             state_update_fn=state_update_fn,
             stop_phase=stop_phase,
         )
+
+        # ── Landing (single-story path) ───────────────────────────────
+        # _finalize_approve defers all git operations and sets landing_status
+        # = "pending_integration".  We perform the actual merge here, without
+        # a lock, because single-story runs have exactly one worker.
+        if result.success and result.landing_status == "pending_integration":
+            from .completion import land_story  # noqa: PLC0415
+
+            _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
+            _parsed_review = state.review_results[-1] if state.review_results else None
+            _merge_info, _landing_status = land_story(
+                config,
+                task,
+                branch_name,
+                workspace_path,
+                _parsed_review,
+                state,
+                _effective_on_approve,
+                logger=logger,
+                run_id=_run_id,
+            )
+            result.merge = _merge_info
+            result.landing_status = _landing_status
+            if _merge_info.get("merged"):
+                result.message += " Merged."
+            elif _merge_info.get("merge_queued"):
+                result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
+            elif _landing_status == "failed":
+                result.message += f" Merge failed: {_merge_info.get('error', 'unknown')}"
+
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
         logger._safe_emit(
@@ -928,6 +958,34 @@ def _run_resume_coordinator(
             logger=logger,
             state_update_fn=state_update_fn,
         )
+
+        # ── Landing (single-story resume path) ───────────────────────
+        if result.success and result.landing_status == "pending_integration":
+            from .completion import land_story  # noqa: PLC0415
+
+            _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
+            _parsed_review = state.review_results[-1] if state.review_results else None
+            _rws = state.workspace_path or workspace_path
+            _merge_info, _landing_status = land_story(
+                config,
+                task,
+                branch_name,
+                _rws,
+                _parsed_review,
+                state,
+                _effective_on_approve,
+                logger=logger,
+                run_id=logger._run_id if logger else "",
+            )
+            result.merge = _merge_info
+            result.landing_status = _landing_status
+            if _merge_info.get("merged"):
+                result.message += " Merged."
+            elif _merge_info.get("merge_queued"):
+                result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
+            elif _landing_status == "failed":
+                result.message += f" Merge failed: {_merge_info.get('error', 'unknown')}"
+
         _total_elapsed = time.monotonic() - _task_start
         _fire_post_run_hook(config, state, task, result, logger._run_id, _total_elapsed, logger)
         logger._safe_emit(

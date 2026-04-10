@@ -839,7 +839,7 @@ class TestParallelDependencySafety:
 
         with (
             patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]) as mock_run,
-            patch("theforge.sprint.runner._merge_branch", side_effect=_fake_merge),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=_fake_merge),
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=False)
 
@@ -871,6 +871,11 @@ class TestParallelMergeOrderingParallelMode:
         # Both complete successfully (no real merge needed in test)
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        # Simulate what _finalize_approve sets when auto_merge=True
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+        result_b.landing_status = "pending_integration"
+        result_b.merge = {"action": "merge", "pending": True}
 
         merge_calls: list[str] = []
 
@@ -880,7 +885,7 @@ class TestParallelMergeOrderingParallelMode:
 
         with (
             patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]),
-            patch("theforge.sprint.runner._merge_branch", side_effect=_fake_merge),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=_fake_merge),
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
@@ -934,7 +939,8 @@ class TestParallelMergeOrderingParallelMode:
             phase=Phase.DONE,
             state=state,
             message="Done.",
-            merge={"action": "none", "success": True, "error": None},
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
         )
 
         merge_info = {
@@ -1012,7 +1018,8 @@ class TestParallelMergeOrderingParallelMode:
             phase=Phase.DONE,
             state=state,
             message="Done.",
-            merge={"action": "none", "success": True, "error": None},
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
         )
 
         with (
@@ -1094,7 +1101,8 @@ class TestParallelMergeOrderingParallelMode:
             phase=Phase.DONE,
             state=state,
             message="Done.",
-            merge={"action": "none", "success": True, "error": None},
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
         )
 
         with (
@@ -1152,13 +1160,14 @@ class TestParallelMergeOrderingParallelMode:
             phase=Phase.DONE,
             state=state,
             message="Done.",
-            merge={"action": "none", "success": True, "error": None},
+            merge={"action": "merge", "pending": True},
+            landing_status="pending_integration",
         )
 
         with (
             patch("theforge.sprint.runner.run_task", return_value=result),
             patch(
-                "theforge.sprint.runner._merge_branch",
+                "theforge.coordinator.completion._merge_branch",
                 return_value={
                     "action": "merge",
                     "merged": False,
@@ -1467,7 +1476,8 @@ class TestQueuedMergePolling:
             phase=Phase.DONE,
             state=state,
             message="Done.",
-            merge={"action": "none", "success": True, "error": None},
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
         )
 
         with (
@@ -1533,6 +1543,8 @@ class TestQueuedMergePolling:
         )
 
         queued_result = _make_coordinator_result(success=True, cost=1.0)
+        queued_result.landing_status = "pending_integration"
+        queued_result.merge = {"action": "merge-pr", "pending": True}
         queued_result.state.review_results = [
             ReviewResult(
                 verdict="APPROVE",
@@ -1547,6 +1559,8 @@ class TestQueuedMergePolling:
             )
         ]
         landed_result = _make_coordinator_result(success=True, cost=1.0)
+        landed_result.landing_status = "pending_integration"
+        landed_result.merge = {"action": "merge-pr", "pending": True}
         landed_result.state.review_results = [
             ReviewResult(
                 verdict="APPROVE",
@@ -1633,6 +1647,11 @@ class TestImmediateIntegrationLanding:
 
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
+        # Simulate what _finalize_approve sets when auto_merge=True
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+        result_b.landing_status = "pending_integration"
+        result_b.merge = {"action": "merge", "pending": True}
         events: list[str] = []
 
         def fake_run_task(*args, **kwargs):  # noqa: ANN001
@@ -1646,7 +1665,7 @@ class TestImmediateIntegrationLanding:
 
         with (
             patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
-            patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
@@ -1673,6 +1692,11 @@ class TestImmediateIntegrationLanding:
         state_b.preflight_result = MagicMock(cost_usd=1.0)
         result_a = CoordinatorResult(True, Phase.DONE, state_a, "Done.")
         result_b = CoordinatorResult(True, Phase.DONE, state_b, "Done.")
+        # Simulate what _finalize_approve sets when auto_merge=True
+        result_a.landing_status = "pending_integration"
+        result_a.merge = {"action": "merge", "pending": True}
+        result_b.landing_status = "pending_integration"
+        result_b.merge = {"action": "merge", "pending": True}
 
         def fake_run_task(*args, **kwargs):  # noqa: ANN001
             task = args[1]
@@ -1689,7 +1713,7 @@ class TestImmediateIntegrationLanding:
 
         with (
             patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
-            patch("theforge.sprint.runner._merge_branch", side_effect=fake_merge),
+            patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
@@ -1735,6 +1759,8 @@ class TestImmediateIntegrationLanding:
             )
         ]
         result = CoordinatorResult(True, Phase.DONE, state, "Done.")
+        result.landing_status = "pending_integration"
+        result.merge = {"action": "merge-pr", "pending": True}
 
         with (
             patch("theforge.sprint.runner.run_task", return_value=result),
