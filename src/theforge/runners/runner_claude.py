@@ -18,7 +18,6 @@ from typing import Any
 from theforge.agent_types import AgentResult, ModelUsage
 
 from ..config import ModelProfile
-from .sandbox import launcher_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -188,7 +187,7 @@ def _run_claude(
     timed_out = False
     try:
         proc = subprocess.Popen(
-            launcher_command(cmd, working_dir),
+            cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

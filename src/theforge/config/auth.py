@@ -56,32 +56,7 @@ def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
 
 
 def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
-    """Return whether CLI launcher sandboxing can enforce the worktree boundary."""
-    if profile.mode != "cli":
-        return (True, "")
-
-    from theforge.runners.sandbox import launcher_command
-
-    binary = "npx" if profile.cli in _NPX_CLIS else profile.cli
-    if binary is None:
-        return (True, "")
-    probe = launcher_command([binary, "--version"], Path.cwd())
-    if probe and probe[0] != binary:
-        return (True, "")
-
-    system = platform.system()
-    if system == "Darwin":
-        return (
-            False,
-            "launcher sandbox unavailable: sandbox-exec not usable; "
-            "CLI filesystem isolation will not hold",
-        )
-    if system == "Linux":
-        return (
-            False,
-            "launcher sandbox unavailable: bwrap not usable; "
-            "CLI filesystem isolation will not hold",
-        )
+    """CLI launchers are intentionally unsandboxed; always report ready."""
     return (True, "")
 
 

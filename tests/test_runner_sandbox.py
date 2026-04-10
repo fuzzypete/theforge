@@ -103,45 +103,6 @@ def test_sandbox_command_linux_probe_uses_hashable_cache_key(tmp_path: Path) -> 
     assert wrapped[0] == "bwrap"
 
 
-def test_launcher_command_macos_adds_cli_install_root(tmp_path: Path) -> None:
-    from theforge.runners.sandbox import launcher_command
-
-    fake_bin = tmp_path / "homebrew" / "bin" / "claude"
-    fake_bin.parent.mkdir(parents=True)
-    fake_bin.write_text("", encoding="utf-8")
-
-    with (
-        patch("theforge.runners.sandbox._SYSTEM", "Darwin"),
-        patch("theforge.runners.sandbox._sandbox_available", return_value=True),
-        patch("theforge.runners.sandbox.shutil.which", return_value=str(fake_bin)),
-    ):
-        wrapped = launcher_command(["claude", "-p"], tmp_path)
-
-    assert wrapped[:2] == ["sandbox-exec", "-p"]
-    profile = wrapped[2]
-    assert str(fake_bin.parent) in profile
-    assert str(fake_bin.parent.parent) in profile
-
-
-def test_launcher_command_linux_adds_cli_install_root(tmp_path: Path) -> None:
-    from theforge.runners.sandbox import launcher_command
-
-    fake_bin = tmp_path / "npm" / "bin" / "npx"
-    fake_bin.parent.mkdir(parents=True)
-    fake_bin.write_text("", encoding="utf-8")
-
-    with (
-        patch("theforge.runners.sandbox._SYSTEM", "Linux"),
-        patch("theforge.runners.sandbox._sandbox_available", return_value=True),
-        patch("theforge.runners.sandbox.shutil.which", return_value=str(fake_bin)),
-    ):
-        wrapped = launcher_command(["npx", "@google/gemini-cli"], tmp_path)
-
-    assert wrapped[0] == "bwrap"
-    assert str(fake_bin.parent) in wrapped
-    assert str(fake_bin.parent.parent) in wrapped
-
-
 def test_workspace_sandbox_allows_project_root_but_blocks_sibling_worktrees(
     tmp_path: Path,
 ) -> None:

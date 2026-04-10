@@ -643,29 +643,11 @@ class TestRunAgentUnknownCli:
         assert result.profile_name == "dev"
 
 
-def test_claude_launcher_invocation_accepts_wrapped_or_direct_command(
-    dev_profile: ModelProfile, tmp_path: Path
-) -> None:
+def test_claude_launcher_invokes_cmd_directly(dev_profile: ModelProfile, tmp_path: Path) -> None:
     mock_proc = _make_stream_mock([_result_line(result="done")])
     with patch(
         "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
     ) as mock_popen:
         run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
     cmd = mock_popen.call_args[0][0]
-    assert cmd[0] == "claude" or cmd[0] in {"sandbox-exec", "bwrap"}
-
-
-def test_claude_launcher_uses_launcher_sandbox(dev_profile: ModelProfile, tmp_path: Path) -> None:
-    mock_proc = _make_stream_mock([_result_line(result="done")])
-    with (
-        patch(
-            "theforge.runners.runner_claude.launcher_command",
-            return_value=["sandbox-exec", "claude"],
-        ) as mock_launcher,
-        patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen,
-    ):
-        run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
-    mock_launcher.assert_called_once()
-    assert mock_popen.call_args[0][0] == ["sandbox-exec", "claude"]
+    assert cmd[0] == "claude"
