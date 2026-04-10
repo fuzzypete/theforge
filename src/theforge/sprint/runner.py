@@ -865,7 +865,7 @@ def run_sprint(
                         poll_result = _poll_queued_pr(
                             dep_pr_url,
                             config.project_root,
-                            config.workspace.ci_check_timeout_seconds,
+                            config.workspace.merge_wait_timeout_seconds,
                         )
                         if poll_result["status"] == "merged":
                             merged_slugs.add(dep)
@@ -874,9 +874,15 @@ def run_sprint(
                             _write_story_audit(config, dep_task, dep_result)
                         else:
                             dep_result.landing_status = "failed"
-                            dep_result.state.error = (
-                                f"Queued PR {poll_result['status']}: {dep_pr_url}"
-                            )
+                            if poll_result["status"] == "timeout":
+                                dep_result.state.error = (
+                                    f"Queued PR timed out after "
+                                    f"{config.workspace.merge_wait_timeout_seconds}s: {dep_pr_url}"
+                                )
+                            else:
+                                dep_result.state.error = (
+                                    f"Queued PR {poll_result['status']}: {dep_pr_url}"
+                                )
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result)
                             _log(
@@ -1153,7 +1159,7 @@ def run_sprint(
             poll_result = _poll_queued_pr(
                 pr_url,
                 config.project_root,
-                config.workspace.ci_check_timeout_seconds,
+                config.workspace.merge_wait_timeout_seconds,
             )
             if poll_result["status"] == "merged":
                 merged_slugs.add(slug)
@@ -1163,7 +1169,13 @@ def run_sprint(
                 specs_succeeded -= 1
                 specs_failed += 1
                 result.landing_status = "failed"
-                result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
+                if poll_result["status"] == "timeout":
+                    result.state.error = (
+                        f"Queued PR timed out after "
+                        f"{config.workspace.merge_wait_timeout_seconds}s: {pr_url}"
+                    )
+                else:
+                    result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _write_story_audit(config, task, result)
             del queued_prs[slug]

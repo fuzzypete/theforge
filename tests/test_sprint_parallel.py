@@ -1542,6 +1542,7 @@ class TestQueuedMergePolling:
                 on_approve="merge-pr",
                 auto_push=True,
                 ci_check_timeout_seconds=60,
+                merge_wait_timeout_seconds=60,
             ),
         )
 
@@ -1608,7 +1609,7 @@ class TestQueuedMergePolling:
             60,
         )
         assert result.landing_status == "failed"
-        assert result.state.error == "Queued PR timeout: https://github.com/x/y/pull/7"
+        assert result.state.error == "Queued PR timed out after 60s: https://github.com/x/y/pull/7"
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 0
@@ -1631,6 +1632,7 @@ class TestQueuedMergePolling:
                 on_approve="merge-pr",
                 auto_push=True,
                 ci_check_timeout_seconds=60,
+                merge_wait_timeout_seconds=60,
             ),
         )
 
@@ -1723,6 +1725,179 @@ class TestQueuedMergePolling:
         assert landed_result.landing_status == "landed"
         assert queued_result.landing_status == "landed"
         assert mock_poll.call_count == 1
+
+    def test_queued_pr_closed_fail_closed_during_wrap_up(self, tmp_path: Path) -> None:
+        """Closed queued PR → failed landing, error message references 'closed'."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md"], budget=10.0, max_parallel=2
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+                merge_wait_timeout_seconds=60,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
+        )
+
+        with (
+            patch("theforge.sprint.runner.run_task", return_value=result),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/x/y/pull/9",
+                    "merged": False,
+                    "merge_queued": True,
+                    "auto_merge_queued": True,
+                    "success": True,
+                    "error": None,
+                },
+            ),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                return_value={"status": "closed"},
+            ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert result.landing_status == "failed"
+        assert "closed" in (result.state.error or "")
+        assert "timed out" not in (result.state.error or "")
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+
+    def test_queued_pr_timeout_blocks_dependent(self, tmp_path: Path) -> None:
+        """Timeout on queued dep PR → dependent story is not dispatched."""
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+                merge_wait_timeout_seconds=60,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        queued_result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
+        )
+
+        dispatched: list[str] = []
+
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            dispatched.append(task.slug)
+            return queued_result
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/x/y/pull/10",
+                    "merged": False,
+                    "merge_queued": True,
+                    "auto_merge_queued": True,
+                    "success": True,
+                    "error": None,
+                },
+            ),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                return_value={"status": "timeout"},
+            ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        # Dependent story-b must never be dispatched when story-a times out
+        assert "story-b" not in dispatched
+        assert queued_result.landing_status == "failed"
+        assert "timed out" in (queued_result.state.error or "")
+        assert sprint.specs_failed >= 1
 
 
 class TestImmediateIntegrationLanding:

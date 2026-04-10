@@ -9,6 +9,9 @@ workspace:
   on_approve: merge-pr
   merge_strategy: squash
   auto_push: true
+  # Bounds queued auto-merge polling. Expiry is fail-closed: story is marked
+  # failed and dependents remain blocked. Increase for slow CI environments.
+  merge_wait_timeout_seconds: 3600
 
 validation:
   gate_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"

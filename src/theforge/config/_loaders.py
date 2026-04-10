@@ -57,6 +57,9 @@ def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
         ci_check_timeout_seconds=int(
             ws_data.get("ci_check_timeout_seconds", DEFAULT_WORKSPACE.ci_check_timeout_seconds)
         ),
+        merge_wait_timeout_seconds=int(
+            ws_data.get("merge_wait_timeout_seconds", DEFAULT_WORKSPACE.merge_wait_timeout_seconds)
+        ),
     )
 
 
