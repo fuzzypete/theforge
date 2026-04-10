@@ -38,8 +38,8 @@ retry:
 # Explicit profiles until adaptive assignment is stable
 profiles:
   dev:
-    cli: claude
-    model: claude-sonnet-4-6
+    provider: openai
+    model: gpt-5.4
     budget_usd: 50.00
     timeout_seconds: 600
     timeout_medium_seconds: 900
