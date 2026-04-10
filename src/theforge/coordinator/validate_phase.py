@@ -5,11 +5,11 @@ from __future__ import annotations
 import dataclasses
 import subprocess
 import time
+import types
 from enum import Enum, auto
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.conventions import check_hard_conventions, new_hard_convention_violations_since_ref
 from theforge.task import TaskStory
 
 from . import util as _cu
@@ -336,14 +336,30 @@ def _run_validate_phase(
     )
 
     # Hard convention checks (post-gate, only on PASS path)
+    # Run in the worktree's subprocess so self-hosting sprints evaluate the
+    # worktree's version of conventions.py, not the coordinator's own copy.
     if config.conventions_hard is not None:
+        _config_dict = dataclasses.asdict(config.conventions_hard)
         baseline_ref = _get_convention_baseline_ref(workspace_path, config.workspace.base_branch)
         if baseline_ref is not None:
-            all_cv_violations, cv_violations = new_hard_convention_violations_since_ref(
-                config.conventions_hard, workspace_path, baseline_ref
+            _cv_result = _cu._run_worktree_eval(
+                workspace_path,
+                "check_conventions",
+                {
+                    "config": _config_dict,
+                    "project_root": str(workspace_path),
+                    "baseline_ref": baseline_ref,
+                },
             )
+            all_cv_violations = [types.SimpleNamespace(**d) for d in _cv_result["all_violations"]]
+            cv_violations = [types.SimpleNamespace(**d) for d in _cv_result["violations"]]
         else:
-            all_cv_violations = check_hard_conventions(config.conventions_hard, workspace_path)
+            _cv_result = _cu._run_worktree_eval(
+                workspace_path,
+                "check_conventions",
+                {"config": _config_dict, "project_root": str(workspace_path)},
+            )
+            all_cv_violations = [types.SimpleNamespace(**d) for d in _cv_result["violations"]]
             cv_violations = all_cv_violations
         if cv_violations:
             state.convention_violations = [

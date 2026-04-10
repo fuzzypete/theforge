@@ -6,6 +6,7 @@ Extracted from coord_state.py so that coord_state.py can remain stdlib-only
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import signal
@@ -15,6 +16,15 @@ from pathlib import Path
 
 from theforge.coordinator.log_tee import get_worker_slug
 from theforge.log_level import LogLevel
+
+# Stable reference captured at import time so test patches that replace the
+# subprocess module attribute (e.g. patch("validate_phase.subprocess.run"))
+# do not accidentally intercept worktree eval subprocess calls.
+_subprocess_run = subprocess.run
+
+# Absolute path to the subprocess eval entry point — invoked by path so the
+# coordinator's own version runs regardless of what the installed package provides.
+_SUBPROCESS_EVAL = Path(__file__).parent / "_subprocess_eval.py"
 
 # ── Log level ─────────────────────────────────────────────────────────
 
@@ -167,3 +177,47 @@ def _run_shell(
                     stream.close()
                 except Exception:
                     pass
+
+
+# ── Worktree project-code evaluation ────────────────────────────────────
+
+
+def _run_worktree_eval(
+    workspace_path: Path,
+    command: str,
+    payload: dict,
+    timeout: int = 120,
+) -> dict:
+    """Run a project-code evaluation in the worktree's Python environment.
+
+    Prepends workspace_path/src to PYTHONPATH so the subprocess imports
+    theforge.* modules from the worktree rather than the coordinator's copies.
+    This is the isolation boundary for self-hosting: project code is never
+    imported into the coordinator's process; it runs only in this subprocess.
+
+    Returns the parsed JSON result dict. Raises RuntimeError on subprocess
+    failure.
+    """
+    env = os.environ.copy()
+    worktree_src = str((workspace_path / "src").resolve())
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = worktree_src + (os.pathsep + existing if existing else "")
+
+    result = _subprocess_run(
+        [sys.executable, str(_SUBPROCESS_EVAL), command],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=str(workspace_path),
+        timeout=timeout,
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise RuntimeError(
+            f"Worktree eval {command!r} failed (exit {result.returncode}): "
+            f"{stderr or '(no stderr)'}"
+        )
+
+    return json.loads(result.stdout)
