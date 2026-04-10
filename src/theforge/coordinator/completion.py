@@ -407,14 +407,6 @@ def _merge_pr(
     merge_queued = False
     auto_merge_queued = False
     merge_retry_error = "base branch was modified"
-    branch_protection_markers = (
-        "required status",
-        "protected branch",
-        "cannot be merged",
-        "branch protection",
-        "required check",
-        "required reviews",
-    )
 
     try:
         merged_pr_proc = subprocess.run(
@@ -546,47 +538,11 @@ def _merge_pr(
         # before any push/merge consumes the rewritten commit graph.
         _deindex_forge_artifacts(push_cwd)
 
-        # Step 5: merge the PR remotely from the repo root. Running gh from the
-        # feature worktree can trip worktree branch checkout constraints. Try a
-        # synchronous merge first; only fall back to --auto when GitHub reports
-        # branch protection / required-check gating.
+        # Step 5: merge the PR via --auto so GitHub queues the merge and applies
+        # it only after all required checks pass. Running gh from the repo root
+        # avoids worktree branch checkout constraints.
         try:
             merge_proc = subprocess.run(
-                ["gh", "pr", "merge", pr_url, f"--{merge_strategy}"],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=120,
-            )
-        except Exception as exc:
-            _pr_log.warning("gh pr merge failed: %s", exc)
-            return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
-
-        if merge_proc.returncode == 0:
-            break
-
-        err = "\n".join(
-            part.strip()
-            for part in (merge_proc.stderr, merge_proc.stdout)
-            if part and part.strip()
-        )
-        err_lower = err.lower()
-        _pr_log.warning("gh pr merge failed (exit %d): %s", merge_proc.returncode, err)
-        if merge_retry_error in err_lower:
-            if attempt < MAX_MERGE_RETRIES - 1:
-                _pr_log.warning(
-                    "base branch changed during PR merge attempt %d/%d; retrying",
-                    attempt + 1,
-                    MAX_MERGE_RETRIES,
-                )
-                continue
-            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
-
-        if not any(marker in err_lower for marker in branch_protection_markers):
-            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
-
-        try:
-            auto_merge_proc = subprocess.run(
                 ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
                 capture_output=True,
                 text=True,
@@ -597,19 +553,25 @@ def _merge_pr(
             _pr_log.warning("gh pr merge --auto failed: %s", exc)
             return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
 
-        if auto_merge_proc.returncode != 0:
-            auto_err = "\n".join(
+        if merge_proc.returncode != 0:
+            err = "\n".join(
                 part.strip()
-                for part in (auto_merge_proc.stderr, auto_merge_proc.stdout)
+                for part in (merge_proc.stderr, merge_proc.stdout)
                 if part and part.strip()
             )
-            _pr_log.warning(
-                "gh pr merge --auto failed (exit %d): %s",
-                auto_merge_proc.returncode,
-                auto_err,
-            )
-            return _fail(f"gh pr merge failed: {auto_err}", pr_url=pr_url)
+            err_lower = err.lower()
+            _pr_log.warning("gh pr merge --auto failed (exit %d): %s", merge_proc.returncode, err)
+            if merge_retry_error in err_lower:
+                if attempt < MAX_MERGE_RETRIES - 1:
+                    _pr_log.warning(
+                        "base branch changed during PR merge attempt %d/%d; retrying",
+                        attempt + 1,
+                        MAX_MERGE_RETRIES,
+                    )
+                    continue
+            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
 
+        # Determine whether GitHub merged immediately or queued for checks.
         try:
             state_proc = subprocess.run(
                 ["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
