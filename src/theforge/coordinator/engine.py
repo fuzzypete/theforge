@@ -211,7 +211,6 @@ def _run_log_context(
 
 # ── Phase handlers ────────────────────────────────────────────────────
 from .dev_phase import _run_dev_phase  # noqa: E402
-from .path_setup import prepend_worktree_src  # noqa: E402
 from .review_context import _parse_dev_handoff  # noqa: E402
 from .review_phase import _ReviewOutcome, _run_review_only_phase, _run_review_phase  # noqa: E402
 from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402
@@ -633,7 +632,6 @@ def run_task(
         assert branch_name is not None
         state.workspace_path = workspace_path
         state.branch_name = branch_name
-        prepend_worktree_src(workspace_path)
         logger._safe_emit("phase_end", phase="WORKSPACE", outcome="success")
 
         # ── Plan injection (--plan) ─────────────────────────────────
@@ -866,7 +864,6 @@ def _run_resume_coordinator(
         return setup
     state, logger, branch_name, story_content, _task_start = setup
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
-    prepend_worktree_src(workspace_path)
 
     if cached_preflight_state is not None:
         from .preflight import _apply_preflight_config  # noqa: PLC0415

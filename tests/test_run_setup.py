@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 from coord_test_helpers import _make_config, _make_task
 
 from theforge.coordinator.engine import _run_resume_coordinator
-from theforge.coordinator.path_setup import prepend_worktree_src
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import CoordinatorResult, Phase
 
@@ -85,25 +84,8 @@ def test_setup_returns_escalate_when_workspace_missing(tmp_path):
     assert not result.success
 
 
-def test_prepend_worktree_src_puts_worktree_src_first(tmp_path, monkeypatch):
-    """Worktree src is prepended ahead of an existing project-root src entry."""
-    root_src = tmp_path / "root" / "src"
-    worktree_src = tmp_path / "worktree" / "src"
-    root_src.mkdir(parents=True)
-    worktree_src.mkdir(parents=True)
-
-    monkeypatch.setattr("sys.path", [str(root_src), "existing"])
-
-    prepend_worktree_src(worktree_src.parent)
-
-    import sys
-
-    assert sys.path[0] == str(worktree_src.resolve())
-    assert str(root_src) in sys.path
-
-
-def test_setup_resume_entry_prepends_worktree_src(tmp_path):
-    """Resume setup prepends the active worktree src directory to sys.path."""
+def test_setup_resume_entry_does_not_mutate_sys_path(tmp_path):
+    """Resume setup no longer mutates sys.path — worktree src is not prepended."""
     import sys
 
     workspace = tmp_path / "workspace"
@@ -127,7 +109,8 @@ def test_setup_resume_entry_prepends_worktree_src(tmp_path):
             )
 
         assert isinstance(result, tuple)
-        assert sys.path[0] == str((workspace / "src").resolve())
+        worktree_src = str((workspace / "src").resolve())
+        assert worktree_src not in sys.path, "prepend_worktree_src must not be called"
     finally:
         sys.path[:] = original_sys_path
 
@@ -151,7 +134,6 @@ def test_run_resume_coordinator_rebases_before_loop_and_continues(tmp_path):
         patch("theforge.coordinator.engine._check_behind_origin"),
         patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
         patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
-        patch("theforge.coordinator.engine.prepend_worktree_src"),
         patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
         patch("theforge.coordinator.engine._rebase_onto_main", return_value=(True, "")),
         patch(
@@ -199,7 +181,6 @@ def test_run_resume_coordinator_escalates_when_rebase_fails(tmp_path):
         patch("theforge.coordinator.engine._check_behind_origin"),
         patch("theforge.coordinator.engine._setup_resume_entry", return_value=setup),
         patch("theforge.coordinator.engine._make_story_log_dir", return_value=tmp_path / "logs"),
-        patch("theforge.coordinator.engine.prepend_worktree_src"),
         patch("theforge.coordinator.engine._run_log_context") as mock_ctx,
         patch(
             "theforge.coordinator.engine._rebase_onto_main",
