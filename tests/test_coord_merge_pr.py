@@ -191,6 +191,9 @@ class TestMergePrFunction:
                 rc = 0 if gh_merge_ok else 1
                 err = "" if gh_merge_ok else "merge failed"
                 return _make_subprocess_result(rc, stderr=err)
+            if "gh" in cmd_str and "pr" in cmd_str and "view" in cmd_str:
+                # Default: report MERGED so merged=True in the common case.
+                return _make_subprocess_result(0, stdout="MERGED")
             return _make_subprocess_result(0)
 
         with (
@@ -341,6 +344,8 @@ class TestMergePrFunction:
                 return _make_subprocess_result(0)
             if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
                 return merge_results.pop(0)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _make_subprocess_result(0, stdout="MERGED")
             return _make_subprocess_result(0)
 
         with (
@@ -468,10 +473,10 @@ class TestMergePrFunction:
         assert result["success"] is False
         assert result["merged"] is False
         assert "branch protection" in result["error"]
-        assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 2}
+        assert call_counts == {"fetch": 1, "rebase": 1, "push": 1, "merge": 1}
 
     def test_auto_flag_passed_to_gh_merge(self, tmp_path: Path) -> None:
-        """Verify --auto is passed so branch protection can queue the merge."""
+        """Verify --auto is unconditionally passed to gh pr merge."""
         config = _make_merge_pr_config(tmp_path)
         task = _make_task(tmp_path)
         review = _make_review_result()
@@ -485,6 +490,8 @@ class TestMergePrFunction:
         def _fake_run(cmd, **kwargs):
             if isinstance(cmd, list) and cmd and cmd[0] == "gh":
                 gh_calls.append(cmd)
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return _make_subprocess_result(0, stdout="MERGED")
                 return _make_subprocess_result(0)
             return _make_subprocess_result(0)
 
@@ -502,8 +509,9 @@ class TestMergePrFunction:
         ):
             _merge_pr(config, task, "forge/test-task", review, state)
 
-        assert gh_calls
-        assert all("--auto" not in c for c in gh_calls)
+        merge_calls = [c for c in gh_calls if len(c) >= 3 and c[1] == "pr" and c[2] == "merge"]
+        assert merge_calls, "Expected at least one gh pr merge call"
+        assert all("--auto" in c for c in merge_calls), "All gh pr merge calls must include --auto"
 
     def test_merge_strategy_squash_passed_to_gh(self, tmp_path: Path) -> None:
         """Verify --squash is passed to gh pr merge."""
@@ -637,6 +645,8 @@ class TestMergePrFunction:
                 commands.append(cmd)
                 if cmd[:3] == ["gh", "pr", "merge"]:
                     return _make_subprocess_result(0, stdout="Merged pull request")
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return _make_subprocess_result(0, stdout="MERGED")
             return _make_subprocess_result(0)
 
         with (
@@ -692,15 +702,38 @@ class TestMergePrFunction:
         assert result["merged"] is True
         assert result["merge_queued"] is False
 
-    def test_branch_protection_fallback_queued(self, tmp_path: Path) -> None:
-        result = self._run_merge_pr(
-            tmp_path,
-            gh_merge_results=[
-                _make_subprocess_result(1, stderr="protected branch hook declined"),
-                _make_subprocess_result(0),
-                _make_subprocess_result(0, stdout="", stderr="OPEN"),
-            ],
-        )
+    def test_auto_merge_queued_when_checks_pending(self, tmp_path: Path) -> None:
+        """--auto succeeds but PR is not yet MERGED → merge_queued=True."""
+        config = _make_merge_pr_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review_result()
+        state = MagicMock()
+        state.review_results = [review]
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        def _fake_run(cmd, **kwargs):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                assert "--auto" in cmd, "merge call must use --auto"
+                return _make_subprocess_result(0)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _make_subprocess_result(0, stdout="OPEN")
+            return _make_subprocess_result(0)
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=_fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value={
+                    "action": "pr",
+                    "pr_url": "https://github.com/fuzzypete/theforge/pull/42",
+                    "success": True,
+                    "error": None,
+                },
+            ),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
         assert result["success"] is True
         assert result["merged"] is False
         assert result["merge_queued"] is True
@@ -1364,6 +1397,8 @@ class TestFastForwardAfterMerge:
                 ff_calls.append(cmd)
                 return _make_subprocess_result(0)
             if isinstance(cmd, list) and cmd and cmd[0] == "gh":
+                if cmd[:3] == ["gh", "pr", "view"]:
+                    return _make_subprocess_result(0, stdout="MERGED")
                 return _make_subprocess_result(0)
             return _make_subprocess_result(0)
 
@@ -1406,6 +1441,8 @@ class TestFastForwardAfterMerge:
                 or cmd[:4] == ["git", "push", "origin", "--delete"]
             ):
                 cleanup_calls.append(cmd)
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "view"]:
+                return _make_subprocess_result(0, stdout="MERGED")
             return _make_subprocess_result(0)
 
         with (

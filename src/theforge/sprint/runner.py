@@ -498,7 +498,10 @@ def _classify_and_record(
         dag.mark_complete(task.slug)
         return delta_succeeded, delta_failed, delta_skipped
 
-    if result.success:
+    if landing_status == "failed":
+        delta_failed = 1
+        dag.mark_skipped(task.slug)
+    elif result.success:
         delta_succeeded = 1
         if landing_status == "landed" or (
             result.merge is not None and result.merge.get("merged", False)

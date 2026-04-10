@@ -123,6 +123,7 @@ def _make_coordinator_result(
     preflight_verdict: str = "PROCEED",
     phase: Phase = Phase.DONE,
     merged: bool = False,
+    landing_status: str | None = None,
 ) -> CoordinatorResult:
     state = CoordinatorState()
     state.preflight_verdict = preflight_verdict
@@ -136,6 +137,7 @@ def _make_coordinator_result(
         state=state,
         message="Done." if success else "Failed.",
         merge={"merged": True} if merged else None,
+        landing_status=landing_status,
     )
 
 
@@ -616,6 +618,96 @@ class TestClassifyAndRecord:
         assert df == 1
         assert "a" not in merged_slugs
         assert dag.ready() == []
+
+    def test_landing_failed_counts_as_delta_failed(self) -> None:
+        """landing_status=failed is classified as a failed story, not a success."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        # success=True but landing_status=failed — the merge step failed after approval.
+        result = _make_coordinator_result(success=True, cost=1.0, landing_status="failed")
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 0, "landing_status=failed must not increment delta_succeeded"
+        assert df == 1, "landing_status=failed must increment delta_failed"
+        assert dsk == 0
+        assert "a" not in merged_slugs
+        # B must remain blocked: a failed to land, so it cannot satisfy a's dependency.
+        assert dag.ready() == []
+
+    def test_landing_pending_integration_does_not_mark_complete(self) -> None:
+        """landing_status=pending_integration does not mark the story complete or unblock deps."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(
+            success=True, cost=1.0, landing_status="pending_integration"
+        )
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 1
+        assert df == 0
+        assert "a" not in merged_slugs
+        # B must remain blocked: a is only queued, not landed.
+        assert dag.ready() == []
+
+    def test_landing_landed_marks_complete_and_unblocks_deps(self) -> None:
+        """landing_status=landed is the only merge-pr state that satisfies dependency gating."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+        ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
+
+        assert ds == 1
+        assert df == 0
+        assert "a" in merged_slugs
+        # B is now ready because a landed.
+        assert {t.slug for t in dag.ready()} == {"b"}
+
+    def test_sequential_dep_blocked_while_pending_integration(self) -> None:
+        """Story B with depends_on=[A] is not dispatched while A is pending_integration."""
+        a = _make_task("a")
+        b = _make_task("b", depends_on=["a"])
+        dag = StoryDAG([a, b])
+        merged_slugs: set[str] = set()
+
+        # A completes with pending_integration (auto-merge queued, not yet landed).
+        result_a = _make_coordinator_result(
+            success=True, cost=1.0, landing_status="pending_integration"
+        )
+        _classify_and_record(a, result_a, dag, merged_slugs)
+
+        # B must still be blocked — only a "landed" outcome satisfies the dependency.
+        assert dag.ready() == [], "B must not become ready while A is pending_integration"
+
+    def test_parallel_deps_both_blocked_until_predecessor_lands(self) -> None:
+        """Two parallel stories (C, D) depending on A both remain blocked until A lands."""
+        a = _make_task("a")
+        c = _make_task("c", depends_on=["a"])
+        d = _make_task("d", depends_on=["a"])
+        dag = StoryDAG([a, c, d])
+        merged_slugs: set[str] = set()
+
+        # A finishes with pending_integration.
+        result_a = _make_coordinator_result(
+            success=True, cost=1.0, landing_status="pending_integration"
+        )
+        _classify_and_record(a, result_a, dag, merged_slugs)
+
+        assert dag.ready() == [], "C and D must not become ready while A is pending_integration"
+
+        # Simulate A landing (a separate queued-PR completion event would update the DAG;
+        # here we directly call mark_complete to prove the gate opens).
+        dag.mark_complete("a")
+        ready_slugs = {t.slug for t in dag.ready()}
+        assert ready_slugs == {"c", "d"}, "Both C and D become ready after A lands"
 
 
 class TestMergeOrdering:
