@@ -380,6 +380,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "verdict": ("cached" if state.preflight_cached else state.preflight_verdict),
                 "reason": state.preflight_reason,
                 "work_type": state.preflight_work_type,
+                "contract_change": state.preflight_contract_change,
                 "bundle_candidate": state.preflight_bundle_candidate,
                 "cost_usd": state.preflight_result.cost_usd if state.preflight_result else 0.0,
                 "cached": state.preflight_cached,

@@ -40,6 +40,7 @@ from .preflight import (
     _apply_preflight_config,
     _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
+    _parse_preflight_contract_change,
     _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
     _parse_preflight_verdict,
@@ -199,11 +200,14 @@ def _run_preflight_phase(
         state.preflight_sufficiency = sufficiency
         work_type = _parse_preflight_work_type(preflight_result.output)
         state.preflight_work_type = work_type
+        contract_change = _parse_preflight_contract_change(preflight_result.output)
+        state.preflight_contract_change = contract_change
         bundle_candidate = _parse_preflight_bundle_candidate(preflight_result.output)
         state.preflight_bundle_candidate = bundle_candidate
         _log(f"  Complexity: {complexity} (from preflight)")
         _log(f"  Sufficiency: {sufficiency}")
         _log(f"  Work type: {work_type}")
+        _log(f"  Contract change: {contract_change}")
         _log(f"  Bundle candidate: {bundle_candidate}")
         if _warnings:
             _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")

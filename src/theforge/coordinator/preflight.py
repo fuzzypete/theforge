@@ -63,6 +63,28 @@ _VALID_SUFFICIENCIES = frozenset({"implementation_ready", "needs_planning"})
 _VALID_WORK_TYPES = frozenset({"feature", "refactor", "mechanical", "bug"})
 
 
+def _parse_preflight_contract_change(output: str) -> bool:
+    """Extract contract_change from preflight agent output. Defaults to False."""
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict):
+            return bool(parsed.get("contract_change", False))
+    except yaml.YAMLError:
+        pass
+
+    return False
+
+
 def _parse_preflight_bundle_candidate(output: str) -> bool:
     """Extract bundle_candidate from preflight agent output. Defaults to False."""
     yaml_text = output

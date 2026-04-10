@@ -262,6 +262,7 @@ def _run_dev_phase(
             cycle_history=state.cycle_history or None,
             handoff_file=config.validation.handoff_file,
             preflight_sufficiency=state.preflight_sufficiency,
+            contract_change=state.preflight_contract_change,
             conventions=config.conventions_soft,
             assembled_context=dev_context,
         )

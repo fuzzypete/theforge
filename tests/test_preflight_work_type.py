@@ -28,7 +28,10 @@ from theforge.config import (
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.preflight import _parse_preflight_work_type
+from theforge.coordinator.preflight import (
+    _parse_preflight_contract_change,
+    _parse_preflight_work_type,
+)
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.task import TaskStory, build_plan_prompt, build_preflight_prompt
 
@@ -929,3 +932,116 @@ class TestAuditLogIncludesWorkType:
         audit = generate_audit_log(config, task, result)
 
         assert audit["preflight"] is None
+
+
+# ── contract_change parser tests ─────────────────────────────────────
+
+
+class TestParsePreflightContractChange:
+    def test_true_when_set(self):
+        output = """\
+```yaml
+verdict: PROCEED
+complexity: small
+work_type: bug
+contract_change: true
+reason: "Behavioral contract change."
+sufficiency: implementation_ready
+spec_issues: []
+warnings: []
+criteria_checked: []
+```
+"""
+        assert _parse_preflight_contract_change(output) is True
+
+    def test_false_when_explicitly_false(self):
+        output = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+work_type: feature
+contract_change: false
+reason: "New capability."
+sufficiency: needs_planning
+spec_issues: []
+warnings: []
+criteria_checked: []
+```
+"""
+        assert _parse_preflight_contract_change(output) is False
+
+    def test_false_when_field_absent(self):
+        output = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+work_type: feature
+reason: "New capability."
+sufficiency: needs_planning
+spec_issues: []
+warnings: []
+criteria_checked: []
+```
+"""
+        assert _parse_preflight_contract_change(output) is False
+
+    def test_false_on_malformed_yaml(self):
+        assert _parse_preflight_contract_change("```yaml\n{{{ not valid\n```") is False
+
+    def test_no_fences_still_parses(self):
+        output = "verdict: PROCEED\ncontract_change: true\n"
+        assert _parse_preflight_contract_change(output) is True
+
+
+# ── Preflight prompt includes contract_change field ───────────────────
+
+
+class TestPreflightPromptContractChange:
+    def test_prompt_includes_contract_change_field(self, tmp_path: Path):
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n\nDo something.", encoding="utf-8")
+        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
+        prompt = build_preflight_prompt(task, story_content="# Test\n\nDo something.")
+        assert "contract_change" in prompt
+
+    def test_audit_log_includes_contract_change(self, tmp_path: Path):
+        """generate_audit_log includes contract_change in the preflight section."""
+        spec_path = tmp_path / "spec.md"
+        spec_path.write_text("# Test spec", encoding="utf-8")
+        task = TaskStory(name="Test Task", slug="test-task", story_path=spec_path)
+
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=DEFAULT_DEV_PROFILE,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[DEFAULT_REVIEW_PROFILE],
+            synthesis_profile=None,
+            retry=RetryPolicy(),
+        )
+
+        state = CoordinatorState(
+            preflight_verdict="PROCEED",
+            preflight_reason="Contract changed.",
+            preflight_work_type="bug",
+            preflight_contract_change=True,
+            preflight_result=_make_agent_result(success=True, output="...", cost_usd=0.01),
+        )
+        result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+        )
+
+        audit = generate_audit_log(config, task, result)
+
+        assert audit["preflight"] is not None
+        assert "contract_change" in audit["preflight"]
+        assert audit["preflight"]["contract_change"] is True

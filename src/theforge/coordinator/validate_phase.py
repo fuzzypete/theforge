@@ -35,7 +35,9 @@ def _test_file_exists_in_head(workspace_path: Path, test_file: str) -> bool:
     return workspace_path.joinpath(test_file).is_file()
 
 
-def _format_failed_test_feedback(gate_output_tail: str, workspace_path: Path) -> tuple[str, bool]:
+def _format_failed_test_feedback(
+    gate_output_tail: str, workspace_path: Path, contract_change: bool = False
+) -> tuple[str, bool]:
     """Return retry-feedback text for extracted failing tests and whether they are existing."""
     failed_tests = _extract_failed_tests(gate_output_tail)
     if not failed_tests:
@@ -49,10 +51,16 @@ def _format_failed_test_feedback(gate_output_tail: str, workspace_path: Path) ->
     lines = ["\n\nExtracted failing tests (best effort):"]
     lines.extend(f"- {test_name}" for test_name in failed_tests)
     if existing_failures:
-        lines.append(
-            "These are existing tests your changes broke — "
-            "fix your implementation, do not edit these test files."
-        )
+        if contract_change:
+            lines.append(
+                "Some of these tests may assert the old behavioral contract — "
+                "update them if they encode the behavior this story is changing."
+            )
+        else:
+            lines.append(
+                "These are existing tests your changes broke — "
+                "fix your implementation, do not edit these test files."
+            )
     return "\n".join(lines), bool(existing_failures)
 
 
@@ -140,7 +148,7 @@ def _run_validate_phase(
         gate_cmd = resolved_gate_cmd
         partial = ""
         failed_test_feedback, existing_test_failures = _format_failed_test_feedback(
-            gate_output_tail, workspace_path
+            gate_output_tail, workspace_path, contract_change=state.preflight_contract_change
         )
         if gate_output_tail and gate_output_tail != gate_err:
             tail_chars = config.validation.gate_output_tail_chars
@@ -280,7 +288,7 @@ def _run_validate_phase(
         gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
         failed_test_feedback, existing_test_failures = _format_failed_test_feedback(
-            gate_output_tail, workspace_path
+            gate_output_tail, workspace_path, contract_change=state.preflight_contract_change
         )
         state.human_feedback = (
             f"The full test suite (`{gate_cmd}`) failed."

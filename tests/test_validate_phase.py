@@ -264,3 +264,45 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
     assert "- tests/test_existing.py::test_breaks" in state.human_feedback
     assert "- generated/test_new.py::test_agent" in state.human_feedback
     assert "These are existing tests your changes broke" in state.human_feedback
+
+
+def test_format_failed_test_feedback_contract_change_uses_contract_message(
+    tmp_path: Path,
+) -> None:
+    from theforge.coordinator.validate_phase import _format_failed_test_feedback
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_existing.py").write_text(
+        "def test_breaks():\n    pass\n", encoding="utf-8"
+    )
+    feedback, existing = _format_failed_test_feedback(
+        "FAILED tests/test_existing.py::test_breaks",
+        tmp_path,
+        contract_change=True,
+    )
+
+    assert existing is True
+    assert "Some of these tests may assert the old behavioral contract" in feedback
+    assert "These are existing tests your changes broke" not in feedback
+    assert "do not edit these test files" not in feedback
+
+
+def test_format_failed_test_feedback_no_contract_change_uses_default_message(
+    tmp_path: Path,
+) -> None:
+    from theforge.coordinator.validate_phase import _format_failed_test_feedback
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_existing.py").write_text(
+        "def test_breaks():\n    pass\n", encoding="utf-8"
+    )
+    feedback, existing = _format_failed_test_feedback(
+        "FAILED tests/test_existing.py::test_breaks",
+        tmp_path,
+        contract_change=False,
+    )
+
+    assert existing is True
+    assert "These are existing tests your changes broke" in feedback
+    assert "do not edit these test files" in feedback
+    assert "old behavioral contract" not in feedback
