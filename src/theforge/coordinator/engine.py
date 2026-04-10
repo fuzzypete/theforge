@@ -429,6 +429,7 @@ def _coordinator_loop(
                 state.escalate_reason = _handoff_reason
                 _log(f"  ✗ ESCALATE   {_handoff_reason}")
                 if logger:
+                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
                     logger._safe_emit(
                         "escalate", reason=_handoff_reason, phase="VALIDATE"
                     )
