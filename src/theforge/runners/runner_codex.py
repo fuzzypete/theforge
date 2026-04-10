@@ -142,6 +142,7 @@ def _run_codex(
             text=True,
             timeout=profile.timeout_seconds,
             env=_codex_env,
+            cwd=str(working_dir),
         ),
         label=label,
         profile=profile,
