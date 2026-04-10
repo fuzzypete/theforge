@@ -41,10 +41,25 @@ def _iter_sibling_worktrees(active_worktree: Path, project_root: Path) -> list[P
     return siblings
 
 
+def _is_forge_artifact_status_line(line: str) -> bool:
+    """Return True if this porcelain status line refers to a forge-owned artifact.
+
+    Forge writes its own files under .forge/ (plan.md, sessions.json, handoff.yaml,
+    traces/, audit.yaml) during normal coordinator operation. These are not agent
+    writes and must not trigger the sibling-worktree contamination detector.
+
+    The porcelain format is ``XY PATH`` (two status chars, space, then path).
+    Ignored directories are reported as ``!! .forge/`` (with trailing slash).
+    """
+    # Strip the two-character status prefix and the separating space
+    path_part = line[3:] if len(line) > 3 else ""
+    return path_part == ".forge" or path_part.startswith(".forge/")
+
+
 def _git_status_porcelain_ignored(path: Path) -> frozenset[str]:
     """Return the set of non-empty status lines from git status --porcelain --ignored.
 
-    Includes ignored files so that writes to .forge/ artifacts and build outputs
+    Includes ignored files so that writes to build outputs or other ignored paths
     in sibling worktrees are visible. Returns empty frozenset on any error.
     """
     try:
@@ -394,8 +409,20 @@ def _run_dev_phase(
     # immediately — CLI agents must not write outside their own worktree.
     for _sib_path, _baseline in _sibling_baselines.items():
         _current = _git_status_porcelain_ignored(_sib_path)
-        if _current != _baseline:
-            _changed = sorted((_current - _baseline) | (_baseline - _current))
+        # Strip forge-owned artifact lines from both snapshots before diffing.
+        # The coordinator writes .forge/ paths (plan.md, sessions.json, traces/,
+        # handoff.yaml, audit.yaml) during normal operation — these are not agent
+        # writes and must not trigger a false contamination escalation.
+        _baseline_filtered = frozenset(
+            ln for ln in _baseline if not _is_forge_artifact_status_line(ln)
+        )
+        _current_filtered = frozenset(
+            ln for ln in _current if not _is_forge_artifact_status_line(ln)
+        )
+        if _current_filtered != _baseline_filtered:
+            _changed = sorted(
+                (_current_filtered - _baseline_filtered) | (_baseline_filtered - _current_filtered)
+            )
             _preview = ", ".join(_changed[:5])
             state.phase = Phase.ESCALATE
             state.error = (
