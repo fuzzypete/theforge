@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
 import subprocess
 import time
@@ -82,6 +83,43 @@ def _format_failed_test_feedback(
     return "\n".join(lines), bool(existing_failures)
 
 
+def _check_conventions_parallel(
+    config: ForgeConfig,
+    workspace_path: Path,
+) -> tuple[list, list] | None:
+    """Return (all_violations, net_new_violations) or None if conventions are not configured.
+
+    Designed to run in a thread concurrently with gate execution.
+    Gate commands are test runners; they don't write source files.
+    Convention scanner reads source, not test output. Parallel execution is safe.
+    """
+    if config.conventions_hard is None:
+        return None
+    _config_dict = dataclasses.asdict(config.conventions_hard)
+    baseline_ref = _get_convention_baseline_ref(workspace_path, config.workspace.base_branch)
+    if baseline_ref is not None:
+        result = _cu._run_worktree_eval(
+            workspace_path,
+            "check_conventions",
+            {
+                "config": _config_dict,
+                "project_root": str(workspace_path),
+                "baseline_ref": baseline_ref,
+            },
+        )
+        all_v = [types.SimpleNamespace(**d) for d in result["all_violations"]]
+        net_v = [types.SimpleNamespace(**d) for d in result["violations"]]
+    else:
+        result = _cu._run_worktree_eval(
+            workspace_path,
+            "check_conventions",
+            {"config": _config_dict, "project_root": str(workspace_path)},
+        )
+        all_v = [types.SimpleNamespace(**d) for d in result["violations"]]
+        net_v = all_v
+    return all_v, net_v
+
+
 def _run_validate_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -100,6 +138,14 @@ def _run_validate_phase(
     state.phase = Phase.VALIDATE
     if logger:
         logger._safe_emit("phase_start", phase="VALIDATE", iteration=state.dev_iteration)
+
+    # Submit convention check to run in parallel with gate execution.
+    # Gate commands are test runners; they don't write source files. Convention
+    # scanner reads source, not test output. Parallel execution is safe.
+    _cv_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    _cv_future: concurrent.futures.Future = _cv_executor.submit(
+        _check_conventions_parallel, config, workspace_path
+    )
 
     _gate_start = time.monotonic()
     gate_override = task.gate_override
@@ -130,6 +176,18 @@ def _run_validate_phase(
             duration_s=round(_gate_elapsed, 2),
             output_tail=gate_output_tail[-500:] if gate_output_tail else "",
         )
+
+    # Retrieve convention check result (ran in parallel; should be done by now).
+    try:
+        _cv_result_raw = _cv_future.result(timeout=120)
+    except Exception as exc:
+        _log(f"  ⚠ Convention check failed or timed out: {exc}")
+        _cv_result_raw = None
+    finally:
+        _cv_executor.shutdown(wait=False)
+
+    _cv_all: list = _cv_result_raw[0] if _cv_result_raw is not None else []
+    _cv_violations: list = _cv_result_raw[1] if _cv_result_raw is not None else []
 
     if gate_err:
         is_timeout = "timed out" in (gate_err or "").lower()
@@ -222,6 +280,16 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
+        if _cv_violations:
+            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
+            state.human_feedback += (
+                "\n\nAdditionally, hard convention violations were detected:\n" + "\n".join(lines)
+            )
+            state.convention_violations = [
+                {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
+                for v in _cv_violations
+            ]
+            _log(f"  ✗ VALIDATE   convention violations also found ({len(_cv_violations)})")
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
@@ -365,6 +433,16 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
+        if _cv_violations:
+            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
+            state.human_feedback += (
+                "\n\nAdditionally, hard convention violations were detected:\n" + "\n".join(lines)
+            )
+            state.convention_violations = [
+                {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
+                for v in _cv_violations
+            ]
+            _log(f"  ✗ VALIDATE   convention violations also found ({len(_cv_violations)})")
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
         return _ValidateOutcome.RETRY_DEV, None
@@ -386,33 +464,11 @@ def _run_validate_phase(
         gate_output_tail=gate_output_tail,
     )
 
-    # Hard convention checks (post-gate, only on PASS path)
-    # Run in the worktree's subprocess so self-hosting sprints evaluate the
+    # Convention check ran in parallel with gate; use pre-fetched result.
+    # Runs in the worktree's subprocess so self-hosting sprints evaluate the
     # worktree's version of conventions.py, not the coordinator's own copy.
     if config.conventions_hard is not None:
-        _config_dict = dataclasses.asdict(config.conventions_hard)
-        baseline_ref = _get_convention_baseline_ref(workspace_path, config.workspace.base_branch)
-        if baseline_ref is not None:
-            _cv_result = _cu._run_worktree_eval(
-                workspace_path,
-                "check_conventions",
-                {
-                    "config": _config_dict,
-                    "project_root": str(workspace_path),
-                    "baseline_ref": baseline_ref,
-                },
-            )
-            all_cv_violations = [types.SimpleNamespace(**d) for d in _cv_result["all_violations"]]
-            cv_violations = [types.SimpleNamespace(**d) for d in _cv_result["violations"]]
-        else:
-            _cv_result = _cu._run_worktree_eval(
-                workspace_path,
-                "check_conventions",
-                {"config": _config_dict, "project_root": str(workspace_path)},
-            )
-            all_cv_violations = [types.SimpleNamespace(**d) for d in _cv_result["violations"]]
-            cv_violations = all_cv_violations
-        if cv_violations:
+        if _cv_violations:
             state.convention_violations = [
                 {
                     "rule": v.rule,
@@ -420,14 +476,14 @@ def _run_validate_phase(
                     "detail": v.detail,
                     "blocking": v.blocking,
                 }
-                for v in cv_violations
+                for v in _cv_violations
             ]
-            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in cv_violations]
+            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
             human_feedback = "Hard convention violations detected:\n" + "\n".join(lines)
             state.human_feedback = human_feedback
             state.retry_reason = "convention_violations"
-            _log(f"  ✗ VALIDATE   convention violations ({len(cv_violations)} found)")
-            for v in cv_violations:
+            _log(f"  ✗ VALIDATE   convention violations ({len(_cv_violations)} found)")
+            for v in _cv_violations:
                 _log(f"    [{v.rule}] {v.file}: {v.detail}")
             if dev_calls_this_cycle >= config.retry.max_dev_iterations:
                 state.phase = Phase.ESCALATE
@@ -451,7 +507,7 @@ def _run_validate_phase(
                     "detail": v.detail,
                     "blocking": False,
                 }
-                for v in all_cv_violations
+                for v in _cv_all
             ]
     else:
         state.convention_violations = []
