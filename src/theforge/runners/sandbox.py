@@ -145,16 +145,6 @@ def _workspace_read_roots(allowed_root: Path) -> tuple[Path, ...]:
     return _unique_existing_paths(roots)
 
 
-def _launcher_extra_read_roots(cmd: list[str]) -> tuple[Path, ...]:
-    roots: list[Path] = []
-    if cmd:
-        executable = shutil.which(cmd[0])
-        if executable is not None:
-            roots.extend(_path_parent_roots(Path(executable)))
-    roots.extend(_user_config_roots())
-    return _unique_existing_paths(roots)
-
-
 def _macos_profile(
     allowed_root: Path,
     *,
@@ -277,35 +267,6 @@ def workspace_effect_sandbox_command(cmd: list[str], allowed_root: Path) -> list
             return _linux_command(cmd, root, masked_read_roots=blocked_worktrees)
         return cmd
     return cmd
-
-
-def launcher_command(cmd: list[str], allowed_root: Path) -> list[str]:
-    root = allowed_root.resolve()
-    blocked_worktrees = _blocked_worktree_roots(root)
-    extra_read_roots = _launcher_extra_read_roots(cmd)
-    if _SYSTEM == "Darwin":
-        profile = _macos_profile(
-            root,
-            extra_read_roots=extra_read_roots,
-            denied_read_roots=blocked_worktrees,
-        )
-        if _sandbox_available(
-            "sandbox-exec", ("sandbox-exec", "-p", "(version 1) (allow default)", "true")
-        ):
-            return ["sandbox-exec", "-p", profile, *cmd]
-        return cmd
-    if _SYSTEM == "Linux":
-        if _sandbox_available("bwrap", ("bwrap", "--ro-bind", "/", "/", "true")):
-            return _linux_command(
-                cmd,
-                root,
-                extra_read_roots=extra_read_roots,
-                masked_read_roots=blocked_worktrees,
-            )
-        return cmd
-    return cmd
-
-    # Backward-compatible alias for existing tool-runtime callers.
 
 
 def sandbox_command(cmd: list[str], allowed_root: Path) -> list[str]:

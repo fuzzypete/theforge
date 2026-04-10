@@ -17,7 +17,6 @@ from theforge.agent_types import AgentResult
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
-from .sandbox import launcher_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -76,7 +75,7 @@ def _run_gemini(
     _gemini_env = {**os.environ, **(secrets or {})}
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
-            launcher_command(cmd, working_dir),
+            cmd,
             capture_output=True,
             text=True,
             cwd=str(working_dir),
