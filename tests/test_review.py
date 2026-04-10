@@ -4,8 +4,10 @@ from theforge.review import (
     ReviewFinding,
     ReviewResult,
     _best_individual_result,
+    _dedup_findings,
     _try_parse_review,
     findings_to_markdown,
+    merge_review_results,
     parse_plan_review_output,
     parse_review_output,
 )
@@ -374,3 +376,134 @@ class TestBestIndividualResult:
     def test_single_p1_result(self):
         with_p1 = _make_review_result("REQUEST_CHANGES", findings=[_p1_finding()])
         assert _best_individual_result([with_p1]) is with_p1
+
+
+# ── Tests: _dedup_findings ───────────────────────────────────────────
+
+
+def _rf(severity: str, file: str, line: int | None, description: str) -> ReviewFinding:
+    return ReviewFinding(
+        severity=severity, file=file, line=line, description=description, suggestion=None
+    )
+
+
+class TestDedupFindings:
+    """Tests for _dedup_findings helper."""
+
+    def test_no_duplicates_unchanged(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P2", "bar.py", 2, "Bug B")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 2
+
+    def test_exact_duplicate_collapsed(self):
+        f = _rf("P1", "foo.py", 1, "Bug A")
+        result = _dedup_findings([("r1", f), ("r2", f)])
+        assert len(result) == 1
+
+    def test_case_insensitive_description_dedup(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P1", "foo.py", 1, "bug a")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 1
+
+    def test_whitespace_normalized_description_dedup(self):
+        f1 = _rf("P1", "foo.py", 1, "  Bug A  ")
+        f2 = _rf("P1", "foo.py", 1, "Bug A")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 1
+
+    def test_different_line_not_deduped(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P1", "foo.py", 2, "Bug A")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 2
+
+    def test_different_file_not_deduped(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P1", "bar.py", 1, "Bug A")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 2
+
+    def test_different_description_not_deduped(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P1", "foo.py", 1, "Bug B")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 2
+
+    def test_first_occurrence_wins(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P2", "foo.py", 1, "bug a")  # different severity, same location/desc
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 1
+        assert result[0].severity == "P1"  # first wins
+
+    def test_reviewers_attributed_on_duplicate(self):
+        f = _rf("P1", "foo.py", 1, "Bug A")
+        result = _dedup_findings([("reviewer-a", f), ("reviewer-b", f)])
+        assert len(result) == 1
+        assert set(result[0].reviewers) == {"reviewer-a", "reviewer-b"}
+
+    def test_single_reviewer_attribution(self):
+        f = _rf("P1", "foo.py", 1, "Bug A")
+        result = _dedup_findings([("reviewer-a", f)])
+        assert result[0].reviewers == ("reviewer-a",)
+
+    def test_triple_duplicate_all_attributed(self):
+        f = _rf("P1", "foo.py", 1, "Bug A")
+        result = _dedup_findings([("r1", f), ("r2", f), ("r3", f)])
+        assert len(result) == 1
+        assert set(result[0].reviewers) == {"r1", "r2", "r3"}
+
+    def test_null_line_deduplication(self):
+        f1 = _rf("P1", "foo.py", None, "Bug A")
+        f2 = _rf("P1", "foo.py", None, "bug a")
+        result = _dedup_findings([("r1", f1), ("r2", f2)])
+        assert len(result) == 1
+        assert set(result[0].reviewers) == {"r1", "r2"}
+
+
+# ── Tests: merge_review_results deduplication ────────────────────────
+
+
+class TestMergeReviewResultsDedup:
+    """Tests for deduplication in merge_review_results."""
+
+    def test_duplicate_p1_across_reviewers_counted_once(self):
+        finding = _rf("P1", "foo.py", 1, "Off-by-one error")
+        r1 = _make_review_result("REQUEST_CHANGES", findings=[finding])
+        r2 = _make_review_result("REQUEST_CHANGES", findings=[finding])
+        r3 = _make_review_result("REQUEST_CHANGES", findings=[finding])
+        merged = merge_review_results([r1, r2, r3], ["a", "b", "c"])
+        p1_count = sum(1 for f in merged.findings if f.severity == "P1")
+        assert p1_count == 1  # unique issue, not reviewer_count * issues
+
+    def test_unique_findings_all_preserved(self):
+        f1 = _rf("P1", "foo.py", 1, "Bug A")
+        f2 = _rf("P1", "bar.py", 2, "Bug B")
+        r1 = _make_review_result("REQUEST_CHANGES", findings=[f1])
+        r2 = _make_review_result("REQUEST_CHANGES", findings=[f2])
+        merged = merge_review_results([r1, r2], ["a", "b"])
+        assert len(merged.findings) == 2
+
+    def test_duplicate_finding_carries_reviewer_attribution(self):
+        finding = _rf("P1", "foo.py", 1, "Same issue")
+        r1 = _make_review_result("REQUEST_CHANGES", findings=[finding])
+        r2 = _make_review_result("REQUEST_CHANGES", findings=[finding])
+        merged = merge_review_results([r1, r2], ["reviewer-a", "reviewer-b"])
+        assert len(merged.findings) == 1
+        assert set(merged.findings[0].reviewers) == {"reviewer-a", "reviewer-b"}
+
+    def test_all_parse_errors_propagated(self):
+        r1 = _make_review_result("REQUEST_CHANGES", parse_errors=["bad yaml"])
+        r2 = _make_review_result("REQUEST_CHANGES", parse_errors=["bad yaml"])
+        merged = merge_review_results([r1, r2], ["a", "b"])
+        assert merged.parse_errors  # propagated for retry loop
+
+    def test_mixed_valid_and_parse_error(self):
+        finding = _rf("P1", "foo.py", 1, "Bug")
+        valid = _make_review_result("REQUEST_CHANGES", findings=[finding])
+        invalid = _make_review_result("REQUEST_CHANGES", parse_errors=["bad"])
+        merged = merge_review_results([valid, invalid], ["a", "b"])
+        assert not merged.parse_errors
+        assert len(merged.findings) == 1
