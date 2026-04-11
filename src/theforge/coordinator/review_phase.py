@@ -982,6 +982,7 @@ def _run_review_only_phase(
         cycle_history=None,
         conventions=config.conventions_soft,
         assembled_context=review_context,
+        sandboxed=state.sandboxed,
     )
 
     meta = ReviewCycleMetadata(

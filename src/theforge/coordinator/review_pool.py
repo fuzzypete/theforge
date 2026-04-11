@@ -203,6 +203,7 @@ def _run_review_pool(
                     cycle_history=state.cycle_history if state.cycle_history else None,
                     conventions=config.conventions_soft,
                     assembled_context=review_context,
+                    sandboxed=state.sandboxed,
                 )
                 for p in pool
             ]
@@ -223,6 +224,7 @@ def _run_review_pool(
                 cycle_history=state.cycle_history if state.cycle_history else None,
                 conventions=config.conventions_soft,
                 assembled_context=review_context,
+                sandboxed=state.sandboxed,
             )
         )
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in pool]}")

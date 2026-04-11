@@ -146,6 +146,7 @@ def build_review_prompt(
     cycle_history: list[CycleHistory] | None = None,
     conventions: list[str] | None = None,
     assembled_context: ContextPack | None = None,
+    sandboxed: bool = True,
 ) -> str:
     """Build the review agent prompt.
 
@@ -268,6 +269,8 @@ def build_review_prompt(
             Use the submit_review tool with your structured review data.
         """)
 
+    sandbox_label = "enabled" if sandboxed else "DISABLED (unsandboxed — effects ran unconfined)"
+
     return dedent(f"""\
         You are reviewing an implementation of **{task.name}**.
 
@@ -283,6 +286,8 @@ def build_review_prompt(
 
         This section is coordinator-verified ground truth captured from git before review.
         Treat it as authoritative over any self-reported handoff claims.
+
+        Sandbox isolation: {sandbox_label}
 
         Verified commit log (`git log --oneline main..HEAD`):
         ```
