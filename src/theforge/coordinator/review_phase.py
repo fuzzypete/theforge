@@ -502,6 +502,10 @@ def _run_review_phase(
     state.phase = Phase.REVIEW
     if logger:
         logger._safe_emit("phase_start", phase="REVIEW", iteration=state.review_cycle + 1)
+    # Reset per-cycle parse failure counts so transient failures from one cycle
+    # do not accumulate into the next. Permanent demotions are tracked separately
+    # in state.reviewer_demoted, which is never reset.
+    state.reviewer_parse_failure_counts = {}
     max_parse_retries = config.retry.max_review_parse_retries
     _review_pool_start = time.monotonic()
     _pool_model_names = "+".join(p.model for p in config.review_pool)

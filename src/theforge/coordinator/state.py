@@ -224,6 +224,9 @@ class CoordinatorState:
     plan_review_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_parse_failure_counts: dict[str, int] = field(default_factory=dict)
+    reviewer_demoted: set[str] = field(
+        default_factory=set
+    )  # reviewers permanently demoted this run
     review_cycle: int = 0  # which dev→review loop we're on
     # dev_iteration is an InitVar: accepted as a constructor kwarg for backward
     # compatibility (tests pass dev_iteration=N directly), but not stored as a

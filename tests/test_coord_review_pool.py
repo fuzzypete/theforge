@@ -213,3 +213,121 @@ class TestReviewerDemotion:
             "⚠ solo demoted after 1 parse failures this run" in str(c)
             for c in mock_log.call_args_list
         )
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_failures_below_threshold_across_cycles_not_demoted(
+        self, mock_pool, _mock_log_agent_result, tmp_path
+    ):
+        """Reviewer fails once per cycle but never reaches threshold in a cycle — not demoted."""
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(demotion_threshold=3)}
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+
+        # Cycle 1: r1 fails once (count=1, < threshold=3)
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+        )
+        assert state.reviewer_parse_failure_counts == {"r1": 1}
+
+        # Simulate cycle boundary: _run_review_phase resets the per-cycle counter
+        state.reviewer_parse_failure_counts = {}
+
+        # Cycle 2: r1 fails again (starts fresh from 0, count=1 again, still < threshold=3)
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+        )
+        assert state.reviewer_parse_failure_counts == {"r1": 1}
+
+        # r1 never hit the threshold in any single cycle → not demoted
+        assert "r1" not in state.reviewer_demoted
+        # Both cycles used the full pool (r1 was not filtered out)
+        assert all(call.kwargs["profiles"] == [r1, r2] for call in mock_pool.call_args_list)
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_demotion_persists_across_cycle_boundary(
+        self, mock_pool, _mock_log_agent_result, tmp_path
+    ):
+        """Reviewer that hits threshold within one cycle stays demoted after counter reset."""
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{**config.__dict__, "retry": RetryPolicy(demotion_threshold=1)}
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.side_effect = [
+            # Cycle 1: r1 fails (threshold=1 → immediately demoted)
+            [
+                _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="r1"),
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+            ],
+            # Cycle 2: only r2 should be in pool
+            [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2")],
+        ]
+
+        # Cycle 1: r1 hits threshold → added to reviewer_demoted
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+        )
+        assert "r1" in state.reviewer_demoted
+
+        # Simulate cycle boundary: _run_review_phase resets the per-cycle counter
+        state.reviewer_parse_failure_counts = {}
+
+        # Cycle 2: counter is clear, but demotion set preserves r1's demotion
+        successful, _, merged, _, _ = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            _meta(),
+            notify=False,
+            enforce_budgets=False,
+        )
+        assert merged is not None
+        assert [r.profile_name for r in successful] == ["r2"]
+        assert mock_pool.call_args_list[1].kwargs["profiles"] == [r2]
