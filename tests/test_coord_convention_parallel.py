@@ -11,7 +11,7 @@ from unittest.mock import patch
 from coord_test_helpers import _make_config, _make_task
 
 from theforge.config.types import HardConventionsConfig
-from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.coordinator.state import CoordinatorState, Phase, RetryReason
 from theforge.coordinator.validate_phase import _run_validate_phase, _ValidateOutcome
 
 
@@ -70,7 +70,7 @@ class TestConventionParallelCheck:
 
         assert outcome is _ValidateOutcome.RETRY_DEV
         assert result is None
-        assert state.retry_reason == "gate_fail"
+        assert state.retry_reason == RetryReason.GATE_FAIL
         # Gate failure text is present
         assert "test suite" in state.human_feedback
         # Convention violation text is also present in the same feedback
@@ -122,7 +122,7 @@ class TestConventionParallelCheck:
 
         assert outcome is _ValidateOutcome.REVIEW_CONVENTION_BLOCK
         assert result is None
-        assert state.retry_reason == "convention_violations"
+        assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
         assert len(state.convention_violations) == 1
         assert "Hard convention violations" in state.human_feedback
 
@@ -161,6 +161,6 @@ class TestConventionParallelCheck:
 
         assert outcome is _ValidateOutcome.RETRY_DEV
         assert result is None
-        assert state.retry_reason == "gate_fail"
+        assert state.retry_reason == RetryReason.GATE_FAIL
         assert "convention" not in state.human_feedback.lower()
         assert state.convention_violations is None or state.convention_violations == []

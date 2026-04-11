@@ -19,7 +19,7 @@ from .gate import _is_gate_skip, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import _get_handoff_content, _get_raw_dev_notes
-from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase
+from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
 from .util import _log, _log_phase, _log_verbose
 from .workspace import _deindex_forge_artifacts
 
@@ -258,7 +258,7 @@ def _run_validate_phase(
                 f"{failed_test_feedback}"
                 f"{partial}"
             )
-        state.retry_reason = "gate_fail"
+        state.retry_reason = RetryReason.GATE_FAIL
         if state.dev_iteration_telemetry:
             state.dev_iteration_telemetry[-1] = dataclasses.replace(
                 state.dev_iteration_telemetry[-1],
@@ -402,7 +402,7 @@ def _run_validate_phase(
             f"Gate output (last {tail_chars} chars):\n{gate_output_tail}\n\n"
             f"Current handoff:\n{handoff_text}"
         )
-        state.retry_reason = "gate_fail"
+        state.retry_reason = RetryReason.GATE_FAIL
         _log(f"  ✗ VALIDATE   {gate_decision}  (iter={state.dev_iteration} → retrying)")
         _log(f"Retrying dev (gate={gate_decision}, iter={state.dev_iteration})")
         record_dev_iteration_telemetry(
@@ -481,7 +481,7 @@ def _run_validate_phase(
             lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
             human_feedback = "Hard convention violations detected:\n" + "\n".join(lines)
             state.human_feedback = human_feedback
-            state.retry_reason = "convention_violations"
+            state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
             _log(f"  ✗ VALIDATE   convention violations ({len(_cv_violations)} found)")
             for v in _cv_violations:
                 _log(f"    [{v.rule}] {v.file}: {v.detail}")
