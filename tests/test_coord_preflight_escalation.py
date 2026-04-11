@@ -81,7 +81,11 @@ def _make_smart_config(
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[review_profile],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=max_review_cycles),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=max_review_cycles,
+            auto_model_escalation=True,
+        ),
         smart_config_models=models,
     )
 
@@ -476,6 +480,101 @@ class TestDevModelEscalationIntegration:
         assert "budget" in result.message.lower()
         # Escalation flag never set (budget guard fired first)
         assert result.state.dev_escalated is False
+
+
+class TestAutoModelEscalationFlag:
+    """Tests that auto_model_escalation feature flag gates dev model escalation."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_escalation_disabled_by_default(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Smart config with auto_model_escalation=False (default) → no dev model swap."""
+        # _make_smart_config would set auto_model_escalation=True; build one without it
+        dev_profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=30.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+        )
+        review_profile = ModelProfile(
+            name="claude-opus",
+            cli="claude",
+            model="opus",
+            budget_usd=10.0,
+            timeout_seconds=300,
+            allowed_tools=("Read", "Bash", "Glob", "Grep"),
+        )
+        config = ForgeConfig(
+            project="test",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=dev_profile,
+            preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+            review_pool=[review_profile],
+            synthesis_profile=None,
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=3,
+                auto_model_escalation=False,  # explicit default
+            ),
+            smart_config_models=["claude/sonnet", "claude/opus"],
+        )
+
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [_make_agent_result() for _ in range(4)]
+
+        pool_call = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_call["n"] += 1
+            if pool_call["n"] >= 3:
+                return [
+                    _make_agent_result(
+                        success=True, output=APPROVE_REVIEW, profile_name="claude-opus"
+                    )
+                ]
+            return [
+                _make_agent_result(
+                    success=True,
+                    output=_PERSISTENT_P1_REVIEW,
+                    profile_name="claude-opus",
+                )
+            ]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_task(config, task)
+
+        # Escalation never fired despite persistent P1 and smart config
+        assert result.state.dev_escalated is False
+
+    def test_auto_model_escalation_defaults_to_false(self, tmp_path):
+        """RetryPolicy.auto_model_escalation defaults to False."""
+        policy = RetryPolicy()
+        assert policy.auto_model_escalation is False
+
+    def test_auto_model_escalation_can_be_enabled(self, tmp_path):
+        """RetryPolicy.auto_model_escalation can be set to True."""
+        policy = RetryPolicy(auto_model_escalation=True)
+        assert policy.auto_model_escalation is True
 
 
 def test_dev_startup_failure_message_mentions_launcher(tmp_path: Path) -> None:

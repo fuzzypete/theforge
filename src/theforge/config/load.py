@@ -261,6 +261,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
+        auto_model_escalation=bool(retry_data.get("auto_model_escalation", False)),
     )
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)

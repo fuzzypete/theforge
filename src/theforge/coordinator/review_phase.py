@@ -816,9 +816,10 @@ def _run_review_phase(
         f"  ${_review_cost:.2f}  {_fmt_duration(_review_elapsed)}"
     )
 
-    # Escalate dev model on persistent P1
+    # Escalate dev model on persistent P1 (only when explicitly enabled via forge.yaml)
     if (
-        _is_persistent_p1
+        config.retry.auto_model_escalation
+        and _is_persistent_p1
         and not state.dev_escalated
         and (state.total_dev_cost < config.dev_profile.budget_usd)
     ):

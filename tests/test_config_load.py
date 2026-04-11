@@ -401,6 +401,19 @@ class TestLoadConfig:
         assert config.retry.max_dev_iterations == 5
         assert config.retry.max_review_cycles == 4
 
+    def test_auto_model_escalation_defaults_false(self, tmp_path):
+        config_path = _write_config({"retry": {}}, tmp_path)
+        config = load_config(config_path)
+        assert config.retry.auto_model_escalation is False
+
+    def test_auto_model_escalation_parsed_true(self, tmp_path):
+        config_path = _write_config(
+            {"retry": {"auto_model_escalation": True}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.retry.auto_model_escalation is True
+
     def test_empty_file(self, tmp_path):
         config_path = tmp_path / "forge.yaml"
         config_path.write_text("", encoding="utf-8")
