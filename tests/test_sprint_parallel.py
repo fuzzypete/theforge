@@ -1899,6 +1899,107 @@ class TestQueuedMergePolling:
         assert "timed out" in (queued_result.state.error or "")
         assert sprint.specs_failed >= 1
 
+    def test_dependent_not_skipped_when_dep_has_queued_pr(self, tmp_path: Path) -> None:
+        """Dependent story must run after its dep's queued PR merges, not be skipped.
+
+        Regression for: dependent stories skipped when dependency is
+        pending_integration instead of waiting (#642).
+
+        Scenario: story-a (no deps) completes REVIEW/APPROVE, PR is queued for
+        auto-merge.  story-b depends on story-a.  When active workers are all
+        done but story-a is still in queued_prs, the scheduler must poll the PR
+        directly and dispatch story-b once it lands — not declare deadlock.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="forge/{slug}",
+                on_approve="merge-pr",
+                auto_push=True,
+                merge_wait_timeout_seconds=60,
+            ),
+        )
+
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        mock_preflight = MagicMock()
+        mock_preflight.cost_usd = 1.0
+        state.preflight_result = mock_preflight
+        state.review_results = [
+            ReviewResult(
+                verdict="APPROVE",
+                summary="Looks good.",
+                findings=[],
+                story_matches=True,
+                story_mismatches=[],
+                test_adequate=True,
+                test_gaps=[],
+                parse_errors=[],
+                raw_yaml={},
+            )
+        ]
+        queued_result = CoordinatorResult(
+            success=True,
+            phase=Phase.DONE,
+            state=state,
+            message="Done.",
+            merge={"action": "merge-pr", "pending": True},
+            landing_status="pending_integration",
+        )
+        dispatched: list[str] = []
+
+        def fake_run_task(*args, **kwargs):  # noqa: ANN001
+            task = args[1]
+            dispatched.append(task.slug)
+            if task.slug == "story-a":
+                return queued_result
+            return _make_coordinator_result(success=True, cost=1.0)
+
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch(
+                "theforge.coordinator.completion._merge_pr",
+                return_value={
+                    "action": "merge-pr",
+                    "pr_url": "https://github.com/x/y/pull/11",
+                    "merged": False,
+                    "merge_queued": True,
+                    "auto_merge_queued": True,
+                    "success": True,
+                    "error": None,
+                },
+            ),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                return_value={"status": "merged"},
+            ),
+            patch(
+                "theforge.sprint.runner.poll_required_checks",
+                return_value={
+                    "status": "pass",
+                    "sha": "deadbeef",
+                    "failing_checks": [],
+                    "message": "ok",
+                },
+            ),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        assert "story-b" in dispatched, "story-b was skipped due to premature deadlock"
+        assert queued_result.landing_status == "landed"
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_skipped == 0
+
 
 class TestImmediateIntegrationLanding:
     def test_immediate_landing_on_approve(self, tmp_path: Path) -> None:

@@ -968,8 +968,11 @@ def run_sprint(
                 )
                 active[task.slug] = fut
 
-            _log(f"[debug] post-submit: active={list(active.keys())}")
-            if not active:
+            _log(
+                f"[debug] post-submit: active={list(active.keys())}"
+                f" queued_prs={list(queued_prs.keys())}"
+            )
+            if not active and not queued_prs:
                 # Deadlock: remaining tasks have unmet or budget-blocked deps
                 # Release any pending plan gates so worker threads can exit
                 for g_slug, _gate in plan_gates.items():
@@ -986,6 +989,42 @@ def run_sprint(
                     dag.mark_skipped(t.slug)
                     specs_skipped += 1
                 break
+
+            # No active workers but queued PRs are still in flight.
+            # Poll each queued PR directly so dependents can be dispatched
+            # once the PR lands — do not declare deadlock while PRs are pending.
+            if not active and queued_prs:
+                for _qp_slug in list(queued_prs):
+                    _qp_task, _qp_result, _qp_pr_url = queued_prs[_qp_slug]
+                    _qp_poll = _poll_queued_pr(
+                        _qp_pr_url,
+                        config.project_root,
+                        config.workspace.merge_wait_timeout_seconds,
+                    )
+                    if _qp_poll["status"] == "merged":
+                        merged_slugs.add(_qp_slug)
+                        dag.mark_complete(_qp_slug)
+                        _qp_result.landing_status = "landed"
+                        del queued_prs[_qp_slug]
+                        _write_story_audit(config, _qp_task, _qp_result)
+                        _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
+                    else:
+                        specs_succeeded -= 1
+                        specs_failed += 1
+                        _qp_result.landing_status = "failed"
+                        if _qp_poll["status"] == "timeout":
+                            _qp_result.state.error = (
+                                f"Queued PR timed out after "
+                                f"{config.workspace.merge_wait_timeout_seconds}s: {_qp_pr_url}"
+                            )
+                        else:
+                            _qp_result.state.error = (
+                                f"Queued PR {_qp_poll['status']}: {_qp_pr_url}"
+                            )
+                        del queued_prs[_qp_slug]
+                        _write_story_audit(config, _qp_task, _qp_result)
+                        _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
+                continue
 
             _log(f"[debug] calling wait() with {len(active)} active futures")
             # Use a short poll interval when plan gates are pending so the
