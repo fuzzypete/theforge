@@ -237,7 +237,7 @@ class TestCoordinatorAutoMerge:
 
         result = run_task(config, task, auto_merge=True)
 
-        assert result.success is True  # run still succeeds
+        assert result.success is False  # landing failure → success=False
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
@@ -281,7 +281,7 @@ class TestCoordinatorAutoMerge:
 
         result = run_task(config, task, auto_merge=True)
 
-        assert result.success is True  # run still succeeds
+        assert result.success is False  # landing failure → success=False
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert result.merge["error"] is not None
@@ -321,7 +321,7 @@ class TestCoordinatorAutoMerge:
 
         result = run_task(config, task, auto_merge=True)
 
-        assert result.success is True
+        assert result.success is False  # landing failure → success=False
         assert result.merge is not None
         assert result.merge["merged"] is False
         assert "no commits" in result.merge["error"]

@@ -830,11 +830,7 @@ def run_task(
             elif _merge_info.get("merge_queued"):
                 result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
             elif _landing_status == "failed":
-                # merge-pr: landing IS part of the story contract — a failed
-                # PR merge means the story did not complete.  Local auto-merge
-                # failures are non-fatal (safety guards, dirty worktree, etc.).
-                if _effective_on_approve == "merge-pr":
-                    result.success = False
+                result.success = False
                 result.message += f" Merge failed: {_merge_info.get('error', 'unknown')}"
 
         _total_elapsed = time.monotonic() - _task_start

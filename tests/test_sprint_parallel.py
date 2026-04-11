@@ -429,7 +429,7 @@ class TestParallelIndependentStories:
 
 class TestParallelDependencyGating:
     def test_dependency_blocks_until_predecessor_completes(self, tmp_path: Path) -> None:
-        """Story B is skipped when A cannot be landed for dependency satisfaction."""
+        """Story B is skipped when A's landing fails — landing failure is now fatal."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
         manifest_path = _make_manifest_parallel(
@@ -440,19 +440,19 @@ class TestParallelDependencyGating:
         )
         config = _make_config(tmp_path)
 
-        # A succeeds but deferred merge fails → B should be skipped
+        # A succeeds but deferred merge fails → A=failed, B=skipped (dep unmet)
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
             sprint = run_sprint(config, manifest_path)
 
         assert mock_run.call_count == 1  # only A ran
-        assert sprint.specs_succeeded == 1
-        assert sprint.specs_failed == 0
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
         assert sprint.specs_skipped == 1
 
     def test_dependency_satisfied_by_merge_unlocks_dependent(self, tmp_path: Path) -> None:
-        """Story B runs after A merges (in max_parallel=1 mode with eager merge)."""
+        """Story B runs after A lands (in max_parallel=1 mode with eager merge)."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         _make_spec_file(tmp_path, "Story B", "story-b", depends_on=["story-a"])
         manifest_path = _make_manifest_parallel(
@@ -463,7 +463,7 @@ class TestParallelDependencyGating:
         )
         config = _make_config(tmp_path)
 
-        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        result_a = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
         result_b = _make_coordinator_result(success=True, cost=1.0)
 
         with patch(
@@ -574,13 +574,13 @@ class TestClassifyAndRecord:
         assert dag.ready() == []
 
     def test_success_with_merge_completes_for_dag(self) -> None:
-        """Success with merge → specs_succeeded, dag.mark_complete (unlocks deps)."""
+        """landing_status=landed → specs_succeeded, dag.mark_complete (unlocks deps)."""
         a = _make_task("a")
         b = _make_task("b", depends_on=["a"])
         dag = StoryDAG([a, b])
         merged_slugs: set[str] = set()
 
-        result = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
         ds, df, dsk = _classify_and_record(a, result, dag, merged_slugs)
 
         assert ds == 1
@@ -723,9 +723,9 @@ class TestMergeOrdering:
         )
         config = _make_config(tmp_path)
 
-        # A merges, then B has satisfied dep, can be merged
-        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
-        result_b = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        # A lands, then B has satisfied dep, can be merged
+        result_a = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+        result_b = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
 
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
@@ -1067,7 +1067,7 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["error"] is None
 
     def test_merge_pr_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
-        """Landing failures record failed integration without rewriting review success."""
+        """Landing failures set success=False and record failed integration in audit."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         (tmp_path / "story-a").mkdir()
         manifest_path = _make_manifest_parallel(
@@ -1140,9 +1140,9 @@ class TestParallelMergeOrderingParallelMode:
 
         audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
-        assert sprint.specs_succeeded == 1
-        assert sprint.specs_failed == 0
-        assert audit["outcome"]["success"] is True
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert audit["outcome"]["success"] is False
         assert audit["outcome"]["final_phase"] == "DONE"
         assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge-pr"
@@ -1231,7 +1231,7 @@ class TestParallelMergeOrderingParallelMode:
         assert audit["merge"]["merged"] is True
 
     def test_deferred_local_merge_failure_rewrites_story_audit(self, tmp_path: Path) -> None:
-        """Local landing failures record failed integration without rewriting review success."""
+        """Local landing failures set success=False and record failed integration in audit."""
         _make_spec_file(tmp_path, "Story A", "story-a")
         (tmp_path / "story-a").mkdir()
         manifest_path = _make_manifest_parallel(
@@ -1272,9 +1272,9 @@ class TestParallelMergeOrderingParallelMode:
 
         audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
-        assert sprint.specs_succeeded == 1
-        assert sprint.specs_failed == 0
-        assert audit["outcome"]["success"] is True
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert audit["outcome"]["success"] is False
         assert audit["outcome"]["final_phase"] == "DONE"
         assert audit["landing_status"] == "failed"
         assert audit["merge"]["action"] == "merge"
@@ -2091,7 +2091,7 @@ class TestImmediateIntegrationLanding:
         assert result_b.landing_status == "landed"
         assert merge_calls == ["story-a", "story-b"]
 
-    def test_landing_failure_does_not_rewrite_success(self, tmp_path: Path) -> None:
+    def test_landing_failure_sets_success_false(self, tmp_path: Path) -> None:
         _make_spec_file(tmp_path, "Story A", "story-a")
         manifest_path = _make_manifest_parallel(
             tmp_path,
@@ -2146,9 +2146,9 @@ class TestImmediateIntegrationLanding:
         ):
             sprint = run_sprint(config, manifest_path)
 
-        assert sprint.specs_succeeded == 1
-        assert sprint.specs_failed == 0
-        assert result.success is True
+        assert sprint.specs_succeeded == 0
+        assert sprint.specs_failed == 1
+        assert result.success is False
         assert result.phase is Phase.DONE
         assert result.landing_status == "failed"
 
