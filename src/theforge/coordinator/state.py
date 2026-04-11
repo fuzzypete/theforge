@@ -64,6 +64,24 @@ def parse_phase_name(name: str) -> Phase:
     return result
 
 
+# ── RetryReason enum ─────────────────────────────────────────────────
+
+
+class RetryReason(str, Enum):
+    """Reason the coordinator is retrying the dev phase.
+
+    Using str mixin keeps serialization compatible with audit YAML output.
+    """
+
+    REVIEW_CHANGES = "review_changes"
+    GATE_FAIL = "gate_fail"
+    DIRTY_WORKTREE = "dirty_worktree"  # reserved; no active assignment site
+    EXTEND = "extend"
+    REJECT = "reject"
+    TIMEOUT_RESUME = "timeout_resume"
+    CONVENTION_VIOLATIONS = "convention_violations"
+
+
 # ── Disposition enum ──────────────────────────────────────────────────
 
 
@@ -260,11 +278,7 @@ class CoordinatorState:
     dev_escalated: bool = False  # True once model escalation has occurred this run
     plan_escalated: bool = False  # True once plan model escalation has occurred this run
     plan_escalation_note: str | None = None  # escalation context injected into regen prompt
-    retry_reason: str | None = (
-        None
-        # "review_changes" | "gate_fail" | "dirty_worktree" | "extend"
-        # | "reject" | "timeout_resume" | None
-    )
+    retry_reason: RetryReason | None = None  # see RetryReason enum for valid values
     last_cycle_reviewer_results: list[tuple[str, ReviewResult]] = field(
         default_factory=list
     )  # (profile_name, ReviewResult) pairs from the most recent pool run

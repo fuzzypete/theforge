@@ -8,6 +8,7 @@ import time
 from typing import TYPE_CHECKING
 
 from .log_tee import _end_run_log_tee, _safe_signal
+from .state import RetryReason
 
 if TYPE_CHECKING:
     from theforge.config import ForgeConfig
@@ -71,7 +72,7 @@ def _make_sigterm_handler(
 
 def _set_timeout_resume(state: "CoordinatorState", gate_result: str) -> None:
     """Mark state for a timeout-resume retry with a short continuation prompt."""
-    state.retry_reason = "timeout_resume"
+    state.retry_reason = RetryReason.TIMEOUT_RESUME
     state.human_feedback = (
         "You were cut off by a timeout. Continue from where you left off. "
         f"Gate result: {gate_result}"

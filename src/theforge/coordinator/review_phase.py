@@ -58,6 +58,7 @@ from .state import (
     CoordinatorState,
     FindingRecord,
     Phase,
+    RetryReason,
     ReviewCycleMetadata,
     ReviewIterationTelemetry,
 )
@@ -449,7 +450,7 @@ def _handle_interactive_review_decision(
                 review_to_dev_handoff(parsed_review) if parsed_review.findings else None
             )
         state.human_feedback = None
-        state.retry_reason = "extend"
+        state.retry_reason = RetryReason.EXTEND
         _log(
             f"Human extended — granting fresh budget "
             f"(extra_cycles={state.human_review_extra_cycles})"
@@ -460,7 +461,7 @@ def _handle_interactive_review_decision(
     _append_cycle_history(state, parsed_review)
     state.dev_iteration = 0
     state.last_review_findings = None
-    state.retry_reason = "reject"
+    state.retry_reason = RetryReason.REJECT
     if exhausted_cycles:
         # Treat as extend + reject: grant fresh budget
         state.review_cycle = 0
@@ -893,7 +894,7 @@ def _run_review_phase(
     state.last_review_findings = review_to_dev_handoff(parsed_review)
     state.dev_iteration = 0
     state.human_feedback = None
-    state.retry_reason = "review_changes"
+    state.retry_reason = RetryReason.REVIEW_CHANGES
     _log_verbose(f"Sending {len(parsed_review.findings)} findings back to dev agent")
     return _ReviewOutcome.RETRY_DEV, None, config
 

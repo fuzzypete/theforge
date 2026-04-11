@@ -71,6 +71,7 @@ from .state import (
     CoordinatorResult,
     CoordinatorState,
     Phase,
+    RetryReason,
 )
 from .util import (
     _generate_run_id,
@@ -338,7 +339,7 @@ def _coordinator_loop(
                     state.dev_results
                     and state.dev_results[-1].exit_code == -9
                     and state.dev_session_id
-                    and state.retry_reason == "gate_fail"
+                    and state.retry_reason == RetryReason.GATE_FAIL
                 ):
                     gate_result = "FAIL"
                     if state.gate_decisions:

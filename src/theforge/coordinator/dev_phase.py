@@ -19,7 +19,7 @@ from theforge.traces import write_trace
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
-from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase
+from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
 from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 
 # ── Sibling-worktree write detector ──────────────────────────────────
@@ -258,74 +258,89 @@ def _run_dev_phase(
         else config.validation.gate_command
     )
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
-    if state.retry_reason == "timeout_resume":
-        prompt = (
-            state.human_feedback
-            or "You were cut off by a timeout. Continue from where you left off."
-        )
-        state.dev_prompt_injected_finding_ids.append([])
-        state.retry_reason = None
-        state.human_feedback = None
-    elif state.retry_reason in ("review_changes", "extend") and state.last_review_findings:
-        carry_forward_p1s = _prior_open_p1s_for_dev_prompt(state)
-        current_cycle_p1s = _current_cycle_p1s_for_dev_prompt(state)
-        prompt = build_fix_prompt(
-            task,
-            workspace_path=workspace_path,
-            branch_name=branch_name,
-            review_findings=state.last_review_findings,
-            gate_command=_gate_cmd,
-            gate_skipped=_is_gate_skip(task.gate_override),
-            iteration=state.dev_iteration,
-            cycle_history=state.cycle_history or None,
-            escalation_note=state.escalation_note,
-            handoff_file=config.validation.handoff_file,
-            plan_output=state.plan_structured
-            if state.plan_structured is not None
-            else state.plan_output,
-            prior_open_p1s=carry_forward_p1s or None,
-            classified_p1s=current_cycle_p1s or None,
-            surviving_families=state.surviving_families or None,
-            conventions=config.conventions_soft,
-        )
-        injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
-        injected_finding_ids.extend(
-            r.finding_id for r in current_cycle_p1s if r.finding_id not in injected_finding_ids
-        )
-        state.dev_prompt_injected_finding_ids.append(injected_finding_ids)
-        state.escalation_note = None  # consumed
-    else:
-        dev_context = ContextAssembler.from_config(config).assemble(
-            phase="dev",
-            story_text=story_content,
-            file_list=plan_file_list(state.plan_structured) or None,
-        )
-        state.context_manifests.append({"phase": "dev", "manifest": dev_context})
-        prompt = build_dev_prompt(
-            task,
-            workspace_path=workspace_path,
-            branch_name=branch_name,
-            story_content=story_content,
-            gate_command=_gate_cmd,
-            gate_skipped=_is_gate_skip(task.gate_override),
-            review_findings=state.last_review_findings,
-            human_feedback=state.human_feedback,
-            preflight_output=(state.preflight_result.output if state.preflight_result else None),
-            plan_output=state.plan_structured
-            if state.plan_structured is not None
-            else state.plan_output,
-            plan_review_advisory=state.plan_agent_review_findings,
-            iteration=state.dev_iteration,
-            escalation_note=state.escalation_note,
-            cycle_history=state.cycle_history or None,
-            handoff_file=config.validation.handoff_file,
-            preflight_sufficiency=state.preflight_sufficiency,
-            contract_change=state.preflight_contract_change,
-            conventions=config.conventions_soft,
-            assembled_context=dev_context,
-        )
-        state.dev_prompt_injected_finding_ids.append([])
-        state.escalation_note = None  # consumed
+    match state.retry_reason:
+        case RetryReason.TIMEOUT_RESUME:
+            prompt = (
+                state.human_feedback
+                or "You were cut off by a timeout. Continue from where you left off."
+            )
+            state.dev_prompt_injected_finding_ids.append([])
+            state.retry_reason = None
+            state.human_feedback = None
+        case RetryReason.REVIEW_CHANGES | RetryReason.EXTEND if state.last_review_findings:
+            carry_forward_p1s = _prior_open_p1s_for_dev_prompt(state)
+            current_cycle_p1s = _current_cycle_p1s_for_dev_prompt(state)
+            prompt = build_fix_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                review_findings=state.last_review_findings,
+                gate_command=_gate_cmd,
+                gate_skipped=_is_gate_skip(task.gate_override),
+                iteration=state.dev_iteration,
+                cycle_history=state.cycle_history or None,
+                escalation_note=state.escalation_note,
+                handoff_file=config.validation.handoff_file,
+                plan_output=state.plan_structured
+                if state.plan_structured is not None
+                else state.plan_output,
+                prior_open_p1s=carry_forward_p1s or None,
+                classified_p1s=current_cycle_p1s or None,
+                surviving_families=state.surviving_families or None,
+                conventions=config.conventions_soft,
+            )
+            injected_finding_ids = [r.finding_id for r in carry_forward_p1s]
+            injected_finding_ids.extend(
+                r.finding_id for r in current_cycle_p1s if r.finding_id not in injected_finding_ids
+            )
+            state.dev_prompt_injected_finding_ids.append(injected_finding_ids)
+            state.escalation_note = None  # consumed
+        case (
+            None
+            | RetryReason.GATE_FAIL
+            | RetryReason.CONVENTION_VIOLATIONS
+            | RetryReason.DIRTY_WORKTREE
+            | RetryReason.REJECT
+            | RetryReason.EXTEND
+            | RetryReason.REVIEW_CHANGES
+        ):
+            # None → first iteration; gate_fail/convention_violations/dirty_worktree/reject
+            # /extend(no findings) → fresh dev prompt
+            dev_context = ContextAssembler.from_config(config).assemble(
+                phase="dev",
+                story_text=story_content,
+                file_list=plan_file_list(state.plan_structured) or None,
+            )
+            state.context_manifests.append({"phase": "dev", "manifest": dev_context})
+            prompt = build_dev_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                story_content=story_content,
+                gate_command=_gate_cmd,
+                gate_skipped=_is_gate_skip(task.gate_override),
+                review_findings=state.last_review_findings,
+                human_feedback=state.human_feedback,
+                preflight_output=(
+                    state.preflight_result.output if state.preflight_result else None
+                ),
+                plan_output=state.plan_structured
+                if state.plan_structured is not None
+                else state.plan_output,
+                plan_review_advisory=state.plan_agent_review_findings,
+                iteration=state.dev_iteration,
+                escalation_note=state.escalation_note,
+                cycle_history=state.cycle_history or None,
+                handoff_file=config.validation.handoff_file,
+                preflight_sufficiency=state.preflight_sufficiency,
+                contract_change=state.preflight_contract_change,
+                conventions=config.conventions_soft,
+                assembled_context=dev_context,
+            )
+            state.dev_prompt_injected_finding_ids.append([])
+            state.escalation_note = None  # consumed
+        case _:
+            raise ValueError(f"Unrecognized retry_reason: {state.retry_reason!r}")
     state.retry_reason = None  # consumed
 
     write_trace(
