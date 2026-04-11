@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -65,16 +66,9 @@ def _write_last_setup_command(workspace_path: Path, cmd: str) -> None:
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
     """Run workspace setup, always running pip install even if .venv exists.
 
-    When setup_command contains the {forge_python} placeholder, the template is
-    matched BEFORE substitution so the regex never has to parse shlex.quote()
-    output (which varies with the interpreter path and cannot be reliably matched
-    by a single regex pattern).  sys.executable is then injected directly into
-    the constructed shell strings via shlex.quote().
-
-    For legacy commands without {forge_python}, falls back to matching the bare
-    executable token after resolving any other substitutions.
-
-    Falls back to running setup_command verbatim when neither pattern matches.
+    Matches the {forge_python} template BEFORE substitution to avoid parsing
+    shlex.quote() output; falls back to the legacy bare-token form; then runs
+    setup_command verbatim if neither pattern matches.
     """
     last_setup_command = _read_last_setup_command(workspace_path)
     if last_setup_command is not None and last_setup_command != setup_command:
@@ -447,8 +441,16 @@ def pull_base_branch(config: ForgeConfig) -> bool:
 
     - If base_branch is checked out: git pull --ff-only (updates working tree)
     - If base_branch is not checked out: git fetch origin base:base (updates ref)
+
+    If the pull updates src/theforge source files, re-execs the process so the
+    sprint runs with fresh imports rather than stale bytecode.
     """
     base_branch = config.workspace.base_branch
+
+    ok_before, tree_before = _cu._run_shell("git rev-parse HEAD:src/theforge", config.project_root)
+    if not ok_before:
+        tree_before = ""
+
     _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
     if current_branch.strip() == base_branch:
         ok_pull, pull_out = _cu._run_shell(
@@ -462,7 +464,24 @@ def pull_base_branch(config: ForgeConfig) -> bool:
         _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
     else:
         _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
-    return ok_pull
+        return False
+
+    ok_after, tree_after = _cu._run_shell("git rev-parse HEAD:src/theforge", config.project_root)
+    if not ok_after:
+        tree_after = ""
+
+    if tree_before and tree_after and tree_before.strip() != tree_after.strip():
+        _cu._log("Source updated after pull — re-execing to load new code")
+        os.chdir(str(config.project_root))
+        try:
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except OSError:
+            raise SystemExit(
+                "Source files changed after git pull"
+                " — re-run forge sprint to pick up the new code."
+            )
+
+    return True
 
 
 def _create_workspace(
