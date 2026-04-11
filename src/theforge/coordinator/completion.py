@@ -17,7 +17,8 @@ from .gate import _parse_dirty_files
 from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
-from .state import CoordinatorResult, CoordinatorState, CycleHistory, Phase
+from .run_setup import delete_merge_state, load_merge_state, save_merge_state
+from .state import CoordinatorResult, CoordinatorState, CycleHistory, MergeStepState, Phase
 from .util import _fmt_duration, _log, _log_verbose, _run_shell
 from .workspace import _deindex_forge_artifacts, _merge_branch
 
@@ -309,6 +310,240 @@ def _create_pr(
         return {"action": "pr", "pr_url": None, "success": False, "error": str(exc)}
 
 
+def _step_fetch_rebase(push_cwd: Path, base_branch: str) -> dict:
+    """Fetch origin/{base_branch} and rebase the worktree onto it.
+
+    Returns ``{"success": True}`` or ``{"success": False, "error": ...}``.
+    """
+    _deindex_forge_artifacts(push_cwd)
+    try:
+        fetch_proc = subprocess.run(
+            ["git", "fetch", "origin", base_branch],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=60,
+        )
+        if fetch_proc.returncode != 0:
+            err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
+            _pr_log.warning("git fetch failed (exit %d): %s", fetch_proc.returncode, err)
+            return {"success": False, "error": f"git fetch failed: {err}"}
+
+        rebase_proc = subprocess.run(
+            ["git", "rebase", f"origin/{base_branch}"],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=120,
+        )
+        if rebase_proc.returncode != 0:
+            err = rebase_proc.stderr.strip() or rebase_proc.stdout.strip()
+            _pr_log.warning("git rebase failed (exit %d): %s", rebase_proc.returncode, err)
+            subprocess.run(
+                ["git", "rebase", "--abort"],
+                capture_output=True,
+                cwd=str(push_cwd),
+                timeout=30,
+            )
+            return {
+                "success": False,
+                "error": f"rebase onto {base_branch} failed — escalating: {err}",
+            }
+    except Exception as exc:
+        _pr_log.warning("rebase step failed: %s", exc)
+        return {"success": False, "error": f"rebase step failed: {exc}"}
+
+    return {"success": True}
+
+
+def _step_force_push(push_cwd: Path, branch_name: str) -> dict:
+    """Force-push the rebased branch to origin.
+
+    Returns ``{"success": True}`` or ``{"success": False, "error": ...}``.
+    A missing remote branch is treated as success (already cleaned up).
+    """
+    try:
+        push_proc = subprocess.run(
+            ["git", "push", "-f", "origin", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=str(push_cwd),
+            timeout=60,
+        )
+        if push_proc.returncode != 0:
+            err = push_proc.stderr.strip() or push_proc.stdout.strip()
+            if "does not match any" in err.lower():
+                _pr_log.info(
+                    "force-push skipped because remote branch %s is already gone: %s",
+                    branch_name,
+                    err,
+                )
+                return {"success": True}
+            _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
+            return {"success": False, "error": f"force-push after rebase failed: {err}"}
+    except Exception as exc:
+        _pr_log.warning("force-push failed: %s", exc)
+        return {"success": False, "error": f"force-push after rebase failed: {exc}"}
+
+    return {"success": True}
+
+
+def _step_create_pr(
+    config: ForgeConfig,
+    task: TaskStory,
+    branch_name: str,
+    parsed_review: ReviewResult,
+    state: CoordinatorState,
+) -> dict:
+    """Create the GitHub PR (archives story, pushes branch).
+
+    Returns ``{"success": True, "pr_url": ...}`` or
+    ``{"success": False, "error": ..., "pr_url": ...}``.
+    """
+    pr_result = _create_pr(config, task, branch_name, parsed_review, state)
+    if not pr_result.get("success"):
+        return {
+            "success": False,
+            "error": pr_result.get("error") or "PR creation failed",
+            "pr_url": pr_result.get("pr_url"),
+        }
+    return {"success": True, "pr_url": pr_result["pr_url"]}
+
+
+def _step_merge(project_root: Path, pr_url: str, merge_strategy: str) -> dict:
+    """Execute ``gh pr merge --auto --{strategy}``.
+
+    Returns ``{"success": True}`` or
+    ``{"success": False, "error": ..., "retryable": bool}``.
+    """
+    merge_retry_error = "base branch was modified"
+    try:
+        merge_proc = subprocess.run(
+            ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=120,
+        )
+    except Exception as exc:
+        _pr_log.warning("gh pr merge --auto failed: %s", exc)
+        return {"success": False, "error": f"gh pr merge failed: {exc}", "retryable": False}
+
+    if merge_proc.returncode != 0:
+        err = "\n".join(
+            part.strip()
+            for part in (merge_proc.stderr, merge_proc.stdout)
+            if part and part.strip()
+        )
+        _pr_log.warning("gh pr merge --auto failed (exit %d): %s", merge_proc.returncode, err)
+        return {
+            "success": False,
+            "error": f"gh pr merge failed: {err}",
+            "retryable": merge_retry_error in err.lower(),
+        }
+
+    return {"success": True}
+
+
+def _step_await_merge_state(project_root: Path, pr_url: str) -> dict:
+    """Check whether GitHub merged the PR immediately or queued it for checks.
+
+    Returns ``{"success": True, "merge_queued": bool, "auto_merge_queued": bool}``
+    or ``{"success": False, "error": ...}``.
+    """
+    try:
+        state_proc = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("gh pr view failed after auto-merge queue: %s", exc)
+        return {"success": False, "error": f"gh pr view failed after auto-merge queue: {exc}"}
+
+    if state_proc.returncode != 0:
+        state_err = state_proc.stderr.strip() or state_proc.stdout.strip()
+        _pr_log.warning(
+            "gh pr view failed after auto-merge queue (exit %d): %s",
+            state_proc.returncode,
+            state_err,
+        )
+        return {
+            "success": False,
+            "error": f"gh pr view failed after auto-merge queue: {state_err}",
+        }
+
+    pr_state = state_proc.stdout.strip()
+    queued = pr_state != "MERGED"
+    return {"success": True, "merge_queued": queued, "auto_merge_queued": queued}
+
+
+def _step_cleanup(
+    project_root: Path,
+    worktree_path: Path,
+    branch_name: str,
+    base_branch: str,
+    *,
+    delete_remote_branch: bool,
+) -> None:
+    """Best-effort local cleanup after a successful remote PR merge."""
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=60,
+        )
+        subprocess.run(
+            ["git", "merge", "--ff-only", f"origin/{base_branch}"],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
+
+    try:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(worktree_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("worktree cleanup failed (non-fatal): %s", exc)
+
+    try:
+        subprocess.run(
+            ["git", "branch", "-D", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=30,
+        )
+    except Exception as exc:
+        _pr_log.warning("local branch cleanup failed (non-fatal): %s", exc)
+
+    if not delete_remote_branch:
+        return
+
+    try:
+        subprocess.run(
+            ["git", "push", "origin", "--delete", branch_name],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=60,
+        )
+    except Exception as exc:
+        _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
+
+
 def _merge_pr(
     config: ForgeConfig,
     task: TaskStory,
@@ -319,13 +554,17 @@ def _merge_pr(
     """Create a PR and immediately merge it via gh pr merge.
 
     Sequence:
-    1. Fetch + rebase onto latest origin/{base_branch} (escalate on conflict).
-    2. Force-push rebased branch so _create_pr's push is a fast-forward.
-    3. Call _create_pr() to archive story, push, and open the PR.
-    4. Merge via `gh pr merge --{strategy}` from the project root.
-    5. Best-effort local cleanup: fast-forward local base_branch, remove the
-       feature worktree, and delete the feature branch locally. Remote branch
-       deletion is deferred unless the PR is already merged.
+    1. Check if PR is already merged (fast-exit).
+    2. Fetch + rebase onto latest origin/{base_branch} (escalate on conflict).
+    3. Force-push rebased branch so _step_create_pr's push is a fast-forward.
+    4. Call _step_create_pr() to archive story, push, and open the PR (once only).
+    5. Merge via ``gh pr merge --auto --{strategy}`` from the project root.
+    6. Confirm PR state (MERGED or queued for auto-merge).
+    7. Best-effort local cleanup.
+
+    Each step's outcome is persisted to merge_state.yaml so a crash mid-merge
+    can be resumed from the last committed step.  Each step logs its outcome via
+    _pr_log so failures are independently auditable in the run log.
 
     Returns a result dict with keys: action, pr_url, merged, success, error.
     Never raises.
@@ -336,78 +575,28 @@ def _merge_pr(
     worktree_path = config.project_root / worktree_dir
     push_cwd = worktree_path if worktree_path.is_dir() else config.project_root
 
-    def _fail(error: str, *, pr_url: str | None = None, merged: bool = False) -> dict:
+    def _fail(error: str, *, merge_state: MergeStepState) -> dict:
+        merge_state.error = error
+        save_merge_state(worktree_path, merge_state)
         return {
             "action": "merge-pr",
-            "pr_url": pr_url,
-            "merged": merged,
+            "pr_url": merge_state.pr_url,
+            "merged": False,
             "merge_queued": False,
             "auto_merge_queued": False,
             "success": False,
             "error": error,
         }
 
-    def _cleanup_after_merge(*, delete_remote_branch: bool) -> None:
-        """Best-effort local cleanup after a successful remote PR merge."""
-        try:
-            subprocess.run(
-                ["git", "fetch", "origin"],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=60,
-            )
-            subprocess.run(
-                ["git", "merge", "--ff-only", f"origin/{base_branch}"],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=30,
-            )
-        except Exception as exc:
-            _pr_log.warning("local base_branch fast-forward failed (non-fatal): %s", exc)
+    def _complete_step(merge_state: MergeStepState, step: str, **log_kwargs: object) -> None:
+        merge_state.completed_steps.append(step)
+        save_merge_state(worktree_path, merge_state)
+        _pr_log.info("merge step %s completed: %s", step, log_kwargs)
 
-        try:
-            subprocess.run(
-                ["git", "worktree", "remove", "--force", str(worktree_path)],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=30,
-            )
-        except Exception as exc:
-            _pr_log.warning("worktree cleanup failed (non-fatal): %s", exc)
+    # Load any persisted step state (enables crash-resume).
+    merge_state = load_merge_state(worktree_path)
 
-        try:
-            subprocess.run(
-                ["git", "branch", "-D", branch_name],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=30,
-            )
-        except Exception as exc:
-            _pr_log.warning("local branch cleanup failed (non-fatal): %s", exc)
-
-        if not delete_remote_branch:
-            return
-
-        try:
-            subprocess.run(
-                ["git", "push", "origin", "--delete", branch_name],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=60,
-            )
-        except Exception as exc:
-            _pr_log.warning("remote branch cleanup failed (non-fatal): %s", exc)
-
-    pr_url: str | None = None
-    merge_queued = False
-    auto_merge_queued = False
-    merge_retry_error = "base branch was modified"
-
+    # Check if the PR is already merged (always runs — external state may have changed).
     try:
         merged_pr_proc = subprocess.run(
             [
@@ -436,7 +625,16 @@ def _merge_pr(
                     branch_name,
                     pr_url,
                 )
-                _cleanup_after_merge(delete_remote_branch=False)
+                if "cleanup" not in merge_state.completed_steps:
+                    _step_cleanup(
+                        config.project_root,
+                        worktree_path,
+                        branch_name,
+                        base_branch,
+                        delete_remote_branch=False,
+                    )
+                    _complete_step(merge_state, "cleanup", pr_url=pr_url)
+                delete_merge_state(worktree_path)
                 return {
                     "action": "merge-pr",
                     "pr_url": pr_url,
@@ -457,163 +655,123 @@ def _merge_pr(
     except Exception as exc:
         _pr_log.warning("Merged PR lookup failed for %s: %s", branch_name, exc)
 
+    # Retry loop: handles transient "base branch was modified" errors from GitHub.
     for attempt in range(MAX_MERGE_RETRIES):
-        # Step 1: defensively scrub tracked forge artifacts before rebase.
+        # fetch + rebase and force-push are only needed before the merge command runs.
+        # If merge already completed (resuming after a crash post-merge), skip them:
+        # force-pushing after auto-merge is queued can dismiss approvals and cancel it.
+        if "merge" not in merge_state.completed_steps:
+            fetch_rebase_result = _step_fetch_rebase(push_cwd, base_branch)
+            _pr_log.info(
+                "merge step fetch_rebase (attempt %d): success=%s error=%s",
+                attempt,
+                fetch_rebase_result["success"],
+                fetch_rebase_result.get("error"),
+            )
+            if not fetch_rebase_result["success"]:
+                return _fail(fetch_rebase_result["error"], merge_state=merge_state)
+
+            force_push_result = _step_force_push(push_cwd, branch_name)
+            _pr_log.info(
+                "merge step force_push (attempt %d): success=%s error=%s",
+                attempt,
+                force_push_result["success"],
+                force_push_result.get("error"),
+            )
+            if not force_push_result["success"]:
+                return _fail(force_push_result["error"], merge_state=merge_state)
+
+        # create PR — only once; skip on resume if already completed.
+        if "create_pr" not in merge_state.completed_steps:
+            create_result = _step_create_pr(config, task, branch_name, parsed_review, state)
+            if not create_result["success"]:
+                return _fail(create_result["error"], merge_state=merge_state)
+            if create_result["pr_url"] is None:
+                # Zero-delta branch: no commits ahead of base, nothing to merge.
+                _log(
+                    f"  Skipping merge: branch {branch_name} has no commits ahead of "
+                    f"origin/{base_branch}"
+                )
+                delete_merge_state(worktree_path)
+                return {
+                    "action": "merge-pr",
+                    "pr_url": None,
+                    "merged": False,
+                    "merge_queued": False,
+                    "auto_merge_queued": False,
+                    "success": True,
+                    "error": None,
+                    "skipped": True,
+                    "skip_reason": "zero-delta branch",
+                }
+            merge_state.pr_url = create_result["pr_url"]
+            _complete_step(merge_state, "create_pr", pr_url=merge_state.pr_url)
+
+        # Scrub forge artifacts before merge consumes the rewritten commit graph.
         _deindex_forge_artifacts(push_cwd)
 
-        # Step 2: fetch + rebase onto latest base_branch
-        try:
-            fetch_proc = subprocess.run(
-                ["git", "fetch", "origin", base_branch],
-                capture_output=True,
-                text=True,
-                cwd=str(push_cwd),
-                timeout=60,
+        # merge — skip on resume if already completed.
+        if "merge" not in merge_state.completed_steps:
+            merge_result = _step_merge(config.project_root, merge_state.pr_url, merge_strategy)
+            _pr_log.info(
+                "merge step merge (attempt %d): success=%s error=%s",
+                attempt,
+                merge_result["success"],
+                merge_result.get("error"),
             )
-            if fetch_proc.returncode != 0:
-                err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
-                _pr_log.warning("git fetch failed (exit %d): %s", fetch_proc.returncode, err)
-                return _fail(f"git fetch failed: {err}", pr_url=pr_url)
-
-            rebase_proc = subprocess.run(
-                ["git", "rebase", f"origin/{base_branch}"],
-                capture_output=True,
-                text=True,
-                cwd=str(push_cwd),
-                timeout=120,
-            )
-            if rebase_proc.returncode != 0:
-                err = rebase_proc.stderr.strip() or rebase_proc.stdout.strip()
-                _pr_log.warning("git rebase failed (exit %d): %s", rebase_proc.returncode, err)
-                subprocess.run(
-                    ["git", "rebase", "--abort"],
-                    capture_output=True,
-                    cwd=str(push_cwd),
-                    timeout=30,
-                )
-                return _fail(
-                    f"rebase onto {base_branch} failed — escalating: {err}",
-                    pr_url=pr_url,
-                )
-        except Exception as exc:
-            _pr_log.warning("rebase step failed: %s", exc)
-            return _fail(f"rebase step failed: {exc}", pr_url=pr_url)
-
-        # Step 3: force-push the rebased branch so _create_pr's push is a fast-forward
-        try:
-            push_proc = subprocess.run(
-                ["git", "push", "-f", "origin", branch_name],
-                capture_output=True,
-                text=True,
-                cwd=str(push_cwd),
-                timeout=60,
-            )
-            if push_proc.returncode != 0:
-                err = push_proc.stderr.strip() or push_proc.stdout.strip()
-                err_lower = err.lower()
-                if "does not match any" in err_lower:
-                    _pr_log.info(
-                        "force-push skipped because remote branch %s is already gone: %s",
-                        branch_name,
-                        err,
-                    )
-                else:
-                    _pr_log.warning("force-push failed (exit %d): %s", push_proc.returncode, err)
-                    return _fail(f"force-push after rebase failed: {err}", pr_url=pr_url)
-        except Exception as exc:
-            _pr_log.warning("force-push failed: %s", exc)
-            return _fail(f"force-push after rebase failed: {exc}", pr_url=pr_url)
-
-        # Step 3: create the PR only once (also archives story + pushes archive commit)
-        if attempt == 0:
-            pr_result = _create_pr(config, task, branch_name, parsed_review, state)
-            if not pr_result.get("success"):
-                return _fail(
-                    pr_result.get("error") or "PR creation failed",
-                    pr_url=pr_result.get("pr_url"),
-                )
-            pr_url = pr_result["pr_url"]
-
-        # Step 4: defensively scrub tracked forge artifacts again after rebase,
-        # before any push/merge consumes the rewritten commit graph.
-        _deindex_forge_artifacts(push_cwd)
-
-        # Step 5: merge the PR via --auto so GitHub queues the merge and applies
-        # it only after all required checks pass. Running gh from the repo root
-        # avoids worktree branch checkout constraints.
-        try:
-            merge_proc = subprocess.run(
-                ["gh", "pr", "merge", pr_url, "--auto", f"--{merge_strategy}"],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=120,
-            )
-        except Exception as exc:
-            _pr_log.warning("gh pr merge --auto failed: %s", exc)
-            return _fail(f"gh pr merge failed: {exc}", pr_url=pr_url)
-
-        if merge_proc.returncode != 0:
-            err = "\n".join(
-                part.strip()
-                for part in (merge_proc.stderr, merge_proc.stdout)
-                if part and part.strip()
-            )
-            err_lower = err.lower()
-            _pr_log.warning("gh pr merge --auto failed (exit %d): %s", merge_proc.returncode, err)
-            if merge_retry_error in err_lower:
-                if attempt < MAX_MERGE_RETRIES - 1:
+            if not merge_result["success"]:
+                if merge_result.get("retryable") and attempt < MAX_MERGE_RETRIES - 1:
                     _pr_log.warning(
                         "base branch changed during PR merge attempt %d/%d; retrying",
                         attempt + 1,
                         MAX_MERGE_RETRIES,
                     )
                     continue
-            return _fail(f"gh pr merge failed: {err}", pr_url=pr_url)
+                return _fail(merge_result["error"], merge_state=merge_state)
+            _complete_step(merge_state, "merge")
 
         # Determine whether GitHub merged immediately or queued for checks.
-        try:
-            state_proc = subprocess.run(
-                ["gh", "pr", "view", pr_url, "--json", "state", "-q", ".state"],
-                capture_output=True,
-                text=True,
-                cwd=str(config.project_root),
-                timeout=30,
+        if "await_merge_state" not in merge_state.completed_steps:
+            await_result = _step_await_merge_state(config.project_root, merge_state.pr_url)
+            if not await_result["success"]:
+                return _fail(await_result["error"], merge_state=merge_state)
+            merge_state.merge_queued = await_result["merge_queued"]
+            merge_state.auto_merge_queued = await_result["auto_merge_queued"]
+            _complete_step(
+                merge_state,
+                "await_merge_state",
+                merge_queued=merge_state.merge_queued,
+                pr_url=merge_state.pr_url,
             )
-        except Exception as exc:
-            _pr_log.warning("gh pr view failed after auto-merge queue: %s", exc)
-            return _fail(f"gh pr view failed after auto-merge queue: {exc}", pr_url=pr_url)
 
-        if state_proc.returncode != 0:
-            state_err = state_proc.stderr.strip() or state_proc.stdout.strip()
-            _pr_log.warning(
-                "gh pr view failed after auto-merge queue (exit %d): %s",
-                state_proc.returncode,
-                state_err,
-            )
-            return _fail(f"gh pr view failed after auto-merge queue: {state_err}", pr_url=pr_url)
+        break  # success — exit retry loop
 
-        pr_state = state_proc.stdout.strip()
-        if pr_state == "MERGED":
-            break
-
-        merge_queued = True
-        auto_merge_queued = True
-        break
+    merge_queued = merge_state.merge_queued
+    auto_merge_queued = merge_state.auto_merge_queued
 
     if merge_queued:
-        _log(f"  ✓ PR queued for auto-merge: {pr_url}")
+        _log(f"  ✓ PR queued for auto-merge: {merge_state.pr_url}")
     else:
-        _log(f"  ✓ PR merged: {pr_url}")
+        _log(f"  ✓ PR merged: {merge_state.pr_url}")
 
-    # Step 6: sync local state and clean up the merged feature worktree/branch.
+    # Sync local state and clean up the merged feature worktree/branch.
     # Preserve the remote branch when GitHub only queued auto-merge; branch
     # protection still needs that ref until the hosted merge completes.
-    _cleanup_after_merge(delete_remote_branch=not merge_queued)
+    if "cleanup" not in merge_state.completed_steps:
+        _step_cleanup(
+            config.project_root,
+            worktree_path,
+            branch_name,
+            base_branch,
+            delete_remote_branch=not merge_queued,
+        )
+        _complete_step(merge_state, "cleanup", pr_url=merge_state.pr_url)
+
+    delete_merge_state(worktree_path)
 
     return {
         "action": "merge-pr",
-        "pr_url": pr_url,
+        "pr_url": merge_state.pr_url,
         "merged": not merge_queued,
         "merge_queued": merge_queued,
         "success": True,

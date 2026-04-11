@@ -23,7 +23,7 @@ from theforge.task import TaskStory, load_story
 from . import util as _cu
 from .logging import StructuredLogger
 from .notify import _escalate_notify
-from .state import CoordinatorResult, CoordinatorState, Phase
+from .state import CoordinatorResult, CoordinatorState, MergeStepState, Phase
 
 _logger = logging.getLogger(__name__)
 
@@ -91,6 +91,63 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         ]
     if "surviving_families" in data and isinstance(data["surviving_families"], list):
         state.surviving_families = data["surviving_families"]
+
+
+def save_merge_state(workspace_path: Path, merge_state: MergeStepState) -> None:
+    """Persist merge step state to <workspace_path>/.forge/merge_state.yaml.
+
+    Called after each step in _merge_pr so a crash can be resumed from the last
+    committed step.  Follows the same sidecar pattern as save_trajectory_state.
+    """
+    sidecar = workspace_path / ".forge" / "merge_state.yaml"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "completed_steps": list(merge_state.completed_steps),
+        "pr_url": merge_state.pr_url,
+        "merge_queued": merge_state.merge_queued,
+        "auto_merge_queued": merge_state.auto_merge_queued,
+        "error": merge_state.error,
+        "last_updated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    sidecar.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+
+
+def load_merge_state(workspace_path: Path) -> MergeStepState:
+    """Restore merge step state from <workspace_path>/.forge/merge_state.yaml.
+
+    Returns a fresh MergeStepState if the sidecar is missing or corrupt.
+    """
+    sidecar = workspace_path / ".forge" / "merge_state.yaml"
+    if not sidecar.exists():
+        return MergeStepState()
+    try:
+        raw = sidecar.read_text(encoding="utf-8")
+        if not raw.strip():
+            return MergeStepState()
+        data = yaml.safe_load(raw)
+        if not isinstance(data, dict):
+            _logger.warning("merge_state.yaml: expected a dict, got %s — ignoring", type(data))
+            return MergeStepState()
+        completed = data.get("completed_steps")
+        return MergeStepState(
+            completed_steps=list(completed) if isinstance(completed, list) else [],
+            pr_url=data.get("pr_url"),
+            merge_queued=bool(data.get("merge_queued", False)),
+            auto_merge_queued=bool(data.get("auto_merge_queued", False)),
+            error=data.get("error"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("merge_state.yaml: failed to parse (%s) — ignoring", exc)
+        return MergeStepState()
+
+
+def delete_merge_state(workspace_path: Path) -> None:
+    """Remove the merge step state sidecar on clean completion."""
+    sidecar = workspace_path / ".forge" / "merge_state.yaml"
+    try:
+        sidecar.unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning("merge_state.yaml: failed to delete (%s) — ignoring", exc)
 
 
 def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[bool, str]:

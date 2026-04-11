@@ -102,6 +102,21 @@ Disposition = Literal[
 
 
 @dataclass
+class MergeStepState:
+    """Persistent step-state for a resumable _merge_pr execution.
+
+    Written to <workspace_path>/.forge/merge_state.yaml after each step so a
+    crash mid-merge can be resumed from the last committed step.
+    """
+
+    completed_steps: list[str] = field(default_factory=list)
+    pr_url: str | None = None
+    merge_queued: bool = False
+    auto_merge_queued: bool = False
+    error: str | None = None
+
+
+@dataclass
 class FindingRecord:
     """Persistent record of a finding across review cycles.
 
