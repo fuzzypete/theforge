@@ -879,6 +879,7 @@ def run_sprint(
                             _write_story_audit(config, dep_task, dep_result)
                         else:
                             dep_result.landing_status = "failed"
+                            dep_result.success = False
                             if poll_result["status"] == "timeout":
                                 dep_result.state.error = (
                                     f"Queued PR timed out after "
@@ -1017,6 +1018,7 @@ def run_sprint(
                         specs_succeeded -= 1
                         specs_failed += 1
                         _qp_result.landing_status = "failed"
+                        _qp_result.success = False
                         if _qp_poll["status"] == "timeout":
                             _qp_result.state.error = (
                                 f"Queued PR timed out after "
@@ -1221,6 +1223,7 @@ def run_sprint(
                 specs_succeeded -= 1
                 specs_failed += 1
                 result.landing_status = "failed"
+                result.success = False
                 if poll_result["status"] == "timeout":
                     result.state.error = (
                         f"Queued PR timed out after "

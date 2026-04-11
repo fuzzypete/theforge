@@ -1609,6 +1609,7 @@ class TestQueuedMergePolling:
             60,
         )
         assert result.landing_status == "failed"
+        assert result.success is False
         assert result.state.error == "Queued PR timed out after 60s: https://github.com/x/y/pull/7"
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
@@ -1802,6 +1803,7 @@ class TestQueuedMergePolling:
             sprint = run_sprint(config, manifest_path)
 
         assert result.landing_status == "failed"
+        assert result.success is False
         assert "closed" in (result.state.error or "")
         assert "timed out" not in (result.state.error or "")
         assert sprint.specs_succeeded == 0
@@ -1896,6 +1898,7 @@ class TestQueuedMergePolling:
         # Dependent story-b must never be dispatched when story-a times out
         assert "story-b" not in dispatched
         assert queued_result.landing_status == "failed"
+        assert queued_result.success is False
         assert "timed out" in (queued_result.state.error or "")
         assert sprint.specs_failed >= 1
 
