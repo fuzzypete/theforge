@@ -989,8 +989,7 @@ def _run_resume_coordinator(
             elif _merge_info.get("merge_queued"):
                 result.message += f" PR queued: {_merge_info.get('pr_url', '')}"
             elif _landing_status == "failed":
-                if _effective_on_approve == "merge-pr":
-                    result.success = False
+                result.success = False
                 result.message += f" Merge failed: {_merge_info.get('error', 'unknown')}"
 
         _total_elapsed = time.monotonic() - _task_start

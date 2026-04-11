@@ -3,11 +3,18 @@
 Covers:
 - result.success is False when landing_status is "failed" (engine and sprint paths)
 - generate_audit_log emits a landing_event block separate from the outcome block
+- Resume path (run_from_review): landing failure sets result.success=False
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
+
+from coord_test_helpers import (
+    APPROVE_REVIEW,
+    _make_agent_result,
+)
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -19,6 +26,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.task import TaskStory
 
@@ -175,3 +183,47 @@ class TestSuccessFalseOnLandingFailure:
         audit = generate_audit_log(_make_config(tmp_path), _make_task(), result)
         assert audit["outcome"]["success"] is False
         assert audit["landing_event"]["landing_status"] == "failed"
+
+
+# ── Resume path: run_from_review landing failure ──────────────────────────────
+
+
+class TestResumeLandingFailure:
+    """Tests that _run_resume_coordinator sets result.success=False on landing failure."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_run_from_review_landing_failure_sets_success_false(
+        self, mock_shell, mock_pool, tmp_path: Path
+    ) -> None:
+        """run_from_review with auto_merge=True: landing failure → result.success=False.
+
+        Previously, the resume path had a merge-pr-only guard so direct-merge
+        failures left success=True. This test documents the fixed contract:
+        any landing failure → success=False, regardless of landing mode.
+        """
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n\nImplement the thing.", encoding="utf-8")
+        config = _make_config(tmp_path)
+        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "git status --porcelain" in cmd:
+                return (True, "")  # clean worktree
+            if "git branch --list" in cmd:
+                return (True, "")  # base branch not found → landing fails
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_from_review(config, task, workspace, auto_merge=True)
+
+        assert result.success is False
+        assert result.landing_status == "failed"
+        assert result.merge is not None
+        assert result.merge["merged"] is False
