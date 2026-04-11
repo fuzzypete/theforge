@@ -300,6 +300,13 @@ class ContextConfig:
 
 
 @dataclass(frozen=True)
+class FindingClassifierConfig:
+    """Configuration for the finding classifier heuristics."""
+
+    allow_net_new_bypass: bool = False
+
+
+@dataclass(frozen=True)
 class SprintConfig:
     """Project-level sprint defaults from forge.yaml."""
 
@@ -347,6 +354,7 @@ class ForgeConfig:
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
     conventions_soft: list[str] = field(default_factory=list)  # [] = no soft conventions
+    finding_classifier: FindingClassifierConfig = field(default_factory=FindingClassifierConfig)
 
     @property
     def review_profile(self) -> ModelProfile:

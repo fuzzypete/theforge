@@ -23,6 +23,7 @@ from coord_test_helpers import (
     _shell_with_gate,
 )
 
+from theforge.config import FindingClassifierConfig
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.state import Phase
@@ -206,7 +207,7 @@ class TestNetNewAcBlocking:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_net_new_p1_with_matches_spec_true_does_not_block(
+    def test_net_new_p1_with_matches_spec_true_blocks_by_default(
         self,
         mock_shell,
         mock_dev,
@@ -216,8 +217,47 @@ class TestNetNewAcBlocking:
         mock_eval,
         tmp_path,
     ):
-        """Net-new P1 where matches_spec=true passes via net_new_pass (no regression)."""
-        config = _make_config(tmp_path)  # max_review_cycles=2
+        """Net-new P1 blocks by default when allow_net_new_bypass is False."""
+        config = _make_config(tmp_path)  # max_review_cycles=2; allow_net_new_bypass defaults False
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_changed_files.return_value = frozenset(["src/changed.py"])
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_NET_NEW_ONLY)
+
+        result = run_from_review(config, task, workspace)
+
+        # Bypass disabled by default: net-new P1 blocks → cycle 2 == max_review_cycles → ESCALATE
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.review_cycle == 2
+
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
+    @patch("theforge.finding_classifier._get_changed_files")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_net_new_p1_with_matches_spec_true_does_not_block_when_bypass_enabled(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
+    ):
+        """Net-new P1 with matches_spec=true passes when allow_net_new_bypass is True."""
+        base = _make_config(tmp_path)
+        config = dataclasses.replace(
+            base,
+            finding_classifier=FindingClassifierConfig(allow_net_new_bypass=True),
+        )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -231,7 +271,7 @@ class TestNetNewAcBlocking:
 
         result = run_from_review(config, task, workspace)
 
-        # Net-new P1 with matches_spec=true → net_new_pass → DONE
+        # Bypass enabled: net-new P1 with matches_spec=true → net_new_pass → DONE
         assert result.success is True
         assert result.phase == Phase.DONE
         assert result.state.review_cycle == 2

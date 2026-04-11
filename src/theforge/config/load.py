@@ -34,6 +34,7 @@ from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
     ContextConfig,
+    FindingClassifierConfig,
     ForgeConfig,
     GithubConfig,
     HardConventionsConfig,
@@ -461,6 +462,15 @@ def load_config(config_path: Path) -> ForgeConfig:
             test_mirrors_source=_test_mirrors,
         )
 
+    _fc_raw = raw.get("finding_classifier", {})
+    _allow_bypass = _fc_raw.get("allow_net_new_bypass", False)
+    if not isinstance(_allow_bypass, bool):
+        raise ValueError(
+            "forge.yaml 'finding_classifier.allow_net_new_bypass' must be a bool,"
+            f" got {_allow_bypass!r}"
+        )
+    finding_classifier_cfg = FindingClassifierConfig(allow_net_new_bypass=_allow_bypass)
+
     return ForgeConfig(
         project=raw.get("project", project_root.name),
         project_root=project_root,
@@ -489,4 +499,5 @@ def load_config(config_path: Path) -> ForgeConfig:
         plan_model_is_default=_plan_model_is_default,
         conventions_hard=conventions_hard_cfg,
         conventions_soft=conventions_soft_list,
+        finding_classifier=finding_classifier_cfg,
     )
