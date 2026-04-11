@@ -66,16 +66,9 @@ def _write_last_setup_command(workspace_path: Path, cmd: str) -> None:
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
     """Run workspace setup, always running pip install even if .venv exists.
 
-    When setup_command contains the {forge_python} placeholder, the template is
-    matched BEFORE substitution so the regex never has to parse shlex.quote()
-    output (which varies with the interpreter path and cannot be reliably matched
-    by a single regex pattern).  sys.executable is then injected directly into
-    the constructed shell strings via shlex.quote().
-
-    For legacy commands without {forge_python}, falls back to matching the bare
-    executable token after resolving any other substitutions.
-
-    Falls back to running setup_command verbatim when neither pattern matches.
+    Matches the {forge_python} template BEFORE substitution to avoid parsing
+    shlex.quote() output; falls back to the legacy bare-token form; then runs
+    setup_command verbatim if neither pattern matches.
     """
     last_setup_command = _read_last_setup_command(workspace_path)
     if last_setup_command is not None and last_setup_command != setup_command:
