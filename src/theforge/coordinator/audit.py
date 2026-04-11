@@ -375,6 +375,15 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),
             "usage_summary": _build_iteration_usage_summary(state, config),
+            "budget_consumption_log": [
+                {
+                    "cycle": entry.cycle,
+                    "cycle_count": entry.cycle_count,
+                    "total_count": entry.total_count,
+                    "timestamp": entry.timestamp,
+                }
+                for entry in state.budget.consumption_log
+            ],
         },
         "cost": {
             "total_usd": state.total_cost,
