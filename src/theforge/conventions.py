@@ -29,6 +29,8 @@ def check_hard_conventions(
         violations.extend(_check_circular_imports(project_root))
     if config.test_mirrors_source:
         violations.extend(_check_test_mirrors(project_root))
+    if config.no_scratch_files:
+        violations.extend(_check_no_scratch_files(project_root))
     return violations
 
 
@@ -267,6 +269,32 @@ def _best_match(name: str, adjacency: dict[str, list[str]]) -> str | None:
         if candidate in adjacency:
             return candidate
     return None
+
+
+# ── Scratch file check ────────────────────────────────────────────────
+
+
+def _check_no_scratch_files(project_root: Path) -> list[ConventionViolation]:
+    """Check that no Python files exist directly in the project root.
+
+    All source code must live under src/, tests/, docs/, or scripts/.
+    Python files in the project root are almost always scratch/exploration
+    files that were never deleted before committing.
+    """
+    violations: list[ConventionViolation] = []
+    for f in sorted(project_root.glob("*.py")):
+        rel = str(f.relative_to(project_root))
+        violations.append(
+            ConventionViolation(
+                rule="no_scratch_files",
+                file=rel,
+                detail=(
+                    f"{rel} is a Python file in the project root — "
+                    "source files must live under src/, tests/, docs/, or scripts/"
+                ),
+            )
+        )
+    return violations
 
 
 # ── Test mirror check ─────────────────────────────────────────────────

@@ -266,6 +266,8 @@ def build_dev_prompt(
 
         - Do NOT merge to main.
         - Do NOT leave uncommitted changes.
+        - Do not create files outside `src/`, `tests/`, or `docs/`. If you need a
+          scratch file for exploration, delete it before committing.
         {test_rule}
         - If you cannot finish, commit what you have and list blockers in
           `deferred_items`.
