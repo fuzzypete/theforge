@@ -64,17 +64,15 @@ def _write_last_setup_command(workspace_path: Path, cmd: str) -> None:
 
 
 def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, str]:
-    """Run workspace setup, always running pip install even if .venv exists.
+    """Run workspace setup, splitting venv creation from install.
 
-    Matches the {forge_python} template BEFORE substitution to avoid parsing
-    shlex.quote() output; falls back to the legacy bare-token form; then runs
-    setup_command verbatim if neither pattern matches.
+    Matches {forge_python} template before substitution to avoid parsing
+    shlex.quote() output; falls back to legacy form; then runs verbatim.
     """
     last_setup_command = _read_last_setup_command(workspace_path)
     if last_setup_command is not None and last_setup_command != setup_command:
         _cu._log("⚠ WORKSPACE  setup_command changed — re-running install")
 
-    # --- template form: match before substitution ---
     m = _VENV_GUARD_TEMPLATE_RE.search(setup_command)
     if m:
         install_cmd = m.group(1).strip()
@@ -87,7 +85,6 @@ def _run_setup_split(setup_command: str, workspace_path: Path) -> tuple[bool, st
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
 
-    # --- legacy form: resolve then match ---
     cmd = _resolve_setup_command(setup_command)
     m = _VENV_GUARD_RE.search(cmd)
     if not m:
@@ -113,10 +110,8 @@ def _resolve_merge_conflicts(
     config: ForgeConfig,
     workspace_path: Path,
 ) -> bool:
-    """Attempt to auto-resolve merge conflicts using the dev agent.
-
-    Returns True if conflicts were resolved and the gate passed, False otherwise.
-    On failure, aborts the in-progress merge.
+    """Auto-resolve merge conflicts via dev agent. Returns True if gate passed.
+    On failure, aborts the in-progress merge and returns False.
     """
     ok, conflict_out = _cu._run_shell("git diff --name-only --diff-filter=U", project_root)
     if not ok or not conflict_out.strip():
@@ -216,9 +211,8 @@ def _merge_branch(
     task_name: str = "",
 ) -> dict:
     """Merge branch_name into base_branch in project_root.
-
-    Returns a merge info dict with keys: attempted, merged, base_branch, error.
-    When config is provided, auto-resolve merge conflicts using the dev agent.
+    Returns dict with keys: attempted, merged, base_branch, error.
+    When config is provided, auto-resolves merge conflicts via dev agent.
     """
     info: dict = {
         "attempted": True,
@@ -382,9 +376,7 @@ def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
 
 def _check_behind_origin(config: ForgeConfig) -> None:
     """Log an informational note if base_branch is behind origin.
-
-    Silently skips if the rev-list command fails (no remote, fetch needed, etc.).
-    This check is purely informational — it never blocks execution.
+    Silently skips if rev-list fails. Purely informational — never blocks.
     """
     base_branch = config.workspace.base_branch
     ok, out = _cu._run_shell(
@@ -405,19 +397,9 @@ _FORGE_ARTIFACTS = (".forge/handoff.yaml", ".forge/trajectory.yaml", ".forge/las
 
 
 def _deindex_forge_artifacts(workspace_path: Path, *, purge: bool = False) -> None:
-    """Remove transient .forge artifacts from the git index.
-
-    Uses -f so index removal succeeds even when the index entry has staged content
-    that differs from both HEAD and the working tree (the agent-misbehavior state
-    described in the story). Uses --ignore-unmatch so the call is a no-op when files
-    are not tracked.
-
-    When ``purge=True``, also deletes the artifact files from disk so reused
-    worktrees cannot carry stale handoff or trajectory state forward.  Pass
-    ``purge=True`` only at workspace setup time — validate-phase callers must
-    leave the handoff on disk so the engine can read it after the gate.
-
-    This helper is intentionally safe to run repeatedly.
+    """Remove transient .forge artifacts from the git index (git rm -f --cached --ignore-unmatch).
+    With purge=True, also deletes the files from disk to prevent stale state in reused worktrees.
+    Omit purge on validate-phase callers that need the handoff on disk. Safe to run repeatedly.
     """
     files_arg = " ".join(_FORGE_ARTIFACTS)
     ok, out = _cu._run_shell(f"git rm -f --cached --ignore-unmatch {files_arg}", workspace_path)
@@ -434,20 +416,10 @@ def _deindex_forge_artifacts(workspace_path: Path, *, purge: bool = False) -> No
 
 
 def pull_base_branch(config: ForgeConfig) -> bool:
-    """Pull the base branch in the project root. Returns True on success.
-
-    Safe to call once before parallel workspace creation to avoid the race
-    condition where concurrent workers each try to update the same git ref.
-
-    - If base_branch is checked out: git pull --ff-only (updates working tree)
-    - If base_branch is not checked out: git fetch origin base:base (updates ref)
-
-    If the pull updates src/theforge source files, re-execs the process so the
-    sprint runs with fresh imports rather than stale bytecode.
-
-    Raises RuntimeError if the base branch has diverged from origin (both ahead
-    and behind), or if origin is unreachable. A diverged base branch is an
-    invalid state for spawning a worktree — fail closed rather than continue.
+    """Pull the base branch once before parallel workspace creation.
+    Uses --ff-only (checked out) or fetch origin base:base (not checked out).
+    Re-execs if src/theforge source changes. Raises RuntimeError if base
+    branch diverged from origin or origin is unreachable.
     """
     base_branch = config.workspace.base_branch
 
@@ -468,34 +440,27 @@ def pull_base_branch(config: ForgeConfig) -> bool:
         _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
     else:
         _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
-        # Measure divergence to distinguish "unreachable" from "diverged".
-        # git pull --ff-only fetches before attempting the merge, so origin/<base>
-        # is current even on failure. If origin is truly unreachable, the fetch
-        # itself will have failed and the rev-list calls will also fail.
         try:
-            ok_ahead, ahead_out = _cu._run_shell(
-                f"git rev-list --count origin/{base_branch}..{base_branch}",
-                config.project_root,
+            ok_a, a = _cu._run_shell(
+                f"git rev-list --count origin/{base_branch}..{base_branch}", config.project_root
             )
-            ok_behind, behind_out = _cu._run_shell(
-                f"git rev-list --count {base_branch}..origin/{base_branch}",
-                config.project_root,
+            ok_b, b = _cu._run_shell(
+                f"git rev-list --count {base_branch}..origin/{base_branch}", config.project_root
             )
-            if ok_ahead and ok_behind:
-                local_ahead = int(ahead_out.strip())
-                local_behind = int(behind_out.strip())
+            if ok_a and ok_b:
+                ahead, behind = int(a.strip()), int(b.strip())
                 raise RuntimeError(
-                    f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin "
-                    f"(local is {local_ahead} ahead, {local_behind} behind). "
-                    f"Run: git rebase origin/{base_branch}"
+                    f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin"
+                    f" (local is {ahead} ahead, {behind} behind)."
+                    f" Run: git rebase origin/{base_branch}"
                 )
         except RuntimeError:
             raise
         except Exception:
             pass
         raise RuntimeError(
-            f"WORKSPACE abort: could not reach origin to verify base branch '{base_branch}' "
-            f"— aborting to avoid spawning a worktree from potentially stale state."
+            f"WORKSPACE abort: could not reach origin to verify base branch '{base_branch}'"
+            f" — aborting to avoid spawning a worktree from potentially stale state."
         )
 
     ok_after, tree_after = _cu._run_shell("git rev-parse HEAD:src/theforge", config.project_root)
