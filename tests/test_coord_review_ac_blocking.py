@@ -236,6 +236,18 @@ class TestNetNewAcBlocking:
         assert result.phase == Phase.ESCALATE
         assert result.state.review_cycle == 2
 
+        # Audit trail must record the blocked finding as ac_blocking, NOT net_new.
+        # If disposition stays net_new, audit.py would serialize it under non_blocking_p1s,
+        # contradicting the actual blocking behavior.
+        audit = generate_audit_log(config, task, result)
+        registry = audit["finding_registry"]
+        flag_blocked = [r for r in registry if "Merge strategy" in r["description"]]
+        assert len(flag_blocked) == 1
+        assert flag_blocked[0]["disposition"] == "ac_blocking"
+        non_blocking = audit["non_blocking_p1s"]
+        non_blocking_ids = {r["finding_id"] for r in non_blocking}
+        assert flag_blocked[0]["finding_id"] not in non_blocking_ids
+
     @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
     @patch("theforge.finding_classifier._get_changed_files")
     @patch("theforge.coordinator.review_pool.run_agent_pool")

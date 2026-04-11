@@ -663,8 +663,17 @@ def _run_review_phase(
                     f" (AC-blocking: reviewer indicated matches_spec=false): {_ac_descs}"
                 )
         # When allow_net_new_bypass is disabled, net-new P1s are treated as blocking.
+        # Persist the disposition change so the audit trail records these as blocking,
+        # not as net_new (which audit.py would serialize under non_blocking_p1s).
         if not _allow_net_new_bypass and _nonblocking_p1s:
             _blocking_p1 = True
+            for _rec in _nonblocking_p1s:
+                _rec.disposition = "ac_blocking"  # type: ignore[assignment]
+            _flag_descs = "; ".join(r.description[:80] for r in _nonblocking_p1s)
+            _log(
+                f"  ✗ {len(_nonblocking_p1s)} net-new P1(s) blocked"
+                f" (flag: allow_net_new_bypass=false): {_flag_descs}"
+            )
             _nonblocking_p1s = []
         # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
         # P1 injection when all reviewers failed to produce parseable output), block
