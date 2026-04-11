@@ -6,7 +6,7 @@ All helper functions (logging, shell, run-id) live in coord_util.py.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from theforge.review import ReviewResult
     from theforge.story_validator import StoryValidationResult
     from theforge.task import PlanData
+
+from .retry_budget import RetryBudget  # noqa: E402
 
 # ── Phase enum ────────────────────────────────────────────────────────
 
@@ -207,7 +209,14 @@ class CoordinatorState:
     reviewer_session_ids: dict[str, str] = field(default_factory=dict)  # keyed by profile.name
     reviewer_parse_failure_counts: dict[str, int] = field(default_factory=dict)
     review_cycle: int = 0  # which dev→review loop we're on
-    dev_iteration: int = 0  # retries within the current review cycle
+    # dev_iteration is an InitVar: accepted as a constructor kwarg for backward
+    # compatibility (tests pass dev_iteration=N directly), but not stored as a
+    # plain int field.  The actual value lives in budget.cycle_count and is
+    # exposed via the dev_iteration property defined below the class.
+    dev_iteration: InitVar[int] = 0
+    budget: RetryBudget = field(
+        default_factory=RetryBudget, init=False
+    )  # unified retry budget; owns cycle_count and total_count
     dev_trace_count: int = 0  # monotonically increasing across all cycles; never reset
     dev_results: list[AgentResult] = field(default_factory=list)
     dev_handoff_fix_results: list[AgentResult] = field(
@@ -335,6 +344,12 @@ class CoordinatorState:
     _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
     _explicit_roles: set = field(default_factory=set)  # roles with explicit forge.yaml config
 
+    def __post_init__(self, dev_iteration: int) -> None:
+        # Sync the budget's per-cycle counter with the constructor kwarg.
+        # This preserves backward compatibility: CoordinatorState(dev_iteration=N)
+        # sets budget.cycle_count = N, and the dev_iteration property reads it back.
+        self.budget.cycle_count = dev_iteration
+
     @property
     def total_dev_cost(self) -> float:
         return sum(r.cost_usd or 0.0 for r in self.dev_results) + sum(
@@ -377,6 +392,15 @@ class CoordinatorState:
             + self.total_plan_review_cost
             + self.total_story_validation_cost
         )
+
+
+# dev_iteration property — added after @dataclass so the decorator sees the
+# InitVar annotation cleanly, then we replace the class-level attribute with a
+# property that reads/writes budget.cycle_count.
+CoordinatorState.dev_iteration = property(  # type: ignore[attr-defined,assignment]
+    lambda self: self.budget.cycle_count,
+    lambda self, val: setattr(self.budget, "cycle_count", val),
+)
 
 
 @dataclass

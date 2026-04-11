@@ -54,6 +54,7 @@ class TestConventionParallelCheck:
         state = _make_state()
 
         viol = _make_violation()
+        state.budget.max_iterations = config.retry.max_dev_iterations
         mock_gate.return_value = ("FAIL", None, "test output: 1 failed", "make gate")
         mock_cv.return_value = ([viol], [viol])
         mock_handoff.return_value = "handoff content"
@@ -63,7 +64,6 @@ class TestConventionParallelCheck:
             config,
             task,
             workspace,
-            dev_calls_this_cycle=0,
             notify=False,
             logger=None,
         )
@@ -106,6 +106,7 @@ class TestConventionParallelCheck:
         state = _make_state()
 
         viol = _make_violation()
+        state.budget.max_iterations = config.retry.max_dev_iterations
         mock_gate.return_value = ("PASS", None, "", "make gate")
         mock_cv.return_value = ([viol], [viol])
         mock_shell.return_value = (True, "")  # clean worktree
@@ -115,7 +116,6 @@ class TestConventionParallelCheck:
             config,
             task,
             workspace,
-            dev_calls_this_cycle=0,
             notify=False,
             logger=None,
         )
@@ -145,6 +145,7 @@ class TestConventionParallelCheck:
         workspace.mkdir()
         state = _make_state()
 
+        state.budget.max_iterations = config.retry.max_dev_iterations
         mock_gate.return_value = ("FAIL", None, "1 failed", "make gate")
         mock_cv.return_value = None  # None because conventions_hard is None
         mock_handoff.return_value = "handoff"
@@ -154,7 +155,6 @@ class TestConventionParallelCheck:
             config,
             task,
             workspace,
-            dev_calls_this_cycle=0,
             notify=False,
             logger=None,
         )

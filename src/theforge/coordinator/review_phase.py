@@ -437,7 +437,7 @@ def _handle_interactive_review_decision(
 
     if decision == "extend":
         _append_cycle_history(state, parsed_review)
-        state.dev_iteration = 0
+        state.budget.reset_cycle()
         state.review_cycle = 0
         state.human_review_extra_cycles += 1
         # exhausted-cycles: always populate so the next DEV iteration uses fix-prompt
@@ -459,7 +459,7 @@ def _handle_interactive_review_decision(
 
     # decision == "reject"
     _append_cycle_history(state, parsed_review)
-    state.dev_iteration = 0
+    state.budget.reset_cycle()
     state.last_review_findings = None
     state.retry_reason = RetryReason.REJECT
     if exhausted_cycles:
@@ -892,7 +892,7 @@ def _run_review_phase(
         )
     _append_cycle_history(state, parsed_review)
     state.last_review_findings = review_to_dev_handoff(parsed_review)
-    state.dev_iteration = 0
+    state.budget.reset_cycle()
     state.human_feedback = None
     state.retry_reason = RetryReason.REVIEW_CHANGES
     _log_verbose(f"Sending {len(parsed_review.findings)} findings back to dev agent")
@@ -922,7 +922,7 @@ def _run_review_only_phase(
     if logger:
         logger._safe_emit("phase_start", phase="REVIEW", iteration=1)
     state.review_cycle = 1
-    state.dev_iteration = 0
+    state.budget.reset_cycle()
     _pool_model_names_ro = "+".join(p.model for p in config.review_pool)
     _log_phase(state.phase, f"{_pool_model_names_ro}  cycle=1  (review-only)")
 

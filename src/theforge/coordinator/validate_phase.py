@@ -125,7 +125,6 @@ def _run_validate_phase(
     config: ForgeConfig,
     task: TaskStory,
     workspace_path: Path,
-    dev_calls_this_cycle: int,
     *,
     notify: bool,
     logger: StructuredLogger | None,
@@ -212,7 +211,7 @@ def _run_validate_phase(
                 success=False, phase=state.phase, state=state, message=state.error
             )
         _log_verbose(f"Gate error: {gate_err}")
-        if dev_calls_this_cycle >= config.retry.max_dev_iterations:
+        if state.budget.is_exhausted():
             state.phase = Phase.ESCALATE
             state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
             _log(f"✗ ESCALATE   {state.error}")
@@ -265,12 +264,11 @@ def _run_validate_phase(
                 existing_test_failures=existing_test_failures,
             )
         if _is_identical_failure(state.dev_iteration_telemetry):
-            remaining = config.retry.max_dev_iterations - dev_calls_this_cycle
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Identical gate failure on consecutive iterations"
                 f" (iteration {state.dev_iteration}): {gate_err}."
-                f" Remaining retry budget: {remaining}."
+                f" Remaining retry budget: {state.budget.remaining()}."
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
@@ -369,7 +367,7 @@ def _run_validate_phase(
                     )
 
     elif gate_decision in ("FAIL", "BLOCKED"):
-        if dev_calls_this_cycle >= config.retry.max_dev_iterations:
+        if state.budget.is_exhausted():
             state.phase = Phase.ESCALATE
             state.error = f"Gate returned {gate_decision} after {state.dev_iteration} attempts"
             _log(f"✗ ESCALATE   {state.error}")
@@ -418,12 +416,11 @@ def _run_validate_phase(
                 existing_test_failures=existing_test_failures,
             )
         if _is_identical_failure(state.dev_iteration_telemetry):
-            remaining = config.retry.max_dev_iterations - dev_calls_this_cycle
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Identical gate failure on consecutive iterations"
                 f" (iteration {state.dev_iteration}): gate returned {gate_decision}."
-                f" Remaining retry budget: {remaining}."
+                f" Remaining retry budget: {state.budget.remaining()}."
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
@@ -485,7 +482,7 @@ def _run_validate_phase(
             _log(f"  ✗ VALIDATE   convention violations ({len(_cv_violations)} found)")
             for v in _cv_violations:
                 _log(f"    [{v.rule}] {v.file}: {v.detail}")
-            if dev_calls_this_cycle >= config.retry.max_dev_iterations:
+            if state.budget.is_exhausted():
                 state.phase = Phase.ESCALATE
                 state.error = f"Hard convention violations after {state.dev_iteration} attempts"
                 _log(f"✗ ESCALATE   {state.error}")

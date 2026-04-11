@@ -53,6 +53,7 @@ def test_run_validate_phase_records_failed_gate_iteration_telemetry(tmp_path: Pa
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(3.5)
     state.last_dev_start_commit = "HEAD"
@@ -77,7 +78,6 @@ def test_run_validate_phase_records_failed_gate_iteration_telemetry(tmp_path: Pa
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,
             notify=False,
             logger=None,
         )
@@ -95,6 +95,7 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(2.0)
     state.last_dev_start_commit = "HEAD"
@@ -130,7 +131,6 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,
             notify=False,
             logger=None,
         )
@@ -151,6 +151,7 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
     )
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.5)
     state.last_dev_start_commit = "HEAD"
@@ -168,7 +169,6 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,
             notify=False,
             logger=None,
         )
@@ -224,6 +224,7 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(1.0)
     state.last_dev_start_commit = "HEAD"
@@ -254,7 +255,6 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,
             notify=False,
             logger=None,
         )
@@ -375,7 +375,10 @@ def test_run_validate_phase_escalates_on_identical_gate_fail(tmp_path: Path) -> 
     """Circuit breaker escalates when consecutive FAIL iterations have the same test failures."""
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
-    state = CoordinatorState(dev_iteration=2)
+    # dev_iteration=1 means cycle_count=1 (per-cycle); max_iterations=2 so budget is not yet
+    # exhausted, allowing the circuit breaker to fire before the exhaustion check.
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(2.0)
     state.last_dev_start_commit = "HEAD"
@@ -412,7 +415,6 @@ def test_run_validate_phase_escalates_on_identical_gate_fail(tmp_path: Path) -> 
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,  # below max_dev_iterations so circuit breaker fires first
             notify=False,
             logger=None,
         )
@@ -428,7 +430,10 @@ def test_run_validate_phase_escalates_on_consecutive_timeouts(tmp_path: Path) ->
     """Circuit breaker escalates when two consecutive gate errors are both timeouts."""
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
-    state = CoordinatorState(dev_iteration=2)
+    # dev_iteration=1 means cycle_count=1 (per-cycle); max_iterations=2 so budget is not yet
+    # exhausted, allowing the circuit breaker to fire before the exhaustion check.
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(2.0)
     state.last_dev_start_commit = "HEAD"
@@ -453,7 +458,6 @@ def test_run_validate_phase_escalates_on_consecutive_timeouts(tmp_path: Path) ->
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,  # below max_dev_iterations so circuit breaker fires first
             notify=False,
             logger=None,
         )
@@ -469,7 +473,9 @@ def test_run_validate_phase_retries_when_failures_differ(tmp_path: Path) -> None
     """Circuit breaker does not fire when failure signatures change between iterations."""
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)
-    state = CoordinatorState(dev_iteration=2)
+    # dev_iteration=1 means cycle_count=1 (per-cycle); max_iterations=2 so budget not exhausted.
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
     state.dev_results.append(_make_agent_result())
     state.dev_durations.append(2.0)
     state.last_dev_start_commit = "HEAD"
@@ -506,7 +512,6 @@ def test_run_validate_phase_retries_when_failures_differ(tmp_path: Path) -> None
             config,
             task,
             tmp_path,
-            dev_calls_this_cycle=1,  # below max_dev_iterations
             notify=False,
             logger=None,
         )

@@ -248,12 +248,12 @@ def _coordinator_loop(
     workspace_path = state.workspace_path
     branch_name = state.branch_name
     _skip_dev = skip_dev_first_iter
-    # Per-cycle retry counter for escalation: reset to 0 at the start of each
-    # new review cycle (and on human extend/reject).  state.dev_iteration is a
-    # CUMULATIVE counter across all review cycles.  Prompt routing uses
-    # state.retry_reason, not dev_iteration, to select build_fix_prompt vs
-    # build_dev_prompt.
-    _dev_calls_this_cycle: int = 0
+    # Initialise the budget's per-cycle limit from config.  The budget tracks
+    # both the per-cycle count (cycle_count, replaces _dev_calls_this_cycle) and
+    # the cumulative count across all review cycles (total_count).  Mutations
+    # go exclusively through budget.consume() and budget.reset_cycle() so that
+    # every consumption is recorded in budget.consumption_log.
+    state.budget.max_iterations = config.retry.max_dev_iterations
 
     while True:
         if not _skip_dev:
@@ -267,9 +267,8 @@ def _coordinator_loop(
                         "cost_usd": state.total_cost,
                     }
                 )
-            state.dev_iteration += 1
+            state.budget.consume(review_cycle=state.review_cycle)
             state.dev_trace_count += 1
-            _dev_calls_this_cycle += 1
             escalation = _run_dev_phase(
                 state,
                 config,
@@ -308,7 +307,6 @@ def _coordinator_loop(
                 config,
                 task,
                 workspace_path,
-                _dev_calls_this_cycle,
                 notify=notify,
                 logger=logger,
             )
@@ -490,8 +488,8 @@ def _coordinator_loop(
                 state=state,
                 message=f"Stopped at --until {stop_phase.name.lower()}",
             )
-        # RETRY_DEV — reset cycle counter and loop back
-        _dev_calls_this_cycle = 0
+        # RETRY_DEV — reset per-cycle budget counter and loop back
+        state.budget.reset_cycle()
 
 
 def run_task(
