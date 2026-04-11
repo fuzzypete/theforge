@@ -449,18 +449,18 @@ def pull_base_branch(config: ForgeConfig) -> bool:
             )
             if ok_a and ok_b:
                 ahead, behind = int(a.strip()), int(b.strip())
-                raise RuntimeError(
-                    f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin"
-                    f" (local is {ahead} ahead, {behind} behind)."
-                    f" Run: git rebase origin/{base_branch}"
-                )
+                if ahead > 0 and behind > 0:
+                    raise RuntimeError(
+                        f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin"
+                        f" (local is {ahead} ahead, {behind} behind)."
+                        f" Run: git rebase origin/{base_branch}"
+                    )
         except RuntimeError:
             raise
         except Exception:
             pass
         raise RuntimeError(
-            f"WORKSPACE abort: could not reach origin to verify base branch '{base_branch}'"
-            f" — aborting to avoid spawning a worktree from potentially stale state."
+            f"WORKSPACE abort: pull failed for base branch '{base_branch}' — {pull_out.strip()}"
         )
 
     ok_after, tree_after = _cu._run_shell("git rev-parse HEAD:src/theforge", config.project_root)

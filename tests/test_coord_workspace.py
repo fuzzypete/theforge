@@ -132,17 +132,25 @@ class TestFreshWorkspacePull:
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
     def test_pull_offline_aborts(self, mock_log, mock_shell, tmp_path):
-        """When origin is unreachable (rev-list fails), workspace creation aborts."""
+        """When pull fails and the branch hasn't diverged, workspace creation aborts.
+
+        This covers the offline/network-error case: git rev-list is a local operation
+        that succeeds even when offline (as long as the origin tracking ref exists from
+        a previous fetch). The 0-ahead/0-behind result correctly distinguishes this from
+        a diverged branch and produces an error with the original pull failure message.
+        """
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
+        pull_err = "fatal: unable to access 'https://...': Could not resolve host"
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, config.workspace.base_branch)
             if "pull --ff-only" in cmd:
-                return (False, "fatal: unable to access 'https://...': Could not resolve host")
+                return (False, pull_err)
             if "rev-list" in cmd:
-                return (False, "fatal: ambiguous argument 'origin/main'")
+                # Local operation: succeeds even offline; 0 ahead, 0 behind
+                return (True, "0\n")
             if "mkdir" in cmd:
                 (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
                 return (True, "")
@@ -155,6 +163,9 @@ class TestFreshWorkspacePull:
         assert workspace_path is None
         assert err is not None
         assert "abort" in err.lower()
+        # The error should include the original pull failure message, not claim divergence
+        assert "diverged" not in err
+        assert "Could not resolve host" in err
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
