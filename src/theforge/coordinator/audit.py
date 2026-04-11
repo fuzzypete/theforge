@@ -487,6 +487,15 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         ),
         "merge": result.merge,
         "landing_status": getattr(result, "landing_status", None),
+        "landing_event": (
+            {
+                "landing_status": result.landing_status,
+                "landed": result.landing_status == "landed",
+                "timestamp": finished_at_str,
+            }
+            if result.landing_status is not None
+            else None
+        ),
         "escalation": (
             {
                 "reason": state.escalate_reason,

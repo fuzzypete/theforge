@@ -498,18 +498,21 @@ def _classify_and_record(
         dag.mark_complete(task.slug)
         return delta_succeeded, delta_failed, delta_skipped
 
-    if landing_status == "failed":
+    if landing_status == "landed":
+        delta_succeeded = 1
+        merged_slugs.add(task.slug)
+        dag.mark_complete(task.slug)
+    elif landing_status == "failed":
         delta_failed = 1
         dag.mark_skipped(task.slug)
-    elif result.success:
+    elif landing_status == "pending_integration":
+        # Approved but merge deferred or queued — counts as succeeded, not yet in DAG
         delta_succeeded = 1
-        if landing_status == "landed" or (
-            result.merge is not None and result.merge.get("merged", False)
-        ):
-            merged_slugs.add(task.slug)
-            dag.mark_complete(task.slug)
-        else:
-            dag.mark_skipped(task.slug)
+        dag.mark_skipped(task.slug)
+    elif result.success:
+        # No merge operation performed (on_approve=none or similar)
+        delta_succeeded = 1
+        dag.mark_skipped(task.slug)
     else:
         delta_failed = 1
         dag.mark_skipped(task.slug)
@@ -813,6 +816,8 @@ def run_sprint(
 
         result.merge = merge_info
         result.landing_status = landing_status
+        if landing_status == "failed":
+            result.success = False
 
         if merge_info.get("merged"):
             merged_slugs.add(slug)
@@ -874,6 +879,7 @@ def run_sprint(
                             _write_story_audit(config, dep_task, dep_result)
                         else:
                             dep_result.landing_status = "failed"
+                            dep_result.success = False
                             if poll_result["status"] == "timeout":
                                 dep_result.state.error = (
                                     f"Queued PR timed out after "
@@ -1012,6 +1018,7 @@ def run_sprint(
                         specs_succeeded -= 1
                         specs_failed += 1
                         _qp_result.landing_status = "failed"
+                        _qp_result.success = False
                         if _qp_poll["status"] == "timeout":
                             _qp_result.state.error = (
                                 f"Queued PR timed out after "
@@ -1160,6 +1167,10 @@ def run_sprint(
                     integrated = _attempt_integration(slug, task, result)
                     if not integrated:
                         pending_integration[slug] = (task, result)
+                    elif result.landing_status == "failed":
+                        # Optimistic classify counted this as succeeded; landing failed.
+                        specs_succeeded -= ds
+                        specs_failed += 1
                     changed = True
                     while changed:
                         changed = False
@@ -1168,6 +1179,10 @@ def run_sprint(
                         ):
                             if _attempt_integration(pending_slug, pending_task, pending_result):
                                 del pending_integration[pending_slug]
+                                if pending_result.landing_status == "failed":
+                                    # Correct the optimistic classify for this pending story
+                                    specs_succeeded -= 1
+                                    specs_failed += 1
                                 changed = True
                 else:
                     _write_story_audit(config, task, result)
@@ -1208,6 +1223,7 @@ def run_sprint(
                 specs_succeeded -= 1
                 specs_failed += 1
                 result.landing_status = "failed"
+                result.success = False
                 if poll_result["status"] == "timeout":
                     result.state.error = (
                         f"Queued PR timed out after "

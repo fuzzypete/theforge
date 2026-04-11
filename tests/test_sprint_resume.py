@@ -85,6 +85,7 @@ def _make_coordinator_result(
     preflight_verdict: str = "PROCEED",
     phase: Phase = Phase.DONE,
     merged: bool = False,
+    landing_status: str | None = None,
 ) -> CoordinatorResult:
     state = CoordinatorState()
     state.preflight_verdict = preflight_verdict
@@ -98,6 +99,7 @@ def _make_coordinator_result(
         state=state,
         message="Done." if success else "Failed.",
         merge={"merged": True} if merged else None,
+        landing_status=landing_status,
     )
 
 
@@ -706,7 +708,7 @@ class TestSprintDependencies:
         manifest_path = _make_manifest(tmp_path, ["spec-a.md", "spec-b.md"], budget=10.0)
         config = _make_config(tmp_path)
 
-        result_a = _make_coordinator_result(success=True, cost=1.0, merged=True)
+        result_a = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
         result_b = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
         with patch(
