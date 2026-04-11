@@ -145,9 +145,8 @@ def _run_review_pool(
     if demotion_threshold > 0:
         active_pool: list = []
         for profile in pool:
-            failure_count = state.reviewer_parse_failure_counts.get(profile.name, 0)
-            if failure_count >= demotion_threshold:
-                _log(f"⚠ {profile.name} demoted after {failure_count} parse failures this run")
+            if profile.name in state.reviewer_demoted:
+                _log(f"⚠ {profile.name} demoted due to parse failures in a previous cycle")
                 continue
             active_pool.append(profile)
         pool = active_pool
@@ -436,6 +435,7 @@ def _run_review_pool(
             failure_count = state.reviewer_parse_failure_counts.get(name, 0) + 1
             state.reviewer_parse_failure_counts[name] = failure_count
             if failure_count >= demotion_threshold:
+                state.reviewer_demoted.add(name)
                 _log(f"⚠ {name} demoted after {failure_count} parse failures this run")
 
     # Individual parsed results (no parse errors) — used by caller for fallback
