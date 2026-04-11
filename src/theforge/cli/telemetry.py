@@ -98,11 +98,17 @@ def cmd_telemetry(args: object) -> int:
             totals = rec.get("totals") or {}
             cost = totals.get("cost_usd") or (rec.get("cost") or {}).get("total_usd")
             dur = totals.get("duration_s") or (rec.get("timing") or {}).get("duration_seconds")
-            dev_iters = totals.get("dev_iterations") or (rec.get("iterations") or {}).get(
-                "dev_iterations", "?"
+            dev_iters = (
+                totals.get("dev_iterations_productive")
+                or totals.get("dev_iterations")
+                or (rec.get("iterations") or {}).get("dev_iterations_productive")
+                or (rec.get("iterations") or {}).get("dev_iterations", "?")
             )
-            rev_cycles = totals.get("review_cycles") or (rec.get("iterations") or {}).get(
-                "review_cycles", "?"
+            rev_cycles = (
+                totals.get("review_cycles_total")
+                or totals.get("review_cycles")
+                or (rec.get("iterations") or {}).get("review_cycles_total")
+                or (rec.get("iterations") or {}).get("review_cycles", "?")
             )
             print(
                 f"{slug_short:<30} {_fmt_cost_s(cost):>8}  {_fmt_dur_s(dur):>8}  "

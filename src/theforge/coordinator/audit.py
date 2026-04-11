@@ -204,7 +204,11 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     totals = {
         "cost_usd": round(state.total_cost, 6),
         "duration_s": round(sum(all_durations), 2),
-        "dev_iterations": state.dev_iteration,
+        "dev_attempts_total": len(state.dev_results) + len(state.dev_handoff_fix_results),
+        "dev_iterations_productive": len(state.dev_results),
+        "review_cycles_total": state.review_cycle,
+        # kept for backward compatibility with older audit readers
+        "dev_iterations": len(state.dev_results),
         "review_cycles": state.review_cycle,
     }
 
@@ -253,6 +257,7 @@ def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig)
 def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
     return [
         {
+            "cycle": item.cycle,
             "iteration": item.iteration,
             "max_iterations": item.max_iterations,
             "gate_result": item.gate_result,
@@ -360,8 +365,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "branch": state.branch_name,
         },
         "iterations": {
+            "dev_attempts_total": len(state.dev_results) + len(state.dev_handoff_fix_results),
+            "dev_iterations_productive": len(state.dev_results),
+            "review_cycles_total": state.review_cycle,
+            # kept for backward compatibility with older audit readers
             "review_cycles": state.review_cycle,
-            "dev_iterations": state.dev_iteration,
+            "dev_iterations": len(state.dev_results),
             "gate_decisions": state.gate_decisions,
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),
@@ -371,7 +380,9 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "total_usd": state.total_cost,
             "dev_usd": state.total_dev_cost,
             "review_usd": state.total_review_cost,
-            "dev_invocations": len(state.dev_results),
+            "dev_invocations": len(state.dev_results) + len(state.dev_handoff_fix_results),
+            "dev_productive_invocations": len(state.dev_results),
+            "dev_handoff_fix_invocations": len(state.dev_handoff_fix_results),
             "review_invocations": len(state.review_agent_results),
             "agents": agents,
         },

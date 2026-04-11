@@ -125,8 +125,14 @@ def cmd_audit(args: object) -> int:
     # Iterations
     print()
     print("  Iterations")
-    print(f"    Dev iterations: {iterations.get('dev_iterations', '?')}")
-    print(f"    Review cycles:  {iterations.get('review_cycles', '?')}")
+    dev_productive = iterations.get(
+        "dev_iterations_productive", iterations.get("dev_iterations", "?")
+    )
+    dev_total = iterations.get("dev_attempts_total", "?")
+    review_cycles = iterations.get("review_cycles_total", iterations.get("review_cycles", "?"))
+    print(f"    Dev iterations (productive): {dev_productive}")
+    print(f"    Dev attempts (total):        {dev_total}")
+    print(f"    Review cycles:               {review_cycles}")
     print(f"    Gate decisions: {iterations.get('gate_decisions', [])}")
 
     # Cost summary
