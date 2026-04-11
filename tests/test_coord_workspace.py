@@ -2,7 +2,8 @@
 
 Covers:
 - Fresh workspace: pull succeeds before worktree creation
-- Fresh workspace: pull fails (non-ff / offline) -> warning logged, workspace still created
+- Fresh workspace: pull fails (diverged) -> hard abort, workspace NOT created, error returned
+- Fresh workspace: pull fails (offline/unreachable) -> hard abort, workspace NOT created
 - Resume path (existing worktree): behind-origin check logs informational note
 - Resume path: rev-list fails -> silently skipped
 - no_pull=True: no pull attempted on fresh path
@@ -96,8 +97,8 @@ class TestFreshWorkspacePull:
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
-    def test_pull_fails_workspace_still_created(self, mock_log, mock_shell, tmp_path):
-        """When pull/fetch fails, a warning is logged but the workspace is still created."""
+    def test_pull_diverged_aborts(self, mock_log, mock_shell, tmp_path):
+        """When pull fails because local and origin have diverged, workspace creation aborts."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
 
@@ -106,6 +107,12 @@ class TestFreshWorkspacePull:
                 return (True, config.workspace.base_branch)
             if "pull --ff-only" in cmd:
                 return (False, "fatal: Not possible to fast-forward, aborting.")
+            if "rev-list --count origin/" in cmd and ".." + config.workspace.base_branch in cmd:
+                # local ahead count
+                return (True, "2\n")
+            if "rev-list --count " + config.workspace.base_branch + "..origin/" in cmd:
+                # local behind count
+                return (True, "2\n")
             if "mkdir" in cmd:
                 (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
                 return (True, "")
@@ -115,11 +122,50 @@ class TestFreshWorkspacePull:
 
         workspace_path, branch_name, err = _create_workspace(config, task, no_pull=False)
 
-        assert err is None
-        assert workspace_path is not None
+        assert workspace_path is None
+        assert err is not None
+        assert "diverged" in err
+        assert "2 ahead" in err
+        assert "2 behind" in err
+        assert "git rebase" in err
 
-        log_calls = [str(c) for c in mock_log.call_args_list]
-        assert any("pull failed" in c or "non-ff" in c for c in log_calls)
+    @patch("theforge.coordinator.workspace._cu._run_shell")
+    @patch("theforge.coordinator.workspace._cu._log")
+    def test_pull_offline_aborts(self, mock_log, mock_shell, tmp_path):
+        """When pull fails and the branch hasn't diverged, workspace creation aborts.
+
+        This covers the offline/network-error case: git rev-list is a local operation
+        that succeeds even when offline (as long as the origin tracking ref exists from
+        a previous fetch). The 0-ahead/0-behind result correctly distinguishes this from
+        a diverged branch and produces an error with the original pull failure message.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        pull_err = "fatal: unable to access 'https://...': Could not resolve host"
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, config.workspace.base_branch)
+            if "pull --ff-only" in cmd:
+                return (False, pull_err)
+            if "rev-list" in cmd:
+                # Local operation: succeeds even offline; 0 ahead, 0 behind
+                return (True, "0\n")
+            if "mkdir" in cmd:
+                (tmp_path / task.slug).mkdir(parents=True, exist_ok=True)
+                return (True, "")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        workspace_path, branch_name, err = _create_workspace(config, task, no_pull=False)
+
+        assert workspace_path is None
+        assert err is not None
+        assert "abort" in err.lower()
+        # The error should include the original pull failure message, not claim divergence
+        assert "diverged" not in err
+        assert "Could not resolve host" in err
 
     @patch("theforge.coordinator.workspace._cu._run_shell")
     @patch("theforge.coordinator.workspace._cu._log")
