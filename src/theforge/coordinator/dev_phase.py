@@ -151,6 +151,7 @@ def record_dev_iteration_telemetry(
             max_iterations=max_iterations,
             cost_usd=dev_result.cost_usd,
             duration_s=duration_s,
+            cycle=state.review_cycle,
             gate_result=gate_result,
             failed_tests=failed_tests,
             existing_test_failures=False,

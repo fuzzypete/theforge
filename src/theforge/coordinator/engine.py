@@ -403,7 +403,7 @@ def _coordinator_loop(
                     session_id=state.dev_session_id,
                     secrets=config.secrets,
                 )
-                state.dev_results.append(_hf_result)
+                state.dev_handoff_fix_results.append(_hf_result)
                 state.dev_session_id = _hf_result.session_id or state.dev_session_id
                 save_sessions(
                     workspace_path,

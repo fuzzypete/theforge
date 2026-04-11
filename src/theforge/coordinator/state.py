@@ -126,6 +126,7 @@ class DevIterationTelemetry:
     max_iterations: int
     cost_usd: float | None
     duration_s: float
+    cycle: int = 0  # which review cycle this dev iteration belongs to
     gate_result: str | None = None
     failed_tests: list[str] = field(default_factory=list)
     existing_test_failures: bool = False
@@ -191,6 +192,9 @@ class CoordinatorState:
     dev_iteration: int = 0  # retries within the current review cycle
     dev_trace_count: int = 0  # monotonically increasing across all cycles; never reset
     dev_results: list[AgentResult] = field(default_factory=list)
+    dev_handoff_fix_results: list[AgentResult] = field(
+        default_factory=list
+    )  # handoff-fix retries, separate from productive dev calls
     dev_durations: list[float] = field(default_factory=list)  # wall-clock seconds per dev call
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
@@ -319,7 +323,9 @@ class CoordinatorState:
 
     @property
     def total_dev_cost(self) -> float:
-        return sum(r.cost_usd or 0.0 for r in self.dev_results)
+        return sum(r.cost_usd or 0.0 for r in self.dev_results) + sum(
+            r.cost_usd or 0.0 for r in self.dev_handoff_fix_results
+        )
 
     @property
     def total_review_cost(self) -> float:

@@ -31,6 +31,26 @@ def build_agent_entries(state: CoordinatorState, config: ForgeConfig) -> list[di
                 for u in r.model_usage
             ]
         agents.append(entry)
+    for r in state.dev_handoff_fix_results:
+        entry = {
+            "role": "dev/handoff-fix",
+            "profile": r.profile_name or config.dev_profile.name,
+            "cost_usd": r.cost_usd,
+            "duration_seconds": None,
+        }
+        if r.model_usage:
+            entry["model_usage"] = [
+                {
+                    "model": u.model,
+                    "input_tokens": u.input_tokens,
+                    "output_tokens": u.output_tokens,
+                    "cache_read_tokens": u.cache_read_tokens,
+                    "cache_creation_tokens": u.cache_creation_tokens,
+                    "cost_usd": u.cost_usd,
+                }
+                for u in r.model_usage
+            ]
+        agents.append(entry)
     for i, r in enumerate(state.review_agent_results):
         dur = state.review_durations[i] if i < len(state.review_durations) else None
         role = "synthesis" if r.profile_name == "synthesis" else "review"
