@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
