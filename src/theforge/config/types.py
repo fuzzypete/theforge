@@ -186,6 +186,7 @@ class RetryPolicy:
         2  # consecutive plan rejections before escalating planner model
     )
     escalate_policy: str = "prompt"  # "prompt" | "auto_approve" | "reject"
+    auto_model_escalation: bool = False  # escalate dev model on persistent P1; disabled by default
 
 
 @dataclass(frozen=True)

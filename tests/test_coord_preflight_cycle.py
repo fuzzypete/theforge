@@ -66,7 +66,11 @@ def _make_smart_config(
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[review_profile],
         synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=max_review_cycles),
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=max_review_cycles,
+            auto_model_escalation=True,
+        ),
         smart_config_models=models,
     )
 
