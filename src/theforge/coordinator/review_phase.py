@@ -625,6 +625,9 @@ def _run_review_phase(
     state.finding_registry = [FindingRecord(**r) for r in _fr_result["finding_registry"]]
     _classified = [state.finding_registry[i] for i in _fr_result["classified_indices"]]
 
+    _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
+    _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
+
     if state.review_cycle >= 2:
         # has_blocking_p1 / net_new_p1s inlined to avoid importing theforge.finding_classifier.
         # Logic is identical to the functions in finding_classifier.py.
@@ -659,6 +662,19 @@ def _run_review_phase(
                     f"  ✗ {len(_ac_blocking_p1s)} net-new P1(s) blocked"
                     f" (AC-blocking: reviewer indicated matches_spec=false): {_ac_descs}"
                 )
+        # When allow_net_new_bypass is disabled, net-new P1s are treated as blocking.
+        # Persist the disposition change so the audit trail records these as blocking,
+        # not as net_new (which audit.py would serialize under non_blocking_p1s).
+        if not _allow_net_new_bypass and _nonblocking_p1s:
+            _blocking_p1 = True
+            for _rec in _nonblocking_p1s:
+                _rec.disposition = "ac_blocking"  # type: ignore[assignment]
+            _flag_descs = "; ".join(r.description[:80] for r in _nonblocking_p1s)
+            _log(
+                f"  ✗ {len(_nonblocking_p1s)} net-new P1(s) blocked"
+                f" (flag: allow_net_new_bypass=false): {_flag_descs}"
+            )
+            _nonblocking_p1s = []
         # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
         # P1 injection when all reviewers failed to produce parseable output), block
         # traditionally to avoid silently passing an unknown failure.
