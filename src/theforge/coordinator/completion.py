@@ -657,33 +657,53 @@ def _merge_pr(
 
     # Retry loop: handles transient "base branch was modified" errors from GitHub.
     for attempt in range(MAX_MERGE_RETRIES):
-        # fetch + rebase — always run per attempt (idempotent, needed for freshness).
-        fetch_rebase_result = _step_fetch_rebase(push_cwd, base_branch)
-        _pr_log.info(
-            "merge step fetch_rebase (attempt %d): success=%s error=%s",
-            attempt,
-            fetch_rebase_result["success"],
-            fetch_rebase_result.get("error"),
-        )
-        if not fetch_rebase_result["success"]:
-            return _fail(fetch_rebase_result["error"], merge_state=merge_state)
+        # fetch + rebase and force-push are only needed before the merge command runs.
+        # If merge already completed (resuming after a crash post-merge), skip them:
+        # force-pushing after auto-merge is queued can dismiss approvals and cancel it.
+        if "merge" not in merge_state.completed_steps:
+            fetch_rebase_result = _step_fetch_rebase(push_cwd, base_branch)
+            _pr_log.info(
+                "merge step fetch_rebase (attempt %d): success=%s error=%s",
+                attempt,
+                fetch_rebase_result["success"],
+                fetch_rebase_result.get("error"),
+            )
+            if not fetch_rebase_result["success"]:
+                return _fail(fetch_rebase_result["error"], merge_state=merge_state)
 
-        # force-push — always run per attempt.
-        force_push_result = _step_force_push(push_cwd, branch_name)
-        _pr_log.info(
-            "merge step force_push (attempt %d): success=%s error=%s",
-            attempt,
-            force_push_result["success"],
-            force_push_result.get("error"),
-        )
-        if not force_push_result["success"]:
-            return _fail(force_push_result["error"], merge_state=merge_state)
+            force_push_result = _step_force_push(push_cwd, branch_name)
+            _pr_log.info(
+                "merge step force_push (attempt %d): success=%s error=%s",
+                attempt,
+                force_push_result["success"],
+                force_push_result.get("error"),
+            )
+            if not force_push_result["success"]:
+                return _fail(force_push_result["error"], merge_state=merge_state)
 
         # create PR — only once; skip on resume if already completed.
         if "create_pr" not in merge_state.completed_steps:
             create_result = _step_create_pr(config, task, branch_name, parsed_review, state)
             if not create_result["success"]:
                 return _fail(create_result["error"], merge_state=merge_state)
+            if create_result["pr_url"] is None:
+                # Zero-delta branch: no commits ahead of base, nothing to merge.
+                _log(
+                    f"  Skipping merge: branch {branch_name} has no commits ahead of "
+                    f"origin/{base_branch}"
+                )
+                delete_merge_state(worktree_path)
+                return {
+                    "action": "merge-pr",
+                    "pr_url": None,
+                    "merged": False,
+                    "merge_queued": False,
+                    "auto_merge_queued": False,
+                    "success": True,
+                    "error": None,
+                    "skipped": True,
+                    "skip_reason": "zero-delta branch",
+                }
             merge_state.pr_url = create_result["pr_url"]
             _complete_step(merge_state, "create_pr", pr_url=merge_state.pr_url)
 

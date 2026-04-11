@@ -558,3 +558,94 @@ class TestMergePrStepStateResume:
         assert "merge" in logged_steps
         assert "await_merge_state" in logged_steps
         assert "cleanup" in logged_steps
+
+    def test_zero_delta_branch_returns_success_without_merge(self, tmp_path: Path) -> None:
+        """Zero-delta skip path: return success immediately, do not persist pr_url=None."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review()
+        state = MagicMock()
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        zero_delta_pr_result = {
+            "action": "pr",
+            "pr_url": None,
+            "success": True,
+            "error": None,
+            "skipped": True,
+            "skip_reason": "zero-delta branch",
+            "ahead_commit_count": 0,
+        }
+
+        merge_calls: list = []
+
+        def fake_run(cmd, **kw):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "list"]:
+                return _ok(0, stdout="[]")
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "merge"]:
+                merge_calls.append(cmd)
+            return _ok(0, stdout="MERGED")
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=fake_run),
+            patch(
+                "theforge.coordinator.completion._create_pr",
+                return_value=zero_delta_pr_result,
+            ),
+            patch("theforge.coordinator.completion._deindex_forge_artifacts"),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        # Zero-delta: success but no merge attempted.
+        assert result["success"] is True
+        assert result["pr_url"] is None
+        assert result.get("skipped") is True
+        assert result.get("skip_reason") == "zero-delta branch"
+        assert merge_calls == []
+
+        # merge_state.yaml must be cleaned up (not persisted with pr_url=None).
+        sidecar = self._worktree_path(tmp_path) / ".forge" / "merge_state.yaml"
+        assert not sidecar.exists()
+
+    def test_resume_after_merge_skips_fetch_rebase_and_force_push(self, tmp_path: Path) -> None:
+        """Resuming after merge is complete must not force-push, which could cancel auto-merge."""
+        self._write_state(
+            tmp_path,
+            completed_steps=["create_pr", "merge"],
+            pr_url=PR_URL,
+            merge_queued=False,
+            auto_merge_queued=False,
+        )
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        review = _make_review()
+        state = MagicMock()
+        state.total_cost = 1.0
+        state.dev_iteration = 1
+
+        git_push_calls: list = []
+        git_fetch_rebase_calls: list = []
+
+        def fake_run(cmd, **kw):
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "pr", "list"]:
+                return _ok(0, stdout="[]")
+            if isinstance(cmd, list) and cmd[:4] == ["git", "push", "-f", "origin"]:
+                git_push_calls.append(cmd)
+            if isinstance(cmd, list) and "rebase" in cmd:
+                git_fetch_rebase_calls.append(cmd)
+            return _ok(0, stdout="MERGED")
+
+        with (
+            patch("theforge.coordinator.completion.subprocess.run", side_effect=fake_run),
+            patch("theforge.coordinator.completion._create_pr") as mock_create_pr,
+            patch("theforge.coordinator.completion._deindex_forge_artifacts"),
+        ):
+            result = _merge_pr(config, task, "forge/test-task", review, state)
+
+        assert result["success"] is True
+        # force-push must NOT run after merge is already complete.
+        assert git_push_calls == [], "force-push must not run when resuming after merge"
+        assert git_fetch_rebase_calls == [], "rebase must not run when resuming after merge"
+        mock_create_pr.assert_not_called()
