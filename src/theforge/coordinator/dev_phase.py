@@ -299,12 +299,13 @@ def _run_dev_phase(
             None
             | RetryReason.GATE_FAIL
             | RetryReason.CONVENTION_VIOLATIONS
+            | RetryReason.DIRTY_WORKTREE
             | RetryReason.REJECT
             | RetryReason.EXTEND
             | RetryReason.REVIEW_CHANGES
         ):
-            # None → first iteration; gate_fail/convention_violations/reject/extend(no findings)
-            # → fresh dev prompt
+            # None → first iteration; gate_fail/convention_violations/dirty_worktree/reject
+            # /extend(no findings) → fresh dev prompt
             dev_context = ContextAssembler.from_config(config).assemble(
                 phase="dev",
                 story_text=story_content,
