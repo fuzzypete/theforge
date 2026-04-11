@@ -26,6 +26,7 @@ conventions:
     max_test_file_lines: 1000
     no_circular_imports: true
     test_mirrors_source: true
+    no_scratch_files: true
   soft:
     - "Coordinator is pure Python — no LLM calls for routing or process decisions"
     - "Schema validation is the integrity boundary — do not relax cross-validation rules"
@@ -33,6 +34,7 @@ conventions:
     - "Keep pure-data types in low-dependency modules with stdlib-only imports"
     - "Separate prompt construction, output parsing, and coordinator control flow"
     - "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail — diagnosing sprint failures requires tracing real data, not reconstructing it"
+    - "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing."
 
 retry:
   max_dev_iterations: 3

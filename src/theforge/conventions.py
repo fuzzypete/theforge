@@ -29,6 +29,8 @@ def check_hard_conventions(
         violations.extend(_check_circular_imports(project_root))
     if config.test_mirrors_source:
         violations.extend(_check_test_mirrors(project_root))
+    if config.no_scratch_files:
+        violations.extend(_check_no_scratch_files(project_root))
     return violations
 
 
@@ -267,6 +269,88 @@ def _best_match(name: str, adjacency: dict[str, list[str]]) -> str | None:
         if candidate in adjacency:
             return candidate
     return None
+
+
+# ── Scratch file check ────────────────────────────────────────────────
+
+# Files that legitimately live in the project root (non-hidden only).
+# Hidden files (dotfiles) are always skipped — they're almost always tooling config.
+_ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
+    {
+        # Build / packaging
+        "pyproject.toml",
+        "setup.py",
+        "setup.cfg",
+        "Makefile",
+        "makefile",
+        # Lock files
+        "uv.lock",
+        "poetry.lock",
+        "package-lock.json",
+        "yarn.lock",
+        # Requirements
+        "requirements.txt",
+        "requirements-dev.txt",
+        "requirements-test.txt",
+        # Documentation / metadata
+        "README.md",
+        "README.rst",
+        "README.txt",
+        "CHANGELOG.md",
+        "CHANGELOG.rst",
+        "CHANGELOG.txt",
+        "LICENSE",
+        "LICENSE.md",
+        "LICENSE.txt",
+        "LICENSE.rst",
+        "RELEASING.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        # Orchestrator config
+        "forge.yaml",
+        # Python test config
+        "conftest.py",
+        # Tooling config
+        "tox.ini",
+        "Dockerfile",
+        "dockerignore",
+    }
+)
+
+
+def _check_no_scratch_files(project_root: Path) -> list[ConventionViolation]:
+    """Check that no unrecognised files exist directly in the project root.
+
+    All source code must live under src/, tests/, docs/, or scripts/.
+    Files that don't match the known-good whitelist of root files are almost
+    always scratch/exploration files that were never deleted before committing
+    (e.g. bin_script, fake_forge, test_exec.py from issue #646).
+
+    Hidden files (dotfiles) are skipped — they are conventionally tooling
+    configuration and pose no risk of accidental source-code pollution.
+    """
+    violations: list[ConventionViolation] = []
+    for f in sorted(project_root.iterdir()):
+        if not f.is_file():
+            continue
+        if f.name.startswith("."):
+            continue  # dotfiles are tooling config — always allowed
+        if f.name in _ALLOWED_ROOT_FILES:
+            continue
+        rel = str(f.relative_to(project_root))
+        violations.append(
+            ConventionViolation(
+                rule="no_scratch_files",
+                file=rel,
+                detail=(
+                    f"{rel} is not an allowed root-level file — "
+                    "source files must live under src/, tests/, docs/, or scripts/"
+                ),
+            )
+        )
+    return violations
 
 
 # ── Test mirror check ─────────────────────────────────────────────────

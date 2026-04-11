@@ -322,6 +322,7 @@ class HardConventionsConfig:
     max_test_file_lines: int = 1000
     no_circular_imports: bool = True
     test_mirrors_source: bool = True
+    no_scratch_files: bool = True
 
 
 @dataclass(frozen=True)

@@ -11,6 +11,7 @@ from theforge.conventions import (
     _check_circular_imports,
     _check_hard_conventions_at_git_ref,
     _check_line_counts,
+    _check_no_scratch_files,
     _check_test_mirrors,
     check_hard_conventions,
     new_hard_convention_violations_since_ref,
@@ -23,6 +24,7 @@ def _make_config(**kwargs) -> HardConventionsConfig:
         max_test_file_lines=1000,
         no_circular_imports=True,
         test_mirrors_source=True,
+        no_scratch_files=True,
     )
     defaults.update(kwargs)
     return HardConventionsConfig(**defaults)
@@ -337,6 +339,104 @@ class TestConventionBaseline:
 
         assert any("legacy.py" in v.file for v in current)
         assert not any("legacy.py" in v.file for v in net_new)
+
+
+# ── Scratch file check tests ──────────────────────────────────────────
+
+
+class TestNoScratchFilesCheck:
+    def test_py_file_in_root_is_violation(self, tmp_path):
+        """A .py file directly in the project root is a violation."""
+        _write(tmp_path / "scratch.py", "# oops\n")
+        violations = _check_no_scratch_files(tmp_path)
+        assert any(v.rule == "no_scratch_files" and "scratch.py" in v.file for v in violations)
+
+    def test_extensionless_script_in_root_is_violation(self, tmp_path):
+        """Scripts without extension (e.g. bin_script, fake_forge) are flagged."""
+        (tmp_path / "bin_script").write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+        (tmp_path / "fake_forge").write_text("#!/usr/bin/env python\n", encoding="utf-8")
+        violations = _check_no_scratch_files(tmp_path)
+        files = {v.file for v in violations if v.rule == "no_scratch_files"}
+        assert "bin_script" in files
+        assert "fake_forge" in files
+
+    def test_multiple_root_files_all_reported(self, tmp_path):
+        """Multiple unlisted files in root are all reported."""
+        _write(tmp_path / "test_exec.py", "# scratch\n")
+        (tmp_path / "bin_script2").write_text("#!/bin/bash\n", encoding="utf-8")
+        violations = _check_no_scratch_files(tmp_path)
+        files = {v.file for v in violations if v.rule == "no_scratch_files"}
+        assert "test_exec.py" in files
+        assert "bin_script2" in files
+
+    def test_allowed_root_files_not_flagged(self, tmp_path):
+        """Known-good root files (forge.yaml, Makefile, etc.) are not flagged."""
+        (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
+        (tmp_path / "Makefile").write_text("all:\n\techo hi\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        (tmp_path / "README.md").write_text("# Readme\n", encoding="utf-8")
+        violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_dotfiles_not_flagged(self, tmp_path):
+        """Hidden files (dotfiles) are always allowed."""
+        (tmp_path / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
+        (tmp_path / ".env").write_text("KEY=val\n", encoding="utf-8")
+        violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_conftest_py_allowed(self, tmp_path):
+        """conftest.py at root is a legitimate pytest file — not flagged."""
+        _write(tmp_path / "conftest.py", "# root conftest\n")
+        violations = _check_no_scratch_files(tmp_path)
+        assert not any(v.rule == "no_scratch_files" for v in violations)
+
+    def test_py_in_src_is_ok(self, tmp_path):
+        """Python files under src/ are not flagged."""
+        _write(tmp_path / "src" / "theforge" / "module.py", "# fine\n")
+        violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_py_in_tests_is_ok(self, tmp_path):
+        """Python files under tests/ are not flagged."""
+        _write(tmp_path / "tests" / "test_module.py", "# fine\n")
+        violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_directories_not_flagged(self, tmp_path):
+        """Directories in the root are never flagged (only files are checked)."""
+        (tmp_path / "scratch_dir").mkdir()
+        violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_empty_root_ok(self, tmp_path):
+        """Empty root directory produces no violations."""
+        violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_violation_is_blocking(self, tmp_path):
+        """no_scratch_files violations are blocking by default."""
+        (tmp_path / "oops").write_text("scratch\n", encoding="utf-8")
+        violations = _check_no_scratch_files(tmp_path)
+        assert all(v.blocking for v in violations if v.rule == "no_scratch_files")
+
+    def test_check_hard_conventions_respects_no_scratch_files_flag(self, tmp_path):
+        """no_scratch_files=False disables the check."""
+        (tmp_path / "bin_script").write_text("#!/bin/bash\n", encoding="utf-8")
+        cfg = _make_config(
+            no_scratch_files=False, no_circular_imports=False, test_mirrors_source=False
+        )
+        violations = check_hard_conventions(cfg, tmp_path)
+        assert not any(v.rule == "no_scratch_files" for v in violations)
+
+    def test_check_hard_conventions_includes_scratch_check_when_enabled(self, tmp_path):
+        """no_scratch_files=True surfaces unlisted root files via check_hard_conventions."""
+        (tmp_path / "bin_script").write_text("#!/bin/bash\n", encoding="utf-8")
+        (tmp_path / "src" / "theforge").mkdir(parents=True)
+        (tmp_path / "tests").mkdir(parents=True)
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        violations = check_hard_conventions(cfg, tmp_path)
+        assert any(v.rule == "no_scratch_files" for v in violations)
 
 
 def _git(repo: Path, *args: str) -> str:
