@@ -205,10 +205,10 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
         "cost_usd": round(state.total_cost, 6),
         "duration_s": round(sum(all_durations), 2),
         "dev_attempts_total": len(state.dev_results) + len(state.dev_handoff_fix_results),
-        "dev_iterations_productive": state.dev_iteration,
+        "dev_iterations_productive": len(state.dev_results),
         "review_cycles_total": state.review_cycle,
         # kept for backward compatibility with older audit readers
-        "dev_iterations": state.dev_iteration,
+        "dev_iterations": len(state.dev_results),
         "review_cycles": state.review_cycle,
     }
 
@@ -366,11 +366,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         },
         "iterations": {
             "dev_attempts_total": len(state.dev_results) + len(state.dev_handoff_fix_results),
-            "dev_iterations_productive": state.dev_iteration,
+            "dev_iterations_productive": len(state.dev_results),
             "review_cycles_total": state.review_cycle,
             # kept for backward compatibility with older audit readers
             "review_cycles": state.review_cycle,
-            "dev_iterations": state.dev_iteration,
+            "dev_iterations": len(state.dev_results),
             "gate_decisions": state.gate_decisions,
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),

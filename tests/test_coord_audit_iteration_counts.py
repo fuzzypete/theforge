@@ -111,6 +111,33 @@ class TestIterationCountFields:
         assert log["totals"]["dev_iterations_productive"] == 2
         assert log["totals"]["review_cycles_total"] == 1
 
+    def test_productive_count_survives_cycle_reset(self, tmp_path: Path) -> None:
+        """dev_iterations_productive counts across ALL review cycles, not just the last.
+
+        Regression test: state.dev_iteration resets to 0 on REQUEST_CHANGES; using it
+        as the productive count would report 0 (or N from the final cycle) instead of
+        the true cumulative total.  len(state.dev_results) is the correct source.
+        """
+        state = CoordinatorState()
+        # Simulate 2 productive dev calls in cycle 1 + 1 productive call in cycle 2
+        state.dev_results.append(_agent_result(cost=0.50))
+        state.dev_results.append(_agent_result(cost=0.50))
+        state.dev_results.append(_agent_result(cost=0.50))
+        state.dev_durations.extend([10.0, 12.0, 9.0])
+        # dev_iteration is reset to 0 by review_phase on REQUEST_CHANGES, then
+        # incremented once for cycle 2's single dev call — final value is 1, not 3.
+        state.dev_iteration = 1
+        state.review_cycle = 2
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+
+        # Must reflect all 3 productive calls, not just the last cycle's counter
+        assert log["iterations"]["dev_iterations_productive"] == 3
+        assert log["totals"]["dev_iterations_productive"] == 3
+        # Backward-compat alias must also be correct
+        assert log["iterations"]["dev_iterations"] == 3
+        assert log["totals"]["dev_iterations"] == 3
+
     def test_handoff_fix_inflates_attempts_total(self, tmp_path: Path) -> None:
         """dev_attempts_total = productive + handoff-fix; productive count is unchanged."""
         state = CoordinatorState()
