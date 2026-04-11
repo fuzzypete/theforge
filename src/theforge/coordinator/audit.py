@@ -268,6 +268,7 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
             "files_changed": item.files_changed,
             "files_changed_count": item.files_changed_count,
             "tests_fixed_count": item.tests_fixed_count,
+            "sandboxed": item.sandboxed,
         }
         for item in state.dev_iteration_telemetry
     ]

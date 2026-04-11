@@ -55,6 +55,16 @@ def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
     return (True, "")
 
 
+def sandbox_available_for_profile(profile: ModelProfile) -> bool:
+    """Return True if workspace-effect sandboxing is available for *profile*.
+
+    Thin public wrapper around the private probe; safe to call repeatedly
+    because the underlying sandbox availability check is lru_cache-backed.
+    """
+    available, _ = _sandbox_readiness(profile)
+    return available
+
+
 def _launcher_sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
     """CLI launchers are intentionally unsandboxed; always report ready."""
     return (True, "")

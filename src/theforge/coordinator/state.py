@@ -155,6 +155,7 @@ class DevIterationTelemetry:
     files_changed_count: int = 0
     tests_fixed_count: int = 0
     meaningful_progress: bool | None = None
+    sandboxed: bool = True
 
 
 @dataclass(frozen=True)
@@ -284,6 +285,7 @@ class CoordinatorState:
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
     error_type: str | None = None
+    sandboxed: bool = False  # True if sandbox isolation was available at dev-phase entry
     dev_escalated: bool = False  # True once model escalation has occurred this run
     plan_escalated: bool = False  # True once plan model escalation has occurred this run
     plan_escalation_note: str | None = None  # escalation context injected into regen prompt

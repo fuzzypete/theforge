@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from theforge.config import ForgeConfig
+from theforge.config.auth import sandbox_available_for_profile
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
@@ -160,6 +161,7 @@ def record_dev_iteration_telemetry(
             files_changed_count=len(files_changed),
             tests_fixed_count=tests_fixed_count,
             meaningful_progress=meaningful_progress,
+            sandboxed=state.sandboxed,
         )
     )
 
@@ -231,6 +233,8 @@ def _run_dev_phase(
     Mutates state in-place (appends dev_results, updates dev_session_id, etc.).
     """
     _ensure_runners()
+    # Probe sandbox availability once per run (lru_cache-backed — cheap on repeat calls).
+    state.sandboxed = sandbox_available_for_profile(config.dev_profile)
     _log_phase(
         state.phase,
         f"{config.dev_profile.model}  iter={state.dev_iteration}",
