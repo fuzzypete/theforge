@@ -444,6 +444,10 @@ def pull_base_branch(config: ForgeConfig) -> bool:
 
     If the pull updates src/theforge source files, re-execs the process so the
     sprint runs with fresh imports rather than stale bytecode.
+
+    Raises RuntimeError if the base branch has diverged from origin (both ahead
+    and behind), or if origin is unreachable. A diverged base branch is an
+    invalid state for spawning a worktree — fail closed rather than continue.
     """
     base_branch = config.workspace.base_branch
 
@@ -464,7 +468,35 @@ def pull_base_branch(config: ForgeConfig) -> bool:
         _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
     else:
         _cu._log(f"⚠ WORKSPACE  pull failed (non-ff / offline): {pull_out.strip()}")
-        return False
+        # Measure divergence to distinguish "unreachable" from "diverged".
+        # git pull --ff-only fetches before attempting the merge, so origin/<base>
+        # is current even on failure. If origin is truly unreachable, the fetch
+        # itself will have failed and the rev-list calls will also fail.
+        try:
+            ok_ahead, ahead_out = _cu._run_shell(
+                f"git rev-list --count origin/{base_branch}..{base_branch}",
+                config.project_root,
+            )
+            ok_behind, behind_out = _cu._run_shell(
+                f"git rev-list --count {base_branch}..origin/{base_branch}",
+                config.project_root,
+            )
+            if ok_ahead and ok_behind:
+                local_ahead = int(ahead_out.strip())
+                local_behind = int(behind_out.strip())
+                raise RuntimeError(
+                    f"WORKSPACE abort: base branch '{base_branch}' has diverged from origin "
+                    f"(local is {local_ahead} ahead, {local_behind} behind). "
+                    f"Run: git rebase origin/{base_branch}"
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"WORKSPACE abort: could not reach origin to verify base branch '{base_branch}' "
+            f"— aborting to avoid spawning a worktree from potentially stale state."
+        )
 
     ok_after, tree_after = _cu._run_shell("git rev-parse HEAD:src/theforge", config.project_root)
     if not ok_after:
@@ -517,7 +549,10 @@ def _create_workspace(
             return workspace_path, branch_name, None
 
     if not no_pull:
-        pull_base_branch(config)
+        try:
+            pull_base_branch(config)
+        except RuntimeError as exc:
+            return None, None, str(exc)
 
     _cu._log(f"Creating workspace: {cmd}")
     ok, output = _cu._run_shell(cmd, config.project_root)

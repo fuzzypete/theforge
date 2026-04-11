@@ -1321,30 +1321,26 @@ class TestSprintPrePull:
             f"got {worker_no_pull_values}"
         )
 
-    def test_failed_prepull_preserves_worker_pulls(self, tmp_path: Path) -> None:
-        """When pull_base_branch fails, workers keep no_pull=False so stale-base warnings fire."""
+    def test_failed_prepull_aborts_sprint(self, tmp_path: Path) -> None:
+        """When pull_base_branch raises, run_sprint propagates the exception and aborts."""
         config = _make_config(tmp_path)
         manifest_path = self._make_manifest(tmp_path)
-        worker_no_pull_values: list[bool] = []
-
-        def capture_no_pull(*args, **kwargs):
-            worker_no_pull_values.append(kwargs.get("no_pull", args[8] if len(args) > 8 else None))
-            state = CoordinatorState()
-            state.preflight_verdict = "PROCEED"
-            state.preflight_result = MagicMock(cost_usd=0.0)
-            return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with (
-            patch("theforge.sprint.runner.pull_base_branch", return_value=False) as mock_pull,
-            patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull),
+            patch(
+                "theforge.sprint.runner.pull_base_branch",
+                side_effect=RuntimeError(
+                    "WORKSPACE abort: base branch 'main' has diverged from origin "
+                    "(local is 2 ahead, 2 behind). Run: git rebase origin/main"
+                ),
+            ) as mock_pull,
+            patch("theforge.sprint.runner.run_task") as mock_run_task,
         ):
-            run_sprint(config, manifest_path)
+            with pytest.raises(RuntimeError, match="diverged"):
+                run_sprint(config, manifest_path)
 
         mock_pull.assert_called_once_with(config)
-        assert all(v is False for v in worker_no_pull_values), (
-            "Expected all workers no_pull=False after failed pre-pull, "
-            f"got {worker_no_pull_values}"
-        )
+        mock_run_task.assert_not_called()
 
     def test_caller_no_pull_true_skips_prepull(self, tmp_path: Path) -> None:
         """When run_sprint is called with no_pull=True, pull_base_branch is never called."""
