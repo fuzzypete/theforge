@@ -2,11 +2,89 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
+import socket as _socket_module
 from unittest.mock import patch
 
 import pytest
 
 from theforge.config import ModelProfile
+
+# ---------------------------------------------------------------------------
+# Global network guard — installed at conftest load time
+# ---------------------------------------------------------------------------
+
+_REAL_SOCKET = _socket_module.socket
+
+_GUARD_MSG = (
+    "[theforge-test-guard] Blocked external network connection to {host!r}. "
+    "Unit tests must not make real network calls. "
+    "Add @pytest.mark.network_integration and set THEFORGE_RUN_INTEGRATION=1 "
+    "to opt in to real network access."
+)
+
+
+def _is_loopback(host: str) -> bool:
+    """Return True if *host* is a loopback or localhost address."""
+    if host in ("", "localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class _BlockedSocket(_REAL_SOCKET):
+    """socket.socket subclass that refuses non-loopback outbound connections.
+
+    Installed unconditionally at conftest load time so every test worker
+    starts with the guard active.  AF_UNIX sockets (file-path addresses)
+    are always allowed; only TCP/UDP tuples are checked.
+    """
+
+    def connect(self, address):  # type: ignore[override]
+        if isinstance(address, tuple):
+            host = str(address[0])
+            if not _is_loopback(host):
+                raise OSError(_GUARD_MSG.format(host=host))
+        return super().connect(address)
+
+    def connect_ex(self, address):  # type: ignore[override]
+        if isinstance(address, tuple):
+            host = str(address[0])
+            if not _is_loopback(host):
+                raise OSError(_GUARD_MSG.format(host=host))
+        return super().connect_ex(address)
+
+
+# Install the guard before any test module is imported.
+_socket_module.socket = _BlockedSocket
+
+
+@pytest.fixture(autouse=True)
+def _enforce_network_integration_marker(request):
+    """Enforce the two-key opt-in for real-network tests.
+
+    * No marker → test runs with the socket guard active (the common case).
+    * Marker present, THEFORGE_RUN_INTEGRATION not set → test is skipped.
+    * Marker present AND THEFORGE_RUN_INTEGRATION=1 → guard is lifted for
+      the duration of this test only, then re-applied on teardown.
+    """
+    marker = request.node.get_closest_marker("network_integration")
+    if marker is None:
+        yield
+        return
+
+    if not os.environ.get("THEFORGE_RUN_INTEGRATION"):
+        pytest.skip("set THEFORGE_RUN_INTEGRATION=1 to run network_integration tests")
+
+    # Both conditions met — lift the guard for this test only.
+    _socket_module.socket = _REAL_SOCKET
+    try:
+        yield
+    finally:
+        _socket_module.socket = _BlockedSocket
 
 
 @pytest.fixture
