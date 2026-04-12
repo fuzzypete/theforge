@@ -253,12 +253,14 @@ def _write_sprint_summary(
     batch_assignments: "dict[str, int] | None" = None,
     slug_map: "dict[str, str] | None" = None,
     run_id: str | None = None,
+    tasks_by_slug: "dict[str, TaskStory] | None" = None,
     ci_break_slug: str | None = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/."""
     story_times = story_times or {}
     batch_assignments = batch_assignments or {}
     slug_map = slug_map or {}
+    tasks_by_slug = tasks_by_slug or {}
 
     spec_entries = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
@@ -344,6 +346,7 @@ def _write_sprint_summary(
                 entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
                 entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
             entry["batch"] = batch_assignments.get(slug, 0)
+            entry["depends_on"] = list(getattr(tasks_by_slug.get(slug), "depends_on", None) or [])
         else:
             entry = {
                 "path": display_key,
@@ -356,6 +359,7 @@ def _write_sprint_summary(
                 "error_type": None,
                 "merge": False,
                 "batch": batch_assignments.get(slug, 0),
+                "depends_on": list(getattr(tasks_by_slug.get(slug), "depends_on", None) or []),
             }
         spec_entries.append(entry)
 

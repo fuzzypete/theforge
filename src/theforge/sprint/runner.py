@@ -50,6 +50,7 @@ from .manifest import (
 )
 from .query import normalize_dependency_plan
 from .sources import StorySource
+from .state_writer import SprintStateWriter
 
 
 def _log(msg: str) -> None:
@@ -427,6 +428,7 @@ def _make_worker_phase_fn(
     phase_lock: threading.Lock,
     outer_fn: "Callable[[dict], None] | None",
     plan_done: "dict[str, str] | None" = None,
+    state_writer: "SprintStateWriter | None" = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper that tracks per-worker phase.
 
@@ -435,6 +437,9 @@ def _make_worker_phase_fn(
 
     When *plan_done* is provided and a PLAN_DONE phase update arrives, stores
     the workspace_path in plan_done[slug] for the scheduler to read.
+
+    When *state_writer* is provided, phase transitions are also written to the
+    live sprint state file so ``forge sprint-status`` reflects the current phase.
     """
 
     def _update(updates: dict) -> None:
@@ -442,6 +447,8 @@ def _make_worker_phase_fn(
         with phase_lock:
             if phase:
                 worker_phases[slug] = phase
+                if state_writer is not None:
+                    state_writer.update(slug, phase=phase)
             if phase == "PLAN_DONE" and plan_done is not None:
                 ws = updates.get("workspace_path", "")
                 if ws:
@@ -742,6 +749,33 @@ def run_sprint(
         dag.mark_skipped(slug)
         specs_skipped += 1
 
+    # Initialise live state file for forge sprint-status (only when a CLI run_id
+    # is present — headless/test invocations without a run_id skip this).
+    _state_writer: SprintStateWriter | None = None
+    if run_id:
+        _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
+        _initial_stories: list[dict] = []
+        for _slug, (_task, _src, _canonical_ref) in slug_to_context.items():
+            _display_key = (
+                f"Issue #{_canonical_ref.split(':')[1]}"
+                if _canonical_ref.startswith("issue:")
+                else _canonical_ref
+            )
+            _blocked_by = list(blocked_slugs.get(_slug, []))
+            _initial_stories.append(
+                {
+                    "slug": _slug,
+                    "path": _display_key,
+                    "status": "blocked" if _blocked_by else "waiting",
+                    "phase": None,
+                    "cost_usd": 0.0,
+                    "bundle_candidate": _slug in _bundle_candidate_slugs,
+                    "blocked_by": _blocked_by,
+                }
+            )
+        _state_writer = SprintStateWriter(run_id, config.project_root, resolved.name)
+        _state_writer.init(_initial_stories)
+
     # Parallel scheduling state
     active: dict[str, Future[object]] = {}
     cost_lock = threading.Lock()
@@ -924,6 +958,8 @@ def run_sprint(
                                 " \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} (budget exhausted)")
+                    if _state_writer is not None:
+                        _state_writer.update(task.slug, status="skipped")
                     continue
 
                 # Eager merge for sequential mode; disabled in parallel mode
@@ -940,6 +976,8 @@ def run_sprint(
                     file=sys.stderr,
                     flush=True,
                 )
+                if _state_writer is not None:
+                    _state_writer.update(task.slug, status="running")
 
                 # Create plan gate for fresh parallel runs
                 gate: threading.Event | None = None
@@ -955,6 +993,7 @@ def run_sprint(
                     phase_lock,
                     state_update_fn,
                     plan_done=plan_done if use_plan_gates else None,
+                    state_writer=_state_writer,
                 )
                 fut = pool.submit(
                     _run_single_story,
@@ -994,6 +1033,8 @@ def run_sprint(
                         _log(f"SKIPPED {t.slug} (blocked)")
                     dag.mark_skipped(t.slug)
                     specs_skipped += 1
+                    if _state_writer is not None:
+                        _state_writer.update(t.slug, status="skipped")
                 break
 
             # No active workers but queued PRs are still in flight.
@@ -1091,6 +1132,8 @@ def run_sprint(
                     story_times[slug] = (story_started_at, timed_out_at)
                     results.append((spec_str, _timeout_result))
                     _write_story_audit(config, slug_to_context[slug][0], _timeout_result)
+                    if _state_writer is not None:
+                        _state_writer.update(slug, status="failed", phase="ESCALATE")
                     dag.mark_skipped(slug)
                     specs_failed += 1
                 active.clear()
@@ -1127,6 +1170,8 @@ def run_sprint(
                     story_times[slug] = (story_started_at, failed_at)
                     results.append((spec_str, _exc_result))
                     _write_story_audit(config, slug_to_context[slug][0], _exc_result)
+                    if _state_writer is not None:
+                        _state_writer.update(slug, status="failed", phase="ESCALATE")
                     dag.mark_skipped(slug)
                     specs_failed += 1
                     continue
@@ -1143,6 +1188,19 @@ def run_sprint(
                 icon = "✓" if result.success else "✗"
                 dur = _fmt_duration(elapsed)
                 _log(f"{icon} {slug}   ${spec_cost:.2f}  {dur}")
+
+                if _state_writer is not None:
+                    _done_status = (
+                        "done"
+                        if (result.success or result.state.preflight_verdict == "ALREADY_DONE")
+                        else "failed"
+                    )
+                    _state_writer.update(
+                        slug,
+                        status=_done_status,
+                        phase=result.phase.name,
+                        cost_usd=result.state.total_cost,
+                    )
 
                 ds, df, dsk = _classify_and_record(task, result, dag, merged_slugs)
                 specs_succeeded += ds
@@ -1330,9 +1388,14 @@ def run_sprint(
             story_times=story_times,
             batch_assignments=batch_assignments,
             slug_map=slug_map,
-            run_id=_cli_run_id,
+            run_id=run_id,
+            tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
             ci_break_slug=ci_halt_slug,
         )
+
+    # Remove live state file now that sprint-summary.yaml is the permanent record.
+    if _state_writer is not None:
+        _state_writer.remove()
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
