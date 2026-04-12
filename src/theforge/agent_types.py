@@ -33,3 +33,6 @@ class AgentResult:
     model_usage: tuple[ModelUsage, ...] = ()  # per-model breakdown (Claude only)
     structured_data: dict | None = None  # parsed JSON for API reviewers
     startup_failure: bool = False  # True when the agent couldn't start at all
+    model_config: tuple[
+        str, ...
+    ] = ()  # configured preference list (non-empty when fallback fired)

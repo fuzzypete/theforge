@@ -27,6 +27,57 @@ CLI_PROVIDER_MAP: dict[str, str] = {
 log = logging.getLogger("theforge.config")
 
 
+def _parse_model_spec(
+    data: dict[str, Any],
+    default_model: str,
+    default_fallbacks: tuple[str, ...],
+    profile_name: str,
+) -> tuple[str, tuple[str, ...]]:
+    """Parse the model preference list from profile data.
+
+    Supports three YAML forms (in precedence order):
+      - models: [model-a, model-b, ...]       → list of models
+      - model: [model-a, model-b, ...]         → list form of model key
+      - model: "model-a"                       → scalar (existing behavior)
+
+    Additional fallback_models: [...] entries are appended to the list.
+    Returns (primary_model, fallback_models_tuple).
+    """
+    raw_models = data.get("models")
+    raw_model = data.get("model")
+
+    # models: key takes precedence over model:
+    spec = raw_models if raw_models is not None else raw_model
+
+    if isinstance(spec, list):
+        if not spec:
+            raise ValueError(
+                f"'model'/'models' list in profile {profile_name!r} must be non-empty"
+            )
+        primary = str(spec[0])
+        fallbacks = tuple(str(m) for m in spec[1:])
+    elif isinstance(spec, str):
+        primary = spec
+        fallbacks = ()
+    elif spec is None:
+        primary = default_model
+        fallbacks = default_fallbacks
+    else:
+        raise ValueError(
+            f"'model'/'models' in profile {profile_name!r} must be a string or list, "
+            f"got {type(spec).__name__}"
+        )
+
+    # fallback_models: key appends to any list already parsed
+    extra = data.get("fallback_models")
+    if extra is not None:
+        if not isinstance(extra, list):
+            raise ValueError(f"'fallback_models' in profile {profile_name!r} must be a list")
+        fallbacks = fallbacks + tuple(str(m) for m in extra)
+
+    return primary, fallbacks
+
+
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
     tools = data.get("allowed_tools")
@@ -40,11 +91,15 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         )
     timeout_medium_raw = data.get("timeout_medium_seconds", base.timeout_medium_seconds)
     timeout_large_raw = data.get("timeout_large_seconds", base.timeout_large_seconds)
+    model_str, fallback_models = _parse_model_spec(
+        data, base.model, base.fallback_models, base.name
+    )
     return ModelProfile(
         name=base.name,
         cli=data.get("cli", base.cli),
         provider=data.get("provider", base.provider),
-        model=data.get("model", base.model),
+        model=model_str,
+        fallback_models=fallback_models,
         budget_usd=float(data.get("budget_usd", base.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", base.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,
@@ -244,11 +299,13 @@ def _parse_profile(
     else:
         allowed_tools_tuple = default.allowed_tools
 
+    model_str, fallback_models = _parse_model_spec(data, default.model, (), name)
     return ModelProfile(
         name=name,
         cli=cli,
         provider=provider,
-        model=data.get("model", default.model),
+        model=model_str,
+        fallback_models=fallback_models,
         budget_usd=float(data.get("budget_usd", default.budget_usd)),
         timeout_seconds=int(data.get("timeout_seconds", default.timeout_seconds)),
         timeout_medium_seconds=int(timeout_medium_raw) if timeout_medium_raw is not None else None,

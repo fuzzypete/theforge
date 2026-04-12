@@ -65,6 +65,29 @@ if TYPE_CHECKING:
 _MAX_RATE_LIMIT_RETRIES = 4
 _RATE_LIMIT_BACKOFF_BASE = 30  # seconds
 
+# Patterns in result.output that indicate a model-preference fallback should fire.
+# Only usage-exhaustion and model-not-found errors trigger fallback; runtime errors
+# (bad code, schema violations) propagate immediately.
+_MODEL_FALLBACK_PATTERNS = (
+    "429",
+    "rate limit",
+    "rate_limit",
+    "resource_exhausted",
+    "resource exhausted",
+    "quota exceeded",
+    "quota_exceeded",
+    "overloaded",
+    "try again later",
+    "model not found",
+    "model_not_found",
+    "no such model",
+    "invalid model",
+    "model does not exist",
+    "model is deprecated",
+    "model has been deprecated",
+    "model.*not.*exist",
+)
+
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Return True if *exc* is a provider 429 / quota-exhausted error."""
@@ -73,6 +96,21 @@ def _is_rate_limit_error(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     return "429" in msg or "rate limit" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+def _classify_api_model_fallback(result: AgentResult) -> str | None:
+    """Return a reason string if *result* should trigger model-preference fallback.
+
+    Only quota-exhaustion and model-not-found errors trigger fallback.
+    Runtime errors (bad code, schema violations, timeouts) return None.
+    """
+    if result.success:
+        return None
+    output_lower = result.output.lower()
+    for pattern in _MODEL_FALLBACK_PATTERNS:
+        if pattern in output_lower:
+            return f"matched {pattern!r}"
+    return None
 
 
 @dataclass
@@ -741,40 +779,18 @@ _LOOP_RUNNERS: dict[str, Callable[..., AgentResult]] = {
 # ── Public entry point ────────────────────────────────────────────────
 
 
-def run_api_agent(
+def _run_single_api_model(
     *,
     prompt: str,
     profile: "ModelProfile",
     working_dir: Path,
-    quiet: bool = False,
-    secrets: dict[str, str] | None = None,
-    plain_text: bool = False,
+    secrets: dict[str, str] | None,
+    plain_text: bool,
 ) -> AgentResult:
-    """Run a text-judgment agent via API.
+    """Invoke one model (profile.model) via the provider's runner.
 
-    When profile.allowed_tools is non-empty, drives an agent loop where the model
-    can call tools. When empty, falls back to a single-shot stateless call.
-
-    Google Gemini plain-text calls intentionally bypass the tool loop even when
-    the profile allows tools. Ideation expects raw markdown/text output, and the
-    Google loop's review finalization path can otherwise force response_schema
-    JSON output that does not match the ideation prompt.
+    Does not handle model-preference iteration — that lives in run_api_agent.
     """
-    if not profile.provider:
-        return AgentResult(
-            success=False,
-            output=f"Profile '{profile.name}' is not an API profile.",
-            session_id=None,
-            cost_usd=None,
-            exit_code=1,
-            raw={},
-            profile_name=profile.name,
-        )
-
-    label = profile.name or f"{profile.provider}/{profile.model}"
-    if not quiet:
-        _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
-
     if profile.provider == "google" and plain_text:
         runner_fn = PROVIDER_RUNNERS.get(profile.provider)
         if not runner_fn:
@@ -787,7 +803,7 @@ def run_api_agent(
                 raw={},
                 profile_name=profile.name,
             )
-        result = runner_fn(prompt, profile, secrets, plain_text=True)
+        return runner_fn(prompt, profile, secrets, plain_text=True)
     elif profile.allowed_tools:
         loop_runner = _LOOP_RUNNERS.get(profile.provider)
         if not loop_runner:
@@ -800,7 +816,7 @@ def run_api_agent(
                 raw={},
                 profile_name=profile.name,
             )
-        result = loop_runner(prompt, profile, working_dir, secrets)
+        return loop_runner(prompt, profile, working_dir, secrets)
     else:
         runner_fn = PROVIDER_RUNNERS.get(profile.provider)
         if not runner_fn:
@@ -813,11 +829,106 @@ def run_api_agent(
                 raw={},
                 profile_name=profile.name,
             )
-        result = runner_fn(prompt, profile, secrets)
+        return runner_fn(prompt, profile, secrets)
 
+
+def run_api_agent(
+    *,
+    prompt: str,
+    profile: "ModelProfile",
+    working_dir: Path,
+    quiet: bool = False,
+    secrets: dict[str, str] | None = None,
+    plain_text: bool = False,
+) -> AgentResult:
+    """Run a text-judgment agent via API, trying models in preference-list order.
+
+    When profile.allowed_tools is non-empty, drives an agent loop where the model
+    can call tools. When empty, falls back to a single-shot stateless call.
+
+    Google Gemini plain-text calls intentionally bypass the tool loop even when
+    the profile allows tools. Ideation expects raw markdown/text output, and the
+    Google loop's review finalization path can otherwise force response_schema
+    JSON output that does not match the ideation prompt.
+
+    If profile.fallback_models is non-empty, forge tries each model in
+    (profile.model, *profile.fallback_models) order. Only quota-exhaustion and
+    model-not-found errors trigger fallback; runtime errors propagate immediately.
+    The model actually used is recorded in AgentResult.model_usage[*].model and,
+    when a fallback fired, in AgentResult.model_config (the full preference list).
+    """
+    if not profile.provider:
+        return AgentResult(
+            success=False,
+            output=f"Profile '{profile.name}' is not an API profile.",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name=profile.name,
+        )
+
+    models = profile.models  # preference list: (primary, *fallbacks)
+    label = profile.name or f"{profile.provider}/{profile.model}"
     if not quiet:
-        status = "OK" if result.success else "FAIL"
-        cost_str = f"${result.cost_usd:.3f}" if result.cost_usd is not None else "unknown"
-        _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
+        _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 
-    return result
+    # model_config is set in the result only when the preference list has >1 entry,
+    # so auditors can detect when a fallback was configured (whether or not it fired).
+    model_config: tuple[str, ...] = models if len(models) > 1 else ()
+
+    last_result: AgentResult | None = None
+    for idx, model in enumerate(models):
+        is_last = idx == len(models) - 1
+        # Build a single-model profile for this attempt
+        current_profile = dataclasses.replace(profile, model=model, fallback_models=())
+
+        result = _run_single_api_model(
+            prompt=prompt,
+            profile=current_profile,
+            working_dir=working_dir,
+            secrets=secrets,
+            plain_text=plain_text,
+        )
+
+        if result.success:
+            if idx > 0:
+                _log(
+                    f"  ✓ {label} fallback to {model!r} succeeded (skipped: {list(models[:idx])})"
+                )
+            if not quiet:
+                status = "OK"
+                cost_str = f"${result.cost_usd:.3f}" if result.cost_usd is not None else "unknown"
+                _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
+            # Annotate with model_config only when a preference list was configured.
+            # Skip replace() for single-model profiles to avoid breaking callers that
+            # return non-dataclass objects (e.g., mocks in tests).
+            if model_config:
+                return dataclasses.replace(result, model_config=model_config)
+            return result
+
+        last_result = result
+
+        if not is_last:
+            fallback_reason = _classify_api_model_fallback(result)
+            if fallback_reason:
+                next_model = models[idx + 1]
+                _log(
+                    f"  ⚠ {label} model {model!r} failed ({fallback_reason}); "
+                    f"trying {next_model!r}..."
+                )
+                continue
+
+        # Not a fallback-eligible error, or we are at the last model — stop here.
+        break
+
+    assert last_result is not None
+    if not quiet:
+        status = "FAIL"
+        cost_str = (
+            f"${last_result.cost_usd:.3f}" if last_result.cost_usd is not None else "unknown"
+        )
+        _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
+    if model_config:
+        return dataclasses.replace(last_result, model_config=model_config)
+    return last_result
