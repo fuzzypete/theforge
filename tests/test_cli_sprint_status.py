@@ -238,7 +238,7 @@ def _run_sprint_status(tmp_path: Path, run_id: str) -> tuple[int, str]:
     """Run cmd_sprint_status and return (exit_code, captured_stdout)."""
     from unittest.mock import MagicMock
 
-    from theforge.cli.sprint import cmd_sprint_status
+    from theforge.cli.sprint_status import cmd_sprint_status
 
     forge_yaml = _make_forge_config(tmp_path)
 
@@ -392,7 +392,7 @@ def test_cmd_sprint_status_blocked_story_shows_dependency(tmp_path: Path) -> Non
 def test_cmd_sprint_status_not_found(tmp_path: Path) -> None:
     from unittest.mock import MagicMock
 
-    from theforge.cli.sprint import cmd_sprint_status
+    from theforge.cli.sprint_status import cmd_sprint_status
 
     forge_yaml = _make_forge_config(tmp_path)
     fake_config = MagicMock()
