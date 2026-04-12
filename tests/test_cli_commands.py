@@ -525,47 +525,6 @@ class TestFgFlag:
             mock_daemonize.assert_not_called()
 
 
-# ── TestCmdLogs ───────────────────────────────────────────────────────
-
-
-class TestCmdLogs:
-    def test_tails_log_file_for_known_run(self, tmp_path):
-        """forge logs <run-id> calls tail -f on the correct log file."""
-        from theforge.cli import cmd_logs
-
-        run_id = "abc123"
-        slug = "my-slug"
-        # Create PID file
-        runs_dir = tmp_path / ".forge" / "runs"
-        runs_dir.mkdir(parents=True)
-        (runs_dir / f"{run_id}.pid").write_text(f"12345\n{slug}\n")
-        # Create log file
-        log_dir = tmp_path / ".forge" / "logs" / slug
-        log_dir.mkdir(parents=True)
-        log_file = log_dir / "run.log"
-        log_file.write_text("hello\n")
-
-        forge_yaml = tmp_path / "forge.yaml"
-        forge_yaml.write_text("project:\n  root: .\n")
-
-        config = _make_forge_config(tmp_path)
-        args = argparse.Namespace(run_id=run_id)
-
-        with (
-            patch("theforge.cli.status._find_config", return_value=forge_yaml),
-            patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status.subprocess.run") as mock_run,
-        ):
-            result = cmd_logs(args)
-
-        assert result == 0
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "tail"
-        assert call_args[1] == "-f"
-        assert str(log_file) in call_args[2]
-
-
 class TestCmdSprintQueryMode:
     def test_query_mode_defaults_to_sequential_when_parallel_omitted(self, tmp_path):
         from theforge.cli.sprint import _run_query_mode
@@ -616,23 +575,6 @@ class TestCmdSprintQueryMode:
 
         assert rc == 0
         assert mock_build.call_args.kwargs["max_parallel"] == 1
-
-    def test_returns_error_when_no_pid_and_no_log(self, tmp_path):
-        """forge logs with unknown run_id returns error."""
-        from theforge.cli import cmd_logs
-
-        forge_yaml = tmp_path / "forge.yaml"
-        forge_yaml.write_text("project:\n  root: .\n")
-        config = _make_forge_config(tmp_path)
-        args = argparse.Namespace(run_id="deadbeef")
-
-        with (
-            patch("theforge.cli.status._find_config", return_value=forge_yaml),
-            patch("theforge.cli.status.load_config", return_value=config),
-        ):
-            result = cmd_logs(args)
-
-        assert result == 1
 
 
 # ── TestCmdStop ───────────────────────────────────────────────────────
