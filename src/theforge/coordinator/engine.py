@@ -713,8 +713,19 @@ def run_task(
             state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
             state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
             config = _apply_preflight_config(config, state)
-            _pf_result = None
-            _pf_already_done_loop = False
+            from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
+
+            config, _pf_result, _pf_already_done_loop = _handle_preflight_verdict(
+                verdict=state.preflight_verdict,
+                reason=state.preflight_reason,
+                state=state,
+                config=config,
+                task=task,
+                branch_name=branch_name,
+                notify=notify,
+                logger=logger,
+                task_start=_task_start,
+            )
         else:
             from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
 
