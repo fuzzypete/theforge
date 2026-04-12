@@ -177,12 +177,18 @@ class TestParseProfileModelList:
     """_parse_profile normalizes model list into ModelProfile."""
 
     def test_scalar_model_no_fallbacks(self):
-        profile = _parse_profile(
-            "rev",
-            {"provider": "openai", "model": "gpt-4o", "budget_usd": 1.0, "timeout_seconds": 60},
-            role="review",
-            secrets={"OPENAI_API_KEY": "test"},
-        )
+        with patch("importlib.import_module"):
+            profile = _parse_profile(
+                "rev",
+                {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "budget_usd": 1.0,
+                    "timeout_seconds": 60,
+                },
+                role="review",
+                secrets={"OPENAI_API_KEY": "test"},
+            )
         assert profile.model == "gpt-4o"
         assert profile.fallback_models == ()
         assert profile.models == ("gpt-4o",)
