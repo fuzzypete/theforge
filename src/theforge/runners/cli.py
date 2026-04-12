@@ -267,6 +267,12 @@ def _maybe_run_api_fallback(
         return result
 
     from theforge.runners import api as runner_api  # noqa: PLC0415
+    from theforge.runners.api import _classify_api_model_fallback  # noqa: PLC0415
+
+    # Track the last API attempt result so we can surface it (not the original CLI error)
+    # when all fallback paths fail.
+    last_fb_result: AgentResult | None = None
+    last_fb_model: str | None = None
 
     # --- Legacy api_fallback (ApiFallbackConfig) ---
     if api_fallback_profile is not None:
@@ -287,13 +293,13 @@ def _maybe_run_api_fallback(
             if fallback_result.model_used is None:
                 return replace(fallback_result, model_used=api_fallback_profile.model)
             return fallback_result
-        # api_fallback failed — fall through to fallback_models below
+        # api_fallback failed — record it as the best result so far, then fall through
+        # to fallback_models. If there are no fallback_models, last_fb_result ensures we
+        # return the API failure rather than the original CLI failure.
+        last_fb_result = fallback_result
+        last_fb_model = api_fallback_profile.model
 
     # --- New fallback_models list ---
-    from theforge.runners.api import _classify_api_model_fallback  # noqa: PLC0415
-
-    last_fb_result: AgentResult | None = None
-    last_fb_model: str | None = None
 
     for fallback_model in profile.fallback_models:
         # Bare CLI names in fallback_models are treated as API (ambiguous → API per spec)
@@ -327,12 +333,13 @@ def _maybe_run_api_fallback(
         last_fb_model = fallback_model
         _log(f"  ⚠ {cli_label} API fallback {fallback_model!r} also failed")
 
-    # All fallback_models exhausted — return the last API fallback result so operators
-    # see the final attempted model's failure details rather than the original CLI error.
+    # Return the last API attempt result (legacy fallback or exhausted fallback_models),
+    # so operators see the final API failure rather than the original CLI error.
     if last_fb_result is not None:
         return replace(last_fb_result, model_config=model_config, model_used=last_fb_model)
 
-    # No fallback_models were iterated (only legacy api_fallback failed, no fallback_models).
+    # No API fallback was available or attempted (no api_fallback_profile, no fallback_models).
+    # Return the original CLI result — there is nothing else to surface.
     if model_config:
         return replace(result, model_config=model_config, model_used=profile.model)
     return result

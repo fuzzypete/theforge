@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from theforge.agent_types import AgentResult, ModelUsage
-from theforge.config import ModelProfile
+from theforge.config import ApiFallbackConfig, ModelProfile
 from theforge.config.profiles import _parse_model_spec, _parse_profile
 from theforge.runners.api import _classify_api_model_fallback, run_api_agent
 from theforge.runners.cli import _classify_cli_fallback
@@ -649,6 +649,57 @@ class TestCliRunnerFallbackModels:
         assert "resource_exhausted" in result.output
         assert result.model_used == "m2"
         assert result.model_config == ("codex", "m1", "m2")
+
+    def test_legacy_api_fallback_failure_returned_not_cli_error(self, tmp_path):
+        """When legacy api_fallback is configured, fails, and there are no fallback_models,
+        the API failure result must be returned — not the original CLI failure."""
+        profile = ModelProfile(
+            name="codex-reviewer",
+            cli="codex",
+            provider=None,
+            model="codex",
+            fallback_models=(),
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+        )
+        cli_fail = AgentResult(
+            success=False,
+            output="Error: 429 rate limit exceeded",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+        api_fail = AgentResult(
+            success=False,
+            output="openai: 503 service unavailable",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="codex-reviewer",
+        )
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_fail),
+            patch("theforge.runners.api.run_api_agent", return_value=api_fail),
+        ):
+            from theforge.runners.cli import run_agent
+
+            result = run_agent(
+                prompt="test",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+            )
+
+        assert not result.success
+        # Must return the API failure, not the original CLI failure
+        assert "503 service unavailable" in result.output
+        assert result.model_used == "o4-mini"
 
 
 # ── Audit trail ────────────────────────────────────────────────────────
