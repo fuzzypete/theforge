@@ -27,6 +27,9 @@ build-backend = "hatchling.build"
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
 addopts = "-n auto --dist worksteal"
+markers = [
+    "network_integration: marks tests that make real external network calls (requires THEFORGE_RUN_INTEGRATION=1)",
+]
 
 [tool.ruff]
 target-version = "py311"
