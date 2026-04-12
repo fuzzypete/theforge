@@ -1,0 +1,88 @@
+"""Tests for cached-preflight verdict dispatch in batch/sprint mode.
+
+When run_task() receives a cached_preflight_state, the coordinator must honour
+ALREADY_DONE and BLOCKED verdicts and terminate the run before reaching
+PLAN/DEV — exactly as it does for freshly-run preflight in single-story mode.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from unittest.mock import patch
+
+from coord_test_helpers import _make_config, _make_task
+
+from theforge.coordinator.engine import run_task
+from theforge.coordinator.state import CoordinatorState, Phase
+
+
+class TestCachedPreflightVerdictDispatch:
+    def test_cached_already_done_skips_dev(self, tmp_path):
+        """Cached ALREADY_DONE verdict → DONE without invoking plan or dev agents."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="ALREADY_DONE",
+            preflight_reason="All acceptance criteria already satisfied.",
+            preflight_complexity="medium",
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+            patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+            patch("theforge.coordinator.plan_flow.run_agent") as mock_plan,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        ):
+            result = run_task(config, task, cached_preflight_state=cached_state)
+
+        assert result.phase == Phase.DONE
+        assert result.success is True
+        assert "already" in result.message.lower()
+        assert mock_preflight.call_count == 0
+        assert mock_dev.call_count == 0
+        assert mock_plan.call_count == 0
+        mock_pool.assert_not_called()
+        assert len(result.state.dev_results) == 0
+        assert len(result.state.review_results) == 0
+
+    def test_cached_blocked_escalates_without_dev(self, tmp_path):
+        """Cached BLOCKED verdict → ESCALATE without invoking plan or dev agents."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="BLOCKED",
+            preflight_reason="Dependency removed_function() no longer exists.",
+            preflight_complexity="medium",
+            preflight_sufficiency="needs_planning",
+            preflight_work_type="feature",
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+            patch("theforge.coordinator.plan_flow.run_agent") as mock_plan,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        ):
+            result = run_task(config, task, cached_preflight_state=cached_state)
+
+        assert result.phase == Phase.ESCALATE
+        assert result.success is False
+        assert "blocked" in result.message.lower()
+        assert mock_preflight.call_count == 0
+        assert mock_dev.call_count == 0
+        assert mock_plan.call_count == 0
+        mock_pool.assert_not_called()
+        assert len(result.state.dev_results) == 0

@@ -296,6 +296,43 @@ def _run_preflight_phase(
             False,
         )
 
+    return _handle_preflight_verdict(
+        verdict=verdict,
+        reason=reason,
+        state=state,
+        config=config,
+        task=task,
+        branch_name=branch_name,
+        notify=notify,
+        logger=logger,
+        task_start=task_start,
+        branch_merged=branch_merged,
+    )
+
+
+def _handle_preflight_verdict(
+    verdict: str,
+    reason: str | None,
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    branch_name: str,
+    *,
+    notify: bool,
+    logger: "StructuredLogger | None",
+    task_start: float,
+    branch_merged: bool | None = None,
+) -> tuple[ForgeConfig, CoordinatorResult | None, bool]:
+    """Dispatch on a preflight verdict and return the standard 3-tuple.
+
+    Returns ``(updated_config, result, already_done_loop)``:
+
+    - ``result is not None`` — stop; caller returns ``result`` immediately.
+    - ``result is None, already_done_loop is True`` — ALREADY_DONE override;
+      caller enters ``_coordinator_loop`` with ``skip_dev_first_iter=True``.
+    - ``result is None, already_done_loop is False`` — PROCEED; caller
+      continues to ``_run_plan_phase``.
+    """
     # ── ALREADY_DONE ──────────────────────────────────────────────────
     if verdict == "ALREADY_DONE":
         branch_merged = (
