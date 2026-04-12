@@ -89,11 +89,17 @@ log_agent_result = None
 
 def _extract_failed_tests(gate_output_tail: str) -> list[str]:
     """Best-effort extraction of failing test identifiers from gate output."""
+    import re
+
+    _xdist_prefix = re.compile(r"^\[gw\d+\]\s+")
+
     failed: list[str] = []
     for raw_line in gate_output_tail.splitlines():
         line = raw_line.strip()
         if not line:
             continue
+        # Strip pytest-xdist worker prefix, e.g. "[gw7] FAILED tests/..."
+        line = _xdist_prefix.sub("", line)
         if line.startswith(("FAILED ", "ERROR ")):
             candidate = line.split()[1].rstrip(":")
             if candidate not in failed:
