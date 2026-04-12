@@ -90,7 +90,7 @@ class ModelProfile:
     """Model configuration for a specific agent role (dev or review)."""
 
     name: str  # "dev", "review", or pool entry name like "opus-reviewer"
-    model: str  # "sonnet", "opus", "claude-sonnet-4-6"
+    model: str  # primary model identifier (first in preference list)
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
@@ -111,6 +111,12 @@ class ModelProfile:
     )
     api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
     github_handle: str | None = None  # optional GitHub username for reviewer assignment
+    fallback_models: tuple[str, ...] = ()  # additional models to try on quota/not-found failure
+
+    @property
+    def models(self) -> tuple[str, ...]:
+        """Full preference list: primary model followed by fallbacks."""
+        return (self.model,) + self.fallback_models
 
     @property
     def mode(self) -> str:
