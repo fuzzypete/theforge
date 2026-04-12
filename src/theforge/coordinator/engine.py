@@ -702,7 +702,7 @@ def run_task(
             state.preflight_work_type = cached_preflight_state.preflight_work_type
             state.preflight_contract_change = cached_preflight_state.preflight_contract_change
             state.preflight_bundle_candidate = cached_preflight_state.preflight_bundle_candidate
-            state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
+            state.preflight_warnings = list(cached_preflight_state.preflight_warnings or [])
             state.preflight_likely_files = (
                 None
                 if cached_preflight_state.preflight_likely_files is None

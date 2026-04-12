@@ -20,7 +20,7 @@ from coord_test_helpers import (
     _shell_with_gate,
 )
 
-from theforge.coordinator.engine import run_from_dev, run_from_review
+from theforge.coordinator.engine import run_from_dev, run_from_review, run_task
 from theforge.coordinator.state import CoordinatorState
 from theforge.task import TaskStory
 
@@ -209,3 +209,66 @@ class TestResumeNonePreflightFields:
         result = run_from_review(config, task, workspace, cached_preflight_state=cached)
         # The final state should have preflight_likely_files=None (not [] or anything else)
         assert result.state.preflight_likely_files is None
+
+
+class TestRunTaskNonePreflightFields:
+    """Ensure run_task cached preflight path also guards None fields."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_run_task_none_preflight_warnings(
+        self, mock_shell, mock_dev, mock_pool, tmp_path: Path
+    ) -> None:
+        """run_task with cached preflight where warnings=None must not crash."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n\nDo the thing.", encoding="utf-8")
+        config = _make_config(tmp_path)
+        task = TaskStory(name="Test Story", story_path=spec, slug="test-story")
+        workspace = tmp_path / "test-story"
+        workspace.mkdir()
+
+        cached = _make_cached_state(
+            preflight_likely_files=["src/foo.py"],
+            preflight_warnings=None,
+        )
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(
+            success=True, output="implemented", profile_name="dev"
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        # Must not raise TypeError: 'NoneType' object is not iterable
+        result = run_task(config, task, cached_preflight_state=cached)
+        assert result is not None
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_run_task_both_none(self, mock_shell, mock_dev, mock_pool, tmp_path: Path) -> None:
+        """run_task with both preflight fields None must not crash."""
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test\n\nDo the thing.", encoding="utf-8")
+        config = _make_config(tmp_path)
+        task = TaskStory(name="Test Story", story_path=spec, slug="test-story")
+        workspace = tmp_path / "test-story"
+        workspace.mkdir()
+
+        cached = _make_cached_state(
+            preflight_likely_files=None,
+            preflight_warnings=None,
+        )
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(
+            success=True, output="implemented", profile_name="dev"
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, cached_preflight_state=cached)
+        assert result is not None
