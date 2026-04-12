@@ -430,6 +430,67 @@ gate_result: PASS
 
         assert errors == []
 
+    def test_multiline_ac_bullets_joined(self):
+        """Multi-line markdown bullets must be joined so full-text comparison works (#666)."""
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "fix: done"}],
+            acceptance_criteria=[
+                {
+                    "criterion": (
+                        "All `urllib.request.urlopen` calls in `coord_notify.py` "
+                        "have an explicit `timeout=` parameter (connect + read, 15-30s)"
+                    ),
+                    "status": "MET",
+                    "notes": "done",
+                },
+                {
+                    "criterion": "No new dependencies introduced",
+                    "status": "MET",
+                    "notes": "done",
+                },
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        story = (
+            "## Acceptance criteria\n\n"
+            "- All `urllib.request.urlopen` calls in `coord_notify.py` have an explicit\n"
+            "  `timeout=` parameter (connect + read, 15-30s)\n"
+            "- No new dependencies introduced\n"
+        )
+
+        errors = check_handoff_story_consistency(handoff, story)
+        assert errors == [], f"Expected no errors, got: {errors}"
+
+    def test_multiline_ac_three_line_continuation(self):
+        """Continuation lines spanning 3+ lines are joined correctly (#666)."""
+        handoff = DevHandoff(
+            summary="done",
+            commits=[{"sha": "abc1234", "message": "fix: done"}],
+            acceptance_criteria=[
+                {
+                    "criterion": "First line second line third line",
+                    "status": "MET",
+                    "notes": "done",
+                },
+            ],
+            story_deviations=[],
+            deferred_items=[],
+            gate_result="PASS",
+            parse_errors=[],
+            raw={},
+        )
+
+        story = "## Acceptance criteria\n\n- First line\n  second line\n  third line\n"
+
+        errors = check_handoff_story_consistency(handoff, story)
+        assert errors == [], f"Expected no errors, got: {errors}"
+
     def test_returns_empty_when_acceptance_criteria_is_empty(self):
         handoff = DevHandoff(
             summary="done",

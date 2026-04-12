@@ -141,7 +141,12 @@ def _normalize_story_text(text: str) -> str:
 
 
 def _extract_story_acceptance_criteria(story_content: str) -> list[str]:
-    """Extract acceptance-criteria bullet text from a story document."""
+    """Extract acceptance-criteria bullet text from a story document.
+
+    Handles multi-line markdown bullets where continuation lines are indented
+    under the ``- `` prefix.  Continuation text is joined with a single space
+    so that normalised comparison works regardless of line-wrapping.
+    """
     lines = story_content.splitlines()
     in_acceptance_section = False
     criteria: list[str] = []
@@ -165,6 +170,9 @@ def _extract_story_acceptance_criteria(story_content: str) -> list[str]:
 
         if stripped.startswith(("- ", "* ")):
             criteria.append(stripped[2:].strip())
+        elif criteria:
+            # Continuation line for the current bullet — append to last criterion
+            criteria[-1] = criteria[-1] + " " + stripped
 
     return criteria
 
