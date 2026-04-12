@@ -95,6 +95,7 @@ Disposition = Literal[
     "corroborated_new",
     "downgraded",
     "ac_blocking",
+    "gate_contradicted",
 ]
 
 
