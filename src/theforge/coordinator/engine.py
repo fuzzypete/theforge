@@ -933,8 +933,12 @@ def _run_resume_coordinator(
         state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
         state.preflight_work_type = cached_preflight_state.preflight_work_type
         state.preflight_contract_change = cached_preflight_state.preflight_contract_change
-        state.preflight_warnings = list(cached_preflight_state.preflight_warnings)
-        state.preflight_likely_files = list(cached_preflight_state.preflight_likely_files)
+        state.preflight_warnings = list(cached_preflight_state.preflight_warnings or [])
+        state.preflight_likely_files = (
+            None
+            if cached_preflight_state.preflight_likely_files is None
+            else list(cached_preflight_state.preflight_likely_files)
+        )
         state.preflight_duration_s = cached_preflight_state.preflight_duration_s
         state.preflight_cached = True
         state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
