@@ -213,6 +213,39 @@ def test_read_completed_status_bundle_candidate_from_audit(tmp_path: Path) -> No
     assert by_slug["issue-11"].bundle_candidate is False  # no audit file
 
 
+def test_read_completed_status_blocked_by_from_depends_on(tmp_path: Path) -> None:
+    from theforge.sprint.status_reader import read_completed_status
+
+    stories = [
+        {"slug": "issue-5", "path": "Issue #5", "outcome": "DONE", "cost_usd": 0.3},
+        {
+            "slug": "issue-6",
+            "path": "Issue #6",
+            "outcome": "SKIPPED",
+            "cost_usd": 0.0,
+            "depends_on": ["issue-5"],
+        },
+        # DONE story with depends_on should NOT populate blocked_by
+        {
+            "slug": "issue-7",
+            "path": "Issue #7",
+            "outcome": "DONE",
+            "cost_usd": 0.1,
+            "depends_on": ["issue-5"],
+        },
+    ]
+    summary_path = _make_summary_file(tmp_path, "dep-sprint", "run-dep", stories)
+
+    entries = read_completed_status(summary_path)
+    by_slug = {e.slug: e for e in entries}
+
+    assert by_slug["issue-6"].status == "skipped"
+    assert by_slug["issue-6"].blocked_by == ["issue-5"]
+    # Non-skipped stories should not show depends_on as blocked_by
+    assert by_slug["issue-5"].blocked_by == []
+    assert by_slug["issue-7"].blocked_by == []
+
+
 # ── cmd_sprint_status (output) ───────────────────────────────────────────────
 
 

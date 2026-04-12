@@ -107,6 +107,11 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 except Exception:
                     pass
 
+        # depends_on is persisted in the summary since the state writer records it;
+        # show it as blocked_by for skipped stories so the operator can see why.
+        raw_depends_on = story.get("depends_on") or []
+        blocked_by = list(raw_depends_on) if status == "skipped" and raw_depends_on else []
+
         entries.append(
             StoryStatusEntry(
                 slug=slug,
@@ -114,7 +119,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 status=status,
                 phase=phase,
                 cost_usd=cost_usd,
-                blocked_by=[],
+                blocked_by=blocked_by,
                 bundle_candidate=bundle_candidate,
             )
         )

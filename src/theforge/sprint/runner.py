@@ -752,7 +752,7 @@ def run_sprint(
     # Initialise live state file for forge sprint-status (only when a CLI run_id
     # is present — headless/test invocations without a run_id skip this).
     _state_writer: SprintStateWriter | None = None
-    if _cli_run_id:
+    if run_id:
         _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
         _initial_stories: list[dict] = []
         for _slug, (_task, _src, _canonical_ref) in slug_to_context.items():
@@ -773,7 +773,7 @@ def run_sprint(
                     "blocked_by": _blocked_by,
                 }
             )
-        _state_writer = SprintStateWriter(_cli_run_id, config.project_root, resolved.name)
+        _state_writer = SprintStateWriter(run_id, config.project_root, resolved.name)
         _state_writer.init(_initial_stories)
 
     # Parallel scheduling state
@@ -958,6 +958,8 @@ def run_sprint(
                                 " \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} (budget exhausted)")
+                    if _state_writer is not None:
+                        _state_writer.update(task.slug, status="skipped")
                     continue
 
                 # Eager merge for sequential mode; disabled in parallel mode
@@ -1031,6 +1033,8 @@ def run_sprint(
                         _log(f"SKIPPED {t.slug} (blocked)")
                     dag.mark_skipped(t.slug)
                     specs_skipped += 1
+                    if _state_writer is not None:
+                        _state_writer.update(t.slug, status="skipped")
                 break
 
             # No active workers but queued PRs are still in flight.
@@ -1384,7 +1388,8 @@ def run_sprint(
             story_times=story_times,
             batch_assignments=batch_assignments,
             slug_map=slug_map,
-            run_id=_cli_run_id,
+            run_id=run_id,
+            tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
             ci_break_slug=ci_halt_slug,
         )
 
