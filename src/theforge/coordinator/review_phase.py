@@ -632,15 +632,62 @@ def _run_review_phase(
     _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
     _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
 
+    # ── Gate-contradiction downgrade ──────────────────────────────────────────
+    # If the most recent gate decision was PASS, any P1 finding whose description
+    # matches a gate-verifiable pattern (test failures, build errors, lint failures)
+    # is mechanically contradicted. Such findings are downgraded in-place to
+    # disposition gate_contradicted so they do not block approval.
+    # Pattern matching is keyword-based (conservative). False negatives are
+    # acceptable — the P1 remains blocking if no pattern matches.
+    # No downgrade occurs when the gate decision is FAIL, BLOCKED, or absent.
+    _GATE_VERIFIABLE_PATTERNS = (
+        "test fail",
+        "tests fail",
+        "test failure",
+        "failing test",
+        "build fail",
+        "build error",
+        "lint fail",
+        "lint error",
+        "compilation fail",
+        "compile fail",
+        "import error",
+        "syntax error",
+        " failures",
+        "0 passed",
+        "test suite",
+        "broken build",
+        "does not compile",
+    )
+    _last_gate = state.gate_decisions[-1] if state.gate_decisions else None
+    if _last_gate == "PASS":
+        for _rec in _classified:
+            if _rec.severity != "P1":
+                continue
+            _desc_lower = _rec.description.lower()
+            _matched = next((p for p in _GATE_VERIFIABLE_PATTERNS if p in _desc_lower), None)
+            if _matched is not None:
+                _log(
+                    f"  ↷ gate_contradicted: P1 downgraded"
+                    f" (gate={_last_gate}, pattern={_matched!r}):"
+                    f" {_rec.description[:80]}"
+                )
+                _rec.disposition = "gate_contradicted"  # type: ignore[assignment]
+
     if state.review_cycle >= 2:
         # has_blocking_p1 / net_new_p1s inlined to avoid importing theforge.finding_classifier.
         # Logic is identical to the functions in finding_classifier.py.
+        # gate_contradicted is intentionally excluded: these findings are mechanically
+        # disproven by a PASS gate and must not block approval.
         _BLOCKING_DISPOSITIONS = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
         _blocking_p1 = any(
             r.severity == "P1" and r.disposition in _BLOCKING_DISPOSITIONS for r in _classified
         )
         _nonblocking_p1s = [
             r for r in _classified if r.severity == "P1" and r.disposition == "net_new"
+        ]
+        _gate_contradicted_p1s = [
+            r for r in _classified if r.severity == "P1" and r.disposition == "gate_contradicted"
         ]
         # AC-violation override: a net-new P1 from a reviewer who also flagged
         # matches_spec=false is not speculative — it asserts the story was not completed
@@ -682,11 +729,23 @@ def _run_review_phase(
         # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
         # P1 injection when all reviewers failed to produce parseable output), block
         # traditionally to avoid silently passing an unknown failure.
-        if not _blocking_p1 and not _nonblocking_p1s and _p1_count > 0:
+        # gate_contradicted P1s are accounted for and must not trigger this fallback.
+        if (
+            not _blocking_p1
+            and not _nonblocking_p1s
+            and not _gate_contradicted_p1s
+            and _p1_count > 0
+        ):
             _blocking_p1 = True
     else:
-        # Cycle 1: any P1 is blocking (no prior baseline to classify against)
-        _blocking_p1 = _p1_count > 0
+        # Cycle 1: any P1 is blocking (no prior baseline to classify against).
+        # Gate-contradicted P1s are non-blocking even on cycle 1.
+        if _classified:
+            _blocking_p1 = any(
+                r.severity == "P1" and r.disposition != "gate_contradicted" for r in _classified
+            )
+        else:
+            _blocking_p1 = _p1_count > 0
         _nonblocking_p1s = []
 
     # ── Trajectory classification via worktree subprocess ─────────────────
