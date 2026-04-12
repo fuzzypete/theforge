@@ -4,12 +4,51 @@ from __future__ import annotations
 
 import datetime
 import os
-import subprocess
 import sys
 import time
+from pathlib import Path
 
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
+
+# Sentinel written to test log files to signal clean EOF (no redirect).
+_SENTINEL_EOF = "[forge test sentinel EOF]"
+
+
+def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str, Path] | None:
+    """Stream log_path line-by-line, printing each line to stdout.
+
+    Returns (new_run_id, new_log_path) when a re-exec redirect block is
+    detected in the log (Run ID trailer differs from current_run_id).
+    Returns None when the sentinel EOF line is encountered (test use).
+    Runs indefinitely on real EOF (tail-f style); caller catches KeyboardInterrupt.
+    """
+    _seen_run_id: str | None = None
+    _seen_log_path: str | None = None
+
+    with open(log_path) as fh:
+        while True:
+            line = fh.readline()
+            if not line:
+                time.sleep(0.1)
+                continue
+
+            text = line.rstrip("\n")
+
+            if text == _SENTINEL_EOF:
+                return None
+
+            print(text)
+
+            if text.startswith("[forge] Run ID:  "):
+                candidate_id = text[len("[forge] Run ID:  ") :].strip()
+                if candidate_id != current_run_id:
+                    _seen_run_id = candidate_id
+            elif text.startswith("[forge] Log:     "):
+                _seen_log_path = text[len("[forge] Log:     ") :].strip()
+
+            if _seen_run_id and _seen_log_path:
+                return (_seen_run_id, Path(_seen_log_path))
 
 
 def cmd_status(args: object) -> int:
@@ -133,9 +172,26 @@ def cmd_logs(args: object) -> int:
             print(f"Log file not found for run {run_id}", file=sys.stderr)
             return 1
 
-    print(f"[forge] Tailing {log_path} — Ctrl+C to stop", file=sys.stderr)
+    current_run_id = run_id
+    current_log = log_path
     try:
-        subprocess.run(["tail", "-f", str(log_path)])
+        while True:
+            print(f"[forge] Tailing {current_log} — Ctrl+C to stop", file=sys.stderr)
+            result = _follow_log_with_redirect(current_log, current_run_id)
+            if result is None:
+                break
+            new_run_id, new_log = result
+            print(
+                f"[forge] Run re-exec'd — following new run {new_run_id}",
+                file=sys.stderr,
+            )
+            # Wait briefly for the new log to be created (up to ~2 s).
+            for _ in range(20):
+                if new_log.exists():
+                    break
+                time.sleep(0.1)
+            current_run_id = new_run_id
+            current_log = new_log
     except KeyboardInterrupt:
         pass
     return 0

@@ -530,7 +530,7 @@ class TestFgFlag:
 
 class TestCmdLogs:
     def test_tails_log_file_for_known_run(self, tmp_path):
-        """forge logs <run-id> calls tail -f on the correct log file."""
+        """forge logs <run-id> tails the correct log file and exits cleanly."""
         from theforge.cli import cmd_logs
 
         run_id = "abc123"
@@ -539,11 +539,11 @@ class TestCmdLogs:
         runs_dir = tmp_path / ".forge" / "runs"
         runs_dir.mkdir(parents=True)
         (runs_dir / f"{run_id}.pid").write_text(f"12345\n{slug}\n")
-        # Create log file
+        # Create log file with sentinel so _follow_log_with_redirect returns None.
         log_dir = tmp_path / ".forge" / "logs" / slug
         log_dir.mkdir(parents=True)
         log_file = log_dir / "run.log"
-        log_file.write_text("hello\n")
+        log_file.write_text("hello\n[forge test sentinel EOF]\n")
 
         forge_yaml = tmp_path / "forge.yaml"
         forge_yaml.write_text("project:\n  root: .\n")
@@ -554,16 +554,71 @@ class TestCmdLogs:
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status.subprocess.run") as mock_run,
         ):
             result = cmd_logs(args)
 
         assert result == 0
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args[0][0]
-        assert call_args[0] == "tail"
-        assert call_args[1] == "-f"
-        assert str(log_file) in call_args[2]
+
+    def test_follows_reexec_redirect(self, tmp_path, capsys):
+        """forge logs follows a re-exec redirect to the successor log."""
+        from theforge.cli import cmd_logs
+        from theforge.cli.status import _SENTINEL_EOF
+
+        old_run_id = "aabbccddee11"
+        new_run_id = "ff99887766aa"
+        slug = "my-slug"
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{old_run_id}.pid").write_text(f"12345\n{slug}\n")
+
+        log_dir = tmp_path / ".forge" / "logs" / slug
+        log_dir.mkdir(parents=True)
+
+        # New log exists before cmd_logs is called (no need for the wait loop to sleep).
+        new_log = log_dir / f"run-{new_run_id}.log"
+        new_log.write_text(f"new run output\n{_SENTINEL_EOF}\n")
+
+        # Old log has the re-exec trailer followed by sentinel.
+        old_log = log_dir / f"run-{old_run_id}.log"
+        old_log.write_text(
+            "old run output\n"
+            "[forge] Run started in background\n"
+            f"[forge] Run ID:  {new_run_id}\n"
+            f"[forge] Log:     {new_log}\n"
+            f"[forge] Logs:    forge logs {new_run_id}\n"
+        )
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=old_run_id)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "old run output" in captured.out
+        assert "new run output" in captured.out
+        assert f"Run re-exec'd — following new run {new_run_id}" in captured.err
+
+    def test_no_redirect_stays_on_original_log(self, tmp_path, capsys):
+        """_follow_log_with_redirect returns None when no re-exec trailer present."""
+        from theforge.cli.status import _SENTINEL_EOF, _follow_log_with_redirect
+
+        log_file = tmp_path / "run.log"
+        log_file.write_text(f"line one\nline two\n{_SENTINEL_EOF}\n")
+
+        result = _follow_log_with_redirect(log_file, "aabbccddee11")
+
+        assert result is None
+        captured = capsys.readouterr()
+        assert "line one" in captured.out
+        assert "line two" in captured.out
 
 
 class TestCmdSprintQueryMode:
