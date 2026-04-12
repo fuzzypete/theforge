@@ -8,9 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
-## [0.5.0] — 2026-04-07
+## [0.6.0] — 2026-04-12
 
-## [Unreleased]
+### Added
+
+- **Sibling-worktree write detector:** parallel CLI workers that write to the same source files are detected and rejected before the collision corrupts both branches (#625, #638)
+- **Conventions check runs with gate:** convention violations (line length, circular imports, module size) are checked in parallel with the gate rather than as a post-gate afterthought — failures surface earlier (#611)
+- **Identical-failure circuit breaker:** gate retries are cut short when the same failure repeats verbatim, preventing wasted dev iterations on a deterministically broken gate (#598)
+
+### Fixed
+
+- **Landing status is now authoritative:** `CoordinatorResult.success` reflects merge/push outcome separately from review approval — "approved but failed to land" is a distinct, visible outcome in the audit trail (#600)
+- **Merge-pr is resumable and fail-closed:** `_merge_pr` is broken into discrete steps with state checkpointing; pending auto-merge polls are bounded and fail closed on timeout rather than hanging the sprint indefinitely (#607, #632, #633)
+- **Landing serialized in scheduler thread:** parallel workers no longer race to merge — the scheduler thread holds the integration lock, preventing interleaved squash-merges from corrupting the base branch (#626)
+- **Dependent stories no longer skip on `pending_integration`:** stories waiting on a dependency that was queued for auto-merge were incorrectly classified as permanently blocked; they now wait correctly and unblock when the dependency lands (#642)
+- **Workspace fails closed on diverged base branch:** when `git pull --ff-only` fails because local and origin have diverged, the sprint aborts with a clear error instead of creating a worktree from stale local state (#661)
+- **Preflight evaluates clean baseline, not stale worktree:** `ALREADY_DONE` verdicts are assessed against the current base branch, not a previously-created worktree that may be behind origin (#588)
+- **Invalid preflight and handoff are hard stops:** a non-`PROCEED` preflight verdict and an invalid dev handoff (after retries) both halt the story rather than normalizing to proceed-anyway behavior (#597, #596)
+- **Dev agent scratch files caught by write detector:** throwaway exploration files created outside standard project directories during dev are flagged and blocked from landing on main (#650)
+- **Re-exec after `git pull`:** when the sprint runner pulls new forge source code at startup, the process re-execs so the updated code is actually running before work begins (#646)
+- **CLI launcher sandbox wrapping removed:** CLI runners (Claude, Codex) were being sandbox-wrapped despite `forge.yaml` explicitly disabling sandbox — removed the erroneous wrapping (#599, #624)
+- **Reviewer demotion counter resets between review cycles:** a reviewer demoted in cycle 1 was permanently demoted for the run; demotion state now resets at the start of each new review cycle (#610)
+- **Audit iteration counts match actual invocations:** dev and review iteration counts in the audit trail now reflect actual agent calls rather than retry-loop bookkeeping values (#601)
+- **Sandbox availability recorded in state and audit:** whether the sandbox is available at run start is captured in coordinator state and surfaced in the audit trail (#604)
+- **Duplicate findings deduplicated in review merge:** identical findings from multiple reviewers in the same pool are collapsed before being surfaced or carried forward (#605)
+- **Multi-line acceptance-criteria bullets parsed correctly:** `_extract_story_acceptance_criteria` was truncating wrapped markdown bullets at the first newline, causing valid dev handoffs to fail story-consistency checks (#666)
+
+### Changed
+
+- **Auto-model escalation frozen behind feature flag:** automatic model tier escalation on repeated failures is disabled by default; enable via `forge.yaml` when the behavior has been validated (#609)
+- **Net-new P1 bypass frozen behind feature flag:** the rule allowing a net-new P1 finding to bypass escalation is disabled by default (#608)
+
+### Refactored
+
+- **`RetryBudget` consolidates retry counters:** scattered dev/review retry tracking replaced with a single `RetryBudget` object with uniform accounting (#603)
+- **`retry_reason` replaced with `Enum`:** string-based retry reason replaced with a typed `Enum` throughout the coordinator (#602)
+- **Subprocess-based project code isolation:** `prepend_worktree_src` path manipulation replaced with a subprocess wrapper that sets the correct `PYTHONPATH` per invocation, eliminating `sys.path` leakage between parallel workers (#606)
 
 
 ## [0.5.0] — 2026-04-07
