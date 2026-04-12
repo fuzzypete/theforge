@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.register_parser(subparsers)
     review.register_parser(subparsers)
     sprint.register_parser(subparsers)
+    sprint.register_sprint_status_parser(subparsers)
     ideate.register_parser(subparsers)
     index.register_parser(subparsers)
     providers.register_parser(subparsers)
@@ -77,6 +78,7 @@ def main() -> None:
         "run": run.cmd_run,
         "review": review.cmd_review,
         "sprint": sprint.cmd_sprint,
+        "sprint-status": sprint.cmd_sprint_status,
         "ideate": ideate.cmd_ideate,
         "index": index.cmd_index,
         "check-providers": providers.cmd_check_providers,
