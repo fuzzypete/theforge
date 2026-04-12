@@ -85,7 +85,6 @@ _MODEL_FALLBACK_PATTERNS = (
     "model does not exist",
     "model is deprecated",
     "model has been deprecated",
-    "model.*not.*exist",
 )
 
 
@@ -900,11 +899,11 @@ def run_api_agent(
                 status = "OK"
                 cost_str = f"${result.cost_usd:.3f}" if result.cost_usd is not None else "unknown"
                 _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
-            # Annotate with model_config only when a preference list was configured.
-            # Skip replace() for single-model profiles to avoid breaking callers that
-            # return non-dataclass objects (e.g., mocks in tests).
+            # Annotate with model_config and model_used only when a preference list is
+            # configured. Skip replace() for single-model profiles to avoid breaking
+            # callers that return non-dataclass objects (e.g., mocks in tests).
             if model_config:
-                return dataclasses.replace(result, model_config=model_config)
+                return dataclasses.replace(result, model_config=model_config, model_used=model)
             return result
 
         last_result = result
@@ -930,5 +929,5 @@ def run_api_agent(
         )
         _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
     if model_config:
-        return dataclasses.replace(last_result, model_config=model_config)
+        return dataclasses.replace(last_result, model_config=model_config, model_used=model)
     return last_result

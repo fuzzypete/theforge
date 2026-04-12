@@ -239,16 +239,31 @@ def _maybe_run_api_fallback(
 
     Only quota-exhaustion and model-not-found errors trigger fallback.
     Session resumption skips API fallback entirely (can't resume across transports).
+
+    model_config is attached to the returned result whenever profile.fallback_models
+    is non-empty, regardless of which path fires. model_used is set to the model that
+    actually ran (the CLI model for non-fallback paths, the API model for fallback paths).
     """
+    # Compute model_config before any early return so it is attached on all paths.
+    # Non-empty only when fallback_models is configured (used to annotate the result
+    # so the audit trail knows a preference list was in play).
+    model_config = profile.models if profile.fallback_models else ()
+    cli_label = profile.name or profile.model
+
     reason = _classify_cli_fallback(result)
     if reason is None:
+        # CLI succeeded or non-retryable failure — no fallback needed.
+        if model_config:
+            return replace(result, model_config=model_config, model_used=profile.model)
         return result
 
     if session_id is not None:
         _log(
-            f"  ⚠ {profile.name or profile.model} CLI failed ({reason}), "
+            f"  ⚠ {cli_label} CLI failed ({reason}), "
             "but API fallback was skipped for a resumed session"
         )
+        if model_config:
+            return replace(result, model_config=model_config, model_used=profile.model)
         return result
 
     from theforge.runners import api as runner_api  # noqa: PLC0415
@@ -256,7 +271,7 @@ def _maybe_run_api_fallback(
     # --- Legacy api_fallback (ApiFallbackConfig) ---
     if api_fallback_profile is not None:
         _log(
-            f"  ⚠ {profile.name or profile.model} CLI failed ({reason}); "
+            f"  ⚠ {cli_label} CLI failed ({reason}); "
             f"retrying via {api_fallback_profile.provider}/{api_fallback_profile.model}"
         )
         fallback_result = runner_api.run_api_agent(
@@ -268,23 +283,29 @@ def _maybe_run_api_fallback(
             plain_text=plain_text,
         )
         if fallback_result.success:
+            # Preserve model_used from the API result if set; otherwise use api_fallback model.
+            if fallback_result.model_used is None:
+                return replace(fallback_result, model_used=api_fallback_profile.model)
             return fallback_result
         # api_fallback failed — fall through to fallback_models below
 
     # --- New fallback_models list ---
-    model_config = profile.models if profile.fallback_models else ()
+    from theforge.runners.api import _classify_api_model_fallback  # noqa: PLC0415
+
+    last_fb_result: AgentResult | None = None
+    last_fb_model: str | None = None
+
     for fallback_model in profile.fallback_models:
         # Bare CLI names in fallback_models are treated as API (ambiguous → API per spec)
         api_profile = _build_cli_fallback_api_profile(profile, fallback_model)
         if api_profile is None:
             _log(
-                f"  ⚠ {profile.name or profile.model} could not build API fallback "
+                f"  ⚠ {cli_label} could not build API fallback "
                 f"for model {fallback_model!r} — skipping"
             )
             continue
         _log(
-            f"  ⚠ {profile.name or profile.model} CLI failed ({reason}); "
-            f"retrying via API model {fallback_model!r}..."
+            f"  ⚠ {cli_label} CLI failed ({reason}); retrying via API model {fallback_model!r}..."
         )
         fb_result = runner_api.run_api_agent(
             prompt=prompt,
@@ -295,17 +316,25 @@ def _maybe_run_api_fallback(
             plain_text=plain_text,
         )
         if fb_result.success:
-            _log(f"  ✓ {profile.name or profile.model} fallback to {fallback_model!r} succeeded")
-            return replace(fb_result, model_config=model_config)
-        # This fallback model also failed — check if it's a fallback-eligible error
-        from theforge.runners.api import _classify_api_model_fallback  # noqa: PLC0415
+            _log(f"  ✓ {cli_label} fallback to {fallback_model!r} succeeded")
+            return replace(fb_result, model_config=model_config, model_used=fallback_model)
 
         if not _classify_api_model_fallback(fb_result):
             # Non-fallback error; stop iterating and surface this result
-            return replace(fb_result, model_config=model_config)
-        _log(f"  ⚠ {profile.name or profile.model} API fallback {fallback_model!r} also failed")
+            return replace(fb_result, model_config=model_config, model_used=fallback_model)
 
-    # All fallbacks exhausted — return the original CLI failure
+        last_fb_result = fb_result
+        last_fb_model = fallback_model
+        _log(f"  ⚠ {cli_label} API fallback {fallback_model!r} also failed")
+
+    # All fallback_models exhausted — return the last API fallback result so operators
+    # see the final attempted model's failure details rather than the original CLI error.
+    if last_fb_result is not None:
+        return replace(last_fb_result, model_config=model_config, model_used=last_fb_model)
+
+    # No fallback_models were iterated (only legacy api_fallback failed, no fallback_models).
+    if model_config:
+        return replace(result, model_config=model_config, model_used=profile.model)
     return result
 
 
@@ -362,7 +391,7 @@ def run_agent(
             quiet=quiet,
             secrets=secrets,
         )
-        return _maybe_run_api_fallback(
+        result = _maybe_run_api_fallback(
             result=result,
             prompt=prompt,
             profile=profile,
@@ -373,6 +402,9 @@ def run_agent(
             secrets=secrets,
             plain_text=plain_text,
         )
+        if result.model_used is None:
+            result = replace(result, model_used=profile.model)
+        return result
 
     if cli == "codex":
         from .runner_codex import _run_codex  # noqa: PLC0415
@@ -386,7 +418,7 @@ def run_agent(
             is_pool=is_pool,
             secrets=secrets,
         )
-        return _maybe_run_api_fallback(
+        result = _maybe_run_api_fallback(
             result=result,
             prompt=prompt,
             profile=profile,
@@ -397,6 +429,9 @@ def run_agent(
             secrets=secrets,
             plain_text=plain_text,
         )
+        if result.model_used is None:
+            result = replace(result, model_used=profile.model)
+        return result
 
     if cli == "gemini":
         from .runner_gemini import _run_gemini  # noqa: PLC0415
@@ -410,7 +445,7 @@ def run_agent(
             is_pool=is_pool,
             secrets=secrets,
         )
-        return _maybe_run_api_fallback(
+        result = _maybe_run_api_fallback(
             result=result,
             prompt=prompt,
             profile=profile,
@@ -421,6 +456,9 @@ def run_agent(
             secrets=secrets,
             plain_text=plain_text,
         )
+        if result.model_used is None:
+            result = replace(result, model_used=profile.model)
+        return result
 
     return AgentResult(
         success=False,

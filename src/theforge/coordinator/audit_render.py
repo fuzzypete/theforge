@@ -8,31 +8,30 @@ from .state import CoordinatorState
 
 
 def _model_usage_entries(r: object) -> list[dict]:
-    """Build the model_usage list for an AgentResult, including model_config when set."""
+    """Build the model_usage list for an AgentResult."""
     from theforge.agent_types import AgentResult  # noqa: PLC0415
 
     assert isinstance(r, AgentResult)
-    entries = []
-    if r.model_usage:
-        # model_used is the model that actually ran (last entry in model_usage, or first)
-        model_used = r.model_usage[-1].model if r.model_usage else None
-        for u in r.model_usage:
-            entries.append(
-                {
-                    "model": u.model,
-                    "input_tokens": u.input_tokens,
-                    "output_tokens": u.output_tokens,
-                    "cache_read_tokens": u.cache_read_tokens,
-                    "cache_creation_tokens": u.cache_creation_tokens,
-                    "cost_usd": u.cost_usd,
-                }
-            )
-        _ = model_used  # used below via r.model_config check
-    return entries
+    return [
+        {
+            "model": u.model,
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_read_tokens": u.cache_read_tokens,
+            "cache_creation_tokens": u.cache_creation_tokens,
+            "cost_usd": u.cost_usd,
+        }
+        for u in r.model_usage
+    ]
 
 
 def _agent_entry(r: object, role: str, profile_fallback: str, dur: float | None) -> dict:
-    """Build a single audit agent entry, recording model_used and model_config when present."""
+    """Build a single audit agent entry, recording model_used and model_config when present.
+
+    model_used is sourced from the explicit AgentResult.model_used field (set by all
+    runners for CLI profiles and by API runners when a preference list is configured).
+    Falls back to model_usage[-1].model for API results that predate this field.
+    """
     from theforge.agent_types import AgentResult  # noqa: PLC0415
 
     assert isinstance(r, AgentResult)
@@ -44,8 +43,11 @@ def _agent_entry(r: object, role: str, profile_fallback: str, dur: float | None)
     }
     if r.model_usage:
         entry["model_usage"] = _model_usage_entries(r)
-        # Record the model actually used (may differ from configured primary when fallback fired)
-        entry["model_used"] = r.model_usage[-1].model
+    # model_used: prefer the explicit field (set by runners for CLI and preference-list
+    # API profiles); fall back to model_usage for legacy single-model API results.
+    model_for_audit = r.model_used or (r.model_usage[-1].model if r.model_usage else None)
+    if model_for_audit:
+        entry["model_used"] = model_for_audit
     if r.model_config:
         # Preference list configured for this profile — present whenever list has >1 entry
         entry["model_config"] = list(r.model_config)

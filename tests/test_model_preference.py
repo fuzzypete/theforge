@@ -497,7 +497,7 @@ class TestCliRunnerFallbackModels:
     """CLI runner tries fallback_models API models on quota failure."""
 
     def test_cli_succeeds_no_fallback(self, tmp_path):
-        """CLI succeeds: fallback_models never tried."""
+        """CLI succeeds: fallback_models never tried, model_config and model_used set."""
         profile = _make_cli_profile(fallback_models=("gpt-4o",))
         cli_result = AgentResult(
             success=True,
@@ -521,6 +521,37 @@ class TestCliRunnerFallbackModels:
 
         assert result.success
         assert result.output == "all good"
+        # model_config set because fallback_models is configured
+        assert result.model_config == ("claude-sonnet-4-6", "gpt-4o")
+        # model_used set to the CLI model that actually ran
+        assert result.model_used == "claude-sonnet-4-6"
+
+    def test_cli_single_model_model_used_set(self, tmp_path):
+        """CLI profile without fallback_models still gets model_used set."""
+        profile = _make_cli_profile()  # no fallback_models
+        cli_result = AgentResult(
+            success=True,
+            output="done",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name="test-cli",
+        )
+
+        with patch("theforge.runners.runner_claude._run_claude", return_value=cli_result):
+            from theforge.runners.cli import run_agent
+
+            result = run_agent(
+                prompt="test",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+            )
+
+        assert result.success
+        assert result.model_used == "claude-sonnet-4-6"
+        assert result.model_config == ()  # no preference list configured
 
     def test_cli_quota_fires_fallback_models(self, tmp_path):
         """CLI quota error causes fallback_models API model to be tried."""
@@ -557,8 +588,67 @@ class TestCliRunnerFallbackModels:
 
         assert result.success
         assert api_call_log == ["gpt-4o"]
-        # model_config recorded
+        # model_config and model_used recorded
         assert result.model_config == ("codex", "gpt-4o")
+        assert result.model_used == "gpt-4o"
+
+    def test_cli_all_fallbacks_exhausted_returns_last_api_result(self, tmp_path):
+        """When CLI fails and all API fallback models also fail, return last API result."""
+        profile = _make_cli_profile(cli="codex", model="codex", fallback_models=("m1", "m2"))
+        cli_fail = AgentResult(
+            success=False,
+            output="Error: 429 rate limit exceeded",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="test-cli",
+        )
+        m1_fail = AgentResult(
+            success=False,
+            output="Provider API error: quota exceeded",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="test-cli",
+        )
+        m2_fail = AgentResult(
+            success=False,
+            output="Provider API error: resource_exhausted",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name="test-cli",
+        )
+
+        call_log: list[str] = []
+
+        def mock_api_agent(**kwargs):
+            model = kwargs["profile"].model
+            call_log.append(model)
+            return m1_fail if model == "m1" else m2_fail
+
+        with (
+            patch("theforge.runners.runner_codex._run_codex", return_value=cli_fail),
+            patch("theforge.runners.api.run_api_agent", side_effect=mock_api_agent),
+        ):
+            from theforge.runners.cli import run_agent
+
+            result = run_agent(
+                prompt="test",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+            )
+
+        assert not result.success
+        assert call_log == ["m1", "m2"]
+        # Must return last API result (not original CLI error)
+        assert "resource_exhausted" in result.output
+        assert result.model_used == "m2"
+        assert result.model_config == ("codex", "m1", "m2")
 
 
 # ── Audit trail ────────────────────────────────────────────────────────

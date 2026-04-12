@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import subprocess
@@ -268,7 +269,7 @@ class TestRunCodex:
         assert fallback_profile.provider == "openai"
         assert fallback_profile.model == "o4-mini"
         assert fallback_profile.allowed_tools == ("Read", "Bash")
-        assert result == api_result
+        assert result == dataclasses.replace(api_result, model_used="o4-mini")
 
     def test_codex_non_retryable_failure_does_not_fall_back(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -297,7 +298,8 @@ class TestRunCodex:
             result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         mock_api.assert_not_called()
-        assert result == cli_result
+        # model_used is set to profile.model even when no fallback fires
+        assert result == dataclasses.replace(cli_result, model_used="gpt-5.4")
 
     def test_codex_startup_failure_falls_back_to_openai_api(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -336,7 +338,7 @@ class TestRunCodex:
             result = run_agent(prompt="review", profile=profile, working_dir=tmp_path)
 
         mock_api.assert_called_once()
-        assert result == api_result
+        assert result == dataclasses.replace(api_result, model_used="o4-mini")
 
     def test_codex_resumed_session_does_not_fall_back_to_api(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -370,7 +372,8 @@ class TestRunCodex:
             )
 
         mock_api.assert_not_called()
-        assert result == cli_result
+        # model_used is set to profile.model even when session prevents fallback
+        assert result == dataclasses.replace(cli_result, model_used="gpt-5.4")
 
     def test_codex_api_fallback_inherits_optional_profile_fields(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -414,7 +417,7 @@ class TestRunCodex:
         assert fallback_profile.reasoning_effort == "high"
         assert fallback_profile.base_url == "https://example.invalid/v1"
         assert fallback_profile.max_iterations == 7
-        assert result == api_result
+        assert result == dataclasses.replace(api_result, model_used="o4-mini")
 
 
 class TestRunGemini:
