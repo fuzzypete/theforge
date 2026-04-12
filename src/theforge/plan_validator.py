@@ -44,6 +44,14 @@ def validate_plan(
             )
 
     # ── 2. Step completeness ──────────────────────────────────────────
+    if not steps:
+        findings.append(
+            {
+                "check": "step_completeness",
+                "message": "Plan defines no steps",
+            }
+        )
+
     for step in steps:
         step_id = step.get("id", "?")
         if not step.get("description"):

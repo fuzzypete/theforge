@@ -69,6 +69,12 @@ def test_ac_coverage_passes_when_all_mapped(tmp_path: Path) -> None:
 # ── Step completeness ─────────────────────────────────────────────────────────
 
 
+def test_step_completeness_warns_on_empty_steps_list(tmp_path: Path) -> None:
+    plan = _make_plan(steps=[])
+    findings = validate_plan(plan, [], tmp_path)
+    assert any(f["check"] == "step_completeness" and "no steps" in f["message"] for f in findings)
+
+
 def test_step_completeness_warns_on_missing_description(tmp_path: Path) -> None:
     step = _step(description="")
     plan = _make_plan(steps=[step])
