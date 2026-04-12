@@ -12,9 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`forge index` command:** generates a structural index of the codebase (modules, classes, functions) to give agents accurate navigational context before they begin work (#418, #419)
+- **Phase-aware ContextAssembler:** assembles relevant codebase context per pipeline phase (preflight, plan, dev, review) and injects it into prompts; index is regenerated as part of `make gate` (#420, #421, #422)
+- **Iteration-level telemetry:** per-iteration cost, duration, tool calls, and token counts are instrumented into the audit trail for every agent invocation (#509)
 - **Sibling-worktree write detector:** parallel CLI workers that write to the same source files are detected and rejected before the collision corrupts both branches (#625, #638)
+- **Deterministic bug bundling:** small bugs in the same area are grouped into a single dev execution when preflight marks them as bundle candidates, reducing per-story overhead (#551)
 - **Conventions check runs with gate:** convention violations (line length, circular imports, module size) are checked in parallel with the gate rather than as a post-gate afterthought — failures surface earlier (#611)
 - **Identical-failure circuit breaker:** gate retries are cut short when the same failure repeats verbatim, preventing wasted dev iterations on a deterministically broken gate (#598)
+- **Directory-level `CLAUDE.md` files:** subsystem-local context files added for `coordinator/`, `runners/`, `sprint/`, `task/`, `config/`, and `cli/` to guide agents working in those areas (#417)
 
 ### Fixed
 
@@ -25,9 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Workspace fails closed on diverged base branch:** when `git pull --ff-only` fails because local and origin have diverged, the sprint aborts with a clear error instead of creating a worktree from stale local state (#661)
 - **Preflight evaluates clean baseline, not stale worktree:** `ALREADY_DONE` verdicts are assessed against the current base branch, not a previously-created worktree that may be behind origin (#588)
 - **Invalid preflight and handoff are hard stops:** a non-`PROCEED` preflight verdict and an invalid dev handoff (after retries) both halt the story rather than normalizing to proceed-anyway behavior (#597, #596)
+- **Handoff self-reporting removed:** dev agents could previously declare `gate: PASS` in their own handoff, bypassing actual gate execution; self-reported gate results are now rejected (#582)
+- **Handoff repair is content-aware:** the handoff repair path now validates repaired content against the story's acceptance criteria, not just schema structure (#544)
+- **Stale handoff capture closed:** the coordinator no longer reads a handoff file left over from a prior iteration when the current dev pass produced none (#543)
+- **Cross-worktree filesystem isolation:** parallel workers are prevented from reading or writing files that belong to a sibling worktree (#545)
+- **Retry feedback surfaces failing tests:** when gate retries fail, the extracted failing test names and likely culprit paths are injected into the next dev prompt (#583)
+- **Dev prompt prohibits editing unrelated tests:** the dev system prompt now explicitly forbids fixing regressions by modifying tests outside the story's scope (#584)
+- **Preflight classifies contract changes as `needs_planning`:** cross-cutting changes that alter shared interfaces are now classified as requiring the plan phase, rather than being sent directly to dev (#586)
+- **Preflight `likely_files` always populated:** a missing `likely_files` field in preflight output no longer leaves the collision scheduler blind — the field defaults to empty list rather than being absent (#548)
+- **Hard convention violations no longer burn a dev iteration:** a convention violation detected before dev begins now aborts early rather than letting dev proceed and failing at gate (#467)
+- **Integration force-push after PR merge fixed:** the sprint no longer attempts a force-push to a remote branch that GitHub has already deleted after auto-merge (#532)
+- **Audit reports finding injection:** P1 findings carried forward into subsequent dev prompts are now recorded in the audit trail (#546)
+- **gpt-5.4 pricing added:** missing cost entry for gpt-5.4 caused dev costs to show as $0 in the audit and sprint summary (#547)
 - **Dev agent scratch files caught by write detector:** throwaway exploration files created outside standard project directories during dev are flagged and blocked from landing on main (#650)
 - **Re-exec after `git pull`:** when the sprint runner pulls new forge source code at startup, the process re-execs so the updated code is actually running before work begins (#646)
 - **CLI launcher sandbox wrapping removed:** CLI runners (Claude, Codex) were being sandbox-wrapped despite `forge.yaml` explicitly disabling sandbox — removed the erroneous wrapping (#599, #624)
+- **Coordinator HTTP calls are bounded:** all outbound `urllib` and `gh` subprocess calls now carry explicit timeouts so a hung connection cannot block the sprint indefinitely (#292)
 - **Reviewer demotion counter resets between review cycles:** a reviewer demoted in cycle 1 was permanently demoted for the run; demotion state now resets at the start of each new review cycle (#610)
 - **Audit iteration counts match actual invocations:** dev and review iteration counts in the audit trail now reflect actual agent calls rather than retry-loop bookkeeping values (#601)
 - **Sandbox availability recorded in state and audit:** whether the sandbox is available at run start is captured in coordinator state and surfaced in the audit trail (#604)
@@ -36,8 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Auto-merge and parallel execution disabled for self-hosting:** auto-merge and parallel sprint workers are temporarily disabled for self-hosting runs until `sys.path` isolation and landing monotonicity are fully validated (#594, #595)
 - **Auto-model escalation frozen behind feature flag:** automatic model tier escalation on repeated failures is disabled by default; enable via `forge.yaml` when the behavior has been validated (#609)
 - **Net-new P1 bypass frozen behind feature flag:** the rule allowing a net-new P1 finding to bypass escalation is disabled by default (#608)
+- **Bug report convention documented:** CLAUDE.md now specifies that bug stories contain only observed behavior + expected behavior — no acceptance criteria, file paths, or implementation hints (#549)
 
 ### Refactored
 
