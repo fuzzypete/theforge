@@ -147,6 +147,7 @@ def build_review_prompt(
     conventions: list[str] | None = None,
     assembled_context: ContextPack | None = None,
     sandboxed: bool = True,
+    fix_claim_flags: list[str] | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -207,6 +208,15 @@ def build_review_prompt(
 
         """)
 
+    fix_claim_warnings = ""
+    if fix_claim_flags:
+        warnings_block = "\n".join(f"- {flag}" for flag in fix_claim_flags)
+        fix_claim_warnings = dedent(f"""\
+
+            ⚠ Unsubstantiated fix claims detected (heuristic — verify independently):
+            {warnings_block}
+        """)
+
     dev_notes_section = (
         dedent(f"""\
 
@@ -219,7 +229,7 @@ def build_review_prompt(
             evidence — verify technical claims against the actual code before
             accepting them. Flag deviations that are unjustified, incorrect, or
             whose justification does not hold up on inspection.
-        """)
+            {fix_claim_warnings}""")
         if dev_notes
         else ""
     )
