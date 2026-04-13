@@ -712,6 +712,9 @@ def run_task(
             state.preflight_cached = True
             state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
             state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
+            state.preflight_criteria_checked = list(
+                getattr(cached_preflight_state, "preflight_criteria_checked", None) or []
+            )
             config = _apply_preflight_config(config, state)
             from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
 
@@ -943,6 +946,9 @@ def _run_resume_coordinator(
         state.preflight_cached = True
         state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
         state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
+        state.preflight_criteria_checked = list(
+            getattr(cached_preflight_state, "preflight_criteria_checked", None) or []
+        )
         config = _apply_preflight_config(config, state)
 
     with _run_log_context(config, logger, task, state, _task_start):

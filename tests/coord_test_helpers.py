@@ -248,6 +248,8 @@ reason: "All acceptance criteria are already satisfied."
 criteria_checked:
   - criterion: "Feature X"
     satisfied: true
+    files_checked:
+      - "coordinator.py"
     evidence: "Implemented in coordinator.py:42"
 ```
 """
