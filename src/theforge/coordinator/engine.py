@@ -309,6 +309,7 @@ def _coordinator_loop(
                 workspace_path,
                 notify=notify,
                 logger=logger,
+                state_update_fn=state_update_fn,
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
                 return _val_result  # type: ignore[return-value]
@@ -476,6 +477,7 @@ def _coordinator_loop(
             notify=notify,
             logger=logger,
             run_id=logger._run_id if logger else "",
+            state_update_fn=state_update_fn,
         )
         if _rev_outcome in (_ReviewOutcome.DONE, _ReviewOutcome.ESCALATE):
             return _rev_result  # type: ignore[return-value]
