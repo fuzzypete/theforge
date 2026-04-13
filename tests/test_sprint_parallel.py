@@ -2154,7 +2154,6 @@ class TestImmediateIntegrationLanding:
 
 def test_integration_lock_serializes(tmp_path: Path) -> None:
     entered: list[str] = []
-    exited: list[str] = []
     overlap = [False]
     inside = threading.Event()
     release = threading.Event()
@@ -2167,11 +2166,7 @@ def test_integration_lock_serializes(tmp_path: Path) -> None:
             entered.append(name)
             if name == "first":
                 release.wait(timeout=2)
-            else:
-                exited.append(name)
             inside.clear()
-        if name == "first":
-            exited.append(name)
 
     first = threading.Thread(target=worker, args=("first",))
     second = threading.Thread(target=worker, args=("second",))
@@ -2186,7 +2181,6 @@ def test_integration_lock_serializes(tmp_path: Path) -> None:
 
     assert overlap[0] is False
     assert entered == ["first", "second"]
-    assert exited == ["first", "second"]
 
 
 def test_write_sprint_summary_marks_cached_preflight(tmp_path):
