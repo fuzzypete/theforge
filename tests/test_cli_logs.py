@@ -99,7 +99,9 @@ class TestCmdLogs:
         assert result == 0
 
     def test_follows_reexec_redirect(self, tmp_path, capsys):
-        """forge logs follows a re-exec redirect to the successor log."""
+        """forge logs follows a re-exec redirect via sidecar file to the successor log."""
+        import json
+
         from theforge.cli import cmd_logs
         from theforge.cli.status import _SENTINEL_EOF
 
@@ -118,12 +120,13 @@ class TestCmdLogs:
         new_log.write_text(f"new run output\n{_SENTINEL_EOF}\n")
 
         old_log = log_dir / f"run-{old_run_id}.log"
-        old_log.write_text(
-            "old run output\n"
-            "[forge] Run started in background\n"
-            f"[forge] Run ID:  {new_run_id}\n"
-            f"[forge] Log:     {new_log}\n"
-            f"[forge] Logs:    forge logs {new_run_id}\n"
+        old_log.write_text("old run output\n")
+
+        # Write the sidecar redirect file (normally written by the new daemon's
+        # grandchild after re-exec; here we write it directly for the test).
+        (runs_dir / f"{old_run_id}.redirect").write_text(
+            json.dumps({"new_run_id": new_run_id, "new_log": str(new_log)}),
+            encoding="utf-8",
         )
 
         forge_yaml = tmp_path / "forge.yaml"
@@ -176,6 +179,7 @@ class TestCmdLogs:
 
     def test_reexec_redirect_new_log_never_appears(self, tmp_path, capsys):
         """forge logs returns error gracefully when the new log never appears after re-exec."""
+        import json
         from unittest.mock import patch
 
         from theforge.cli import cmd_logs
@@ -191,16 +195,16 @@ class TestCmdLogs:
         log_dir = tmp_path / ".forge" / "logs" / slug
         log_dir.mkdir(parents=True)
 
-        # The new log path is referenced in the redirect block but never created.
+        # The new log path is referenced in the sidecar redirect file but never created.
         new_log = log_dir / f"run-{new_run_id}.log"
 
         old_log = log_dir / f"run-{old_run_id}.log"
-        old_log.write_text(
-            "old run output\n"
-            "[forge] Run started in background\n"
-            f"[forge] Run ID:  {new_run_id}\n"
-            f"[forge] Log:     {new_log}\n"
-            f"[forge] Logs:    forge logs {new_run_id}\n"
+        old_log.write_text("old run output\n")
+
+        # Write sidecar redirect file pointing to a non-existent new log.
+        (runs_dir / f"{old_run_id}.redirect").write_text(
+            json.dumps({"new_run_id": new_run_id, "new_log": str(new_log)}),
+            encoding="utf-8",
         )
 
         forge_yaml = tmp_path / "forge.yaml"
@@ -219,3 +223,55 @@ class TestCmdLogs:
         assert result == 1
         captured = capsys.readouterr()
         assert "Timed out waiting for new log" in captured.err
+
+    def test_spoof_log_lines_do_not_trigger_redirect(self, tmp_path, capsys):
+        """Log lines that look like re-exec trailers must NOT trigger a redirect.
+
+        LLM output printed to the log could contain ``[forge] Run ID:`` and
+        ``[forge] Log:`` lines.  The new sidecar-file mechanism ensures these
+        are ignored — a redirect only happens when forge itself writes the
+        ``.redirect`` file.
+        """
+        from theforge.cli import cmd_logs
+        from theforge.cli.status import _SENTINEL_EOF
+
+        old_run_id = "aabbccddee11"
+        spoof_run_id = "deadbeefcafe"
+        slug = "my-slug"
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{old_run_id}.pid").write_text(f"12345\n{slug}\n")
+
+        log_dir = tmp_path / ".forge" / "logs" / slug
+        log_dir.mkdir(parents=True)
+
+        spoof_log = log_dir / f"run-{spoof_run_id}.log"
+        # Do NOT create the spoof log — if redirect happens it would fail anyway.
+
+        old_log = log_dir / f"run-{old_run_id}.log"
+        old_log.write_text(
+            "legitimate output\n"
+            f"[forge] Run ID:  {spoof_run_id}\n"
+            f"[forge] Log:     {spoof_log}\n"
+            f"{_SENTINEL_EOF}\n"
+        )
+
+        # No .redirect sidecar file is written — these are just spoofed log lines.
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=old_run_id)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+        ):
+            result = cmd_logs(args)
+
+        # The follower must stop at the sentinel EOF without switching logs.
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "legitimate output" in captured.out
+        assert "Run re-exec'd" not in captured.err

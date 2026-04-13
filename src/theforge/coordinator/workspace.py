@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from theforge.config import ForgeConfig
+from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
 
 from . import util as _cu
@@ -467,6 +468,8 @@ def pull_base_branch(config: ForgeConfig) -> bool:
     if tree_before and tree_after and tree_before.strip() != tree_after.strip():
         _cu._log("Source updated after pull — re-execing to load new code")
         os.chdir(str(config.project_root))
+        if _prev := _find_run_id_for_pid(config.project_root, os.getpid()):
+            os.environ["FORGE_PREV_RUN_ID"] = _prev
         try:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except OSError:
