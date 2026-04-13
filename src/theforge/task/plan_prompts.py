@@ -36,13 +36,15 @@ def build_preflight_prompt(
         """)
 
     return dedent(f"""\
-        You are a preflight validator for **{task.name}**.
+        You are a bounded forensic classifier for **{task.name}**.
 
         ## Your Role
 
-        You are a cheap gate that stops doomed work before expensive dev+review
-        cycles begin. You are NOT implementing anything. You are classifying the
-        spec and catching problems that would waste downstream budget.
+        You are NOT reviewing code quality. You are NOT planning implementation.
+        You are NOT critiquing requirements.
+
+        Your only job is sufficiency judgment — does this spec describe work that
+        a dev agent can do, has already done, or cannot do at all?
 
         ## Spec
 
@@ -53,21 +55,23 @@ def build_preflight_prompt(
         Evaluate the spec against the repository content you can inspect in the
         provided working directory and output ONE of these verdicts:
 
-        - **PROCEED** — The spec describes unfinished work. The acceptance criteria
-          are clear, non-contradictory, and testable. Implementation should begin.
+        - **PROCEED** — PROCEED is the default verdict. If the work is implementable
+          and unfinished, output PROCEED. The spec describes unfinished work that a
+          dev agent can implement.
 
         - **ALREADY_DONE** — Every acceptance criterion is ALREADY satisfied by
-          the target baseline branch content. You MUST verify each criterion individually.
+          the target baseline branch content. You MUST verify each criterion
+          individually with direct code evidence.
 
-        - **BLOCKED** — The spec cannot be implemented as written. This includes:
-          - References to functions or APIs that do not exist
-          - Conflicts with the current architecture
-          - **Internal contradictions** (e.g., requirements that conflict with
-            acceptance criteria, or acceptance criteria that contradict each other)
-          - **Ambiguous acceptance criteria** that a dev agent cannot objectively
-            verify (e.g., "should be fast" without a measurable threshold)
-          - A dependency is missing
-          Provide a clear reason so a human can fix the spec.
+        - **BLOCKED** — Reserved for exceptional cases only. Use BLOCKED when:
+          - Missing credentials or secrets that the dev agent cannot create
+          - Requirements that directly contradict each other (not mere ambiguity)
+          - An external dependency that does not exist and cannot be installed
+          - A required fact that is absent and cannot be inferred
+          Provide a clear reason so a human can fix the blocker.
+
+        **Ambiguity is NOT grounds for BLOCKED.** Route ambiguous specs to PROCEED
+        with `sufficiency: needs_planning` — the plan agent resolves ambiguity.
 
         **File path references**: If the spec mentions file paths that don't exist
         on disk, do NOT set verdict to BLOCKED for this reason alone. Instead,
@@ -78,17 +82,39 @@ def build_preflight_prompt(
 
         Before classifying, scan the spec for these problems:
 
-        1. **Contradictions**: Do any requirements conflict with acceptance criteria?
-           Do any acceptance criteria conflict with each other?
-        2. **Ambiguity**: Can every acceptance criterion be objectively verified by
-           reading code or running tests? If not, it's ambiguous.
-        3. **Impossible constraints**: Does the spec require mutually exclusive
+        1. **Contradictions**: Do any requirements directly conflict with acceptance
+           criteria? Do any acceptance criteria directly contradict each other?
+        2. **Impossible constraints**: Does the spec require mutually exclusive
            behaviors (e.g., "never overwrite files" + a fixed filename that runs
            multiple times)?
+        3. **Ambiguity**: Can every acceptance criterion be objectively verified by
+           reading code or running tests? If not, add to `spec_issues` with type
+           `ambiguity` and set `sufficiency: needs_planning` — do NOT set BLOCKED.
 
-        If you find any of these, verdict is BLOCKED with a clear explanation of
-        the contradiction or ambiguity. It is far cheaper to fix a spec than to
-        burn plan+dev+review cycles on a doomed implementation.
+        Only direct contradictions and impossible constraints can trigger BLOCKED.
+        Ambiguity is routed to needs_planning, not BLOCKED.
+
+        ## Investigation Budget
+
+        Do targeted searches. Inspect the minimum number of files needed to answer
+        each question, then stop. Do not read entire files when a grep or a targeted
+        line read suffices. Do not expand investigation because a result was
+        surprising — record the finding and move on.
+
+        If you have not found conclusive evidence after inspecting 3-5 files per
+        acceptance criterion, record what you found, note the uncertainty in the
+        `evidence` field, and produce your output.
+
+        ## Uncertainty
+
+        Uncertainty does NOT cause BLOCKED and does NOT justify more investigation.
+        Instead:
+        - Lower your confidence in the verdict (use `reason` to say so)
+        - Increase complexity assessment (unknown blast radius → medium or large)
+        - Set `sufficiency: needs_planning` so the plan agent investigates further
+
+        You MUST always produce output. Output under uncertainty is better than
+        no output.
 
         ## Complexity Assessment
 
@@ -137,6 +163,7 @@ def build_preflight_prompt(
         - Implementation approach is unclear or underspecified
         - Acceptance criteria describe HOW to implement rather than WHAT to observe
         - Spec lacks enough detail for a dev agent to proceed without a plan
+        - Spec contains ambiguous acceptance criteria (add to spec_issues as well)
         - The story is a **contract change** — it removes, renames, or migrates a
           field or function name that is part of a shared interface (coordinator-agent
           output schema, prompt template field, review YAML field, config field).
@@ -170,8 +197,10 @@ def build_preflight_prompt(
           - "<repo-relative file path likely to be edited if implementation proceeds>"
         criteria_checked:
           - criterion: "<acceptance criterion text>"
+            files_checked:
+              - "<repo-relative path[:line] inspected to check this criterion>"
             satisfied: true | false
-            evidence: "<where in the code this is satisfied, or what is missing>"
+            evidence: "<conclusion: what confirms it is satisfied, or what is missing>"
         ```
 
         Use `spec_issues: []` if the spec is clean.
@@ -185,6 +214,10 @@ def build_preflight_prompt(
         dev agent is permitted to update test files that assert the old behavior. Set
         `contract_change: false` (the default) for all other stories.
 
+        The `files_checked` list is the evidence map: AC → files inspected → conclusion.
+        A valid ALREADY_DONE verdict requires non-empty `files_checked` for every criterion.
+        An empty `files_checked` means the criterion was not actually checked.
+
         ## Rules
 
         - Check EVERY acceptance criterion individually. Do not shortcut.
@@ -192,13 +225,13 @@ def build_preflight_prompt(
         - Evaluate ALREADY_DONE against the configured target baseline branch
           content from `config.workspace.base_branch`, not the resumed worktree contents.
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.
-        - If the spec has internal contradictions or untestable criteria, verdict is BLOCKED.
+        - Ambiguity in a spec is not BLOCKED — it is needs_planning.
         - If the spec contains a **Notes** section, treat it as informal hints that
           may be stale or wrong. Notes are NOT requirements — do not BLOCK a spec
           because a Note references a nonexistent file or outdated pattern. Only
           acceptance criteria and explicit requirements can trigger BLOCKED.
-        - BLOCKED is not a failure — it's a save. Fixing a spec costs minutes; a
-          doomed plan+dev+review loop costs hours and dollars.
+        - You MUST output a verdict even if you are uncertain. Withholding output
+          is not an option.
     """)
 
 
