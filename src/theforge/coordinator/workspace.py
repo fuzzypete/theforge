@@ -328,7 +328,10 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
         f"git log {base_branch}..{branch_name} --oneline",
         config.project_root,
     )
-    commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()] if ok else []
+    if not ok:
+        return False, f"Cannot determine branch state — git log failed: {log_out.strip()}"
+
+    commits_ahead = [ln for ln in log_out.strip().splitlines() if ln.strip()]
 
     if not commits_ahead:
         return True, f"0 commits ahead of {base_branch} — removing (stale)"
