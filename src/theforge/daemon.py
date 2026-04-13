@@ -54,6 +54,7 @@ class DaemonServer:
         self._queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue()
         self._running_spec: str | None = None
         self._queued_specs: list[str] = []  # ordered list for FIFO display
+        self._queued_slugs: set[str] = set()  # parallel set for O(1) dedup
         self._completed: list[dict] = []
         self._shutdown_event: asyncio.Event = asyncio.Event()
         self._current_sprint_task: asyncio.Task | None = None
@@ -129,10 +130,11 @@ class DaemonServer:
 
         if slug == self._running_spec:
             return {"ok": False, "error": f"spec '{slug}' is already running"}
-        if slug in self._queued_specs:
+        if slug in self._queued_slugs:
             return {"ok": False, "error": f"spec '{slug}' is already queued"}
 
         self._queued_specs.append(slug)
+        self._queued_slugs.add(slug)
         await self._queue.put((manifest, args))
 
         # Update queue in state
@@ -168,6 +170,7 @@ class DaemonServer:
                     self._queued_specs.remove(slug)
                 except ValueError:
                     pass
+                self._queued_slugs.discard(slug)
 
                 started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
                 sprint_state: dict = {
