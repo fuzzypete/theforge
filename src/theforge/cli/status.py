@@ -434,6 +434,12 @@ def cmd_logs(args: object) -> int:
                 if new_log.exists():
                     break
                 time.sleep(0.1)
+            if not new_log.exists():
+                print(
+                    f"[forge] Timed out waiting for new log {new_log} — run may have exited",
+                    file=sys.stderr,
+                )
+                return 1
             current_run_id = new_run_id
             current_log = new_log
     except KeyboardInterrupt:
