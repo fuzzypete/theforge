@@ -41,6 +41,7 @@ from .preflight import (
     _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
     _parse_preflight_contract_change,
+    _parse_preflight_criteria_checked,
     _parse_preflight_likely_files,
     _parse_preflight_sufficiency,
     _parse_preflight_verdict,
@@ -214,7 +215,11 @@ def _run_preflight_phase(
     log_agent_result(preflight_result, "PREFLIGHT")
 
     if preflight_result.success:
-        verdict, reason = _parse_preflight_verdict(preflight_result.output)
+        verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
+        if _parse_degraded:
+            state.preflight_degraded = True
+            state.preflight_degraded_reason = "parse_error"
+            _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
     else:
         verdict, reason = (
             "PROCEED",
@@ -244,6 +249,8 @@ def _run_preflight_phase(
         state.preflight_contract_change = contract_change
         bundle_candidate = _parse_preflight_bundle_candidate(preflight_result.output)
         state.preflight_bundle_candidate = bundle_candidate
+        criteria_checked = _parse_preflight_criteria_checked(preflight_result.output)
+        state.preflight_criteria_checked = criteria_checked
 
         # ── Deterministic contract-change policy ───────────────────────
         # A contract change touches a shared interface field, prompt template
@@ -276,6 +283,33 @@ def _run_preflight_phase(
             _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
         if _likely_files is not None:
             _log(f"  Likely files: {', '.join(_likely_files)}")
+
+        # ── ALREADY_DONE evidence downgrade ───────────────────────────
+        # Require that every AC has concrete file evidence (files_checked is
+        # non-empty) and is marked satisfied=True.  An empty or absent
+        # criteria_checked map is itself treated as missing evidence —
+        # fail-safe toward PROCEED rather than silently honoring the verdict.
+        if verdict == "ALREADY_DONE":
+            downgrade_reasons: list[str] = []
+            if not criteria_checked:
+                downgrade_reasons.append(
+                    "criteria_checked absent or empty; cannot verify ALREADY_DONE"
+                )
+            else:
+                for entry in criteria_checked:
+                    criterion = entry.get("criterion", "(unnamed)")
+                    if not entry.get("satisfied"):
+                        downgrade_reasons.append(f"AC '{criterion}' marked satisfied=false")
+                    elif not entry.get("files_checked"):
+                        downgrade_reasons.append(
+                            f"AC '{criterion}' lacked concrete evidence (no files_checked)"
+                        )
+            if downgrade_reasons:
+                verdict = "PROCEED"
+                state.preflight_verdict = verdict
+                for dr in downgrade_reasons:
+                    _log(f"  ⚠ ALREADY_DONE downgraded → PROCEED: {dr}")
+                state.preflight_warnings = list(state.preflight_warnings or []) + downgrade_reasons
 
         # ── Ambiguity BLOCKED downgrade ───────────────────────────────
         # Must come *after* all signal parsing so that forced overrides are
@@ -336,6 +370,7 @@ def _run_preflight_phase(
         "bundle_candidate": state.preflight_bundle_candidate,
         "branch_merged": branch_merged,
         "evaluation_base_branch": config.workspace.base_branch,
+        "criteria_checked": state.preflight_criteria_checked,
     }
     _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
     _write_log_artifact(

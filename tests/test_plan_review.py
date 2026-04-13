@@ -324,6 +324,76 @@ def test_api_schema_includes_p1_impl():
     assert "P2" in severity_enum
 
 
+def test_plan_review_json_schema_mirrors_submit_tool(tmp_path):
+    """plan_review_json_schema() must mirror the submit_plan_review tool parameters."""
+    from theforge.runners.schema_utils import _submit_plan_review_schema
+    from theforge.schemas import plan_review_json_schema
+
+    tool_params = _submit_plan_review_schema()["parameters"]
+    json_schema = plan_review_json_schema()
+
+    # Same top-level required fields
+    assert set(json_schema["required"]) == set(tool_params["required"])
+    # Severity enum must match
+    tool_severity = tool_params["properties"]["findings"]["items"]["properties"]["severity"][
+        "enum"
+    ]
+    schema_severity = json_schema["properties"]["findings"]["items"]["properties"]["severity"][
+        "enum"
+    ]
+    assert set(schema_severity) == set(tool_severity)
+    # additionalProperties: false at top level (required for OpenAI strict mode)
+    assert json_schema.get("additionalProperties") is False
+
+
+def test_plan_review_prompt_api_mode_uses_submit_tool(tmp_path):
+    """build_plan_review_prompt with mode='api' uses submit_plan_review tool and omits YAML."""
+    from theforge.task.plan_prompts import build_plan_review_prompt
+    from theforge.task.story import TaskStory
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n", encoding="utf-8")
+    task = TaskStory(
+        name="Test Task",
+        story_path=spec,
+        slug="test-task",
+        pytest_target="tests/",
+    )
+    prompt = build_plan_review_prompt(
+        task,
+        story_content="## Spec\n- AC: something",
+        plan_content="## Plan\n- step 1",
+        mode="api",
+    )
+    assert "submit_plan_review" in prompt
+    # YAML output block must not appear in API mode
+    assert "```yaml" not in prompt
+
+
+def test_plan_review_prompt_cli_mode_uses_yaml_block(tmp_path):
+    """build_plan_review_prompt with mode='cli' includes YAML block, omits submit_plan_review."""
+    from theforge.task.plan_prompts import build_plan_review_prompt
+    from theforge.task.story import TaskStory
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n", encoding="utf-8")
+    task = TaskStory(
+        name="Test Task",
+        story_path=spec,
+        slug="test-task",
+        pytest_target="tests/",
+    )
+    prompt = build_plan_review_prompt(
+        task,
+        story_content="## Spec\n- AC: something",
+        plan_content="## Plan\n- step 1",
+        mode="cli",
+    )
+    assert "```yaml" in prompt
+    # CLI mode must NOT instruct agent to use the tool
+    assert "submit_plan_review" not in prompt
+
+
 # ── Corroboration logic ──────────────────────────────────────────────────────
 
 

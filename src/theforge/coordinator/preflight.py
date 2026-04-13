@@ -17,12 +17,12 @@ if TYPE_CHECKING:
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
 
 
-def _parse_preflight_verdict(output: str) -> tuple[str, str]:
+def _parse_preflight_verdict(output: str) -> tuple[str, str, bool]:
     """Extract verdict and reason from preflight agent output.
 
-    Returns (verdict, reason). Parse failures and invalid verdicts are treated
-    as BLOCKED because downstream classifications from a confused preflight are
-    unreliable.
+    Returns (verdict, reason, degraded). Parse failures and invalid verdicts
+    return PROCEED with degraded=True — a confused classifier should not become
+    process truth (same principle as the success=False path in preflight_flow).
     """
     # Extract YAML block from markdown fences
     yaml_text = output
@@ -38,22 +38,26 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str]:
     try:
         parsed = yaml.safe_load(yaml_text)
     except yaml.YAMLError:
-        return "BLOCKED", f"Failed to parse preflight YAML; blocking. Raw: {output[:200]}"
+        return (
+            "PROCEED",
+            f"Failed to parse preflight YAML; falling back to PROCEED. Raw: {output[:200]}",
+            True,
+        )
 
     if not isinstance(parsed, dict):
-        return "BLOCKED", "Preflight output is not a dict; blocking."
+        return "PROCEED", "Preflight output is not a dict; falling back to PROCEED.", True
 
     verdict = str(parsed.get("verdict", "PROCEED")).upper()
     reason = str(parsed.get("reason", "(no reason provided)"))
 
     if verdict not in _VALID_PREFLIGHT_VERDICTS:
         return (
-            "BLOCKED",
-            "Unknown preflight verdict "
-            f"{verdict!r}; escalating because preflight output is invalid. {reason}",
+            "PROCEED",
+            f"Unknown preflight verdict {verdict!r}; falling back to PROCEED. {reason}",
+            True,
         )
 
-    return verdict, reason
+    return verdict, reason, False
 
 
 _VALID_COMPLEXITIES = frozenset({"small", "medium", "large"})
@@ -241,6 +245,49 @@ def _parse_preflight_sufficiency(output: str) -> str:
         pass
 
     return "needs_planning"
+
+
+def _parse_preflight_criteria_checked(output: str) -> list[dict]:
+    """Extract criteria_checked list from preflight agent output.
+
+    Each entry should have: criterion (str), files_checked (list[str]),
+    satisfied (bool), evidence (str).
+
+    Returns [] on parse failure, missing key, or non-list value so that
+    callers can treat an absent map as insufficient evidence (conservative).
+    """
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if not isinstance(parsed, dict):
+            return []
+        raw = parsed.get("criteria_checked")
+        if not isinstance(raw, list):
+            return []
+        result = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            result.append(
+                {
+                    "criterion": str(entry.get("criterion", "")),
+                    "files_checked": list(entry.get("files_checked") or []),
+                    "satisfied": bool(entry.get("satisfied", False)),
+                    "evidence": str(entry.get("evidence", "")),
+                }
+            )
+        return result
+    except yaml.YAMLError:
+        return []
 
 
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:

@@ -252,6 +252,123 @@ class TestDeepSeekSubmitGating:
         assert finalizer is not noop_finalizer
 
 
+class TestDeepSeekPlanReviewFinalizer:
+    """DeepSeek plan_review finalizer uses json_object and plan-review message fields."""
+
+    def _make_finalizer(self, phase: str):
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_openai = MagicMock()
+        mock_openai.BadRequestError = Exception
+        mock_openai.OpenAI = MagicMock()
+        mock_httpx = MagicMock()
+
+        with patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}):
+            from theforge.runners.finalizers import _make_deepseek_finalizer
+
+            profile = _make_profile("deepseek-plan-reviewer", provider="deepseek", phase=phase)
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices[
+                0
+            ].message.content = '{"verdict": "APPROVE", "summary": "ok", "findings": []}'
+            mock_response.usage = MagicMock()
+            mock_client.chat.completions.create.return_value = mock_response
+            fn = _make_deepseek_finalizer(profile, {}, client=mock_client)
+            return fn, mock_client
+
+    def test_plan_review_uses_json_object(self):
+        fn, mock_client = self._make_finalizer("plan_review")
+        fn([{"role": "user", "content": "Review this plan."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        assert kwargs["response_format"] == {"type": "json_object"}
+
+    def test_plan_review_message_references_plan_fields(self):
+        fn, mock_client = self._make_finalizer("plan_review")
+        fn([{"role": "user", "content": "Review this plan."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        last_msg = kwargs["messages"][-1]["content"]
+        assert "findings" in last_msg
+        assert "criteria_coverage" in last_msg
+        assert "story_compliance" not in last_msg
+        assert "test_coverage" not in last_msg
+
+    def test_code_review_message_references_code_review_fields(self):
+        fn, mock_client = self._make_finalizer("review")
+        fn([{"role": "user", "content": "Review this code."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        last_msg = kwargs["messages"][-1]["content"]
+        assert "story_compliance" in last_msg
+        assert "test_coverage" in last_msg
+
+
+class TestOpenAIPlanReviewFinalizer:
+    """OpenAI chat plan_review finalizer uses plan_review_json_schema and correct message."""
+
+    def _make_finalizer(self, phase: str):
+        import sys
+        from unittest.mock import MagicMock
+
+        mock_openai = MagicMock()
+        mock_openai.BadRequestError = Exception
+        mock_openai.OpenAI = MagicMock()
+        mock_httpx = MagicMock()
+
+        with patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}):
+            from theforge.runners.finalizers import _make_openai_chat_finalizer
+
+            profile = _make_profile("openai-plan-reviewer", provider="openai", phase=phase)
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices[
+                0
+            ].message.content = '{"verdict": "APPROVE", "summary": "ok", "findings": []}'
+            mock_response.usage = MagicMock()
+            mock_client.chat.completions.create.return_value = mock_response
+            fn = _make_openai_chat_finalizer(profile, {}, client=mock_client)
+            return fn, mock_client
+
+    def test_plan_review_uses_plan_review_json_schema(self):
+        from theforge.schemas import plan_review_json_schema
+
+        fn, mock_client = self._make_finalizer("plan_review")
+        fn([{"role": "user", "content": "Review this plan."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        rf = kwargs["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["name"] == "plan_review_output"
+        assert rf["json_schema"]["schema"] == plan_review_json_schema()
+
+    def test_plan_review_message_omits_code_review_fields(self):
+        fn, mock_client = self._make_finalizer("plan_review")
+        fn([{"role": "user", "content": "Review this plan."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        last_msg = kwargs["messages"][-1]["content"]
+        assert "criteria_coverage" in last_msg
+        assert "story_compliance" not in last_msg
+        assert "test_coverage" not in last_msg
+
+    def test_code_review_uses_review_json_schema(self):
+        from theforge.schemas import review_json_schema
+
+        fn, mock_client = self._make_finalizer("review")
+        fn([{"role": "user", "content": "Review this code."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        rf = kwargs["response_format"]
+        assert rf["type"] == "json_schema"
+        assert rf["json_schema"]["name"] == "review_output"
+        assert rf["json_schema"]["schema"] == review_json_schema()
+
+    def test_code_review_message_references_code_review_fields(self):
+        fn, mock_client = self._make_finalizer("review")
+        fn([{"role": "user", "content": "Review this code."}])
+        kwargs = mock_client.chat.completions.create.call_args[1]
+        last_msg = kwargs["messages"][-1]["content"]
+        assert "story_compliance" in last_msg
+        assert "test_coverage" in last_msg
+
+
 class TestProviderFallbackPreservesPhase:
     """_apply_provider_fallback must carry phase through to the rebuilt ModelProfile."""
 
