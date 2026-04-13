@@ -3,29 +3,20 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 
-def cmd_sprint_status(args: object) -> int:
-    """Show per-story status for a sprint run."""
-    from theforge.cli.shared import _find_config
-    from theforge.config import load_config
+def display_sprint_status(run_id: str, project_root: Path) -> int:
+    """Display per-story status for a sprint run.
+
+    Handles both live (PID file present) and completed (sprint-summary.yaml)
+    sprints.  Returns 0 on success, 1 if no sprint data is found.
+    """
     from theforge.sprint.status_reader import (
         find_sprint_summary,
         read_completed_status,
         read_live_status,
     )
-
-    run_id: str = getattr(args, "run_id", "")
-    if not run_id:
-        print("run_id is required", file=sys.stderr)
-        return 1
-
-    config_path = _find_config()
-    if config_path is None or not config_path.exists():
-        print("forge.yaml not found.", file=sys.stderr)
-        return 1
-    config = load_config(config_path)
-    project_root = config.project_root
 
     # Determine if the sprint is live (PID file present).
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
@@ -102,10 +93,28 @@ def cmd_sprint_status(args: object) -> int:
     return 0
 
 
+def cmd_sprint_status(args: object) -> int:
+    """Show per-story status for a sprint run."""
+    from theforge.cli.shared import _find_config
+    from theforge.config import load_config
+
+    run_id: str = getattr(args, "run_id", "")
+    if not run_id:
+        print("run_id is required", file=sys.stderr)
+        return 1
+
+    config_path = _find_config()
+    if config_path is None or not config_path.exists():
+        print("forge.yaml not found.", file=sys.stderr)
+        return 1
+    config = load_config(config_path)
+    project_root = config.project_root
+
+    return display_sprint_status(run_id, project_root)
+
+
 def _read_sprint_name_from_state(state_path: object) -> str:
     """Read sprint_name from a .state YAML file.  Returns '' on any error."""
-    from pathlib import Path  # noqa: PLC0415
-
     import yaml  # noqa: PLC0415
 
     try:
@@ -118,8 +127,6 @@ def _read_sprint_name_from_state(state_path: object) -> str:
 
 def _read_sprint_name_from_summary(summary_path: object) -> str:
     """Read sprint.name from a sprint-summary.yaml file.  Returns '' on any error."""
-    from pathlib import Path  # noqa: PLC0415
-
     import yaml  # noqa: PLC0415
 
     try:
