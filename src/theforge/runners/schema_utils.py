@@ -241,11 +241,11 @@ def _submit_plan_review_schema() -> dict:
         "parameters": {
             "type": "object",
             "additionalProperties": False,
-            "required": ["verdict", "summary", "findings"],
+            "required": ["verdict", "summary", "findings", "criteria_coverage"],
             "properties": {
                 "verdict": {
                     "type": "string",
-                    "enum": ["APPROVE", "REQUEST_CHANGES"],
+                    "enum": ["APPROVE", "REJECT"],
                     "description": "Overall verdict on the plan.",
                 },
                 "summary": {
@@ -259,8 +259,24 @@ def _submit_plan_review_schema() -> dict:
                         "additionalProperties": False,
                         "required": ["severity", "description"],
                         "properties": {
-                            "severity": {"type": "string", "enum": ["P1", "P1-impl", "P2"]},
+                            "severity": {
+                                "type": "string",
+                                "enum": ["P0", "P1", "P1-impl", "P2"],
+                            },
                             "description": {"type": "string"},
+                        },
+                    },
+                },
+                "criteria_coverage": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["criterion", "covered", "plan_section"],
+                        "properties": {
+                            "criterion": {"type": "string"},
+                            "covered": {"type": "boolean"},
+                            "plan_section": {"type": "string"},
                         },
                     },
                 },
