@@ -19,6 +19,8 @@ class StoryStatusEntry:
     cost_usd: float
     blocked_by: list[str] = field(default_factory=list)
     bundle_candidate: bool = False
+    elapsed_seconds: float | None = None
+    detail: str = ""
 
 
 def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
@@ -112,6 +114,18 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         raw_depends_on = story.get("depends_on") or []
         blocked_by = list(raw_depends_on) if status == "skipped" and raw_depends_on else []
 
+        # Derive a short detail line from the completed-sprint outcome.
+        if outcome == "ESCALATE":
+            detail = "ESCALATE"
+        elif outcome == "ALREADY_DONE":
+            detail = "already done"
+        elif outcome == "DONE":
+            detail = "APPROVE"
+        elif status == "skipped" and raw_depends_on:
+            detail = f"waiting on: {', '.join(raw_depends_on)}"
+        else:
+            detail = ""
+
         entries.append(
             StoryStatusEntry(
                 slug=slug,
@@ -121,6 +135,8 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 cost_usd=cost_usd,
                 blocked_by=blocked_by,
                 bundle_candidate=bundle_candidate,
+                elapsed_seconds=None,  # not tracked in sprint summary
+                detail=detail,
             )
         )
 
@@ -150,15 +166,29 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
     for story in stories_data:
         if not isinstance(story, dict):
             continue
+        status_val = story.get("status", "waiting")
+        phase_val = story.get("phase")
+        blocked_by_val = list(story.get("blocked_by") or [])
+
+        # Derive a short detail line from available live-state data.
+        if blocked_by_val and status_val == "blocked":
+            detail = f"waiting on: {', '.join(blocked_by_val)}"
+        elif status_val == "failed" and phase_val:
+            detail = f"failed in: {phase_val}"
+        else:
+            detail = ""
+
         entries.append(
             StoryStatusEntry(
                 slug=story.get("slug", ""),
                 path=story.get("path", story.get("slug", "")),
-                status=story.get("status", "waiting"),
-                phase=story.get("phase"),
+                status=status_val,
+                phase=phase_val,
                 cost_usd=float(story.get("cost_usd", 0.0)),
-                blocked_by=list(story.get("blocked_by") or []),
+                blocked_by=blocked_by_val,
                 bundle_candidate=bool(story.get("bundle_candidate", False)),
+                elapsed_seconds=None,  # not tracked in live state file
+                detail=detail,
             )
         )
     return entries

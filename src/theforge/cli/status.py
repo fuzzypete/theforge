@@ -51,9 +51,225 @@ def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str,
                 return (_seen_run_id, Path(_seen_log_path))
 
 
+# ── Run-discovery helpers ─────────────────────────────────────────────────────
+
+
+def _find_active_run_id(project_root: Path) -> str | None:
+    """Return the run_id of the first alive run, or None if none are active."""
+    from theforge import detach as _detach
+
+    active = _detach.list_active_runs(project_root)
+    return active[0]["run_id"] if active else None
+
+
+def _is_sprint_run(run_id: str, project_root: Path) -> bool:
+    """Return True if run_id is a sprint (has a .state file or sprint-summary.yaml)."""
+    from theforge.sprint.status_reader import find_sprint_summary
+
+    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
+    if state_path.exists():
+        return True
+    return find_sprint_summary(run_id, project_root) is not None
+
+
+def _find_most_recent_run(project_root: Path) -> tuple[str, bool] | None:
+    """Scan for the most recent completed run (sprint or single).
+
+    Returns (run_id, is_sprint) for the newest completed/historical run,
+    or None if no runs are found.  Active runs (PID files present and
+    process alive) are excluded so callers see only finished work.
+    """
+    import yaml
+
+    logs_dir = project_root / ".forge" / "logs"
+    if not logs_dir.exists():
+        return None
+
+    # Collect active run_ids so we can skip live single runs
+    active_run_ids: set[str] = set()
+    runs_dir = project_root / ".forge" / "runs"
+    if runs_dir.exists():
+        for pid_file in runs_dir.glob("*.pid"):
+            active_run_ids.add(pid_file.stem)
+
+    best_mtime: float | None = None
+    best: tuple[str, bool] | None = None
+
+    # Sprint summaries are only written on completion — always historical.
+    for summary in logs_dir.rglob("sprint-summary.yaml"):
+        try:
+            mtime = summary.stat().st_mtime
+        except OSError:
+            continue
+        try:
+            with open(summary, encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            run_id = (data or {}).get("sprint", {}).get("run_id", "")
+        except Exception:
+            run_id = ""
+        if run_id and (best_mtime is None or mtime > best_mtime):
+            best_mtime = mtime
+            best = (run_id, True)
+
+    # Single-run log files: run-<run_id>.log in any logs subdirectory.
+    for log_file in logs_dir.rglob("run-*.log"):
+        run_id = log_file.stem[4:]  # strip leading "run-"
+        if run_id in active_run_ids:
+            continue  # still live — skip
+        try:
+            mtime = log_file.stat().st_mtime
+        except OSError:
+            continue
+        if best_mtime is None or mtime > best_mtime:
+            best_mtime = mtime
+            best = (run_id, False)
+
+    return best
+
+
+def _resolve_run_id(run_id: str, project_root: Path) -> bool:
+    """Return True if run_id can be located (active PID, sprint data, or log file)."""
+    # Active PID
+    pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
+    if pid_file.exists():
+        return True
+
+    # Sprint state or summary
+    state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
+    if state_path.exists():
+        return True
+
+    from theforge.sprint.status_reader import find_sprint_summary
+
+    if find_sprint_summary(run_id, project_root) is not None:
+        return True
+
+    # Historical single-run log file
+    logs_dir = project_root / ".forge" / "logs"
+    if logs_dir.exists():
+        for _match in logs_dir.rglob(f"run-{run_id}.log"):
+            return True
+
+    return False
+
+
+def _show_recent_runs(project_root: Path) -> int:
+    """Print a compact table of recent runs sorted by time (newest first)."""
+    import time
+
+    import yaml
+
+    from theforge import detach as _detach
+
+    # Rows: (mtime_float, run_id, type, status, cost_str, elapsed_str)
+    rows: list[tuple[float, str, str, str, str, str]] = []
+    seen_ids: set[str] = set()
+    now = time.time()
+
+    # Active runs — treat as most recent by using current time as mtime.
+    for run in _detach.list_active_runs(project_root):
+        run_id = run["run_id"]
+        slug = run["slug"]
+        st = _detach.read_run_status(run_id, slug, project_root)
+        run_type = "sprint" if _is_sprint_run(run_id, project_root) else "single"
+        cost_usd = st.get("cost_usd")
+        elapsed_s = st.get("elapsed_seconds")
+        cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "—"
+        elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
+        rows.append((now, run_id, run_type, "active", cost_str, elapsed_str))
+        seen_ids.add(run_id)
+
+    logs_dir = project_root / ".forge" / "logs"
+
+    if logs_dir.exists():
+        # Completed sprints — collect with their summary file mtime.
+        for summary in logs_dir.rglob("sprint-summary.yaml"):
+            try:
+                mtime = summary.stat().st_mtime
+            except OSError:
+                continue
+            try:
+                with open(summary, encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            sp = data.get("sprint", {})
+            run_id = sp.get("run_id", "")
+            if not run_id or run_id in seen_ids:
+                continue
+            cost_usd = sp.get("total_cost_usd")
+            dur_s = sp.get("duration_seconds")
+            cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "—"
+            dur_str = f"{int(dur_s // 60)}m" if dur_s is not None else "—"
+            stopped = sp.get("stopped_reason")
+            status_str = "stopped" if stopped else "completed"
+            rows.append((mtime, run_id, "sprint", status_str, cost_str, dur_str))
+            seen_ids.add(run_id)
+
+        # Historical single runs — collect with log file mtime.
+        for log_file in logs_dir.rglob("run-*.log"):
+            run_id = log_file.stem[4:]
+            if run_id in seen_ids:
+                continue
+            try:
+                mtime = log_file.stat().st_mtime
+            except OSError:
+                continue
+            rows.append((mtime, run_id, "single", "completed", "—", "—"))
+            seen_ids.add(run_id)
+
+    if not rows:
+        print("No recent runs found.")
+        return 0
+
+    # Sort all runs newest-first, then truncate.
+    rows.sort(key=lambda r: r[0], reverse=True)
+
+    print(f"{'RUN ID':<14}  {'TYPE':<8}  {'STATUS':<12}  {'COST':>7}  {'ELAPSED':>8}")
+    print("-" * 60)
+    for _, run_id, rtype, status, cost, elapsed in rows[:20]:
+        print(f"{run_id:<14}  {rtype:<8}  {status:<12}  {cost:>7}  {elapsed:>8}")
+    return 0
+
+
+def _show_single_run_status(run_id: str, project_root: Path) -> None:
+    """Print a single-row status line for a non-sprint run."""
+    from theforge import detach as _detach
+
+    # Try to find slug from PID file
+    pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
+    slug: str | None = None
+    if pid_file.exists():
+        parsed = _detach._read_pid_file(pid_file)
+        if parsed:
+            _, slug = parsed
+
+    if slug is None:
+        # Infer slug from log directory
+        logs_dir = project_root / ".forge" / "logs"
+        if logs_dir.exists():
+            for match in logs_dir.rglob(f"run-{run_id}.log"):
+                slug = match.parent.name
+                break
+
+    st = _detach.read_run_status(run_id, slug or run_id, project_root)
+    phase = st.get("phase") or "DONE"
+    cost_usd = st.get("cost_usd")
+    elapsed_s = st.get("elapsed_seconds")
+    cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "  —"
+    elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
+
+    story_label = slug or run_id
+    print(f"{'RUN ID':<12}  {'STORY':<30}  {'PHASE':<12}  {'COST':>7}  {'ELAPSED':>8}")
+    print("-" * 78)
+    print(f"{run_id:<12}  {story_label:<30}  {phase:<12}  {cost_str:>7}  {elapsed_str:>8}")
+
+
+# ── Command handlers ─────────────────────────────────────────────────────────
+
+
 def cmd_status(args: object) -> int:
     """Show active forge runs and pending decisions."""
-    from theforge import detach as _detach
     from theforge import pending as _pending
 
     config_path = _find_config()
@@ -63,34 +279,62 @@ def cmd_status(args: object) -> int:
     config = load_config(config_path)
     project_root = config.project_root
 
-    # Active runs via PID scan
-    active_runs = _detach.list_active_runs(project_root)
-    if active_runs:
-        print(f"{'RUN ID':<12}  {'STORY':<30}  {'PHASE':<12}  {'COST':>7}  {'ELAPSED':>8}")
-        print("-" * 78)
-        for run in active_runs:
-            run_id = run["run_id"]
-            slug = run["slug"]
-            status = _detach.read_run_status(run_id, slug, project_root)
-            phase = status.get("phase") or "RUNNING"
-            cost_usd = status.get("cost_usd")
-            elapsed_s = status.get("elapsed_seconds")
-            cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "  —"
-            if elapsed_s is not None:
-                elapsed_m = int(elapsed_s // 60)
-                elapsed_str = f"{elapsed_m}m"
-            else:
-                elapsed_str = "—"
-            print(f"{run_id:<12}  {slug:<30}  {phase:<12}  {cost_str:>7}  {elapsed_str:>8}")
-        print()
-        n = len(active_runs)
-        print(f"{n} active run{'s' if n != 1 else ''}. Use 'forge logs <run-id>' for live output.")
-    else:
-        print("No active runs.")
+    recent = getattr(args, "recent", False)
+    last = getattr(args, "last", False)
+    explicit_run_id: str | None = getattr(args, "run_id", None)
 
-    # Show pending decisions
+    # ── --recent: compact run list ────────────────────────────────────────
+    if recent:
+        return _show_recent_runs(project_root)
+
+    # ── Resolve target run ────────────────────────────────────────────────
+    target_run_id: str | None = None
+
+    if explicit_run_id:
+        if not _resolve_run_id(explicit_run_id, project_root):
+            print(f"No run found with ID '{explicit_run_id}'.", file=sys.stderr)
+            return 1
+        target_run_id = explicit_run_id
+    elif last:
+        result = _find_most_recent_run(project_root)
+        if result is None:
+            print("No recent completed runs found.")
+            return 0
+        target_run_id, _ = result
+    else:
+        active_id = _find_active_run_id(project_root)
+        if active_id is not None:
+            target_run_id = active_id
+        else:
+            result = _find_most_recent_run(project_root)
+            if result is not None:
+                target_run_id, _ = result
+
+    if target_run_id is None:
+        print("No active or recent runs found.")
+        _pending.cleanup_stale(project_root)
+        _show_pending_decisions(_pending, project_root)
+        return 0
+
+    # ── Display run status ────────────────────────────────────────────────
+    if _is_sprint_run(target_run_id, project_root):
+        from theforge.cli.sprint_status import display_sprint_status
+
+        rc = display_sprint_status(target_run_id, project_root)
+    else:
+        _show_single_run_status(target_run_id, project_root)
+        rc = 0
+
+    # ── Pending decisions (always shown) ──────────────────────────────────
     _pending.cleanup_stale(project_root)
-    pending_entries = _pending.list_pending(project_root)
+    _show_pending_decisions(_pending, project_root)
+
+    return rc
+
+
+def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
+    """Print the pending-decisions section."""
+    pending_entries = pending_mod.list_pending(project_root)
     if pending_entries:
         print("\nPending decisions:")
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -129,8 +373,6 @@ def cmd_status(args: object) -> int:
                 print(f"    created: {created_at}")
     else:
         print("\nPending decisions: (none)")
-
-    return 0
 
 
 def cmd_logs(args: object) -> int:
@@ -294,9 +536,27 @@ def cmd_decide(args: object) -> int:
 def register_parsers(subparsers: object) -> None:
     """Register status/logs/stop/decide subcommand parsers."""
     # forge status
-    subparsers.add_parser(
+    status_parser = subparsers.add_parser(
         "status",
         help="Show active runs and pending decisions",
+    )
+    status_parser.add_argument(
+        "run_id",
+        nargs="?",
+        default=None,
+        help="Run ID to show status for (default: active or most recent run)",
+    )
+    status_parser.add_argument(
+        "--recent",
+        action="store_true",
+        default=False,
+        help="Show recent runs in compact list form",
+    )
+    status_parser.add_argument(
+        "--last",
+        action="store_true",
+        default=False,
+        help="Show the most recent completed or failed run",
     )
 
     # forge logs

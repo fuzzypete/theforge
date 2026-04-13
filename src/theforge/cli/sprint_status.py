@@ -3,29 +3,23 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 
-def cmd_sprint_status(args: object) -> int:
-    """Show per-story status for a sprint run."""
-    from theforge.cli.shared import _find_config
-    from theforge.config import load_config
+def display_sprint_status(run_id: str, project_root: Path) -> int:
+    """Display per-story status for a sprint run.
+
+    Handles live (PID file present), completed (sprint-summary.yaml), and
+    crashed (PID gone, .state still present) sprints.
+    Returns 0 on success, 1 if no sprint data is found.
+    """
+    import yaml
+
     from theforge.sprint.status_reader import (
         find_sprint_summary,
         read_completed_status,
         read_live_status,
     )
-
-    run_id: str = getattr(args, "run_id", "")
-    if not run_id:
-        print("run_id is required", file=sys.stderr)
-        return 1
-
-    config_path = _find_config()
-    if config_path is None or not config_path.exists():
-        print("forge.yaml not found.", file=sys.stderr)
-        return 1
-    config = load_config(config_path)
-    project_root = config.project_root
 
     # Determine if the sprint is live (PID file present).
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
@@ -34,6 +28,8 @@ def cmd_sprint_status(args: object) -> int:
     entries = None
     sprint_name = ""
     unexpected_end = False
+    total_cost_usd: float | None = None
+    duration_seconds: float | None = None
 
     if is_live:
         entries = read_live_status(run_id, project_root)
@@ -41,14 +37,33 @@ def cmd_sprint_status(args: object) -> int:
             sprint_name = _read_sprint_name_from_state(
                 project_root / ".forge" / "runs" / f"{run_id}.state"
             )
+        # Approximate elapsed from the process start time via detach
+        try:
+            from theforge import detach as _detach
+
+            parsed = _detach._read_pid_file(pid_file)
+            if parsed:
+                _, slug = parsed
+                run_st = _detach.read_run_status(run_id, slug, project_root)
+                elapsed_s = run_st.get("elapsed_seconds")
+                if elapsed_s is not None:
+                    duration_seconds = elapsed_s
+        except Exception:
+            pass
     else:
-        # PID file gone — check if state file still exists (unexpected exit)
+        # PID file gone — check if state file still exists (unexpected exit).
         state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
         if state_path.exists():
             unexpected_end = True
             entries = read_live_status(run_id, project_root)
             if entries is not None:
                 sprint_name = _read_sprint_name_from_state(state_path)
+
+    # For crashed sprints with an unreadable state file, show the banner with
+    # an empty story list rather than falling through to sprint-summary (which
+    # won't exist for crashed sprints).
+    if entries is None and unexpected_end:
+        entries = []
 
     # Fall back to completed sprint-summary.yaml
     if entries is None:
@@ -62,8 +77,47 @@ def cmd_sprint_status(args: object) -> int:
             return 1
         entries = read_completed_status(summary_path)
         sprint_name = _read_sprint_name_from_summary(summary_path)
+        # Read aggregate metrics from the completed summary.
+        try:
+            with open(summary_path, encoding="utf-8") as f:
+                summary_data = yaml.safe_load(f) or {}
+            sp = summary_data.get("sprint", {})
+            total_cost_usd = sp.get("total_cost_usd")
+            duration_seconds = sp.get("duration_seconds")
+        except Exception:
+            pass
 
-    # ── Display ──────────────────────────────────────────────────────────
+    # For live/crashed sprints compute total cost from story entries.
+    if total_cost_usd is None and entries:
+        total_cost_usd = sum(getattr(e, "cost_usd", 0.0) for e in entries)
+
+    # ── Header ───────────────────────────────────────────────────────────
+    if is_live:
+        state_label = "live"
+    elif unexpected_end:
+        state_label = "crashed"
+    else:
+        state_label = "completed"
+
+    header_parts: list[str] = [f"Sprint: {sprint_name}  run: {run_id}  [{state_label}]"]
+    if total_cost_usd is not None:
+        header_parts.append(f"cost: ${total_cost_usd:.2f}")
+    if duration_seconds is not None:
+        if is_live:
+            header_parts.append(f"elapsed: {int(duration_seconds // 60)}m")
+        else:
+            header_parts.append(f"duration: {int(duration_seconds // 60)}m")
+    print("  ".join(header_parts))
+
+    if unexpected_end:
+        print("  ⚠  Sprint ended unexpectedly (PID file missing, state file present)")
+    print()
+
+    if not entries:
+        print("  No stories found.")
+        return 0
+
+    # ── Story rows ───────────────────────────────────────────────────────
     status_icons = {
         "done": "✓",
         "running": "▸",
@@ -73,17 +127,9 @@ def cmd_sprint_status(args: object) -> int:
         "blocked": "⊘",
     }
 
-    header = f"Sprint: {sprint_name}  (run: {run_id})"
-    if is_live:
-        header += "  [live]"
-    print(header)
-    if unexpected_end:
-        print("  ⚠  Sprint ended unexpectedly (PID file missing, state file present)")
-    print()
-
-    if not entries:
-        print("  No stories found.")
-        return 0
+    # Column header
+    print(f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'COST':>7}  {'ELAPSED':>7}  DETAIL")
+    print("  " + "-" * 80)
 
     # Separate bundle candidates from regular stories
     bundle_entries = [e for e in entries if e.bundle_candidate]
@@ -102,10 +148,28 @@ def cmd_sprint_status(args: object) -> int:
     return 0
 
 
+def cmd_sprint_status(args: object) -> int:
+    """Show per-story status for a sprint run."""
+    from theforge.cli.shared import _find_config
+    from theforge.config import load_config
+
+    run_id: str = getattr(args, "run_id", "")
+    if not run_id:
+        print("run_id is required", file=sys.stderr)
+        return 1
+
+    config_path = _find_config()
+    if config_path is None or not config_path.exists():
+        print("forge.yaml not found.", file=sys.stderr)
+        return 1
+    config = load_config(config_path)
+    project_root = config.project_root
+
+    return display_sprint_status(run_id, project_root)
+
+
 def _read_sprint_name_from_state(state_path: object) -> str:
     """Read sprint_name from a .state YAML file.  Returns '' on any error."""
-    from pathlib import Path  # noqa: PLC0415
-
     import yaml  # noqa: PLC0415
 
     try:
@@ -118,8 +182,6 @@ def _read_sprint_name_from_state(state_path: object) -> str:
 
 def _read_sprint_name_from_summary(summary_path: object) -> str:
     """Read sprint.name from a sprint-summary.yaml file.  Returns '' on any error."""
-    from pathlib import Path  # noqa: PLC0415
-
     import yaml  # noqa: PLC0415
 
     try:
@@ -139,26 +201,17 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     status = getattr(entry, "status", "waiting")
     phase = getattr(entry, "phase", None)
     cost_usd = getattr(entry, "cost_usd", 0.0)
-    blocked_by = getattr(entry, "blocked_by", [])
+    elapsed_s = getattr(entry, "elapsed_seconds", None)
+    detail = getattr(entry, "detail", "")
 
-    # Build the phase/status label
-    if phase and status == "running":
-        phase_label = phase
-    elif status == "done":
-        phase_label = "done"
-    elif status == "failed":
-        phase_label = phase or "ESCALATE"
-    elif status == "skipped":
-        phase_label = "skipped"
-    elif status == "blocked":
-        phase_label = "blocked"
-    else:
-        phase_label = "waiting"
+    phase_str = phase if phase else "—"
+    cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
+    elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
 
-    cost_str = f"${cost_usd:.2f}" if cost_usd else "    "
-    line = f"{icon} {path:<30}  {phase_label:<14}  {cost_str}"
-    if blocked_by:
-        line += f"  (waiting on: {', '.join(blocked_by)})"
+    line = (
+        f"{icon} {path:<28}  {status:<8}  {phase_str:<12}  "
+        f"{cost_str:>7}  {elapsed_str:>7}  {detail}"
+    )
     prefix = " " * indent
     print(f"{prefix}{line}")
 

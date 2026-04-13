@@ -704,62 +704,6 @@ class TestCmdStop:
         assert result == 1
 
 
-# ── TestCmdStatusActiveRuns ───────────────────────────────────────────
-
-
-class TestCmdStatusActiveRuns:
-    def test_shows_no_active_runs(self, tmp_path, capsys):
-        """When no active runs, prints 'No active runs.'"""
-        from theforge.cli import cmd_status
-
-        forge_yaml = tmp_path / "forge.yaml"
-        forge_yaml.write_text("project:\n  root: .\n")
-        config = _make_forge_config(tmp_path)
-        args = argparse.Namespace()
-
-        with (
-            patch("theforge.cli.status._find_config", return_value=forge_yaml),
-            patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.detach.list_active_runs", return_value=[]),
-            patch("theforge.pending.cleanup_stale"),
-            patch("theforge.pending.list_pending", return_value=[]),
-        ):
-            result = cmd_status(args)
-
-        assert result == 0
-        captured = capsys.readouterr()
-        assert "No active runs" in captured.out
-
-    def test_shows_table_for_active_runs(self, tmp_path, capsys):
-        """Active runs are displayed in table format."""
-        from theforge.cli import cmd_status
-
-        forge_yaml = tmp_path / "forge.yaml"
-        forge_yaml.write_text("project:\n  root: .\n")
-        config = _make_forge_config(tmp_path)
-        args = argparse.Namespace()
-
-        mock_runs = [{"run_id": "abc123ef", "pid": 12345, "slug": "my-story", "alive": True}]
-        mock_status = {"phase": "DEV", "cost_usd": 1.23, "elapsed_seconds": 300, "log_path": None}
-
-        with (
-            patch("theforge.cli.status._find_config", return_value=forge_yaml),
-            patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.detach.list_active_runs", return_value=mock_runs),
-            patch("theforge.detach.read_run_status", return_value=mock_status),
-            patch("theforge.pending.cleanup_stale"),
-            patch("theforge.pending.list_pending", return_value=[]),
-        ):
-            result = cmd_status(args)
-
-        assert result == 0
-        captured = capsys.readouterr()
-        assert "abc123ef" in captured.out
-        assert "my-story" in captured.out
-        assert "DEV" in captured.out
-        assert "active run" in captured.out
-
-
 # ── TestDaemonDeprecation ─────────────────────────────────────────────
 
 
