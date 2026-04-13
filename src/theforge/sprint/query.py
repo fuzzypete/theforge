@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import logging
 import subprocess
-import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +17,8 @@ from urllib.parse import quote
 if TYPE_CHECKING:
     from ..task import TaskStory
     from .manifest import ResolvedSprint
+
+from ..log_util import _log_line
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class NormalizedDependencyPlan:
 
 
 def _log(msg: str) -> None:
-    print(f"[sprint] {msg}", file=sys.stderr, flush=True)
+    _log_line("[sprint]", msg)
 
 
 def _gh_api_paginate_issues(

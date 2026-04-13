@@ -22,6 +22,7 @@ from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
 from ..coordinator.workspace import pull_base_branch
+from ..log_util import _log_line
 from ..task import TaskStory
 from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
 from .ci_checks import poll_required_checks
@@ -56,7 +57,7 @@ from .state_writer import SprintStateWriter
 def _log(msg: str) -> None:
     slug = get_worker_slug()
     prefix = f"[{slug}] " if slug else ""
-    print(f"[sprint] {prefix}{msg}", file=sys.stderr, flush=True)
+    _log_line("[sprint]", f"{prefix}{msg}")
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:

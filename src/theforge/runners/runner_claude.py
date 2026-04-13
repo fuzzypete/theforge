@@ -9,13 +9,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
 
 from theforge.agent_types import AgentResult, ModelUsage
+from theforge.log_util import _log_line
 
 from ..config import ModelProfile
 
@@ -23,14 +23,14 @@ from ..config import ModelProfile
 
 
 def _log(msg: str) -> None:
-    print(f"[forge] {msg}", file=sys.stderr, flush=True)
+    _log_line("[forge]", msg)
 
 
 def _log_verbose(msg: str) -> None:
     from theforge.log_level import _LOG_LEVEL, LogLevel  # noqa: PLC0415
 
     if _LOG_LEVEL >= LogLevel.VERBOSE:
-        print(f"[forge] {msg}", file=sys.stderr, flush=True)
+        _log_line("[forge]", msg)
 
 
 # ── Claude-specific helpers ───────────────────────────────────────────

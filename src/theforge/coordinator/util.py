@@ -16,6 +16,7 @@ from pathlib import Path
 
 from theforge.coordinator.log_tee import get_worker_slug
 from theforge.log_level import LogLevel
+from theforge.log_util import _log_line
 
 # Stable reference captured at import time so test patches that replace the
 # subprocess module attribute (e.g. patch("validate_phase.subprocess.run"))
@@ -54,7 +55,7 @@ def _log(msg: str) -> None:
     """Print coordinator status to stderr (always shown)."""
     slug = get_worker_slug()
     prefix = f"[{slug}] " if slug else ""
-    print(f"[forge] {prefix}{msg}", file=sys.stderr, flush=True)
+    _log_line("[forge]", f"{prefix}{msg}")
 
 
 def _log_verbose(msg: str) -> None:
@@ -62,7 +63,7 @@ def _log_verbose(msg: str) -> None:
     if _LOG_LEVEL >= LogLevel.VERBOSE:
         slug = get_worker_slug()
         prefix = f"[{slug}] " if slug else ""
-        print(f"[forge] {prefix}{msg}", file=sys.stderr, flush=True)
+        _log_line("[forge]", f"{prefix}{msg}")
 
 
 def _fmt_cost(cost: float | None) -> str:

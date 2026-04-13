@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import ForgeConfig
 from ..coordinator.audit import has_review_approve
 from ..coordinator.gate import _run_gate
+from ..log_util import _log_line
 from ..task import TaskStory
 from .manifest import _build_task_from_story
 
 
 def _log(msg: str) -> None:
-    print(f"[sprint] {msg}", file=sys.stderr, flush=True)
+    _log_line("[sprint]", msg)
 
 
 @dataclass

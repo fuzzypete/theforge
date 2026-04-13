@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import datetime
 import json
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 
+from ..log_util import _log_line
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
 if TYPE_CHECKING:
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def _log(msg: str) -> None:
-    print(f"[sprint] {msg}", file=sys.stderr, flush=True)
+    _log_line("[sprint]", msg)
 
 
 def _write_sprint_audit(
