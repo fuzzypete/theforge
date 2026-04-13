@@ -166,7 +166,7 @@ def run_preflight_for_model(
     if submitted:
         valid_yaml = _output_has_valid_yaml(result.output)
         if valid_yaml:
-            verdict, _ = _parse_preflight_verdict(result.output)
+            verdict, _, _degraded = _parse_preflight_verdict(result.output)
             complexity = _parse_preflight_complexity(result.output)
         else:
             # Output is garbage — don't report the fallback-BLOCKED as a real verdict.
