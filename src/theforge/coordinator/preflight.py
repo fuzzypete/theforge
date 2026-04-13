@@ -243,6 +243,49 @@ def _parse_preflight_sufficiency(output: str) -> str:
     return "needs_planning"
 
 
+def _parse_preflight_criteria_checked(output: str) -> list[dict]:
+    """Extract criteria_checked list from preflight agent output.
+
+    Each entry should have: criterion (str), files_checked (list[str]),
+    satisfied (bool), evidence (str).
+
+    Returns [] on parse failure, missing key, or non-list value so that
+    callers can treat an absent map as insufficient evidence (conservative).
+    """
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if not isinstance(parsed, dict):
+            return []
+        raw = parsed.get("criteria_checked")
+        if not isinstance(raw, list):
+            return []
+        result = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            result.append(
+                {
+                    "criterion": str(entry.get("criterion", "")),
+                    "files_checked": list(entry.get("files_checked") or []),
+                    "satisfied": bool(entry.get("satisfied", False)),
+                    "evidence": str(entry.get("evidence", "")),
+                }
+            )
+        return result
+    except yaml.YAMLError:
+        return []
+
+
 def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
     """Return (cost_rank, capability) for a profile using the model registry.
 

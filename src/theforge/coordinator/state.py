@@ -283,6 +283,7 @@ class CoordinatorState:
     preflight_cached_original_verdict: str | None = None
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None
+    preflight_criteria_checked: list[dict] = field(default_factory=list)
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
         None  # contents of the worktree plan file, passed to dev (raw string for audit)
