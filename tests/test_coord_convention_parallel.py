@@ -95,7 +95,7 @@ class TestConventionParallelCheck:
         mock_telemetry,
         tmp_path,
     ):
-        """When gate PASSes but conventions have violations, outcome is REVIEW_CONVENTION_BLOCK."""
+        """Gate PASSes with blocking=True violations → outcome is REVIEW_CONVENTION_BLOCK."""
         config = dataclasses.replace(
             _make_config(tmp_path),
             conventions_hard=HardConventionsConfig(max_module_lines=500),
@@ -105,7 +105,7 @@ class TestConventionParallelCheck:
         workspace.mkdir()
         state = _make_state()
 
-        viol = _make_violation()
+        viol = _make_violation(blocking=True)
         state.budget.max_iterations = config.retry.max_dev_iterations
         mock_gate.return_value = ("PASS", None, "", "make gate")
         mock_cv.return_value = ([viol], [viol])
@@ -125,6 +125,111 @@ class TestConventionParallelCheck:
         assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
         assert len(state.convention_violations) == 1
         assert "Hard convention violations" in state.human_feedback
+
+    @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
+    @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
+    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase._cu._run_shell")
+    @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
+    def test_gate_pass_followup_only_violations_proceed_to_pass(
+        self,
+        mock_deindex,
+        mock_shell,
+        mock_gate,
+        mock_cv,
+        mock_telemetry,
+        tmp_path,
+    ):
+        """Gate PASSes with only follow-up (blocking=False) violations → outcome is PASS."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            conventions_hard=HardConventionsConfig(max_module_lines=500),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = _make_state()
+
+        # LOC violations are non-blocking follow-ups
+        viol = _make_violation(rule="max_module_lines", blocking=False)
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        mock_gate.return_value = ("PASS", None, "", "make gate")
+        mock_cv.return_value = ([viol], [viol])
+        mock_shell.return_value = (True, "")  # clean worktree
+
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            workspace,
+            notify=False,
+            logger=None,
+        )
+
+        # Follow-up violations do not block — proceed to PASS
+        assert outcome is _ValidateOutcome.PASS
+        assert result is None
+        # Violations are recorded on state for audit visibility
+        assert len(state.convention_violations) == 1
+        assert state.convention_violations[0]["rule"] == "max_module_lines"
+        assert state.convention_violations[0]["blocking"] is False
+        # Follow-up violations are NOT injected into human_feedback
+        assert not state.human_feedback or "convention" not in state.human_feedback.lower()
+        # retry_reason is not set to CONVENTION_VIOLATIONS
+        assert state.retry_reason != RetryReason.CONVENTION_VIOLATIONS
+
+    @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
+    @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
+    @patch("theforge.coordinator.validate_phase._run_gate_full")
+    @patch("theforge.coordinator.validate_phase._cu._run_shell")
+    @patch("theforge.coordinator.validate_phase._deindex_forge_artifacts")
+    def test_gate_pass_mixed_violations_blocks_on_blocking_only(
+        self,
+        mock_deindex,
+        mock_shell,
+        mock_gate,
+        mock_cv,
+        mock_telemetry,
+        tmp_path,
+    ):
+        """Mixed blocking + follow-up violations: REVIEW_CONVENTION_BLOCK fires; both recorded."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            conventions_hard=HardConventionsConfig(max_module_lines=500),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = _make_state()
+
+        blocking_viol = _make_violation(rule="no_circular_imports", file="src/a.py", blocking=True)
+        followup_viol = _make_violation(rule="max_module_lines", file="src/big.py", blocking=False)
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        mock_gate.return_value = ("PASS", None, "", "make gate")
+        mock_cv.return_value = ([blocking_viol, followup_viol], [blocking_viol, followup_viol])
+        mock_shell.return_value = (True, "")  # clean worktree
+
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            workspace,
+            notify=False,
+            logger=None,
+        )
+
+        # Blocking violations trigger REVIEW_CONVENTION_BLOCK
+        assert outcome is _ValidateOutcome.REVIEW_CONVENTION_BLOCK
+        assert result is None
+        assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
+        # Both violations recorded on state
+        assert len(state.convention_violations) == 2
+        rules = {v["rule"] for v in state.convention_violations}
+        assert "no_circular_imports" in rules
+        assert "max_module_lines" in rules
+        # Only blocking violation text in human_feedback
+        assert "no_circular_imports" in state.human_feedback
+        assert "max_module_lines" not in state.human_feedback
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._get_handoff_content")
