@@ -368,7 +368,13 @@ def _persistent_p1_descriptions(
 
 def _p1_findings_match(current: ReviewFinding, previous: ReviewFinding) -> bool:
     """Return True when two P1 findings should be treated as the same persistent issue."""
-    if current.file and previous.file and current.file == previous.file:
+    if (
+        current.file
+        and previous.file
+        and current.file != "unknown"
+        and previous.file != "unknown"
+        and current.file == previous.file
+    ):
         return True
 
     if current.description in previous.description or previous.description in current.description:

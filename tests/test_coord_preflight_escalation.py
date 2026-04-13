@@ -150,6 +150,18 @@ class TestHasPersistentP1:
         assert _has_persistent_p1([], [finding]) is False
         assert _has_persistent_p1([finding], []) is False
 
+    def test_unknown_file_not_matched_as_same_file(self):
+        """Two P1s with file='unknown' (the default) must not match via file equality."""
+        curr = [_make_review_finding(file="unknown", description="unrelated issue alpha")]
+        prev = [_make_review_finding(file="unknown", description="completely different beta")]
+        assert _has_persistent_p1(curr, prev) is False
+
+    def test_unknown_file_still_matches_by_description(self):
+        """'unknown' file P1s with similar descriptions are still caught by text similarity."""
+        curr = [_make_review_finding(file="unknown", description="gate_override never wired")]
+        prev = [_make_review_finding(file="unknown", description="gate_override never wired in")]
+        assert _has_persistent_p1(curr, prev) is True
+
 
 class TestEscalateDevModel:
     def test_escalation_swaps_to_higher_model(self):
