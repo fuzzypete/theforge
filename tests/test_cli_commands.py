@@ -9,6 +9,8 @@ import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from theforge.cli import cmd_run
 from theforge.config import (
     DEFAULT_VALIDATION,
@@ -884,3 +886,248 @@ class TestEditableSourcePath:
             result = _editable_source_path()
 
         assert result is None
+
+
+# ── TestPidFileCleanupOnException ────────────────────────────────────────
+
+
+class TestPidFileCleanupOnException:
+    """PID file is removed even when run_task / run_sprint raises an exception."""
+
+    def test_cmd_run_removes_pid_on_run_task_exception(self, tmp_path):
+        """remove_pid is called when run_task raises an uncaught exception."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, fg=True)
+
+        removed: list[str] = []
+
+        def _fake_remove_pid(run_id: str, project_root: object) -> None:
+            removed.append(run_id)
+
+        with (
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", side_effect=RuntimeError("agent crash")),
+            patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
+        ):
+            with pytest.raises(RuntimeError, match="agent crash"):
+                cmd_run(args)
+
+        assert len(removed) == 1, "remove_pid must be called exactly once even on exception"
+
+    def test_cmd_run_removes_pid_on_success(self, tmp_path):
+        """remove_pid is called on normal completion (regression guard)."""
+        config = _make_forge_config(tmp_path)
+        args = _make_run_args(tmp_path, fg=True)
+
+        removed: list[str] = []
+
+        def _fake_remove_pid(run_id: str, project_root: object) -> None:
+            removed.append(run_id)
+
+        with (
+            patch("theforge.cli.run.load_config", return_value=config),
+            patch("theforge.cli.run.run_task", return_value=_stub_result()),
+            patch("theforge.cli.run._write_audit"),
+            patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
+        ):
+            rc = cmd_run(args)
+
+        assert rc == 0
+        assert len(removed) == 1
+
+    def test_cmd_sprint_removes_pid_on_run_sprint_exception(self, tmp_path):
+        """remove_pid is called when run_sprint raises an exception (manifest mode)."""
+        from theforge.cli import cmd_sprint
+
+        config = _make_forge_config(tmp_path)
+        args = _make_sprint_args(tmp_path, fg=True)
+
+        removed: list[str] = []
+
+        def _fake_remove_pid(run_id: str, project_root: object) -> None:
+            removed.append(run_id)
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint.run_sprint", side_effect=RuntimeError("sprint crash")),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch(
+                "theforge.cli.sprint._acquire_launch_locks",
+                return_value=([], None),
+            ),
+            patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
+        ):
+            rc = cmd_sprint(args)
+
+        assert rc == 1
+        assert len(removed) == 1, "remove_pid must be called even when run_sprint raises"
+
+    def test_cmd_sprint_removes_pid_on_success(self, tmp_path):
+        """remove_pid is called on normal sprint completion (regression guard)."""
+        from theforge.cli import cmd_sprint
+        from theforge.sprint import SprintResult
+
+        config = _make_forge_config(tmp_path)
+        args = _make_sprint_args(tmp_path, fg=True)
+
+        removed: list[str] = []
+
+        def _fake_remove_pid(run_id: str, project_root: object) -> None:
+            removed.append(run_id)
+
+        stub_result = SprintResult(
+            name="test",
+            specs_total=1,
+            specs_succeeded=1,
+            specs_failed=0,
+            specs_skipped=0,
+            total_cost_usd=0.0,
+            budget_usd=0.0,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint.run_sprint", return_value=stub_result),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch(
+                "theforge.cli.sprint._acquire_launch_locks",
+                return_value=([], None),
+            ),
+            patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
+        ):
+            rc = cmd_sprint(args)
+
+        assert rc == 0
+        assert len(removed) == 1
+
+    def test_run_query_mode_removes_pid_on_run_sprint_exception(self, tmp_path):
+        """remove_pid is called when run_sprint raises in _run_query_mode."""
+        from theforge import detach as _detach_module
+        from theforge.cli.sprint import _run_query_mode
+
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(
+            name=None,
+            no_notify=True,
+            fg=True,
+            detach=False,
+        )
+
+        task = MagicMock()
+        task.slug = "issue-42"
+        task.depends_on = []
+        resolved = MagicMock()
+        resolved.stories = [(task, MagicMock(), "issue:42")]
+
+        removed: list[str] = []
+
+        def _fake_remove_pid(run_id: str, project_root: object) -> None:
+            removed.append(run_id)
+
+        with (
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 42, "title": "Story"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch(
+                "theforge.cli.sprint._acquire_launch_locks",
+                return_value=([], None),
+            ),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch(
+                "theforge.cli.sprint.run_sprint",
+                side_effect=RuntimeError("query sprint crash"),
+            ),
+            patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
+        ):
+            rc = _run_query_mode(
+                args=args,
+                config=config,
+                config_path=tmp_path / "forge.yaml",
+                milestone="v1.0",
+                label=None,
+                budget_str="5",
+                dry_run=False,
+                max_parallel=1,
+                auto_merge=False,
+                interactive=False,
+                resume=False,
+                no_pull=False,
+                _daemon=MagicMock(is_daemon_running=MagicMock(return_value=False)),
+                _detach=_detach_module,
+                _generate_run_id=MagicMock(return_value="run-xyz"),
+            )
+
+        assert rc == 1
+        assert len(removed) == 1, "remove_pid must be called even when run_sprint raises"
+
+    def test_run_query_mode_removes_pid_on_success(self, tmp_path):
+        """remove_pid is called on normal _run_query_mode completion (regression guard)."""
+        from theforge import detach as _detach_module
+        from theforge.cli.sprint import _run_query_mode
+        from theforge.sprint import SprintResult
+
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(
+            name=None,
+            no_notify=True,
+            fg=True,
+            detach=False,
+        )
+
+        task = MagicMock()
+        task.slug = "issue-42"
+        task.depends_on = []
+        resolved = MagicMock()
+        resolved.stories = [(task, MagicMock(), "issue:42")]
+
+        stub_result = SprintResult(
+            name="test",
+            specs_total=1,
+            specs_succeeded=1,
+            specs_failed=0,
+            specs_skipped=0,
+            total_cost_usd=0.0,
+            budget_usd=0.0,
+        )
+
+        removed: list[str] = []
+
+        def _fake_remove_pid(run_id: str, project_root: object) -> None:
+            removed.append(run_id)
+
+        with (
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 42, "title": "Story"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch(
+                "theforge.cli.sprint._acquire_launch_locks",
+                return_value=([], None),
+            ),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch("theforge.cli.sprint.run_sprint", return_value=stub_result),
+            patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
+        ):
+            rc = _run_query_mode(
+                args=args,
+                config=config,
+                config_path=tmp_path / "forge.yaml",
+                milestone="v1.0",
+                label=None,
+                budget_str="5",
+                dry_run=False,
+                max_parallel=1,
+                auto_merge=False,
+                interactive=False,
+                resume=False,
+                no_pull=False,
+                _daemon=MagicMock(is_daemon_running=MagicMock(return_value=False)),
+                _detach=_detach_module,
+                _generate_run_id=MagicMock(return_value="run-abc"),
+            )
+
+        assert rc == 0
+        assert len(removed) == 1

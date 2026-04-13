@@ -230,39 +230,50 @@ def cmd_run(args: "argparse.Namespace") -> int:
 
     no_pull = getattr(args, "no_pull", False)
 
-    if resume:
-        triage = _triage_spec(str(story_path), config, config.project_root)
-        action_label = triage.action.upper().replace("_", " ")
-        print(f"  Resume triage: {action_label} — {triage.reason}", file=sys.stderr)
+    try:
+        if resume:
+            triage = _triage_spec(str(story_path), config, config.project_root)
+            action_label = triage.action.upper().replace("_", " ")
+            print(f"  Resume triage: {action_label} — {triage.reason}", file=sys.stderr)
 
-        if triage.action in ("skip_merged", "skip"):
-            print(f"  ✓ Nothing to do — {triage.reason}", file=sys.stderr)
-            return 0
+            if triage.action in ("skip_merged", "skip"):
+                print(f"  ✓ Nothing to do — {triage.reason}", file=sys.stderr)
+                return 0
 
-        if triage.action == "review" and triage.worktree_path is not None:
-            result = run_from_review(
-                config,
-                task,
-                triage.worktree_path,
-                interactive=interactive,
-                auto_merge=auto_merge,
-                notify=not args.no_notify,
-                no_pull=no_pull,
-            )
-        elif triage.action == "dev" and triage.worktree_path is not None:
-            from theforge.coordinator.engine import run_from_dev
+            if triage.action == "review" and triage.worktree_path is not None:
+                result = run_from_review(
+                    config,
+                    task,
+                    triage.worktree_path,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    notify=not args.no_notify,
+                    no_pull=no_pull,
+                )
+            elif triage.action == "dev" and triage.worktree_path is not None:
+                from theforge.coordinator.engine import run_from_dev
 
-            result = run_from_dev(
-                config,
-                task,
-                triage.worktree_path,
-                interactive=interactive,
-                auto_merge=auto_merge,
-                notify=not args.no_notify,
-                no_pull=no_pull,
-            )
+                result = run_from_dev(
+                    config,
+                    task,
+                    triage.worktree_path,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    notify=not args.no_notify,
+                    no_pull=no_pull,
+                )
+            else:
+                # "full" or no worktree — run from scratch
+                result = run_task(
+                    config,
+                    task,
+                    interactive=interactive,
+                    auto_merge=auto_merge,
+                    notify=not args.no_notify,
+                    plan_path=plan_path,
+                    no_pull=no_pull,
+                )
         else:
-            # "full" or no worktree — run from scratch
             result = run_task(
                 config,
                 task,
@@ -270,37 +281,27 @@ def cmd_run(args: "argparse.Namespace") -> int:
                 auto_merge=auto_merge,
                 notify=not args.no_notify,
                 plan_path=plan_path,
+                start_phase=start_phase,
+                stop_phase=stop_phase,
                 no_pull=no_pull,
             )
-    else:
-        result = run_task(
-            config,
-            task,
-            interactive=interactive,
-            auto_merge=auto_merge,
-            notify=not args.no_notify,
-            plan_path=plan_path,
-            start_phase=start_phase,
-            stop_phase=stop_phase,
-            no_pull=no_pull,
-        )
 
-    # Write audit log
-    audit_path = _write_audit(result, config, task)
+        # Write audit log
+        audit_path = _write_audit(result, config, task)
 
-    # Summary
-    print(file=sys.stderr)
-    print(f"{'=' * 60}", file=sys.stderr)
-    icon = "✓" if result.success else "✗"
-    print(f"  {icon} {result.message}", file=sys.stderr)
-    print(f"  Audit log: {audit_path}", file=sys.stderr)
-    print(f"  Total cost: ${result.state.total_cost:.3f}", file=sys.stderr)
-    print(f"{'=' * 60}", file=sys.stderr)
+        # Summary
+        print(file=sys.stderr)
+        print(f"{'=' * 60}", file=sys.stderr)
+        icon = "✓" if result.success else "✗"
+        print(f"  {icon} {result.message}", file=sys.stderr)
+        print(f"  Audit log: {audit_path}", file=sys.stderr)
+        print(f"  Total cost: ${result.state.total_cost:.3f}", file=sys.stderr)
+        print(f"{'=' * 60}", file=sys.stderr)
 
-    # Remove PID file on completion
-    _detach.remove_pid(run_id, config.project_root)
-
-    return 0 if result.success else 1
+        return 0 if result.success else 1
+    finally:
+        # Remove PID file unconditionally — ensures cleanup even if run_task raises
+        _detach.remove_pid(run_id, config.project_root)
 
 
 def register_parser(subparsers: object) -> None:
