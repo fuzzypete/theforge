@@ -9,7 +9,9 @@ from unittest.mock import MagicMock, patch
 from theforge.agent_types import ModelUsage
 from theforge.config import ModelProfile
 from theforge.runners.api import (
+    _SENSITIVE_ARG_NAMES,
     AgentLoopManager,
+    _redact_tool_call_arguments,
     run_api_agent,
 )
 from theforge.runners.schema_utils import (
@@ -799,3 +801,46 @@ class TestTimeNudge:
         assert len(time_nudges) >= 1
         # All nudge messages should be identical (sent once, seen in subsequent turns)
         assert len(set(time_nudges)) == 1
+
+
+class TestRedactToolCallArguments:
+    """Unit tests for _redact_tool_call_arguments and _SENSITIVE_ARG_NAMES."""
+
+    def test_sensitive_arg_names_contains_content(self):
+        assert "content" in _SENSITIVE_ARG_NAMES
+        assert "new_content" in _SENSITIVE_ARG_NAMES
+        assert "old_string" in _SENSITIVE_ARG_NAMES
+        assert "new_string" in _SENSITIVE_ARG_NAMES
+        assert "input" in _SENSITIVE_ARG_NAMES
+
+    def test_non_sensitive_args_preserved(self):
+        args = {"path": "src/foo.py", "start_line": 1, "end_line": 10}
+        result = _redact_tool_call_arguments(args)
+        assert result == args
+
+    def test_content_redacted(self):
+        args = {"path": "src/foo.py", "content": "SECRET_API_KEY=abc123\nimport os\n"}
+        result = _redact_tool_call_arguments(args)
+        assert result["path"] == "src/foo.py"
+        assert result["content"] == "<redacted>"
+        assert "SECRET_API_KEY" not in str(result)
+
+    def test_edit_args_redacted(self):
+        args = {
+            "path": "src/bar.py",
+            "old_string": "password = 'hunter2'",
+            "new_string": "password = env.get('PASSWORD')",
+        }
+        result = _redact_tool_call_arguments(args)
+        assert result["path"] == "src/bar.py"
+        assert result["old_string"] == "<redacted>"
+        assert result["new_string"] == "<redacted>"
+        assert "hunter2" not in str(result)
+
+    def test_original_dict_not_mutated(self):
+        args = {"path": "x.py", "content": "sensitive data"}
+        _redact_tool_call_arguments(args)
+        assert args["content"] == "sensitive data"
+
+    def test_empty_args(self):
+        assert _redact_tool_call_arguments({}) == {}
