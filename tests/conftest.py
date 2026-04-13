@@ -132,6 +132,7 @@ def gemini_profile() -> ModelProfile:
         budget_usd=1.0,
         timeout_seconds=300,
         allowed_tools=(),
+        sandbox_mode="none",  # sandbox behaviour is tested in test_runner_gemini.py
     )
 
 
