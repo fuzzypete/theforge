@@ -445,6 +445,138 @@ def test_cmd_sprint_status_not_found(tmp_path: Path) -> None:
     assert code == 1
 
 
+# ── display_sprint_status: header and row field coverage ─────────────────────
+
+
+def test_display_sprint_status_header_includes_cost_and_duration(tmp_path: Path) -> None:
+    """Completed sprint header includes total cost and duration."""
+    stories = [
+        {"slug": "issue-1", "path": "Issue #1", "outcome": "DONE", "cost_usd": 0.50},
+    ]
+    _make_summary_file(tmp_path, "cost-sprint", "run-cost-1", stories)
+    # Patch the sprint summary fixture to include aggregate fields.
+    import yaml
+
+    log_dir = tmp_path / ".forge" / "logs" / "cost-sprint"
+    summary_path = log_dir / "sprint-summary.yaml"
+    with open(summary_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    data["sprint"]["total_cost_usd"] = 1.23
+    data["sprint"]["duration_seconds"] = 3720.0  # 62 minutes
+    with open(summary_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+
+    code, output = _run_sprint_status(tmp_path, "run-cost-1")
+
+    assert code == 0
+    assert "cost: $1.23" in output
+    assert "duration: 62m" in output
+
+
+def test_display_sprint_status_row_shows_status_and_detail(tmp_path: Path) -> None:
+    """Sprint rows include status and detail fields."""
+    stories = [
+        {"slug": "issue-2", "path": "Issue #2", "outcome": "DONE", "cost_usd": 0.30},
+        {"slug": "issue-3", "path": "Issue #3", "outcome": "ESCALATE", "cost_usd": 0.10},
+    ]
+    _make_summary_file(tmp_path, "row-sprint", "run-row-1", stories)
+
+    code, output = _run_sprint_status(tmp_path, "run-row-1")
+
+    assert code == 0
+    # status column
+    assert "done" in output
+    assert "failed" in output
+    # detail column for DONE → "APPROVE", for ESCALATE → "ESCALATE"
+    assert "APPROVE" in output
+    assert "ESCALATE" in output
+
+
+def test_display_sprint_status_live_row_shows_phase_and_status(tmp_path: Path) -> None:
+    """Live sprint rows include both status and phase columns."""
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "live-row.pid").write_text("99999\nrow-sprint\n")
+
+    _make_state_file(
+        tmp_path,
+        "live-row",
+        "row-sprint",
+        [
+            {
+                "slug": "issue-10",
+                "path": "Issue #10",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 0.07,
+                "bundle_candidate": False,
+                "blocked_by": [],
+            },
+            {
+                "slug": "issue-11",
+                "path": "Issue #11",
+                "status": "blocked",
+                "phase": None,
+                "cost_usd": 0.0,
+                "bundle_candidate": False,
+                "blocked_by": ["issue-10"],
+            },
+        ],
+    )
+
+    code, output = _run_sprint_status(tmp_path, "live-row")
+
+    assert code == 0
+    assert "running" in output
+    assert "DEV" in output
+    assert "blocked" in output
+    assert "issue-10" in output  # blocked_by appears in detail
+
+
+def test_display_sprint_status_crashed_sprint(tmp_path: Path) -> None:
+    """Crashed sprint (no PID, .state present, no summary) shows crash banner."""
+    _make_state_file(
+        tmp_path,
+        "crashed-run",
+        "crashed-sprint",
+        [
+            {
+                "slug": "issue-40",
+                "path": "Issue #40",
+                "status": "running",
+                "phase": "DEV",
+                "cost_usd": 0.05,
+                "bundle_candidate": False,
+                "blocked_by": [],
+            }
+        ],
+    )
+    # No PID file and no sprint-summary — simulates an unexpected exit.
+
+    code, output = _run_sprint_status(tmp_path, "crashed-run")
+
+    assert code == 0
+    assert "crashed" in output
+    assert "unexpectedly" in output
+
+
+def test_display_sprint_status_column_header_present(tmp_path: Path) -> None:
+    """Sprint display includes a column header row."""
+    stories = [
+        {"slug": "issue-50", "path": "Issue #50", "outcome": "DONE", "cost_usd": 0.10},
+    ]
+    _make_summary_file(tmp_path, "col-sprint", "run-col-1", stories)
+
+    code, output = _run_sprint_status(tmp_path, "run-col-1")
+
+    assert code == 0
+    assert "STATUS" in output
+    assert "PHASE" in output
+    assert "COST" in output
+    assert "ELAPSED" in output
+    assert "DETAIL" in output
+
+
 # ── SprintStateWriter ────────────────────────────────────────────────────────
 
 

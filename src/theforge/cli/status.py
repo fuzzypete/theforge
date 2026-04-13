@@ -154,14 +154,19 @@ def _resolve_run_id(run_id: str, project_root: Path) -> bool:
 
 
 def _show_recent_runs(project_root: Path) -> int:
-    """Print a compact table of recent runs (active + completed)."""
+    """Print a compact table of recent runs sorted by time (newest first)."""
+    import time
+
     import yaml
 
     from theforge import detach as _detach
 
-    rows: list[tuple[str, str, str, str, str]] = []  # run_id, type, status, cost, elapsed
+    # Rows: (mtime_float, run_id, type, status, cost_str, elapsed_str)
+    rows: list[tuple[float, str, str, str, str, str]] = []
+    seen_ids: set[str] = set()
+    now = time.time()
 
-    # Active runs
+    # Active runs — treat as most recent by using current time as mtime.
     for run in _detach.list_active_runs(project_root):
         run_id = run["run_id"]
         slug = run["slug"]
@@ -171,18 +176,18 @@ def _show_recent_runs(project_root: Path) -> int:
         elapsed_s = st.get("elapsed_seconds")
         cost_str = f"${cost_usd:.2f}" if cost_usd is not None else "—"
         elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
-        rows.append((run_id, run_type, "active", cost_str, elapsed_str))
+        rows.append((now, run_id, run_type, "active", cost_str, elapsed_str))
+        seen_ids.add(run_id)
 
     logs_dir = project_root / ".forge" / "logs"
-    active_ids = {r[0] for r in rows}
 
     if logs_dir.exists():
-        # Completed sprints
-        for summary in sorted(
-            logs_dir.rglob("sprint-summary.yaml"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
+        # Completed sprints — collect with their summary file mtime.
+        for summary in logs_dir.rglob("sprint-summary.yaml"):
+            try:
+                mtime = summary.stat().st_mtime
+            except OSError:
+                continue
             try:
                 with open(summary, encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
@@ -190,7 +195,7 @@ def _show_recent_runs(project_root: Path) -> int:
                 continue
             sp = data.get("sprint", {})
             run_id = sp.get("run_id", "")
-            if not run_id or run_id in active_ids:
+            if not run_id or run_id in seen_ids:
                 continue
             cost_usd = sp.get("total_cost_usd")
             dur_s = sp.get("duration_seconds")
@@ -198,28 +203,31 @@ def _show_recent_runs(project_root: Path) -> int:
             dur_str = f"{int(dur_s // 60)}m" if dur_s is not None else "—"
             stopped = sp.get("stopped_reason")
             status_str = "stopped" if stopped else "completed"
-            rows.append((run_id, "sprint", status_str, cost_str, dur_str))
-            active_ids.add(run_id)
+            rows.append((mtime, run_id, "sprint", status_str, cost_str, dur_str))
+            seen_ids.add(run_id)
 
-        # Historical single runs
-        for log_file in sorted(
-            logs_dir.rglob("run-*.log"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
+        # Historical single runs — collect with log file mtime.
+        for log_file in logs_dir.rglob("run-*.log"):
             run_id = log_file.stem[4:]
-            if run_id in active_ids:
+            if run_id in seen_ids:
                 continue
-            rows.append((run_id, "single", "completed", "—", "—"))
-            active_ids.add(run_id)
+            try:
+                mtime = log_file.stat().st_mtime
+            except OSError:
+                continue
+            rows.append((mtime, run_id, "single", "completed", "—", "—"))
+            seen_ids.add(run_id)
 
     if not rows:
         print("No recent runs found.")
         return 0
 
+    # Sort all runs newest-first, then truncate.
+    rows.sort(key=lambda r: r[0], reverse=True)
+
     print(f"{'RUN ID':<14}  {'TYPE':<8}  {'STATUS':<12}  {'COST':>7}  {'ELAPSED':>8}")
     print("-" * 60)
-    for run_id, rtype, status, cost, elapsed in rows[:20]:
+    for _, run_id, rtype, status, cost, elapsed in rows[:20]:
         print(f"{run_id:<14}  {rtype:<8}  {status:<12}  {cost:>7}  {elapsed:>8}")
     return 0
 

@@ -259,3 +259,18 @@ class TestCmdStatusRouting:
 
         assert result == 0
         mock_recent.assert_called_once_with(config.project_root)
+
+
+# ── Parser-level coverage ─────────────────────────────────────────────────────
+
+
+def test_sprint_status_absent_from_cli_parser() -> None:
+    """forge sprint-status must not appear in the built CLI parser."""
+    from theforge.cli.main import build_parser
+
+    parser = build_parser()
+    try:
+        parser.parse_args(["sprint-status", "some-run-id"])
+        raise AssertionError("Expected SystemExit for removed sprint-status command")
+    except SystemExit:
+        pass  # argparse exits on unrecognised subcommand — expected
