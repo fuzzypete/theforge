@@ -192,8 +192,9 @@ def cmd_sprint(args: object) -> int:
         return 1
     finally:
         release_story_locks(locked_fds)
+        # Remove PID file unconditionally — ensures cleanup even if run_sprint raises
+        _detach.remove_pid(run_id, config.project_root)
 
-    _detach.remove_pid(run_id, config.project_root)
     return 0 if result.specs_failed == 0 else 1
 
 
@@ -383,8 +384,9 @@ def _run_query_mode(
         return 1
     finally:
         release_story_locks(locked_fds)
+        # Remove PID file unconditionally — ensures cleanup even if run_sprint raises
+        _detach.remove_pid(run_id, config.project_root)
 
-    _detach.remove_pid(run_id, config.project_root)
     return 0 if result.specs_failed == 0 else 1
 
 
