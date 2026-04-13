@@ -1015,6 +1015,15 @@ class TestAllowedToolsConfig:
 
         assert profile.thinking_budget == 2048
 
+    def test_parse_profile_name_with_bracket_raises(self):
+        """Profile names containing ']' are rejected at parse time."""
+        with pytest.raises(ValueError, match=r"contains '\]'"):
+            _parse_profile(
+                "bad]name",
+                {"cli": "claude", "model": "sonnet"},
+                role="review",
+            )
+
     def test_apply_profile_overrides_preserves_explicit_zero_thinking_budget(self):
         base = ModelProfile(
             name="gemini-reviewer",
