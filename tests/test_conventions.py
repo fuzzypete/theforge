@@ -40,12 +40,14 @@ def _write(path: Path, content: str) -> None:
 
 class TestLineCountCheck:
     def test_line_count_violation(self, tmp_path):
-        """File over max_module_lines is reported."""
+        """File over max_module_lines is reported with blocking=False."""
         py_file = tmp_path / "src" / "theforge" / "big.py"
         _write(py_file, "\n" * 501)  # 501 lines (empty lines count)
         cfg = _make_config(max_module_lines=500)
         violations = _check_line_counts(cfg, tmp_path)
         assert any(v.rule == "max_module_lines" and "big.py" in v.file for v in violations)
+        loc_violations = [v for v in violations if v.rule == "max_module_lines"]
+        assert all(v.blocking is False for v in loc_violations)
 
     def test_line_count_ok(self, tmp_path):
         """File at exactly the limit is not reported."""
@@ -56,12 +58,14 @@ class TestLineCountCheck:
         assert not any(v.rule == "max_module_lines" and "small.py" in v.file for v in violations)
 
     def test_test_file_line_count_violation(self, tmp_path):
-        """Test file over max_test_file_lines is reported with correct rule."""
+        """Test file over max_test_file_lines is reported with correct rule and blocking=False."""
         py_file = tmp_path / "tests" / "test_big.py"
         _write(py_file, "\n" * 1001)
         cfg = _make_config(max_test_file_lines=1000)
         violations = _check_line_counts(cfg, tmp_path)
         assert any(v.rule == "max_test_file_lines" and "test_big.py" in v.file for v in violations)
+        test_loc_violations = [v for v in violations if v.rule == "max_test_file_lines"]
+        assert all(v.blocking is False for v in test_loc_violations)
 
     def test_test_file_line_count_ok(self, tmp_path):
         """Test file at limit is not reported."""
@@ -85,13 +89,15 @@ class TestLineCountCheck:
 
 class TestCircularImportCheck:
     def test_circular_import_detected(self, tmp_path):
-        """Two files that import each other → no_circular_imports violation."""
+        """Two files that import each other → no_circular_imports violation (blocking=True)."""
         pkg = tmp_path / "src" / "theforge"
         pkg.mkdir(parents=True)
         _write(pkg / "a.py", "from theforge import b\n")
         _write(pkg / "b.py", "from theforge import a\n")
         violations = _check_circular_imports(tmp_path)
         assert any(v.rule == "no_circular_imports" for v in violations)
+        circular_violations = [v for v in violations if v.rule == "no_circular_imports"]
+        assert all(v.blocking is True for v in circular_violations)
 
     def test_no_circular_imports(self, tmp_path):
         """Linear imports → no violation."""
@@ -159,11 +165,13 @@ class TestCircularImportCheck:
 
 class TestTestMirrorCheck:
     def test_missing_test_mirror(self, tmp_path):
-        """src/theforge/bar.py with no tests/test_bar.py → violation."""
+        """src/theforge/bar.py with no tests/test_bar.py → violation (blocking=True)."""
         _write(tmp_path / "src" / "theforge" / "bar.py", "# module\n")
         (tmp_path / "tests").mkdir(parents=True)
         violations = _check_test_mirrors(tmp_path)
         assert any(v.rule == "test_mirrors_source" and "bar.py" in v.file for v in violations)
+        mirror_violations = [v for v in violations if v.rule == "test_mirrors_source"]
+        assert all(v.blocking is True for v in mirror_violations)
 
     def test_test_mirror_ok(self, tmp_path):
         """Mirror exists → no violation."""
@@ -258,7 +266,7 @@ class TestCheckHardConventions:
         assert violations == []
 
     def test_violation_dataclass_fields(self, tmp_path):
-        """ConventionViolation has correct fields."""
+        """ConventionViolation has correct fields; line-count violations are non-blocking."""
         _write(tmp_path / "src" / "theforge" / "over.py", "\n" * 6)
         (tmp_path / "tests").mkdir(parents=True)
         cfg = _make_config(
@@ -271,7 +279,8 @@ class TestCheckHardConventions:
         assert v.rule
         assert v.file
         assert v.detail
-        assert v.blocking is True
+        # max_module_lines is a hygiene/follow-up rule — non-blocking
+        assert v.blocking is False
 
 
 class TestConventionBaseline:

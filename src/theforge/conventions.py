@@ -104,6 +104,7 @@ def _check_line_counts(
                     rule="max_module_lines",
                     file=rel,
                     detail=f"{rel} has {line_count} lines (limit {config.max_module_lines})",
+                    blocking=False,
                 )
             )
 
@@ -116,6 +117,7 @@ def _check_line_counts(
                     rule="max_test_file_lines",
                     file=rel,
                     detail=f"{rel} has {line_count} lines (limit {config.max_test_file_lines})",
+                    blocking=False,
                 )
             )
 

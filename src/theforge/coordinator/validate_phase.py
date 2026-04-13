@@ -279,15 +279,24 @@ def _run_validate_phase(
                 success=False, phase=state.phase, state=state, message=state.error
             )
         if _cv_violations:
-            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
-            state.human_feedback += (
-                "\n\nAdditionally, hard convention violations were detected:\n" + "\n".join(lines)
-            )
+            _blocking_cv = [v for v in _cv_violations if v.blocking]
+            _followup_cv = [v for v in _cv_violations if not v.blocking]
             state.convention_violations = [
                 {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
                 for v in _cv_violations
             ]
-            _log(f"  ✗ VALIDATE   convention violations also found ({len(_cv_violations)})")
+            if _blocking_cv:
+                lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _blocking_cv]
+                state.human_feedback += (
+                    "\n\nAdditionally, hard convention violations were detected:\n"
+                    + "\n".join(lines)
+                )
+            for v in _followup_cv:
+                _log(f"  Convention follow-up [hygiene]: {v.rule} in {v.file} — {v.detail}")
+            _log(
+                f"  ✗ VALIDATE   convention violations also found"
+                f" ({len(_blocking_cv)} blocking, {len(_followup_cv)} follow-up)"
+            )
         _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
@@ -431,15 +440,24 @@ def _run_validate_phase(
                 success=False, phase=state.phase, state=state, message=state.error
             )
         if _cv_violations:
-            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
-            state.human_feedback += (
-                "\n\nAdditionally, hard convention violations were detected:\n" + "\n".join(lines)
-            )
+            _blocking_cv2 = [v for v in _cv_violations if v.blocking]
+            _followup_cv2 = [v for v in _cv_violations if not v.blocking]
             state.convention_violations = [
                 {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
                 for v in _cv_violations
             ]
-            _log(f"  ✗ VALIDATE   convention violations also found ({len(_cv_violations)})")
+            if _blocking_cv2:
+                lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _blocking_cv2]
+                state.human_feedback += (
+                    "\n\nAdditionally, hard convention violations were detected:\n"
+                    + "\n".join(lines)
+                )
+            for v in _followup_cv2:
+                _log(f"  Convention follow-up [hygiene]: {v.rule} in {v.file} — {v.detail}")
+            _log(
+                f"  ✗ VALIDATE   convention violations also found"
+                f" ({len(_blocking_cv2)} blocking, {len(_followup_cv2)} follow-up)"
+            )
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
         return _ValidateOutcome.RETRY_DEV, None
@@ -466,6 +484,10 @@ def _run_validate_phase(
     # worktree's version of conventions.py, not the coordinator's own copy.
     if config.conventions_hard is not None:
         if _cv_violations:
+            blocking_violations = [v for v in _cv_violations if v.blocking]
+            followup_violations = [v for v in _cv_violations if not v.blocking]
+
+            # Record ALL violations on state — blocking flag preserved
             state.convention_violations = [
                 {
                     "rule": v.rule,
@@ -475,27 +497,48 @@ def _run_validate_phase(
                 }
                 for v in _cv_violations
             ]
-            lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _cv_violations]
-            human_feedback = "Hard convention violations detected:\n" + "\n".join(lines)
-            state.human_feedback = human_feedback
-            state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
-            _log(f"  ✗ VALIDATE   convention violations ({len(_cv_violations)} found)")
-            for v in _cv_violations:
-                _log(f"    [{v.rule}] {v.file}: {v.detail}")
-            if state.budget.is_exhausted():
-                state.phase = Phase.ESCALATE
-                state.error = f"Hard convention violations after {state.dev_iteration} attempts"
-                _log(f"✗ ESCALATE   {state.error}")
+
+            # Log and emit follow-up (hygiene) violations — not blocking
+            for v in followup_violations:
+                _log(f"  Convention follow-up [hygiene]: {v.rule} in {v.file} — {v.detail}")
                 if logger:
-                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
-                    logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
-                _escalate_notify(task, state, notify, config)
-                return _ValidateOutcome.ESCALATE, CoordinatorResult(
-                    success=False, phase=state.phase, state=state, message=state.error
+                    logger._safe_emit(
+                        "convention_followup",
+                        severity="hygiene",
+                        rule=v.rule,
+                        file=v.file,
+                        detail=v.detail,
+                        suggested_story_title=f"Split {v.file} below LOC limit",
+                    )
+
+            if blocking_violations:
+                lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in blocking_violations]
+                human_feedback = "Hard convention violations detected:\n" + "\n".join(lines)
+                state.human_feedback = human_feedback
+                state.retry_reason = RetryReason.CONVENTION_VIOLATIONS
+                _log(
+                    f"  ✗ VALIDATE   convention violations"
+                    f" ({len(blocking_violations)} blocking found)"
                 )
-            if logger:
-                logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
-            return _ValidateOutcome.REVIEW_CONVENTION_BLOCK, None
+                for v in blocking_violations:
+                    _log(f"    [{v.rule}] {v.file}: {v.detail}")
+                if state.budget.is_exhausted():
+                    state.phase = Phase.ESCALATE
+                    state.error = (
+                        f"Hard convention violations after {state.dev_iteration} attempts"
+                    )
+                    _log(f"✗ ESCALATE   {state.error}")
+                    if logger:
+                        logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+                        logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+                    _escalate_notify(task, state, notify, config)
+                    return _ValidateOutcome.ESCALATE, CoordinatorResult(
+                        success=False, phase=state.phase, state=state, message=state.error
+                    )
+                if logger:
+                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
+                return _ValidateOutcome.REVIEW_CONVENTION_BLOCK, None
+            # Only follow-up violations — proceed to PASS
         else:
             state.convention_violations = [
                 {
