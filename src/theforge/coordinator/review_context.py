@@ -54,7 +54,7 @@ def _get_commit_log(workspace_path: Path, base_branch: str = "main") -> str:
 
 def _get_diff_stat(workspace_path: Path, base_branch: str = "main") -> str:
     """Get verified diff stat vs the base branch."""
-    ok, stat = _cu._run_shell(f"git diff {base_branch} --stat", workspace_path)
+    ok, stat = _cu._run_shell(f"git diff {base_branch}...HEAD --stat", workspace_path)
     if ok and stat.strip():
         return stat
     return "(no files changed vs base branch)"
@@ -67,7 +67,7 @@ def _get_diff_content(
     max_chars: int = 300_000,
 ) -> str:
     """Get verified diff content vs the base branch, truncating when too large."""
-    ok, diff = _cu._run_shell(f"git diff {base_branch}", workspace_path)
+    ok, diff = _cu._run_shell(f"git diff {base_branch}...HEAD", workspace_path)
     if not ok and not diff.strip():
         return "(failed to load git diff vs base branch)"
     if not diff.strip():
