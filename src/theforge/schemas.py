@@ -358,11 +358,11 @@ def plan_review_json_schema() -> dict:
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["verdict", "summary", "findings"],
+        "required": ["verdict", "summary", "findings", "criteria_coverage"],
         "properties": {
             "verdict": {
                 "type": "string",
-                "enum": ["APPROVE", "REQUEST_CHANGES"],
+                "enum": ["APPROVE", "REJECT"],
                 "description": "Overall verdict on the plan.",
             },
             "summary": {
@@ -378,9 +378,22 @@ def plan_review_json_schema() -> dict:
                     "properties": {
                         "severity": {
                             "type": "string",
-                            "enum": ["P1", "P1-impl", "P2"],
+                            "enum": ["P0", "P1", "P1-impl", "P2"],
                         },
                         "description": {"type": "string"},
+                    },
+                },
+            },
+            "criteria_coverage": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["criterion", "covered", "plan_section"],
+                    "properties": {
+                        "criterion": {"type": "string"},
+                        "covered": {"type": "boolean"},
+                        "plan_section": {"type": "string"},
                     },
                 },
             },
