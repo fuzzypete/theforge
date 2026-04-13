@@ -358,8 +358,9 @@ def test_budget_cap_enforcement():
     """When sum of budgets exceeds cap, downgrade until within budget."""
     # Use a very tight budget that forces downgrades
     agents = _make_agents_one_per_tier()
-    # Each story: preflight(1) + planner(8) + plan_review(8) + dev(5) + code_review(8)
-    # Total ≈ 30 — much more than budget_per_story_usd=10
+    # Uncapped MEDIUM story: preflight(1) + planner(8) + plan_review(8) + dev(5) +
+    # code_review(8) ≈ $30. With budget=$10 and all phases as downgrade candidates,
+    # enforcement should converge: all-cheap = $1×5 = $5 ≤ $10.
     cfg = _make_cfg(
         min_reviewers=1,
         max_reviewers=1,
@@ -367,18 +368,56 @@ def test_budget_cap_enforcement():
         prefer_cross_provider=False,
     )
 
-    import warnings
+    decision = assign_models(agents, cfg, "medium")
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        decision = assign_models(agents, cfg, "medium")
-
-    # Budget enforcement may still exceed cap if no cheaper option,
-    # but should have attempted to downgrade
-    # At minimum: decision must be a valid AssignmentDecision
+    total = (
+        decision.preflight.budget_usd
+        + decision.planner.budget_usd
+        + sum(p.budget_usd for p in decision.plan_reviewers)
+        + decision.dev.budget_usd
+        + sum(p.budget_usd for p in decision.code_reviewers)
+    )
+    assert total <= 10.0, f"Budget cap not met: total ${total:.2f} > $10.00"
     assert isinstance(decision, AssignmentDecision)
     assert decision.dev is not None
     assert len(decision.code_reviewers) >= 1
+
+
+def test_budget_cap_plan_phase_downgraded():
+    """Plan-phase models are downgraded when they alone exceed the cap.
+
+    This guards against the regression where _enforce_budget excluded planner and
+    plan_reviewers from candidates, making the cap unreachable for MEDIUM+ stories.
+    """
+    agents = _make_agents_one_per_tier()
+    # MEDIUM complexity: planner=strong($8) + plan_reviewer=strong($8) = $16 alone.
+    # With budget=$12, plan-phase models must be downgraded to reach the cap.
+    # All-cheap floor = $1×5 = $5 so $12 IS achievable.
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        budget_per_story_usd=12.0,
+        prefer_cross_provider=False,
+    )
+
+    decision = assign_models(agents, cfg, "medium")
+
+    total = (
+        decision.preflight.budget_usd
+        + decision.planner.budget_usd
+        + sum(p.budget_usd for p in decision.plan_reviewers)
+        + decision.dev.budget_usd
+        + sum(p.budget_usd for p in decision.code_reviewers)
+    )
+    assert total <= 12.0, f"Budget cap not met: total ${total:.2f} > $12.00"
+    # At least one plan-phase model must have been downgraded from strong ($8)
+    plan_phase_max = max(
+        decision.planner.budget_usd,
+        *(p.budget_usd for p in decision.plan_reviewers),
+    )
+    assert plan_phase_max < 8.0, (
+        f"Plan-phase models were not downgraded (max budget ${plan_phase_max:.2f})"
+    )
 
 
 def test_budget_cap_downgrade_dev():

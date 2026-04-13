@@ -258,7 +258,14 @@ def _enforce_budget(
     agents: list[AgentDef],
     budget_per_story_usd: float,
 ) -> AssignmentDecision:
-    """Downgrade highest-cost non-preflight model if over budget cap."""
+    """Downgrade highest-cost non-preflight model if over budget cap.
+
+    Candidates for downgrade: planner, plan_reviewers, dev, code_reviewers.
+    Preflight is excluded to preserve classification quality.
+    Plan-phase models are included because for MEDIUM+ complexity their costs
+    alone can exceed the cap, making it impossible to reach via dev/code_review
+    downgrades alone.
+    """
     from dataclasses import replace as _dc_replace
 
     def _total(d: AssignmentDecision) -> float:
@@ -303,10 +310,14 @@ def _enforce_budget(
         if _total(decision) <= budget_per_story_usd:
             break
 
-        # Find highest-cost non-preflight, non-planner profile that can be downgraded
-        # Candidates: dev, code_reviewers (exclude preflight to preserve quality).
-        # All profiles are candidates — _next_cheaper_profile handles pool lookup.
-        candidates = []
+        # Find highest-cost non-preflight profile that can be downgraded.
+        # Include plan-phase (planner, plan_reviewers) alongside dev and code_reviewers
+        # so that MEDIUM+ stories where plan-phase costs alone exceed the cap can still
+        # converge. Preflight is excluded to preserve classification quality.
+        candidates: list[tuple[str, ModelProfile]] = []
+        candidates.append(("planner", decision.planner))
+        for i, p in enumerate(decision.plan_reviewers):
+            candidates.append((f"plan_review_{i}", p))
         candidates.append(("dev", decision.dev))
         for i, p in enumerate(decision.code_reviewers):
             candidates.append((f"code_review_{i}", p))
@@ -322,6 +333,13 @@ def _enforce_budget(
             if cheaper is not None:
                 if role == "dev":
                     decision = _dc_replace(decision, dev=cheaper)
+                elif role == "planner":
+                    decision = _dc_replace(decision, planner=cheaper)
+                elif role.startswith("plan_review_"):
+                    i = int(role.split("_")[-1])
+                    new_reviewers = list(decision.plan_reviewers)
+                    new_reviewers[i] = cheaper
+                    decision = _dc_replace(decision, plan_reviewers=new_reviewers)
                 else:
                     i = int(role.split("_")[-1])
                     new_reviewers = list(decision.code_reviewers)
@@ -331,9 +349,11 @@ def _enforce_budget(
                 break
 
         if not downgraded:
-            # Can't downgrade any model; try removing a code reviewer (keep min 1)
+            # Can't downgrade any model; try removing a reviewer (keep min 1 each)
             if len(decision.code_reviewers) > 1:
                 decision = _dc_replace(decision, code_reviewers=decision.code_reviewers[:-1])
+            elif len(decision.plan_reviewers) > 1:
+                decision = _dc_replace(decision, plan_reviewers=decision.plan_reviewers[:-1])
             else:
                 break
 
