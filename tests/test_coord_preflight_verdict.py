@@ -221,10 +221,10 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_agent_failure_blocks(
+    def test_preflight_agent_failure_falls_back_to_degraded_proceed(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """If the preflight agent itself fails, execution is blocked."""
+        """If the preflight agent itself fails, coordinator falls back to degraded PROCEED."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -242,11 +242,16 @@ class TestCoordinatorPreflight:
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert result.state.preflight_verdict == "BLOCKED"
+        # Fallback PROCEED — not BLOCKED/ESCALATE
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "timeout_no_verdict"
         assert "failed" in result.state.preflight_reason.lower()
-        assert len(result.state.dev_results) == 0
+        # Conservative classification applied
+        assert result.state.preflight_sufficiency == "needs_planning"
+        assert result.state.preflight_complexity == "large"
+        # Run continues to dev
+        assert len(result.state.dev_results) >= 1
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
