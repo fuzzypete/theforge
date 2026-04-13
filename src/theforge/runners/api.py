@@ -65,6 +65,25 @@ if TYPE_CHECKING:
 _MAX_RATE_LIMIT_RETRIES = 4
 _RATE_LIMIT_BACKOFF_BASE = 30  # seconds
 
+# Argument names that may carry large or sensitive content (file bodies, edit
+# payloads, stdin data).  These are redacted in any diagnostic log or trace
+# artifact that serialises ToolCallRequest objects — they are NOT removed from
+# the live conversation history sent to the provider, which needs them for
+# context.
+_SENSITIVE_ARG_NAMES: frozenset[str] = frozenset(
+    {"content", "new_content", "old_string", "new_string", "input"}
+)
+
+
+def _redact_tool_call_arguments(arguments: dict) -> dict:
+    """Return a copy of *arguments* with sensitive fields replaced by a placeholder.
+
+    Only keys in _SENSITIVE_ARG_NAMES are redacted.  All other arguments (paths,
+    patterns, commands) are preserved so the diagnostic output is still useful.
+    """
+    return {k: "<redacted>" if k in _SENSITIVE_ARG_NAMES else v for k, v in arguments.items()}
+
+
 # Patterns in result.output that indicate a model-preference fallback should fire.
 # Only usage-exhaustion and model-not-found errors trigger fallback; runtime errors
 # (bad code, schema violations) propagate immediately.
@@ -259,7 +278,7 @@ class AgentLoopManager:
                     content = f"Error: {type(exc).__name__} — {exc}"
                 duration_ms = int((time.monotonic() - t0) * 1000)
 
-            # Brief summary for logging
+            # Brief summary for logging — never include sensitive argument values.
             if call.name == "read_file":
                 summary = call.arguments.get("path", "")
                 sl = call.arguments.get("start_line")
@@ -271,8 +290,11 @@ class AgentLoopManager:
                 summary = cmd[:60] + ("..." if len(cmd) > 60 else "")
             elif call.name in ("grep", "glob"):
                 summary = call.arguments.get("pattern", "")
+            elif call.name in ("write_file", "edit_file"):
+                # content/old_string/new_string can be large — log only the path.
+                summary = call.arguments.get("path", "")
             else:
-                summary = str(call.arguments)[:60]
+                summary = str(_redact_tool_call_arguments(call.arguments))[:60]
 
             _log_verbose(f"  ↳ {call.name}: {summary} ({duration_ms}ms)")
             return {"id": call.id, "name": call.name, "content": content}
@@ -468,7 +490,17 @@ class AgentLoopManager:
     def _finalize_or_timeout(
         self, messages: list[dict], iterations: int, reason: str
     ) -> AgentResult:
-        """Attempt finalization via constrained output; fall back to timeout failure."""
+        """Attempt finalization via constrained output; fall back to timeout failure.
+
+        *messages* contains the full conversation history, including assistant turns
+        with ToolCallRequest objects whose arguments may hold sensitive data (file
+        contents, edit payloads, etc.).  The history is passed to the provider as-is
+        so the model has full context for producing its final output.
+
+        If this method ever needs to write *messages* to a diagnostic artifact (log
+        file, trace, etc.), use _redact_tool_call_arguments() on each call's
+        arguments before serialising to avoid leaking sensitive content.
+        """
         if self._finalizer is None:
             return self._timeout_result(iterations, reason=reason)
 
