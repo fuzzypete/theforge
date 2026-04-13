@@ -1388,3 +1388,36 @@ class TestConventionsConfig:
         )
         with pytest.raises(ValueError, match="max_module_lines"):
             load_config(config_path)
+
+
+class TestValidationTestCommand:
+    """Tests for validation.test_command config field."""
+
+    def test_test_command_parsed_when_present(self, tmp_path):
+        config_path = _write_config(
+            {
+                "validation": {
+                    "gate_command": "make gate",
+                    "handoff_file": "handoff.yaml",
+                    "gate_decision_key": "gate_decision",
+                    "test_command": "pytest tests/ -v -n auto",
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.validation.test_command == "pytest tests/ -v -n auto"
+
+    def test_test_command_defaults_to_none_when_absent(self, tmp_path):
+        config_path = _write_config(
+            {
+                "validation": {
+                    "gate_command": "make gate",
+                    "handoff_file": "handoff.yaml",
+                    "gate_decision_key": "gate_decision",
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.validation.test_command is None

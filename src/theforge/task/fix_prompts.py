@@ -126,6 +126,7 @@ def build_fix_prompt(
     branch_name: str,
     review_findings: str,
     gate_command: str,
+    test_command: str | None = None,
     gate_skipped: bool = False,
     iteration: int = 2,
     cycle_history: list[CycleHistory] | None = None,
@@ -153,6 +154,16 @@ def build_fix_prompt(
             "The coordinator runs it automatically after you complete.\n        "
         )
     )
+
+    if test_command and test_command != gate_command:
+        test_bullet = (
+            f"- When running tests during development, use exactly: "
+            f"`{test_command}`. Do not hand-roll pytest invocations.\n        "
+        )
+    else:
+        test_bullet = ""
+
+    _pfx = f"{gate_bullet}{test_bullet}"
 
     context_sections = ""
     if escalation_note:
@@ -328,7 +339,7 @@ def build_fix_prompt(
 
         ## Important
 
-        {gate_bullet}- Focus on fixing the identified findings. Do not refactor unrelated code.
+        {_pfx}- Focus on fixing the identified findings. Do not refactor unrelated code.
         - When a finding describes a **pattern bug** (e.g., a flawed lookup key,
           an unsafe cast, a missing guard), search the entire file — and related
           files — for **all occurrences** of that pattern before committing your

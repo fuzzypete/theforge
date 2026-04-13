@@ -175,6 +175,7 @@ class ValidationConfig:
     gate_debug_command: str | None = (
         None  # diagnostic command on timeout (e.g. "pytest -x -v -n 0")
     )
+    test_command: str | None = None  # canonical command for intermediate test runs in dev loop
     pre_validate_command: str | None = None  # optional command run before dirty check
 
 
