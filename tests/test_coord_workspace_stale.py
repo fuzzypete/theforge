@@ -156,6 +156,27 @@ class TestStaleWorktree:
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is True
 
+    @patch("theforge.coordinator.util._run_shell")
+    def test_git_log_failure_not_stale(self, mock_shell, tmp_path):
+        """git log failure -> not stale (cannot determine state, do not delete)."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "--oneline" in cmd:
+                return (False, "fatal: ambiguous argument 'main'")
+            return (True, "")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is False
+        assert "Cannot determine branch state" in info
+        assert "git log failed" in info
+
     # -- _remove_worktree unit tests --
 
     @patch("theforge.coordinator.util._run_shell")
