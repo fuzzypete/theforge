@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import sys
 import time
@@ -14,22 +15,41 @@ from theforge.config import load_config
 _SENTINEL_EOF = "[forge test sentinel EOF]"
 
 
-def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str, Path] | None:
+def _follow_log_with_redirect(
+    log_path: Path,
+    current_run_id: str,
+    *,
+    runs_dir: Path | None = None,
+) -> tuple[str, Path] | None:
     """Stream log_path line-by-line, printing each line to stdout.
 
-    Returns (new_run_id, new_log_path) when a re-exec redirect block is
-    detected in the log (Run ID trailer differs from current_run_id).
+    Returns (new_run_id, new_log_path) when a re-exec redirect sidecar file
+    is found at ``runs_dir/<current_run_id>.redirect`` (written by the new
+    daemon process after a source-update re-exec).
     Returns None when the sentinel EOF line is encountered (test use).
     Runs indefinitely on real EOF (tail-f style); caller catches KeyboardInterrupt.
+
+    ``runs_dir`` should be ``.forge/runs/``. Without it, no redirect detection
+    is performed (useful in tests that only exercise log-tailing behaviour).
     """
-    _seen_run_id: str | None = None
-    _seen_log_path: str | None = None
+    redirect_file = (runs_dir / f"{current_run_id}.redirect") if runs_dir else None
 
     with open(log_path) as fh:
         while True:
             pos = fh.tell()
             line = fh.readline()
             if not line:
+                # On EOF, check the sidecar redirect file written by the new
+                # daemon after a re-exec.  This file is written by forge itself
+                # (not derived from log content), so LLM output cannot spoof it.
+                if redirect_file is not None and redirect_file.exists():
+                    try:
+                        data = json.loads(redirect_file.read_text(encoding="utf-8"))
+                        new_run_id = data["new_run_id"]
+                        new_log = Path(data["new_log"])
+                        return (new_run_id, new_log)
+                    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+                        pass  # incomplete or malformed write — keep tailing
                 time.sleep(0.1)
                 continue
 
@@ -44,16 +64,6 @@ def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str,
                 return None
 
             print(text)
-
-            if text.startswith("[forge] Run ID:  "):
-                candidate_id = text[len("[forge] Run ID:  ") :].strip()
-                if candidate_id != current_run_id:
-                    _seen_run_id = candidate_id
-            elif text.startswith("[forge] Log:     "):
-                _seen_log_path = text[len("[forge] Log:     ") :].strip()
-
-            if _seen_run_id and _seen_log_path:
-                return (_seen_run_id, Path(_seen_log_path))
 
 
 def _find_active_run_id(project_root: Path) -> str | None:
@@ -410,10 +420,11 @@ def cmd_logs(args: object) -> int:
 
     current_run_id = run_id
     current_log = log_path
+    runs_dir = project_root / ".forge" / "runs"
     try:
         while True:
             print(f"[forge] Tailing {current_log} — Ctrl+C to stop", file=sys.stderr)
-            result = _follow_log_with_redirect(current_log, current_run_id)
+            result = _follow_log_with_redirect(current_log, current_run_id, runs_dir=runs_dir)
             if result is None:
                 break
             new_run_id, new_log = result

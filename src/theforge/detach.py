@@ -6,6 +6,7 @@ PID file management, and run status queries.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import sys
@@ -238,6 +239,28 @@ def suppress_app_nap() -> None:
         pass
 
 
+# ── Re-exec redirect sidecar ─────────────────────────────────────────
+
+
+def write_reexec_redirect(
+    prev_run_id: str, new_run_id: str, new_log: Path, project_root: Path
+) -> None:
+    """Write a sidecar redirect file so the log follower can switch to the new log.
+
+    Written by the grandchild daemon after a re-exec (source changed after git pull)
+    so that ``_follow_log_with_redirect`` in the CLI can detect the new run without
+    parsing log lines (which LLM output could spoof).
+    """
+    redirect_file = project_root / ".forge" / "runs" / f"{prev_run_id}.redirect"
+    try:
+        redirect_file.write_text(
+            json.dumps({"new_run_id": new_run_id, "new_log": str(new_log)}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass  # best-effort; log follower will time out gracefully if this fails
+
+
 # ── Daemonization ────────────────────────────────────────────────────
 
 
@@ -287,6 +310,13 @@ def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
 
     # Grandchild: write PID file, redirect stdio
     write_pid(run_id, slug, project_root)
+
+    # If this is a re-exec (source changed after git pull), write a sidecar
+    # redirect file so the log follower can switch to this new run without
+    # relying on log-line parsing (which LLM output could spoof).
+    prev_run_id = os.environ.pop("FORGE_PREV_RUN_ID", None)
+    if prev_run_id:
+        write_reexec_redirect(prev_run_id, run_id, log_file, project_root)
 
     # Redirect stdin to /dev/null — use raw fd ops to avoid issues with
     # Python file objects in forked processes

@@ -467,6 +467,22 @@ def pull_base_branch(config: ForgeConfig) -> bool:
     if tree_before and tree_after and tree_before.strip() != tree_after.strip():
         _cu._log("Source updated after pull — re-execing to load new code")
         os.chdir(str(config.project_root))
+        # Expose our run_id via the environment so the re-exec'd daemon can write
+        # a sidecar redirect file for the log follower (instead of relying on
+        # log-line parsing, which LLM output could spoof).
+        _my_pid = os.getpid()
+        _runs_dir = config.project_root / ".forge" / "runs"
+        try:
+            for _pf in _runs_dir.glob("*.pid"):
+                try:
+                    _lines = _pf.read_text(encoding="utf-8").splitlines()
+                    if _lines and int(_lines[0].strip()) == _my_pid:
+                        os.environ["FORGE_PREV_RUN_ID"] = _pf.stem
+                        break
+                except (OSError, ValueError):
+                    continue
+        except OSError:
+            pass
         try:
             os.execv(sys.executable, [sys.executable] + sys.argv)
         except OSError:
