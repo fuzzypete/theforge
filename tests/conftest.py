@@ -27,7 +27,7 @@ _GUARD_MSG = (
 
 def _is_loopback(host: str) -> bool:
     """Return True if *host* is a loopback or localhost address."""
-    if host in ("", "localhost"):
+    if host.lower() in ("", "localhost"):
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
