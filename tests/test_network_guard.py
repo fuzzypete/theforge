@@ -92,6 +92,16 @@ def test_localhost_string_is_allowed():
         sock.close()
 
 
+def test_localhost_uppercase_is_allowed():
+    """'LOCALHOST' (uppercase) must not trigger the guard — check is case-insensitive."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        err = sock.connect_ex(("LOCALHOST", 19994))
+        assert isinstance(err, int)
+    finally:
+        sock.close()
+
+
 def test_loopback_ipv6_is_allowed():
     """::1 (IPv6 loopback) must not be blocked."""
     try:
