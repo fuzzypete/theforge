@@ -144,7 +144,7 @@ def test_scrub_rebase_failure_is_silent(tmp_path):
     def side_effect(cmd, cwd, **kwargs):
         if cmd == f"git log --format=%H origin/{base_branch}..HEAD":
             return True, "abc123"
-        if cmd == "git check-ignore -q -- .forge/handoff.yaml":
+        if cmd == "git check-ignore -q --no-index -- .forge/handoff.yaml":
             return True, ""
         if cmd == "git diff-tree --no-commit-id -r --name-only abc123":
             return True, ".forge/handoff.yaml"
