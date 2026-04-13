@@ -345,3 +345,44 @@ def review_json_schema() -> dict:
             },
         },
     }
+
+
+def plan_review_json_schema() -> dict:
+    """Export the plan review schema as a JSON Schema dict.
+
+    Mirrors the submit_plan_review tool parameters in schema_utils.py.
+    Conforms to OpenAI strict JSON Schema requirements:
+    - additionalProperties: false on every object
+    - all object properties listed in required
+    """
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["verdict", "summary", "findings"],
+        "properties": {
+            "verdict": {
+                "type": "string",
+                "enum": ["APPROVE", "REQUEST_CHANGES"],
+                "description": "Overall verdict on the plan.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "One-line summary of the review.",
+            },
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["severity", "description"],
+                    "properties": {
+                        "severity": {
+                            "type": "string",
+                            "enum": ["P1", "P1-impl", "P2"],
+                        },
+                        "description": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }

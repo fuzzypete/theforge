@@ -31,29 +31,36 @@ def _make_openai_chat_finalizer(
         _openai_client,
         _translate_messages_openai_chat,
     )
-    from theforge.schemas import review_json_schema
+    from theforge.schemas import plan_review_json_schema, review_json_schema
 
     if client is None:
         client = _openai_client(profile, secrets)
-    schema = review_json_schema()
+
+    is_plan_review = profile.phase == "plan_review"
+    if is_plan_review:
+        schema = plan_review_json_schema()
+        schema_name = "plan_review_output"
+        time_up_content = (
+            "Time is up. Deliver your plan review verdict now as structured JSON. "
+            "Include verdict, summary, and findings."
+        )
+    else:
+        schema = review_json_schema()
+        schema_name = "review_output"
+        time_up_content = (
+            "Time is up. Deliver your code review verdict now as structured JSON. "
+            "Include verdict, summary, findings, story_compliance, and test_coverage."
+        )
 
     def finalizer(messages: list[dict]) -> LoopTurn:
         oai_messages = _translate_messages_openai_chat(messages)
-        oai_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Time is up. Deliver your code review verdict now as structured JSON. "
-                    "Include verdict, summary, findings, story_compliance, and test_coverage."
-                ),
-            }
-        )
+        oai_messages.append({"role": "user", "content": time_up_content})
         kwargs: dict[str, Any] = {
             "model": profile.model,
             "messages": oai_messages,
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "review_output", "schema": schema, "strict": True},
+                "json_schema": {"name": schema_name, "schema": schema, "strict": True},
             },
         }
         if not _is_reasoning_model(profile.model):
@@ -99,18 +106,23 @@ def _make_deepseek_finalizer(
     if client is None:
         client = _deepseek_client(profile, secrets)
 
+    is_plan_review = profile.phase == "plan_review"
+
     def finalizer(messages: list[dict]) -> LoopTurn:
         oai_messages = _translate_messages_openai_chat(messages)
-        oai_messages.append(
-            {
-                "role": "user",
-                "content": (
-                    "Time is up. Deliver your code review verdict now as JSON. "
-                    "Include verdict, summary, findings, story_compliance, and test_coverage. "
-                    "Output only valid JSON with no markdown fences."
-                ),
-            }
-        )
+        if is_plan_review:
+            time_up_content = (
+                "Time is up. Deliver your plan review verdict now as JSON. "
+                "Include verdict, summary, and findings. "
+                "Output only valid JSON with no markdown fences."
+            )
+        else:
+            time_up_content = (
+                "Time is up. Deliver your code review verdict now as JSON. "
+                "Include verdict, summary, findings, story_compliance, and test_coverage. "
+                "Output only valid JSON with no markdown fences."
+            )
+        oai_messages.append({"role": "user", "content": time_up_content})
         kwargs: dict[str, Any] = {
             "model": profile.model,
             "messages": oai_messages,
