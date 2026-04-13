@@ -208,6 +208,29 @@ def test_submitted_false_on_empty_output() -> None:
     assert metrics.submitted is False
 
 
+def test_valid_yaml_false_on_truncated_fence() -> None:
+    """valid_yaml=False (no crash) when output has opening fence but no closing fence."""
+    story = _make_story()
+    profile = _make_profile()
+    config = _make_config()
+
+    truncated = "```yaml\nverdict: PROCEED\n"  # missing closing ```
+    truncated_result = _make_agent_result(success=True, output=truncated, exit_code=0)
+
+    with (
+        patch("theforge.eval.preflight_harness.run_agent", return_value=truncated_result),
+        patch(
+            "theforge.eval.preflight_harness.build_preflight_prompt",
+            return_value="prompt",
+        ),
+    ):
+        metrics = run_preflight_for_model(story, profile, Path("/tmp"), config)
+
+    assert metrics.submitted is True
+    assert metrics.valid_yaml is False
+    assert metrics.verdict is None
+
+
 def test_valid_yaml_false_on_garbage_output() -> None:
     """valid_yaml=False when output is garbage that cannot be parsed."""
     story = _make_story()
