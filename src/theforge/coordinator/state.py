@@ -39,7 +39,6 @@ class Phase(Enum):
 
 
 _PHASE_NAME_MAP: dict[str, Phase] = {
-    "init": Phase.INIT,
     "workspace": Phase.WORKSPACE,
     "preflight": Phase.PREFLIGHT,
     "plan": Phase.PLAN,
@@ -54,8 +53,12 @@ _PHASE_NAME_MAP: dict[str, Phase] = {
 def parse_phase_name(name: str) -> Phase:
     """Parse a lowercase hyphenated phase name into a Phase enum value.
 
-    Accepted names: init, workspace, preflight, plan, plan-review, dev,
+    Accepted names: workspace, preflight, plan, plan-review, dev,
     validate, review, human-review.
+
+    ``init`` is intentionally excluded: INIT completes before any observable
+    work begins, so ``--until init`` would be a silent no-op.  Use
+    ``--until workspace`` to stop after workspace creation.
 
     Raises ValueError with valid names on unknown input.
     """
