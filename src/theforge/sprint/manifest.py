@@ -28,6 +28,7 @@ class ResolvedSprint:
     budget_usd: float
     stories: list[tuple[TaskStory, StorySource, str]]  # (task, source, canonical_ref)
     max_parallel: int | None = None
+    worker_timeout_seconds: int | None = None
 
 
 @dataclass
@@ -38,6 +39,7 @@ class SprintManifest:
     budget_usd: float
     stories: list[str | dict]  # relative paths to story files or {issue: N} dicts
     max_parallel: int | None = None
+    worker_timeout_seconds: int | None = None
 
 
 @dataclass
@@ -91,6 +93,18 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
             raise ValueError(f"Sprint 'max_parallel' must be >= 1, got {max_parallel_raw}")
     max_parallel = max_parallel_raw
 
+    worker_timeout_raw = raw.get("worker_timeout_seconds")
+    if worker_timeout_raw is not None:
+        if not isinstance(worker_timeout_raw, int):
+            raise ValueError(
+                f"Sprint 'worker_timeout_seconds' must be an integer, got {worker_timeout_raw!r}"
+            )
+        if worker_timeout_raw < 1:
+            raise ValueError(
+                f"Sprint 'worker_timeout_seconds' must be >= 1, got {worker_timeout_raw}"
+            )
+    worker_timeout_seconds = worker_timeout_raw
+
     # Accept both 'stories' (new) and 'specs' (deprecated) keys
     stories = raw.get("stories")
     if stories is None:
@@ -121,7 +135,11 @@ def load_sprint_manifest(manifest_path: Path) -> SprintManifest:
         )
 
     return SprintManifest(
-        name=name, budget_usd=budget_usd, stories=stories, max_parallel=max_parallel
+        name=name,
+        budget_usd=budget_usd,
+        stories=stories,
+        max_parallel=max_parallel,
+        worker_timeout_seconds=worker_timeout_seconds,
     )
 
 
@@ -204,6 +222,7 @@ def resolve_from_manifest(manifest_path: Path, project_root: Path) -> ResolvedSp
         budget_usd=manifest.budget_usd,
         stories=task_entries,
         max_parallel=manifest.max_parallel,
+        worker_timeout_seconds=manifest.worker_timeout_seconds,
     )
 
 

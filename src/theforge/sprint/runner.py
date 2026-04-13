@@ -578,6 +578,7 @@ def run_sprint(
             budget_usd=_manifest.budget_usd,
             stories=_task_entries,
             max_parallel=_manifest.max_parallel,
+            worker_timeout_seconds=_manifest.worker_timeout_seconds,
         )
 
     # Defensive scrub for the root checkout used by sprint commands.
@@ -585,6 +586,11 @@ def run_sprint(
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
+    )
+    worker_timeout_seconds = (
+        resolved.worker_timeout_seconds
+        if resolved.worker_timeout_seconds is not None
+        else config.sprint.worker_timeout_seconds
     )
 
     # Pull base branch once here, before any parallel workspace creation.
@@ -1081,10 +1087,11 @@ def run_sprint(
             # this, gated workers block in _run_fresh waiting for their gate
             # while the scheduler blocks here waiting for a future to finish
             # — a deadlock.
-            _poll_interval = 2.0 if plan_gates else 3600.0
+            _wt_float = float(worker_timeout_seconds)
+            _poll_interval = 2.0 if plan_gates else _wt_float
             _total_waited = 0.0
             done_futs: set = set()
-            while not done_futs and _total_waited < 3600.0:
+            while not done_futs and _total_waited < _wt_float:
                 _current_interval = _poll_interval
                 done_futs, _ = wait(
                     list(active.values()),
@@ -1096,7 +1103,7 @@ def run_sprint(
                     _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
                     # All gates released — switch to long poll
                     if not plan_gates:
-                        _poll_interval = 3600.0
+                        _poll_interval = _wt_float
                 _total_waited += _current_interval
 
             _log(f"[debug] wait() returned: {len(done_futs)} done")
@@ -1110,7 +1117,10 @@ def run_sprint(
                 plan_gates.clear()
                 for slug, fut in list(active.items()):
                     fut.cancel()
-                    _log(f"TIMEOUT {slug} (worker unresponsive after 3600s — marking as failed)")
+                    _log(
+                        f"TIMEOUT {slug} (worker unresponsive after "
+                        f"{worker_timeout_seconds}s — marking as failed)"
+                    )
                     spec_str = slug_to_spec[slug]
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
                     story_started_at = story_times.get(slug, (timed_out_at, timed_out_at))[0]
@@ -1121,14 +1131,14 @@ def run_sprint(
                             config.project_root / config.workspace.path_pattern.format(slug=slug)
                         ),
                         log_dir=_make_story_log_dir(config, slug, resolved.name),
-                        error="Worker timeout (>3600s)",
+                        error=f"Worker timeout (>{worker_timeout_seconds}s)",
                         error_type="TimeoutError",
                     )
                     _timeout_result = CoordinatorResult(
                         success=False,
                         phase=Phase.ESCALATE,
                         state=_timeout_state,
-                        message="Worker thread timed out after 3600s",
+                        message=f"Worker thread timed out after {worker_timeout_seconds}s",
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
                     results.append((spec_str, _timeout_result))
@@ -1138,7 +1148,7 @@ def run_sprint(
                     dag.mark_skipped(slug)
                     specs_failed += 1
                 active.clear()
-                stopped_reason = stopped_reason or "Worker timeout (>3600s)"
+                stopped_reason = stopped_reason or f"Worker timeout (>{worker_timeout_seconds}s)"
                 continue
 
             for slug, fut in list(active.items()):

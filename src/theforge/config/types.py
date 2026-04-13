@@ -320,6 +320,7 @@ class SprintConfig:
     """Project-level sprint defaults from forge.yaml."""
 
     max_parallel: int = 1
+    worker_timeout_seconds: int = 3600
 
 
 @dataclass(frozen=True)

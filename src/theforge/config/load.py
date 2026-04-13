@@ -406,7 +406,21 @@ def load_config(config_path: Path) -> ForgeConfig:
         raise ValueError(
             f"forge.yaml 'sprint.max_parallel' must be >= 1, got {sprint_max_parallel_raw}"
         )
-    sprint_cfg = SprintConfig(max_parallel=sprint_max_parallel_raw)
+    sprint_worker_timeout_raw = sprint_data.get("worker_timeout_seconds", 3600)
+    if not isinstance(sprint_worker_timeout_raw, int):
+        raise ValueError(
+            f"forge.yaml 'sprint.worker_timeout_seconds' must be an integer, "
+            f"got {sprint_worker_timeout_raw!r}"
+        )
+    if sprint_worker_timeout_raw < 1:
+        raise ValueError(
+            f"forge.yaml 'sprint.worker_timeout_seconds' must be >= 1, "
+            f"got {sprint_worker_timeout_raw}"
+        )
+    sprint_cfg = SprintConfig(
+        max_parallel=sprint_max_parallel_raw,
+        worker_timeout_seconds=sprint_worker_timeout_raw,
+    )
 
     context_data = raw.get("context", {})
     context_cfg = ContextConfig(
