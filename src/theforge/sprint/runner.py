@@ -1110,7 +1110,7 @@ def run_sprint(
             batch_number += 1
 
             if not done_futs:
-                # Timeout: all active workers hung for >3600s — cancel and fail them
+                # Timeout: all active workers hung for >worker_timeout_seconds — cancel and fail
                 for g_slug, _gate in plan_gates.items():
                     _log(f"TIMEOUT releasing plan gate for {g_slug}")
                     _gate.set()
