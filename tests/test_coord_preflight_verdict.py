@@ -400,6 +400,76 @@ likely_files:
         assert "src/theforge/old_module.py" in result.state.preflight_warnings[0]
         assert len(result.state.dev_results) == 1
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.preflight_flow.has_review_approve", return_value=True)
+    @patch("theforge.coordinator.engine._fire_post_run_hook")
+    def test_post_run_hook_fires_on_already_done(
+        self,
+        mock_hook,
+        mock_approve,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """ALREADY_DONE verdict → post_run hook fires exactly once."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE, cost_usd=0.08, profile_name="review"
+        )
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "ALREADY_DONE"
+        mock_hook.assert_called_once()
+        called_result = mock_hook.call_args[0][3]
+        assert called_result is result
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    @patch("theforge.coordinator.engine._fire_post_run_hook")
+    def test_post_run_hook_fires_on_blocked(
+        self,
+        mock_hook,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """BLOCKED verdict → post_run hook fires exactly once."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "OK")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_BLOCKED, cost_usd=0.08, profile_name="review"
+        )
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "BLOCKED"
+        mock_hook.assert_called_once()
+        called_result = mock_hook.call_args[0][3]
+        assert called_result is result
+
     def test_parse_preflight_likely_files_requires_explicit_field(self):
         """Missing likely_files stays unknown instead of defaulting to zero-footprint."""
         from coord_test_helpers import PREFLIGHT_PROCEED

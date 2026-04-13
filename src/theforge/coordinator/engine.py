@@ -748,6 +748,8 @@ def run_task(
                 stop_phase=stop_phase,
             )
         if _pf_result is not None:
+            _total_elapsed = time.monotonic() - _task_start
+            _fire_post_run_hook(config, state, task, _pf_result, _run_id, _total_elapsed, logger)
             return _pf_result
         if _pf_already_done_loop:
             # ALREADY_DONE override: commits on branch without prior APPROVE → resume REVIEW
