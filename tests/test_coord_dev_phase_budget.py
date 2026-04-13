@@ -304,9 +304,9 @@ class TestCoordinatorDevNotes:
                 return (True, "")
             if "git log" in cmd and "--oneline --reverse" in cmd:
                 return (True, "abc1234 feat: implement\ndef5678 test: add coverage")
-            if "git diff main --stat" in cmd:
+            if "git diff main...HEAD --stat" in cmd:
                 return (True, " src/foo.py | 2 ++\n tests/test_foo.py | 4 ++++")
-            if cmd.strip() == "git diff main":
+            if cmd.strip() == "git diff main...HEAD":
                 return (True, "diff --git a/src/foo.py b/src/foo.py\n+print('ok')")
             if "git show abc1234" in cmd:
                 return (True, "commit abc1234\n...diff one...")
@@ -382,9 +382,9 @@ class TestCoordinatorDevNotes:
                 return (True, "")
             if "git log" in cmd and "--oneline --reverse" in cmd:
                 return (True, "abc1234 feat: real commit")
-            if "git diff main --stat" in cmd:
+            if "git diff main...HEAD --stat" in cmd:
                 return (True, " src/foo.py | 1 +")
-            if cmd.strip() == "git diff main":
+            if cmd.strip() == "git diff main...HEAD":
                 return (True, "diff --git a/src/foo.py b/src/foo.py")
             if "git show abc1234" in cmd:
                 return (True, "commit abc1234\n...diff...")
