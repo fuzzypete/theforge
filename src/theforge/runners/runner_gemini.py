@@ -17,6 +17,7 @@ from theforge.log_util import _log_line
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
+from .sandbox import workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -70,6 +71,21 @@ def _run_gemini(
     # NOTE: Gemini CLI has no --config flag for thinking config.
     # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.
     # The model uses its default thinking level.
+
+    # Gemini CLI has no native sandbox flag. When sandboxing is requested, wrap the
+    # command with the platform sandbox (macOS Seatbelt / Linux bwrap). This is the
+    # correct approach for Gemini — unlike #624 (which double-sandboxed claude-within-
+    # claude), wrapping the Gemini binary is safe because Gemini has no native sandbox
+    # of its own. If the sandbox infrastructure is unavailable, log a warning and
+    # continue unsandboxed; operators can set sandbox_mode: none to suppress this.
+    if profile.sandbox_mode != "none":
+        sandboxed_cmd = workspace_effect_sandbox_command(cmd, working_dir)
+        if sandboxed_cmd[0] == cmd[0]:
+            _log(
+                f"  WARNING: sandbox_mode={profile.sandbox_mode!r} requested for gemini but "
+                "platform sandbox (sandbox-exec/bwrap) is unavailable — running unsandboxed"
+            )
+        cmd = sandboxed_cmd
 
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
     _gemini_env = {**os.environ, **(secrets or {})}

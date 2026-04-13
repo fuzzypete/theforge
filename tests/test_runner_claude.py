@@ -470,6 +470,73 @@ class TestRunAgentClaude:
         assert result.output == json.dumps({"type": "assistant", "session_id": "sess-fallback"})
 
 
+class TestClaudePermissionMode:
+    """Assert that --permission-mode is injected based on sandbox_mode."""
+
+    def _popen_capture(self, mock_popen: MagicMock) -> list[str]:
+        """Extract the cmd list from the Popen call."""
+        return mock_popen.call_args[0][0]
+
+    def test_workspace_write_adds_permission_mode(self, tmp_path: Path) -> None:
+        """sandbox_mode=workspace-write → --permission-mode default in cmd."""
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="workspace-write",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with patch(
+            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        cmd = self._popen_capture(mock_popen)
+        assert "--permission-mode" in cmd
+        idx = cmd.index("--permission-mode")
+        assert cmd[idx + 1] == "default"
+
+    def test_read_only_adds_permission_mode(self, tmp_path: Path) -> None:
+        """sandbox_mode=read-only → --permission-mode default (most restrictive available)."""
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="read-only",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with patch(
+            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        cmd = self._popen_capture(mock_popen)
+        assert "--permission-mode" in cmd
+
+    def test_none_omits_permission_mode(self, tmp_path: Path) -> None:
+        """sandbox_mode=none → no --permission-mode flag in cmd."""
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="none",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
+        with patch(
+            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
+            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        cmd = self._popen_capture(mock_popen)
+        assert "--permission-mode" not in cmd
+
+
 class TestClaudeSessionIdHelper:
     def test_get_claude_session_id_from_jsonl(self, tmp_path: Path) -> None:
         output = "\n".join(

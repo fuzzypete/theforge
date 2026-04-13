@@ -115,6 +115,8 @@ def _run_codex(
         ]
         if profile.reasoning_effort:
             cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
+        if profile.sandbox_mode != "none":
+            cmd += ["--sandbox", profile.sandbox_mode]
         cmd += ["-C", str(working_dir), "-o", str(output_file), "-"]
         stdin_prompt: str | None = prompt
     else:
@@ -128,6 +130,8 @@ def _run_codex(
         ]
         if profile.reasoning_effort:
             cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
+        if profile.sandbox_mode != "none":
+            cmd += ["--sandbox", profile.sandbox_mode]
         cmd += ["-C", str(working_dir), "-o", str(output_file), prompt]
         stdin_prompt = None
 

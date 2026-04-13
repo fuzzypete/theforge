@@ -112,6 +112,7 @@ class ModelProfile:
     api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
     github_handle: str | None = None  # optional GitHub username for reviewer assignment
     fallback_models: tuple[str, ...] = ()  # additional models to try on quota/not-found failure
+    sandbox_mode: str = "workspace-write"  # CLI sandbox: "workspace-write" | "read-only" | "none"
 
     @property
     def models(self) -> tuple[str, ...]:

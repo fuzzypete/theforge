@@ -23,61 +23,6 @@ from .notify import _escalate_notify
 from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
 from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 
-# ── Sibling-worktree write detector ──────────────────────────────────
-# CLI agents run unsandboxed and could write to sibling worktrees. These helpers
-# snapshot and diff sibling worktrees around each dev iteration so cross-worktree
-# contamination is detected and escalated before it can corrupt parallel work.
-
-
-def _iter_sibling_worktrees(active_worktree: Path, project_root: Path) -> list[Path]:
-    """Return paths of sibling worktrees — all dirs under .forge/worktrees/ except active."""
-    worktrees_dir = project_root / ".forge" / "worktrees"
-    if not worktrees_dir.is_dir():
-        return []
-    active_resolved = active_worktree.resolve()
-    siblings = []
-    for entry in worktrees_dir.iterdir():
-        if entry.is_dir() and entry.resolve() != active_resolved:
-            siblings.append(entry)
-    return siblings
-
-
-def _is_forge_artifact_status_line(line: str) -> bool:
-    """Return True if this porcelain status line refers to a forge-owned artifact.
-
-    Forge writes its own files under .forge/ (plan.md, sessions.json, handoff.yaml,
-    traces/, audit.yaml) during normal coordinator operation. These are not agent
-    writes and must not trigger the sibling-worktree contamination detector.
-
-    The porcelain format is ``XY PATH`` (two status chars, space, then path).
-    Ignored directories are reported as ``!! .forge/`` (with trailing slash).
-    """
-    # Strip the two-character status prefix and the separating space
-    path_part = line[3:] if len(line) > 3 else ""
-    return path_part == ".forge" or path_part.startswith(".forge/")
-
-
-def _git_status_porcelain_ignored(path: Path) -> frozenset[str]:
-    """Return the set of non-empty status lines from git status --porcelain --ignored.
-
-    Includes ignored files so that writes to build outputs or other ignored paths
-    in sibling worktrees are visible. Returns empty frozenset on any error.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "status", "--porcelain", "--ignored"],
-            cwd=str(path),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if proc.returncode != 0:
-            return frozenset()
-        return frozenset(line for line in proc.stdout.splitlines() if line.strip())
-    except Exception:  # noqa: BLE001  # best-effort, any error treated as clean
-        return frozenset()
-
-
 # ── Lazy runner slot ──────────────────────────────────────────────────
 # None until first call; tests may replace before calling run_task.
 # Patch targets:
@@ -241,6 +186,11 @@ def _run_dev_phase(
     _ensure_runners()
     # Probe sandbox availability once per run (lru_cache-backed — cheap on repeat calls).
     state.sandboxed = sandbox_available_for_profile(config.dev_profile)
+    if config.dev_profile.mode == "cli" and config.dev_profile.sandbox_mode == "none":
+        _log(
+            "  WARNING: sandbox_mode: none — dev agent runs without write containment. "
+            "Use for debugging only."
+        )
     _log_phase(
         state.phase,
         f"{config.dev_profile.model}  iter={state.dev_iteration}",
@@ -380,14 +330,6 @@ def _run_dev_phase(
         _log(f"  Dev timeout: {_dev_timeout}s")
     _dev_profile = _dc_replace(config.dev_profile, timeout_seconds=_dev_timeout)
 
-    # Snapshot sibling worktrees before dev agent runs.
-    # CLI agents are opaque — we cannot intercept their writes, so we detect
-    # cross-worktree contamination by diffing state before and after.
-    _sibling_baselines: dict[Path, frozenset[str]] = {
-        _sib: _git_status_porcelain_ignored(_sib)
-        for _sib in _iter_sibling_worktrees(workspace_path, config.project_root)
-    }
-
     _dev_start = time.monotonic()
     dev_result = run_agent(
         prompt=prompt,
@@ -433,43 +375,6 @@ def _run_dev_phase(
             cost_usd=dev_result.cost_usd,
             duration_s=round(_dev_elapsed, 2),
         )
-
-    # ── Sibling-worktree write detector ──────────────────────────────
-    # Check each sibling for any on-disk changes (tracked, untracked, or ignored)
-    # that were not present before the dev agent ran. Any mismatch is escalated
-    # immediately — CLI agents must not write outside their own worktree.
-    for _sib_path, _baseline in _sibling_baselines.items():
-        _current = _git_status_porcelain_ignored(_sib_path)
-        # Strip forge-owned artifact lines from both snapshots before diffing.
-        # The coordinator writes .forge/ paths (plan.md, sessions.json, traces/,
-        # handoff.yaml, audit.yaml) during normal operation — these are not agent
-        # writes and must not trigger a false contamination escalation.
-        _baseline_filtered = frozenset(
-            ln for ln in _baseline if not _is_forge_artifact_status_line(ln)
-        )
-        _current_filtered = frozenset(
-            ln for ln in _current if not _is_forge_artifact_status_line(ln)
-        )
-        if _current_filtered != _baseline_filtered:
-            _changed = sorted(
-                (_current_filtered - _baseline_filtered) | (_baseline_filtered - _current_filtered)
-            )
-            _preview = ", ".join(_changed[:5])
-            state.phase = Phase.ESCALATE
-            state.error = (
-                f"Sibling worktree write detected in {_sib_path}: "
-                f"{len(_changed)} change(s) — {_preview}"
-            )
-            _log(f"✗ ESCALATE   {state.error}")
-            if logger:
-                logger._safe_emit("escalate", reason=state.error, phase="DEV")
-            _escalate_notify(task, state, notify, config)
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=state.error,
-            )
 
     if state.total_dev_cost > config.dev_profile.budget_usd:
         state.phase = Phase.ESCALATE
