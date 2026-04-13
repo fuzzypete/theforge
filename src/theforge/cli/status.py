@@ -34,8 +34,7 @@ def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str,
                 time.sleep(0.1)
                 continue
 
-            # Partial line: writer hasn't flushed the newline yet.
-            # Rewind to the start of the incomplete line and wait.
+            # Partial write in progress — rewind and wait for the complete line.
             if not line.endswith("\n"):
                 fh.seek(pos)
                 time.sleep(0.1)
@@ -137,12 +136,10 @@ def _find_most_recent_run(project_root: Path) -> tuple[str, bool] | None:
 
 def _resolve_run_id(run_id: str, project_root: Path) -> bool:
     """Return True if run_id can be located (active PID, sprint data, or log file)."""
-    # Active PID
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
     if pid_file.exists():
         return True
 
-    # Sprint state or summary
     state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
     if state_path.exists():
         return True
@@ -152,7 +149,6 @@ def _resolve_run_id(run_id: str, project_root: Path) -> bool:
     if find_sprint_summary(run_id, project_root) is not None:
         return True
 
-    # Historical single-run log file
     logs_dir = project_root / ".forge" / "logs"
     if logs_dir.exists():
         for _match in logs_dir.rglob(f"run-{run_id}.log"):
@@ -163,8 +159,6 @@ def _resolve_run_id(run_id: str, project_root: Path) -> bool:
 
 def _show_recent_runs(project_root: Path) -> int:
     """Print a compact table of recent runs sorted by time (newest first)."""
-    import time
-
     import yaml
 
     from theforge import detach as _detach
