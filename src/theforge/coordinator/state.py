@@ -281,6 +281,8 @@ class CoordinatorState:
     preflight_cached: bool = False
     preflight_cached_from_run_id: str | None = None
     preflight_cached_original_verdict: str | None = None
+    preflight_degraded: bool = False
+    preflight_degraded_reason: str | None = None
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
         None  # contents of the worktree plan file, passed to dev (raw string for audit)

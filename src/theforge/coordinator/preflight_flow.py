@@ -50,6 +50,43 @@ from .preflight import (
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
 
+# Tokens that indicate a BLOCKED verdict is based on ambiguity/verifiability
+# concerns rather than a concrete hard blocker.  Two conditions must hold
+# simultaneously before the override fires: an ambiguity token matches AND
+# prior-execution evidence exists on the branch.  The conjunction prevents
+# false positives from BLOCKEDs that legitimately mention "verifiable" in a
+# non-ambiguity context.
+_AMBIGUITY_TOKENS = (
+    "ambiguous",
+    "verif",
+    "not objectively",
+    "cannot verify",
+    "unclear",
+    "measurable",
+)
+
+
+def _has_prior_execution_evidence(
+    project_root: "Path", branch_name: str, base_branch: str
+) -> bool:
+    """Return True if branch_name has commits ahead of base_branch.
+
+    Uses ``git log <base>..<branch> --oneline``; returns False on any error so
+    that the caller fails conservatively (keeps BLOCKED) rather than crashing.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "log", f"{base_branch}..{branch_name}", "--oneline"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        lines = [ln for ln in result.stdout.strip().splitlines() if ln.strip()]
+        return len(lines) > 0
+    except Exception:
+        return False
+
 
 def _prepare_preflight_working_dir(
     project_root: Path, base_branch: str
@@ -180,10 +217,13 @@ def _run_preflight_phase(
         verdict, reason = _parse_preflight_verdict(preflight_result.output)
     else:
         verdict, reason = (
-            "BLOCKED",
-            f"Preflight agent failed (exit={preflight_result.exit_code}); blocking execution.",
+            "PROCEED",
+            f"Preflight agent failed (exit={preflight_result.exit_code}); "
+            "falling back to conservative PROCEED.",
         )
-        _log("  ⚠ PREFLIGHT failed — blocking execution")
+        state.preflight_degraded = True
+        state.preflight_degraded_reason = "timeout_no_verdict"
+        _log("  ⚠ PREFLIGHT failed — fallback PROCEED (degraded)")
 
     state.preflight_verdict = verdict
     state.preflight_reason = reason
@@ -236,11 +276,32 @@ def _run_preflight_phase(
             _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
         if _likely_files is not None:
             _log(f"  Likely files: {', '.join(_likely_files)}")
+
+        # ── Ambiguity BLOCKED downgrade ───────────────────────────────
+        # Must come *after* all signal parsing so that forced overrides are
+        # not later clobbered by the parsers.
+        if verdict == "BLOCKED" and any(t in (reason or "").lower() for t in _AMBIGUITY_TOKENS):
+            if _has_prior_execution_evidence(
+                config.project_root, branch_name, config.workspace.base_branch
+            ):
+                _log(
+                    "  ⚠ PREFLIGHT BLOCKED (ambiguity) overridden — prior execution evidence found"
+                )
+                verdict = "PROCEED"
+                state.preflight_verdict = verdict
+                state.preflight_degraded = True
+                state.preflight_degraded_reason = "blocked_downgraded_prior_evidence"
+                # Compensate for missing classification: force planning and
+                # upgrade complexity to at least medium.
+                if state.preflight_complexity == "small":
+                    state.preflight_complexity = "medium"
+                state.preflight_sufficiency = "needs_planning"
     else:
-        complexity = state.preflight_complexity or "medium"
-        state.preflight_complexity = complexity
-        state.preflight_sufficiency = state.preflight_sufficiency or "needs_planning"
-        state.preflight_work_type = state.preflight_work_type or "feature"
+        # Agent failed — skip all parsers; hard-set conservative values so
+        # downstream phases plan carefully despite missing classification.
+        state.preflight_complexity = "large"
+        state.preflight_sufficiency = "needs_planning"
+        state.preflight_work_type = "feature"
         state.preflight_bundle_candidate = False
 
     config = _apply_preflight_config(config, state, log=_log, log_verbose=_log_verbose)
