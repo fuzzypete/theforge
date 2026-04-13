@@ -565,3 +565,68 @@ class TestNotesConventionInPrompts:
         )
         assert "Notes" in prompt
         assert "NOT requirements" in prompt
+
+
+class TestTestCommandInPrompts:
+    """Tests that test_command is injected into dev and fix prompts."""
+
+    def test_dev_prompt_includes_test_command_when_different_from_gate(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            story_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+            test_command="pytest tests/ -v -n auto --dist worksteal",
+        )
+        assert "pytest tests/ -v -n auto --dist worksteal" in prompt
+
+    def test_dev_prompt_omits_test_section_when_test_command_equals_gate(self, tmp_path):
+        task = _make_task(tmp_path)
+        cmd = "make gate"
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            story_content="# Spec\n\nDo the thing.",
+            gate_command=cmd,
+            test_command=cmd,
+        )
+        assert "Testing During Development" not in prompt
+
+    def test_dev_prompt_omits_test_section_when_test_command_is_none(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_dev_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            story_content="# Spec\n\nDo the thing.",
+            gate_command="make gate",
+        )
+        assert "Testing During Development" not in prompt
+
+    def test_fix_prompt_includes_test_command_when_different_from_gate(self, tmp_path):
+        task = _make_task(tmp_path)
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            review_findings="- P1: Bug in src/foo.py:10",
+            gate_command="make gate",
+            test_command="pytest tests/ -v -n auto --dist worksteal",
+        )
+        assert "pytest tests/ -v -n auto --dist worksteal" in prompt
+
+    def test_fix_prompt_omits_test_bullet_when_test_command_equals_gate(self, tmp_path):
+        task = _make_task(tmp_path)
+        cmd = "make gate"
+        prompt = build_fix_prompt(
+            task,
+            workspace_path=tmp_path / "ws",
+            branch_name="feat/test-task",
+            review_findings="- P1: Bug in src/foo.py:10",
+            gate_command=cmd,
+            test_command=cmd,
+        )
+        assert "hand-roll pytest" not in prompt

@@ -16,6 +16,7 @@ def build_dev_prompt(
     branch_name: str,
     story_content: str,
     gate_command: str,
+    test_command: str | None = None,
     gate_skipped: bool = False,
     review_findings: str | None = None,
     human_feedback: str | None = None,
@@ -167,6 +168,20 @@ def build_dev_prompt(
             {assembled_context.content}
         """)
 
+    if test_command and test_command != gate_command:
+        test_section = dedent(f"""\
+
+            ## Testing During Development
+
+            When running tests during development, use exactly:
+            ```bash
+            {test_command}
+            ```
+            Do not hand-roll pytest invocations — always use this command.
+        """)
+    else:
+        test_section = ""
+
     if gate_skipped:
         gate_section = dedent("""\
             Gate is disabled for this spec. Skip the gate command.
@@ -220,7 +235,7 @@ def build_dev_prompt(
         > most reasonable interpretation and flag the ambiguity in `dev_notes`.
 
         {story_content}
-        {feedback_section}{preflight_section}{context_section}{
+        {feedback_section}{preflight_section}{context_section}{test_section}{
         render_conventions_block(conventions)
     }
         ## Workflow

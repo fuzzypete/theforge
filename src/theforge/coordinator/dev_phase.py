@@ -267,6 +267,7 @@ def _run_dev_phase(
         if task.gate_override is not None and not _is_gate_skip(task.gate_override)
         else config.validation.gate_command
     )
+    _test_cmd = config.validation.test_command or _gate_cmd
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
     match state.retry_reason:
         case RetryReason.TIMEOUT_RESUME:
@@ -286,6 +287,7 @@ def _run_dev_phase(
                 branch_name=branch_name,
                 review_findings=state.last_review_findings,
                 gate_command=_gate_cmd,
+                test_command=_test_cmd,
                 gate_skipped=_is_gate_skip(task.gate_override),
                 iteration=state.dev_iteration,
                 cycle_history=state.cycle_history or None,
@@ -328,6 +330,7 @@ def _run_dev_phase(
                 branch_name=branch_name,
                 story_content=story_content,
                 gate_command=_gate_cmd,
+                test_command=_test_cmd,
                 gate_skipped=_is_gate_skip(task.gate_override),
                 review_findings=state.last_review_findings,
                 human_feedback=state.human_feedback,
