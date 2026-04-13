@@ -16,6 +16,7 @@ from theforge.task import TaskStory
 
 from . import util as _cu
 from .gate import _run_gate
+from .git_lock import FETCH_LOCK
 
 # Populated lazily on first call to _resolve_merge_conflicts.
 run_agent = None
@@ -426,14 +427,26 @@ def pull_base_branch(config: ForgeConfig) -> bool:
         tree_before = ""
 
     _, current_branch = _cu._run_shell("git rev-parse --abbrev-ref HEAD", config.project_root)
-    if current_branch.strip() == base_branch:
-        ok_pull, pull_out = _cu._run_shell(
-            f"git pull --ff-only origin {base_branch}", config.project_root
-        )
-    else:
-        ok_pull, pull_out = _cu._run_shell(
-            f"git fetch origin {base_branch}:{base_branch}", config.project_root
-        )
+    with FETCH_LOCK:
+        if current_branch.strip() == base_branch:
+            ok_pull, pull_out = _cu._run_shell(
+                f"git pull --ff-only origin {base_branch}", config.project_root
+            )
+        else:
+            ok_pull, pull_out = _cu._run_shell(
+                f"git fetch origin {base_branch}:{base_branch}", config.project_root
+            )
+        if not ok_pull and "incorrect old value" in pull_out:
+            _cu._log("⚠ WORKSPACE  fetch race detected — retrying fetch once")
+            time.sleep(1)
+            if current_branch.strip() == base_branch:
+                ok_pull, pull_out = _cu._run_shell(
+                    f"git pull --ff-only origin {base_branch}", config.project_root
+                )
+            else:
+                ok_pull, pull_out = _cu._run_shell(
+                    f"git fetch origin {base_branch}:{base_branch}", config.project_root
+                )
     if ok_pull:
         _cu._log(f"✓ WORKSPACE  pulled latest {base_branch}")
     else:

@@ -21,6 +21,7 @@ from theforge.sessions import load_sessions
 from theforge.task import TaskStory, load_story
 
 from . import util as _cu
+from .git_lock import FETCH_LOCK
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .state import CoordinatorResult, CoordinatorState, MergeStepState, Phase
@@ -157,12 +158,13 @@ def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[boo
         return True, ""
 
     try:
-        fetch_proc = subprocess.run(
-            ["git", "fetch", "origin", base_branch],
-            capture_output=True,
-            text=True,
-            cwd=worktree_path,
-        )
+        with FETCH_LOCK:
+            fetch_proc = subprocess.run(
+                ["git", "fetch", "origin", base_branch],
+                capture_output=True,
+                text=True,
+                cwd=worktree_path,
+            )
         if fetch_proc.returncode != 0:
             err = fetch_proc.stderr.strip() or fetch_proc.stdout.strip()
             return False, err
