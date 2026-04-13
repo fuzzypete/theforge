@@ -110,11 +110,11 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         return
-    except (ProcessLookupError, PermissionError):
+    except OSError:
         pass
     try:
         proc.terminate()
-    except (ProcessLookupError, PermissionError):
+    except OSError:
         pass
 
 
