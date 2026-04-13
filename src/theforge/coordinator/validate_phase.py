@@ -7,6 +7,7 @@ import dataclasses
 import subprocess
 import time
 import types
+from collections.abc import Callable
 from enum import Enum, auto
 from pathlib import Path
 
@@ -128,6 +129,7 @@ def _run_validate_phase(
     *,
     notify: bool,
     logger: StructuredLogger | None,
+    state_update_fn: Callable[[dict], None] | None = None,
 ) -> tuple[_ValidateOutcome, CoordinatorResult | None]:
     """Run one VALIDATE iteration. Returns (outcome, result).
 
@@ -135,6 +137,14 @@ def _run_validate_phase(
     Does NOT emit 'phase_end VALIDATE pass' — caller emits that (it fires on skip too).
     """
     state.phase = Phase.VALIDATE
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "VALIDATE",
+                "iteration": state.dev_iteration,
+                "cost_usd": state.total_cost,
+            }
+        )
     if logger:
         logger._safe_emit("phase_start", phase="VALIDATE", iteration=state.dev_iteration)
 

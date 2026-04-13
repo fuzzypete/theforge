@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
@@ -491,6 +492,7 @@ def _run_review_phase(
     notify: bool,
     logger: StructuredLogger | None,
     run_id: str = "",
+    state_update_fn: Callable[[dict], None] | None = None,
 ) -> tuple[_ReviewOutcome, CoordinatorResult | None, ForgeConfig]:
     """Run the full REVIEW phase: pool+synthesis, parse retries, verdict handling.
 
@@ -500,6 +502,14 @@ def _run_review_phase(
     config is returned because persistent-P1 model escalation may replace it.
     """
     state.phase = Phase.REVIEW
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "REVIEW",
+                "iteration": state.review_cycle + 1,
+                "cost_usd": state.total_cost,
+            }
+        )
     if logger:
         logger._safe_emit("phase_start", phase="REVIEW", iteration=state.review_cycle + 1)
     # Reset per-cycle parse failure counts so transient failures from one cycle
