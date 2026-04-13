@@ -112,6 +112,26 @@ Or create manually via GitHub UI using the CHANGELOG section as release notes.
 
 ---
 
+## Post-release doc review
+
+After cutting a release, review public-facing documentation before the next sprint
+starts. The release tag is what users see — docs should match what shipped.
+
+### Checklist
+
+- [ ] **README.md** — capabilities, install instructions, CLI usage match current state
+- [ ] **CHANGELOG.md** — release section accurately covers what shipped
+- [ ] **CLAUDE.md / AGENTS.md** — conventions, architecture notes, phase descriptions match shipped code
+- [ ] **RELEASING.md** — did this release surface any process gaps? Update if so
+- [ ] **forge.yaml comments** — inline config docs match current behavior
+- [ ] **CLI help text** — `forge --help` and subcommand help reflect current flags and options
+- [ ] **GitHub release notes** — body covers what users need to know
+
+If anything is materially wrong, file a story for the next milestone. One-liner
+fixes can go directly on main.
+
+---
+
 ## Hotfixing a release (vX.Y.Z → vX.Y.Z+1)
 
 Use this when a bug is found in a shipped release and cannot wait for the next
