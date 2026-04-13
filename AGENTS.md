@@ -132,6 +132,9 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - New coordinator behaviour → add a `tests/test_coord_*.py` file matching the phase
 - New runner behaviour → `tests/test_runner_*.py`
 - Mock subprocess; never invoke real agent CLIs in tests
+- **Never use `fcntl.flock` in tests that also use `threading`.** pytest runs with `-n auto --dist worksteal` (xdist), which forks worker processes. A forked worker inherits open file descriptors with held locks, causing sibling threads to block indefinitely — deadlock, memory balloon, and eventual OOM. Mock the lock instead.
+- **Never write tests that can hang.** No `while True`, no unbounded retry loops, no `time.sleep()` longer than 1 second, no blocking I/O without a timeout, no `threading.Event.wait()` without a timeout. Every test must complete in under 5 seconds. A hanging test kills the entire gate run for every story in the sprint.
+- **Never import optional provider SDKs unconditionally in tests.** Tests must pass whether the environment has `.[dev]` or `.[all,dev]` installed. Mock or stub provider SDK boundaries.
 
 ## Cutting a Release
 

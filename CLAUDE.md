@@ -16,7 +16,7 @@ sections as navigational guidance.
 To understand what's in progress and what's next, run:
 ```bash
 gh milestone list                              # see milestones
-gh issue list --milestone "v0.5.0"             # current priority
+gh issue list --milestone "v0.8.0"             # current priority
 gh project item-list 1 --owner fuzzypete       # full project board
 ```
 
