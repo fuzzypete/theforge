@@ -51,9 +51,9 @@ profiles:
     timeout_medium_seconds: 900
     timeout_large_seconds: 1800
   preflight:
-    provider: deepseek
-    model: deepseek-reasoner
-    budget_usd: 1.00
+    provider: anthropic
+    model: claude-opus-4-5
+    budget_usd: 5.00
     timeout_seconds: 300
   review_pool:
     - name: openai-reviewer
