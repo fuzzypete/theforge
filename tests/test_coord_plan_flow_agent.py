@@ -1097,6 +1097,100 @@ findings:
         assert result.state.plan_output == "# Plan\n\nFixed plan."
         assert len(result.state.plan_results) == 2
 
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_plan_agent_review_backtrack_allowed_when_max_regen_is_one(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """With max_plan_regen_attempts=1 and recurring P0 theme, backtrack regen runs.
+
+        Three consecutive P0 rejections share the snake_case anchor 'parse_config',
+        so classify_disposition returns 'backtrack' after the second rejection.
+        The fix ensures the backtrack attempt is NOT gated by the
+        max_plan_regen_attempts ceiling, so the review pool is called a third time
+        (for the backtrack regen output) before the run finally escalates.
+
+        P0 severity is used (not P1) so the finding blocks on a single reviewer
+        without requiring corroboration.
+
+        Bug: without the fix, pool is only called twice — the ceiling check fires on
+        the second rejection and escalates before the backtrack regen is dispatched.
+        """
+        # P0 with a snake_case anchor so extract_finding_themes produces an
+        # overlapping non-file-path theme ('parse_config') across all three cycles.
+        reject_p0_with_theme = """\
+```yaml
+verdict: REJECT
+findings:
+  - severity: P0
+    description: "Plan calls parse_config() which does not exist"
+    suggestion: "Replace parse_config with load_config throughout the plan"
+```
+"""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=1
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        # Three plan outputs: initial plan, patch regen, backtrack regen
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nInitial plan.", cost_usd=0.10),
+            _make_agent_result(success=True, output="# Plan\n\nPatch attempt.", cost_usd=0.12),
+            _make_agent_result(success=True, output="# Plan\n\nBacktrack attempt.", cost_usd=0.12),
+        ]
+        # Three review rounds all REJECT P0 with the same snake_case theme.
+        # Repeated parse_config across attempts → _has_sufficient_overlap returns
+        # True across cycles, so classify_disposition returns "backtrack" after the
+        # second rejection (and "escalate" after the third).
+        mock_pool.side_effect = [
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_p0_with_theme,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_p0_with_theme,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+            [
+                _make_agent_result(
+                    success=True,
+                    output=reject_p0_with_theme,
+                    cost_usd=0.08,
+                    profile_name="plan-review",
+                )
+            ],
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        # Backtrack review ran — pool called 3 times; if bug present, only 2
+        assert mock_pool.call_count == 3
+        assert result.state.plan_backtrack_used is True
+        assert result.state.plan_regen_count >= 2
+
 
 # ── TestPlanReviewerFailureAudit ──────────────────────────────────────
 

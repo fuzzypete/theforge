@@ -307,6 +307,7 @@ class CoordinatorState:
         default_factory=list
     )  # per-attempt: {files_touched, p1_count, p2_count, finding_themes}
     plan_regen_disposition: str | None = None  # "patch" | "backtrack" | "escalate"
+    plan_backtrack_used: bool = False  # True once the backtrack regen has been dispatched
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/
     error: str | None = None
     error_type: str | None = None

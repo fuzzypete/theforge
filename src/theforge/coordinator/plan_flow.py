@@ -434,7 +434,7 @@ def _run_plan_agent_review(
         _log("  ⚠ Both plan_agent_review and plan_review enabled — agent review takes precedence")
 
     _max = config.retry.max_plan_regen_attempts
-    for _attempt in range(_max + 1):
+    for _attempt in range(_max + 2):
         _log_phase(
             state.phase,
             f"agent review ({_pool_label}, {len(par_profiles)} reviewer(s))",
@@ -748,23 +748,25 @@ def _run_plan_agent_review(
                     )
 
         if state.plan_regen_count > config.retry.max_plan_regen_attempts:
-            state.plan_review_decision = "reject"
-            state.phase = Phase.ESCALATE
-            _max_regen = config.retry.max_plan_regen_attempts
-            state.error = (
-                f"Plan rejected {state.plan_regen_count} time(s)"
-                f" by agent reviewer"
-                f" (max_plan_regen_attempts={_max_regen})."
-                f" Findings:\n{findings_text}"
-            )
-            _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — escalating")
-            _escalate_notify(task, state, notify, config)
-            return CoordinatorResult(
-                success=False,
-                phase=Phase.ESCALATE,
-                state=state,
-                message=state.error,
-            )
+            _disposition_now = state.plan_regen_disposition or "patch"
+            if _disposition_now != "backtrack" or state.plan_backtrack_used:
+                state.plan_review_decision = "reject"
+                state.phase = Phase.ESCALATE
+                _max_regen = config.retry.max_plan_regen_attempts
+                state.error = (
+                    f"Plan rejected {state.plan_regen_count} time(s)"
+                    f" by agent reviewer"
+                    f" (max_plan_regen_attempts={_max_regen})."
+                    f" Findings:\n{findings_text}"
+                )
+                _log(f"  ✗ PLAN_REVIEW   rejected {state.plan_regen_count}x — escalating")
+                _escalate_notify(task, state, notify, config)
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.error,
+                )
 
         # Early escalation: disposition tracker determined the backtrack attempt
         # itself diverged — no further regen will help; escalate immediately.
@@ -803,6 +805,7 @@ def _run_plan_agent_review(
             # text (opening, learned constraints, rejected strategy, instructions).
             # The patch ## Instructions block is intentionally omitted here — patch
             # guidance ("Do not discard working parts") contradicts backtrack intent.
+            state.plan_backtrack_used = True
             disposition_ctx = build_disposition_context(state)
             regen_prompt = dedent(f"""\
                 You are a planning agent for **{task.name}**.
