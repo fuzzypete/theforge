@@ -130,5 +130,32 @@ run gh release create "v$VERSION" --repo fuzzypete/theforge \
     --title "v$VERSION" \
     --notes "$RELEASE_NOTES"
 
+# --- 11. Create post-release doc review issue ---
+echo "==> Creating post-release doc review issue for $NEXT_MILESTONE..."
+NEXT_MILESTONE="v$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')"
+DOC_REVIEW_BODY="## What
+
+Review all public-facing documentation after v$VERSION ships to ensure it matches what was released.
+
+## Why
+
+v$VERSION is a new release. Documentation written before or during development may describe stale behavior, missing flags, or outdated architecture. This review ensures users see accurate docs.
+
+## Checklist
+
+- [ ] **README.md** — capabilities, install instructions, CLI usage
+- [ ] **CHANGELOG.md** — release section accurately covers what shipped
+- [ ] **CLAUDE.md** — conventions, architecture notes, phase descriptions
+- [ ] **AGENTS.md** — agent instructions match current prompt construction and tool usage
+- [ ] **RELEASING.md** — process gaps from this release
+- [ ] **forge.yaml comments** — inline config docs match current behavior
+- [ ] **CLI help text** — \`forge --help\` and subcommands reflect current flags
+- [ ] **GitHub release notes** — body covers what users need to know"
+run gh issue create --repo fuzzypete/theforge \
+    --title "Post-release doc review for v$VERSION" \
+    --body "$DOC_REVIEW_BODY" \
+    --label "documentation" \
+    --milestone "$NEXT_MILESTONE"
+
 echo ""
 echo "Released v$VERSION."
