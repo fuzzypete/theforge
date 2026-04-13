@@ -10,15 +10,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] — 2026-04-13
 
+### Added
 
-## [0.6.0] — 2026-04-11
+- **Native CLI sandbox write containment:** Claude and Codex CLI runners use provider-native sandbox flags (`--sandbox`, `--no-write-outside-sandbox`) to confine agent writes to the worktree — replacing the file-system sibling-worktree detector (#654)
+- **Plan structure validation:** plan output is checked against a mechanical structure schema before DEV begins — empty or schema-invalid plans are rejected rather than passed on (#335)
+- **Self-review prevention for plan reviewers:** the plan reviewer pool now excludes the same model used as planner, ensuring independent review (#333)
+- **Plan review JSON schema enforcement extended to plan path:** API-mode plan reviewers now receive full `response_schema` enforcement, matching what code reviewers already had (#332)
+- **Model preference lists for best-available provider fallback:** forge.yaml profiles can declare an ordered preference list of models; the coordinator picks the best available at run time (#326)
+- **Auto-downgrade reviewer findings contradicted by gate:** findings that the gate run does not reproduce are automatically downgraded so false positives no longer block APPROVE (#320)
+- **Global provider SDK isolation guard in tests:** a pytest fixture injects a socket guard that fails the test if real provider API calls are made during the unit test suite (#684)
+- **Preflight prompt hardening:** bounded forensic classifier prompt reduces hallucinated BLOCKED verdicts on ambiguous specs (#700)
+- **Unsubstantiated fix claims flagged to reviewers:** when a dev handoff claims fixes without matching code evidence, the flag is surfaced in the review prompt (#257)
+- **`forge sprint-status` command:** shows all stories and their live phase for a running sprint (#492)
+- **`forge status` unified surface:** `forge status` is now the single surface for active runs and pending decisions — previously split across multiple commands (#711)
 
+### Fixed
 
-## [Unreleased]
+- **Gate parser false FAIL on successful output:** gate output containing "All checks passed!" or similar success signals is now correctly parsed as PASS even on non-zero exit codes (#740)
+- **Preflight malformed/empty output no longer becomes BLOCKED:** a parse failure in preflight output defaults to PROCEED rather than halting the story (#709)
+- **Preflight ALREADY_DONE is deterministic:** verification is now assessed against a clean baseline rather than a potentially stale cached verdict (#705)
+- **Preflight failure no longer blocks the story:** a coordinator crash during preflight now escalates the story rather than silently marking it BLOCKED (#699)
+- **NoneType crash in cached preflight resume path:** fixed a crash in `engine.py _resume_body` when resuming a run that had a cached preflight but no associated state (#675)
+- **ALREADY_DONE stories no longer run DEV in sprint/batch mode:** coordinator correctly short-circuits to DONE when preflight returns ALREADY_DONE (#674)
+- **Review diff uses three-dot notation:** review phase now uses `git diff A...B` (three-dot, merge-base diff) rather than two-dot, eliminating phantom regressions when parallel stories diverge (#770)
+- **Parallel worktrees no longer race on git fetch:** `git fetch` calls across parallel sprint workers are serialized to prevent `incorrect old value provided` failures (#754)
+- **`_extract_failed_tests` no longer records xdist worker IDs:** pytest-xdist worker prefix lines are filtered out so only real test names are injected into retry prompts (#681)
+- **Dev prompt prevents tests depending on optional provider SDKs:** system prompt explicitly prohibits importing optional SDK packages in test files, preventing CI failures in minimal environments (#683, #682)
+- **Preflight early-exit verdict writes audit:** when preflight returns ALREADY_DONE or BLOCKED, the audit trail is now written before the coordinator exits (#678)
+- **Dev runs pytest with xdist parallelism:** the gate command passed to dev agents now includes `-n auto --dist worksteal`, matching what the coordinator uses (#574)
+- **Sprint log lines now include timestamps:** log lines emitted during sprint execution carry ISO timestamps for tracing latency (#573)
+- **Review no longer hard-fails on misreported commit list:** when a dev agent's handoff lists incorrect commits, the review phase uses the actual worktree commits rather than failing (#572)
+- **Gemini profile fixture missing `sandbox_mode=none` fixed in CI:** Linux CI failures caused by a missing `sandbox_mode` key in the Gemini test fixture are resolved (#702)
+- **PID file removed on unhandled exception in daemon:** the daemon now cleans up its PID file even when `run_task` raises an unexpected exception (#137)
+- **Daemon `state_update_fn` called at all phases:** state updates are now emitted at WORKSPACE, PREFLIGHT, PLAN, and all subsequent phases — not only at DEV and later (#104)
+- **`--until init` stop check fires at correct phase:** `forge run --until init` now stops before WORKSPACE rather than after it (#100)
+- **`git log` failure no longer silently continues workspace-branch collision check:** when `git log` fails, the collision check aborts rather than treating it as no collision (#98)
+- **Budget enforcement includes planner and plan reviewers:** `_enforce_budget` now accounts for plan-phase costs when evaluating the remaining budget (#95)
+- **Conversation JSON dump on max-iterations uses correct path:** the debug dump created when an agent hits max iterations is written to the correct per-run path (#39)
+- **Review convergence corroboration uses fuzzy fingerprint matching:** corroboration grouping now tolerates minor wording differences across reviewers, reducing false-negative corroboration (#34, #31, #30)
 
+### Changed
 
-## [0.7.0] — 2026-04-13
-
+- **Sibling-worktree write detector retired:** the file-system level sibling detector is replaced by provider-native sandbox containment (#654)
+- **Preflight BLOCKED verdict is now only emitted when the spec itself is invalid** — coordinator crashes and malformed output no longer masquerade as BLOCKED (#699, #709)
 
 ## [0.6.0] — 2026-04-12
 

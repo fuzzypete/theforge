@@ -103,8 +103,9 @@ plan_agent_review:
       thinking_budget: 4096
       max_iterations: 20
 
-# smart_config_models disabled until #496 is fixed —
-# _apply_complexity_adaptation downgrades dev to o4-mini on large stories
+# smart_config_models disabled pending validation —
+# adaptive complexity assignment (#496, now fixed) is stable for most cases
+# but full end-to-end validation in self-hosting is still in progress.
 # smart_config_models:
 #   - deepseek/deepseek-reasoner
 #   - openai/gpt-5.4
