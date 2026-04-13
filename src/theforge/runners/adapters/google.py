@@ -24,12 +24,19 @@ if TYPE_CHECKING:
 def _is_stop_finish_reason(finish_reason: Any) -> bool:
     """Return True if finish_reason represents a normal STOP completion.
 
-    Normalises across string ("STOP"), dotted-enum ("FinishReason.STOP"),
-    and integer ("1") representations emitted by different SDK versions.
+    Prefers the canonical enum .name attribute when finish_reason is an enum
+    so we compare against a single well-known name ("STOP") rather than
+    juggling multiple string representations.  Falls back to string
+    normalisation for plain strings and legacy SDK integer representations.
     """
     if finish_reason is None:
         return True
-    # Split on "." so "FinishReason.STOP" → "STOP"; plain "STOP" → "STOP"
+    # Prefer enum .name (FinishReason.STOP → "STOP") — canonical, single check.
+    enum_name = getattr(finish_reason, "name", None)
+    if enum_name is not None:
+        return enum_name == "STOP"
+    # String fallback: split on "." so "FinishReason.STOP" → "STOP".
+    # Keep "1" for SDK versions that serialise the enum as its integer value.
     name = str(finish_reason).split(".")[-1]
     return name in ("", "STOP", "1")
 

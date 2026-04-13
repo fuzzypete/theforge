@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import sys
+from enum import IntEnum
 from unittest.mock import MagicMock, patch
 
 from theforge.config import ModelProfile
-from theforge.runners.adapters.google import _make_google_adapter, _run_google
+from theforge.runners.adapters.google import (
+    _is_stop_finish_reason,
+    _make_google_adapter,
+    _run_google,
+)
 from theforge.runners.schema_utils import ToolCallRequest
 
 
@@ -75,6 +80,53 @@ def _make_response(
     response.candidates = [candidate]
     response.prompt_feedback = feedback
     return response
+
+
+class _FakeFinishReason(IntEnum):
+    """Minimal enum that mimics google.genai.types.FinishReason for unit tests."""
+
+    STOP = 1
+    SAFETY = 2
+    RECITATION = 3
+    MAX_TOKENS = 4
+    MALFORMED_FUNCTION_CALL = 5
+
+
+class TestIsStopFinishReason:
+    """Unit tests for _is_stop_finish_reason — the canonical finish-reason check."""
+
+    def test_none_is_stop(self):
+        assert _is_stop_finish_reason(None) is True
+
+    def test_enum_stop_is_stop(self):
+        """Enum path: FinishReason.STOP (name='STOP') → True."""
+        assert _is_stop_finish_reason(_FakeFinishReason.STOP) is True
+
+    def test_enum_safety_is_not_stop(self):
+        """Enum path: FinishReason.SAFETY (name='SAFETY') → False."""
+        assert _is_stop_finish_reason(_FakeFinishReason.SAFETY) is False
+
+    def test_enum_max_tokens_is_not_stop(self):
+        assert _is_stop_finish_reason(_FakeFinishReason.MAX_TOKENS) is False
+
+    def test_string_stop_is_stop(self):
+        """String 'STOP' → True via string-fallback path."""
+        assert _is_stop_finish_reason("STOP") is True
+
+    def test_dotted_string_stop_is_stop(self):
+        """'FinishReason.STOP' normalises to 'STOP' via split-on-dot fallback."""
+        assert _is_stop_finish_reason("FinishReason.STOP") is True
+
+    def test_string_safety_is_not_stop(self):
+        assert _is_stop_finish_reason("SAFETY") is False
+
+    def test_string_1_is_stop(self):
+        """Legacy SDK: integer-as-string '1' maps to STOP."""
+        assert _is_stop_finish_reason("1") is True
+
+    def test_empty_string_is_stop(self):
+        """Empty string (unset finish_reason) treated as STOP."""
+        assert _is_stop_finish_reason("") is True
 
 
 class TestRunGoogle:
