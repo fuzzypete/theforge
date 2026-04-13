@@ -66,10 +66,26 @@ def _matches_prior(
     prior: FindingRecord,
     threshold: float = JACCARD_THRESHOLD,
 ) -> bool:
-    """Return True if finding matches prior record (same file + sufficient token overlap)."""
+    """Return True if finding matches prior record (same file + same severity + token overlap)."""
     if finding.file != prior.file:
         return False
     if finding.severity != prior.severity:
+        return False
+    tokens_new = _normalize_tokens(finding.description)
+    tokens_prior = _normalize_tokens(prior.description)
+    return _jaccard(tokens_new, tokens_prior) >= threshold
+
+
+def _matches_prior_agnostic(
+    finding: ReviewFinding,
+    prior: FindingRecord,
+    threshold: float = JACCARD_THRESHOLD,
+) -> bool:
+    """Return True if finding matches prior record ignoring severity (same file + token overlap).
+
+    Used to detect severity downgrades between cycles (e.g. P1 → P2).
+    """
+    if finding.file != prior.file:
         return False
     tokens_new = _normalize_tokens(finding.description)
     tokens_prior = _normalize_tokens(prior.description)
@@ -194,12 +210,23 @@ def update_finding_registry(
         # Use the first report as representative
         first_reviewer, first_finding = reports[0]
 
-        # Look for match in prior registry (snapshot taken before this cycle's inserts)
+        # Look for match in prior registry (snapshot taken before this cycle's inserts).
+        # First pass: exact match (same severity).
+        # Second pass: severity-agnostic match to detect P1 → P2 downgrades.
         prior_match: FindingRecord | None = None
+        is_severity_downgrade = False
         for record in prior_registry:
             if _matches_prior(first_finding, record):
                 prior_match = record
                 break
+        if prior_match is None:
+            for record in prior_registry:
+                if _matches_prior_agnostic(first_finding, record):
+                    # Only treat as downgrade when severity decreased (P1 → P2)
+                    if record.severity == "P1" and first_finding.severity == "P2":
+                        prior_match = record
+                        is_severity_downgrade = True
+                    break
 
         in_changed_files = first_finding.file in changed_files if first_finding.file else False
         num_reporters = len({r for r, _ in reports})  # unique reviewer count
@@ -207,7 +234,10 @@ def update_finding_registry(
         if prior_match is not None:
             # Finding existed in a prior cycle
             disposition: str
-            if prior_match.disposition in (
+            if is_severity_downgrade:
+                # P1 finding was reported as P2 this cycle — record the downgrade
+                disposition = "downgraded"
+            elif prior_match.disposition in (
                 "unresolved",
                 "net_new",
                 "corroborated_new",

@@ -11,6 +11,7 @@ from theforge.finding_classifier import (
     _fingerprint,
     _jaccard,
     _matches_prior,
+    _matches_prior_agnostic,
     _normalize_tokens,
     has_blocking_p1,
     net_new_p1s,
@@ -153,6 +154,44 @@ class TestMatchesPrior:
         finding = _make_finding("Completely different description about something else")
         record = self._make_record("Missing null check in handler method call")
         assert not _matches_prior(finding, record)
+
+
+class TestMatchesPriorAgnostic:
+    def _make_record(
+        self, description: str, file: str = "src/foo.py", severity: str = "P1"
+    ) -> FindingRecord:
+        fp = _fingerprint(severity, file, description)
+        return FindingRecord(
+            finding_id=fp,
+            cycle_first_seen=1,
+            cycle_last_seen=1,
+            file=file,
+            line=10,
+            severity=severity,
+            description=description,
+            reporter="reviewer-a",
+            disposition="net_new",
+        )
+
+    def test_same_severity_matches(self):
+        finding = _make_finding("Missing null check in handler")
+        record = self._make_record("Missing null check in handler")
+        assert _matches_prior_agnostic(finding, record)
+
+    def test_different_severity_still_matches(self):
+        finding = _make_finding("Missing null check in handler", severity="P2")
+        record = self._make_record("Missing null check in handler", severity="P1")
+        assert _matches_prior_agnostic(finding, record)
+
+    def test_different_file_no_match(self):
+        finding = _make_finding("Missing null check in handler", file="src/bar.py")
+        record = self._make_record("Missing null check in handler", file="src/foo.py")
+        assert not _matches_prior_agnostic(finding, record)
+
+    def test_low_overlap_no_match(self):
+        finding = _make_finding("Completely different description about something else")
+        record = self._make_record("Missing null check in handler method call")
+        assert not _matches_prior_agnostic(finding, record)
 
 
 class TestUpdateFindingRegistryCycle1:
@@ -404,6 +443,86 @@ class TestUpdateFindingRegistryCycle2:
         p1s = [r for r in classified if r.severity == "P1"]
         assert len(p1s) == 1
         assert p1s[0].disposition == "corroborated_new"
+
+    def test_p1_downgraded_to_p2_gets_downgraded_disposition(self, tmp_path):
+        """A P1 in cycle 1 reported as P2 in cycle 2 should get 'downgraded', not 'fixed'."""
+        state = _make_state()
+        self._populate_cycle1(state, "Missing null check in handler")
+
+        # Same description, but P2 this time
+        finding = _make_finding("Missing null check in handler", severity="P2")
+        review = _make_review([finding], verdict="APPROVE")
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        # The existing P1 record should be updated to 'downgraded'
+        assert len(state.finding_registry) == 1
+        record = state.finding_registry[0]
+        assert record.disposition == "downgraded"
+        assert record.cycle_last_seen == 2
+        # Severity stays P1 (it's the same record — the downgrade is noted in disposition)
+        assert record.severity == "P1"
+
+    def test_p1_downgraded_to_p2_is_not_marked_fixed(self, tmp_path):
+        """A downgraded finding's cycle_last_seen is updated, so it must not be marked fixed."""
+        state = _make_state()
+        self._populate_cycle1(state, "Missing null check in handler")
+
+        finding = _make_finding("Missing null check in handler", severity="P2")
+        review = _make_review([finding], verdict="APPROVE")
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        record = state.finding_registry[0]
+        assert record.disposition != "fixed"
+
+    def test_downgraded_p1_does_not_block(self, tmp_path):
+        """A downgraded P1 should not block — it was intentionally softened by reviewers."""
+        state = _make_state()
+        self._populate_cycle1(state, "Missing null check in handler")
+
+        finding = _make_finding("Missing null check in handler", severity="P2")
+        review = _make_review([finding], verdict="APPROVE")
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        assert not has_blocking_p1(classified)
+
+    def test_p2_upgraded_to_p1_creates_new_record(self, tmp_path):
+        """P2 in cycle 1 reported as P1 in cycle 2 → new finding (regression or net_new)."""
+        state = _make_state()
+        fp = _fingerprint("P2", "src/foo.py", "Style issue in handler")
+        record = FindingRecord(
+            finding_id=fp,
+            cycle_first_seen=1,
+            cycle_last_seen=1,
+            file="src/foo.py",
+            line=10,
+            severity="P2",
+            description="Style issue in handler",
+            reporter="reviewer-a",
+            disposition="net_new",
+        )
+        state.finding_registry.append(record)
+
+        # Same description but P1 now — upgrade case
+        finding = _make_finding("Style issue in handler", severity="P1", file="src/foo.py")
+        review = _make_review([finding])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        # P2→P1 is NOT treated as downgrade; new P1 record created
+        p1_records = [r for r in state.finding_registry if r.severity == "P1"]
+        assert len(p1_records) == 1
+        assert p1_records[0].disposition in ("net_new", "regression")
 
 
 class TestHasBlockingP1:
