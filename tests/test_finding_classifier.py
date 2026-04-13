@@ -322,6 +322,76 @@ class TestUpdateFindingRegistryCycle1:
             f"{[r.disposition for r in p1s]}"
         )
 
+    def test_paraphrased_descriptions_corroborated_via_jaccard(self, tmp_path):
+        """Two reviewers describing the same issue with similar but different wording
+        should be corroborated even when there is no line proximity to merge them.
+
+        'Missing null check when processing user requests' and
+        'User requests could fail if null check is missing' share enough tokens
+        (Jaccard ≥ 0.5) that the classifier should group them as corroborated_new.
+        """
+        state = _make_state()
+        # line=None so fingerprints only differ on token content, not line
+        finding_a = _make_finding(
+            "Missing null check when processing user requests",
+            line=None,
+        )
+        finding_b = _make_finding(
+            "User requests could fail if null check is missing",
+            line=None,
+        )
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 1, f"Expected 1 merged P1 bucket; got {len(p1s)}"
+        assert p1s[0].disposition == "corroborated_new"
+
+    def test_same_description_different_lines_corroborated_via_jaccard(self, tmp_path):
+        """Two reviewers reporting an identical description at distant line numbers
+        (fingerprints differ due to line inclusion) should be corroborated.
+
+        Jaccard of identical descriptions is 1.0 so they should always merge.
+        """
+        state = _make_state()
+        finding_a = _make_finding("Missing null check in handler", line=10)
+        finding_b = _make_finding("Missing null check in handler", line=50)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 1, f"Expected 1 merged P1 bucket; got {len(p1s)}"
+        assert p1s[0].disposition == "corroborated_new"
+
+    def test_dissimilar_descriptions_different_lines_not_corroborated(self, tmp_path):
+        """Two reviewers with genuinely different descriptions and distant lines
+        should remain as separate net_new findings (Jaccard below threshold).
+        """
+        state = _make_state()
+        finding_a = _make_finding("Missing null check before dereferencing request.user", line=10)
+        finding_b = _make_finding("Handler can crash when account lookup returns None", line=50)
+        cycle_results = [
+            ("reviewer-a", _make_review([finding_a])),
+            ("reviewer-b", _make_review([finding_b])),
+        ]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=1)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert len(p1s) == 2
+        assert all(r.disposition == "net_new" for r in p1s)
+
     def test_nearby_line_corroboration_does_not_chain_transitively(self, tmp_path):
         state = _make_state()
         cycle_results = [

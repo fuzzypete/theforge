@@ -159,6 +159,11 @@ def update_finding_registry(
         reports_a: list[tuple[str, ReviewFinding]],
         reports_b: list[tuple[str, ReviewFinding]],
     ) -> bool:
+        # Path 1: line-proximity merge.
+        # Requires ALL comparable pairs across the two buckets to satisfy same-file,
+        # same-severity, and within-3-line constraints.  The all-pairs requirement is
+        # intentional — it prevents transitive merging when a bucket grows after
+        # absorbing a finding whose line is far from a third bucket.
         comparable_a = [
             finding
             for _, finding in reports_a
@@ -169,17 +174,51 @@ def update_finding_registry(
             for _, finding in reports_b
             if finding.file is not None and finding.line is not None
         ]
-        if not comparable_a or not comparable_b:
-            return False
-        for finding_a in comparable_a:
-            for finding_b in comparable_b:
-                if finding_a.severity != finding_b.severity:
-                    return False
-                if finding_a.file != finding_b.file:
-                    return False
-                if abs(finding_a.line - finding_b.line) > 3:
-                    return False
-        return True
+        if comparable_a and comparable_b:
+            all_close = True
+            for finding_a in comparable_a:
+                for finding_b in comparable_b:
+                    if finding_a.severity != finding_b.severity:
+                        all_close = False
+                        break
+                    if finding_a.file != finding_b.file:
+                        all_close = False
+                        break
+                    if abs(finding_a.line - finding_b.line) > 3:
+                        all_close = False
+                        break
+                if not all_close:
+                    break
+            if all_close:
+                return True
+
+        # Path 2: Jaccard-similarity merge (different-reviewer pairs only).
+        # Catches paraphrased corroborations: same file + same severity + similar
+        # description tokens, regardless of line numbers.  Two reviewers describing the
+        # same issue with slightly different wording produce different fingerprints and
+        # end up in different buckets; Jaccard reunites them.
+        #
+        # Restricted to disjoint reviewer sets: a single reviewer can legitimately
+        # report the same class of issue at many locations (Jaccard 1.0 between those
+        # reports).  Merging intra-reviewer buckets early would suppress the
+        # corroboration signal from a second reviewer who describes the issue differently.
+        reviewers_a = {reviewer for reviewer, _ in reports_a}
+        reviewers_b = {reviewer for reviewer, _ in reports_b}
+        if reviewers_a.isdisjoint(reviewers_b):
+            all_a = [finding for _, finding in reports_a]
+            all_b = [finding for _, finding in reports_b]
+            for finding_a in all_a:
+                for finding_b in all_b:
+                    if finding_a.severity != finding_b.severity:
+                        continue
+                    if finding_a.file != finding_b.file:
+                        continue
+                    tokens_a = _normalize_tokens(finding_a.description)
+                    tokens_b = _normalize_tokens(finding_b.description)
+                    if _jaccard(tokens_a, tokens_b) >= JACCARD_THRESHOLD:
+                        return True
+
+        return False
 
     merged_reports: dict[str, list[tuple[str, ReviewFinding]]] = {
         fp: list(reports) for fp, reports in fingerprint_to_reports.items()
