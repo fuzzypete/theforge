@@ -147,6 +147,7 @@ def build_review_prompt(
     conventions: list[str] | None = None,
     assembled_context: ContextPack | None = None,
     sandboxed: bool = True,
+    fix_claim_flags: list[str] | None = None,
 ) -> str:
     """Build the review agent prompt.
 
@@ -207,7 +208,7 @@ def build_review_prompt(
 
         """)
 
-    dev_notes_section = (
+    _dev_notes_base = (
         dedent(f"""\
 
             ## Developer Notes
@@ -223,6 +224,16 @@ def build_review_prompt(
         if dev_notes
         else ""
     )
+
+    # Append fix-claim warnings after dedent so dynamic multi-line content does
+    # not interfere with dedent's common-indent calculation.
+    if _dev_notes_base and fix_claim_flags:
+        _warn_lines = ["⚠ Unsubstantiated fix claims detected (heuristic — verify independently):"]
+        for _flag in fix_claim_flags:
+            _warn_lines.append(f"- {_flag}")
+        dev_notes_section = _dev_notes_base + "\n".join(_warn_lines) + "\n"
+    else:
+        dev_notes_section = _dev_notes_base
 
     context_section = ""
     if assembled_context and assembled_context.content:

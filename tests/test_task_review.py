@@ -276,6 +276,75 @@ class TestBuildReviewPromptCycleHistory:
         assert "## Commits" in prompt
 
 
+class TestBuildReviewPromptFixClaimFlags:
+    """Tests for build_review_prompt() fix_claim_flags parameter."""
+
+    def test_no_flags_no_warning_section(self, review_task: TaskStory) -> None:
+        """When fix_claim_flags is None, no warning section appears."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            dev_notes="Summary: implemented the feature.",
+            fix_claim_flags=None,
+        )
+        assert "Unsubstantiated fix claims" not in prompt
+
+    def test_single_flag_appears_in_dev_notes_section(self, review_task: TaskStory) -> None:
+        """A fix-claim flag is injected after the Developer Notes section."""
+        _flag = (
+            "Dev claimed this finding fixed but cited no test or invariant"
+            " — verify independently.\n"
+            '  Claim: "fixes gap"\n'
+            '  Related finding: "gap in component"'
+        )
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            dev_notes="Summary: fixed the gap.",
+            fix_claim_flags=[_flag],
+        )
+        assert "## Developer Notes" in prompt
+        assert "Unsubstantiated fix claims detected" in prompt
+        assert "verify independently" in prompt
+
+    def test_flags_without_dev_notes_are_suppressed(self, review_task: TaskStory) -> None:
+        """fix_claim_flags with no dev_notes produces no warning (nothing to attach to)."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            dev_notes=None,
+            fix_claim_flags=["some warning"],
+        )
+        assert "Unsubstantiated fix claims" not in prompt
+
+    def test_multiline_flag_message_does_not_corrupt_prompt(self, review_task: TaskStory) -> None:
+        """Multi-line flag_message (with Claim / Related finding lines) renders correctly.
+
+        Verifies the P2 fix: flag content with mixed indentation must not corrupt
+        the surrounding prompt sections via dedent interaction.
+        """
+        multiline_flag = (
+            "Dev claimed this finding fixed but cited no test or invariant"
+            " — verify independently.\n"
+            '  Claim: "ensures gap is never skipped"\n'
+            '  Related finding: "gap in lagging component"'
+        )
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            dev_notes="Summary: fixes applied.",
+            fix_claim_flags=[multiline_flag],
+        )
+        # All major prompt sections must still be present (not eaten by bad dedent)
+        assert "## Developer Notes" in prompt
+        assert "## Spec" in prompt
+        assert "## Verified Git Metadata" in prompt
+        assert "## Severity Definitions" in prompt
+        # Flag content itself must appear
+        assert "ensures gap is never skipped" in prompt
+        assert "gap in lagging component" in prompt
+
+
 class TestTaskStoryDependsOn:
     def test_depends_on_default_empty(self, tmp_path: Path) -> None:
         """TaskStory without depends_on argument defaults to []."""

@@ -18,6 +18,7 @@ import yaml
 
 from theforge.config import ForgeConfig
 from theforge.coordinator.context_scope import plan_file_list
+from theforge.handoff_claim_checker import check_handoff_fix_claims
 from theforge.review import (
     ReviewResult,
     _try_parse_review,
@@ -39,6 +40,7 @@ from .review_context import (
     _get_diff_stat,
     _get_handoff_commit_warning,
     _get_handoff_content,
+    _parse_dev_handoff,
 )
 from .state import CoordinatorState, Phase, ReviewCycleMetadata
 
@@ -87,6 +89,22 @@ def _emit_review_git_context(
         commit_log=commit_log,
         diff_stat=diff_stat,
         handoff_commit_warning=handoff_commit_warning,
+    )
+
+
+def _emit_fix_claim_check(
+    logger: Any | None,
+    *,
+    flagged: list[dict],
+    accepted: list[dict],
+) -> None:
+    """Emit handoff fix-claim check results to the audit trail."""
+    if logger is None:
+        return
+    logger._safe_emit(
+        "handoff_fix_claim_check",
+        flagged=flagged,
+        accepted=accepted,
     )
 
 
@@ -176,6 +194,37 @@ def _run_review_pool(
             handoff_commit_warning=handoff_commit_warning,
         )
 
+        # Heuristic fix-claim check: flag confident fix assertions in the
+        # handoff summary that reference a prior P1 but cite no test or invariant.
+        # Use only the most recent REQUEST_CHANGES cycle — its p1_findings are the
+        # currently unresolved findings. Earlier cycles may contain findings that
+        # were already fixed, and including them would cause false-positive flags.
+        _last_rc = next(
+            (ch for ch in reversed(state.cycle_history or []) if ch.verdict == "REQUEST_CHANGES"),
+            None,
+        )
+        _prior_p1_descs: list[str] = list(_last_rc.p1_findings) if _last_rc else []
+        _parsed_handoff = _parse_dev_handoff(config, workspace_path)
+        _claim_summary = (
+            _parsed_handoff.summary
+            if _parsed_handoff is not None and not _parsed_handoff.parse_errors
+            else ""
+        )
+        _claim_check = check_handoff_fix_claims(_claim_summary, _prior_p1_descs)
+        _emit_fix_claim_check(
+            logger,
+            flagged=[
+                {"claim": r.claim_text, "finding": r.related_finding} for r in _claim_check.flagged
+            ],
+            accepted=[
+                {"claim": r.claim_text, "finding": r.related_finding}
+                for r in _claim_check.accepted
+            ],
+        )
+        fix_claim_flags: list[str] | None = [
+            r.flag_message for r in _claim_check.flagged if r.flag_message
+        ] or None
+
         review_context = ContextAssembler.from_config(config).assemble(
             phase="review",
             story_text=story_content,
@@ -203,6 +252,7 @@ def _run_review_pool(
                     conventions=config.conventions_soft,
                     assembled_context=review_context,
                     sandboxed=state.sandboxed,
+                    fix_claim_flags=fix_claim_flags,
                 )
                 for p in pool
             ]
@@ -224,6 +274,7 @@ def _run_review_pool(
                 conventions=config.conventions_soft,
                 assembled_context=review_context,
                 sandboxed=state.sandboxed,
+                fix_claim_flags=fix_claim_flags,
             )
         )
     _log_verbose(f"Running {pool_size} reviewer(s): {[p.name for p in pool]}")
