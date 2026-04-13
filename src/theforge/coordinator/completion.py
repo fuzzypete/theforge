@@ -823,9 +823,7 @@ def land_story(
         if status_ok:
             tracked_dirty = _parse_dirty_files(status_out)
             untracked_files = [
-                line[3:].strip()
-                for line in status_out.splitlines()
-                if len(line) >= 4 and line[:2] in {"??", " ?"}
+                line[3:].strip() for line in status_out.splitlines() if line.startswith("?? ")
             ]
             if tracked_dirty:
                 quoted = " ".join(shlex.quote(path) for path in tracked_dirty)
