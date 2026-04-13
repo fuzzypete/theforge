@@ -743,20 +743,26 @@ class TestWorkerSlugContext:
         assert results == {"a": "issue-99", "b": ""}
 
     def test_runner_log_includes_slug(self, monkeypatch, capsys) -> None:
+        import re
+
         from theforge.sprint import runner
 
         monkeypatch.setattr(runner, "get_worker_slug", lambda: "my-story")
         runner._log("hello")
 
-        assert "[sprint] [my-story] hello" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert re.search(r"\[sprint\] \d{2}:\d{2}:\d{2}\.\d{3} \[my-story\] hello", err)
 
     def test_util_log_includes_slug(self, monkeypatch, capsys) -> None:
+        import re
+
         from theforge.coordinator import util
 
         monkeypatch.setattr(util, "get_worker_slug", lambda: "my-story")
         util._log("hello")
 
-        assert "[forge] [my-story] hello" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert re.search(r"\[forge\] \d{2}:\d{2}:\d{2}\.\d{3} \[my-story\] hello", err)
 
 
 def test_preflight_yaml_includes_branch_merged(tmp_path):

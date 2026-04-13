@@ -7,11 +7,12 @@ from dataclasses import dataclass, replace
 from ..config import ForgeConfig
 from ..coordinator.engine import run_task
 from ..coordinator.state import CoordinatorState, Phase
+from ..log_util import _log_line
 from ..task import TaskStory
 
 
 def _log(msg: str) -> None:
-    print(f"[sprint] {msg}", file=sys.stderr, flush=True)
+    _log_line("[sprint]", msg)
 
 
 @dataclass(frozen=True)

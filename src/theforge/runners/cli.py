@@ -10,7 +10,6 @@ Provider-specific runners live in dedicated modules:
 from __future__ import annotations
 
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -21,6 +20,7 @@ from typing import cast
 
 from theforge.agent_types import AgentResult
 from theforge.log_level import LogLevel
+from theforge.log_util import _log_line
 
 from ..config import ModelProfile
 
@@ -28,14 +28,14 @@ from ..config import ModelProfile
 
 
 def _log(msg: str) -> None:
-    print(f"[forge] {msg}", file=sys.stderr, flush=True)
+    _log_line("[forge]", msg)
 
 
 def _log_verbose(msg: str) -> None:
     from theforge.log_level import _LOG_LEVEL as _LL
 
     if _LL >= LogLevel.VERBOSE:
-        print(f"[forge] {msg}", file=sys.stderr, flush=True)
+        _log_line("[forge]", msg)
 
 
 # ── Heartbeat helper ─────────────────────────────────────────────────

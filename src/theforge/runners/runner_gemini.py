@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
 from theforge.agent_types import AgentResult
+from theforge.log_util import _log_line
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
@@ -22,14 +22,14 @@ from .cli import _handle_exception, _run_with_heartbeat
 
 
 def _log(msg: str) -> None:
-    print(f"[forge] {msg}", file=sys.stderr, flush=True)
+    _log_line("[forge]", msg)
 
 
 def _log_verbose(msg: str) -> None:
     from theforge.log_level import _LOG_LEVEL, LogLevel  # noqa: PLC0415
 
     if _LOG_LEVEL >= LogLevel.VERBOSE:
-        print(f"[forge] {msg}", file=sys.stderr, flush=True)
+        _log_line("[forge]", msg)
 
 
 # ── Gemini runner ─────────────────────────────────────────────────────
