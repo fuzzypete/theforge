@@ -234,6 +234,12 @@ def _parse_profile(
     anything else uses DEFAULT_REVIEW_PROFILE. This prevents pool entries
     named "dev" from accidentally inheriting dev-level tools/timeouts.
     """
+    if "]" in name:
+        raise ValueError(
+            f"Profile name {name!r} contains ']', which is not allowed. "
+            "Profile names are used as '[name] description' attribution prefixes; "
+            "a ']' in the name would break reviewer attribution parsing."
+        )
     default = DEFAULT_DEV_PROFILE if role == "dev" else DEFAULT_REVIEW_PROFILE
     cli = data.get("cli")
     provider = data.get("provider")
