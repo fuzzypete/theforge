@@ -28,8 +28,16 @@ def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str,
 
     with open(log_path) as fh:
         while True:
+            pos = fh.tell()
             line = fh.readline()
             if not line:
+                time.sleep(0.1)
+                continue
+
+            # Partial line: writer hasn't flushed the newline yet.
+            # Rewind to the start of the incomplete line and wait.
+            if not line.endswith("\n"):
+                fh.seek(pos)
                 time.sleep(0.1)
                 continue
 
