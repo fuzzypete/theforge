@@ -3,7 +3,12 @@
 All logic is pure Python — no LLM calls.
 
 Fingerprinting uses sha256(severity + "|" + (file or "") + "|" + normalized_tokens).
-Matching uses file equality + Jaccard token overlap ≥ JACCARD_THRESHOLD (0.5).
+Corroboration grouping uses a single-pass Jaccard similarity assignment:
+  each finding is assigned to the first existing bucket whose reviewer set is disjoint
+  from the new finding's reviewer and which contains at least one finding with the same
+  file, same severity, and Jaccard token overlap ≥ JACCARD_THRESHOLD.  If no bucket
+  matches, a new bucket is created.  A line-proximity post-pass then merges any remaining
+  buckets whose cross-bucket all-pairs satisfy same-file, same-severity, and ≤3-line gap.
 
 # CALIBRATION NOTE: The Jaccard threshold of 0.5 was chosen as a reasonable default.
 # It may need tuning depending on how verbose reviewer descriptions tend to be.
@@ -21,7 +26,6 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
-from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -115,6 +119,67 @@ def _get_changed_files(workspace_path: Path, prev_commit: str | None) -> frozens
         return frozenset()
 
 
+def _jaccard_matches_bucket(
+    reviewer: str,
+    finding: ReviewFinding,
+    bucket: list[tuple[str, ReviewFinding]],
+) -> bool:
+    """Return True if finding should join bucket via Jaccard similarity (Path 2).
+
+    Conditions:
+    - finding's reviewer is not already in the bucket (cross-reviewer only).
+    - At least one bucket finding has same severity + same file +
+      Jaccard token overlap >= JACCARD_THRESHOLD with the new finding.
+
+    First-match policy: callers stop at the first qualifying bucket.
+    """
+    if reviewer in {r for r, _ in bucket}:
+        return False
+    tokens_new = _normalize_tokens(finding.description)
+    for _, existing in bucket:
+        if existing.severity != finding.severity:
+            continue
+        if existing.file != finding.file:
+            continue
+        if _jaccard(tokens_new, _normalize_tokens(existing.description)) >= JACCARD_THRESHOLD:
+            return True
+    return False
+
+
+def _should_merge_line_proximity(
+    reports_a: list[tuple[str, ReviewFinding]],
+    reports_b: list[tuple[str, ReviewFinding]],
+) -> bool:
+    """Return True if two buckets should merge based on line proximity (Path 1).
+
+    Requires ALL comparable pairs across the two buckets to satisfy same-file,
+    same-severity, and within-3-line constraints.  The all-pairs requirement is
+    intentional — it prevents transitive merging when a bucket grows after
+    absorbing a finding whose line is far from a third bucket.
+    """
+    comparable_a = [
+        finding
+        for _, finding in reports_a
+        if finding.file is not None and finding.line is not None
+    ]
+    comparable_b = [
+        finding
+        for _, finding in reports_b
+        if finding.file is not None and finding.line is not None
+    ]
+    if not comparable_a or not comparable_b:
+        return False
+    for finding_a in comparable_a:
+        for finding_b in comparable_b:
+            if finding_a.severity != finding_b.severity:
+                return False
+            if finding_a.file != finding_b.file:
+                return False
+            if abs(finding_a.line - finding_b.line) > 3:
+                return False
+    return True
+
+
 def update_finding_registry(
     state: CoordinatorState,
     cycle_results: list[tuple[str, ReviewResult]],
@@ -144,99 +209,56 @@ def update_finding_registry(
 
     changed_files = _get_changed_files(workspace_path, prev_commit)
 
-    # Gather all P1 findings per reviewer (for corroboration detection)
-    # Structure: {fingerprint -> list of (reviewer_name, finding)}
-    fingerprint_to_reports: dict[str, list[tuple[str, ReviewFinding]]] = defaultdict(list)
-
-    all_findings: list[tuple[str, ReviewFinding]] = []  # (reviewer, finding)
+    # Collect all findings across reviewers
+    all_findings: list[tuple[str, ReviewFinding]] = []
     for reviewer_name, review_result in cycle_results:
         for finding in review_result.findings:
             all_findings.append((reviewer_name, finding))
-            fp = _fingerprint(finding.severity, finding.file, finding.description, finding.line)
-            fingerprint_to_reports[fp].append((reviewer_name, finding))
 
-    def _should_merge(
-        reports_a: list[tuple[str, ReviewFinding]],
-        reports_b: list[tuple[str, ReviewFinding]],
-    ) -> bool:
-        # Path 1: line-proximity merge.
-        # Requires ALL comparable pairs across the two buckets to satisfy same-file,
-        # same-severity, and within-3-line constraints.  The all-pairs requirement is
-        # intentional — it prevents transitive merging when a bucket grows after
-        # absorbing a finding whose line is far from a third bucket.
-        comparable_a = [
-            finding
-            for _, finding in reports_a
-            if finding.file is not None and finding.line is not None
-        ]
-        comparable_b = [
-            finding
-            for _, finding in reports_b
-            if finding.file is not None and finding.line is not None
-        ]
-        if comparable_a and comparable_b:
-            all_close = True
-            for finding_a in comparable_a:
-                for finding_b in comparable_b:
-                    if finding_a.severity != finding_b.severity:
-                        all_close = False
-                        break
-                    if finding_a.file != finding_b.file:
-                        all_close = False
-                        break
-                    if abs(finding_a.line - finding_b.line) > 3:
-                        all_close = False
-                        break
-                if not all_close:
-                    break
-            if all_close:
-                return True
+    # Single-pass Jaccard-based bucket assignment (Path 2).
+    # Each finding is assigned to the first existing bucket whose reviewer set
+    # is disjoint from the new finding's reviewer and which contains at least one
+    # finding with the same file, same severity, and Jaccard >= JACCARD_THRESHOLD.
+    # First-match policy: consistent with prior merge-loop behaviour and simpler
+    # than best-Jaccard-match; ordering effects are negligible at typical cardinality.
+    # Intra-reviewer findings always create a new bucket to preserve the corroboration
+    # signal — a single reviewer reporting similar issues at many locations is noise,
+    # not corroboration.
+    buckets: list[list[tuple[str, ReviewFinding]]] = []
+    for reviewer_name, finding in all_findings:
+        for bucket in buckets:
+            if _jaccard_matches_bucket(reviewer_name, finding, bucket):
+                bucket.append((reviewer_name, finding))
+                break
+        else:
+            buckets.append([(reviewer_name, finding)])
 
-        # Path 2: Jaccard-similarity merge (different-reviewer pairs only).
-        # Catches paraphrased corroborations: same file + same severity + similar
-        # description tokens, regardless of line numbers.  Two reviewers describing the
-        # same issue with slightly different wording produce different fingerprints and
-        # end up in different buckets; Jaccard reunites them.
-        #
-        # Restricted to disjoint reviewer sets: a single reviewer can legitimately
-        # report the same class of issue at many locations (Jaccard 1.0 between those
-        # reports).  Merging intra-reviewer buckets early would suppress the
-        # corroboration signal from a second reviewer who describes the issue differently.
-        reviewers_a = {reviewer for reviewer, _ in reports_a}
-        reviewers_b = {reviewer for reviewer, _ in reports_b}
-        if reviewers_a.isdisjoint(reviewers_b):
-            all_a = [finding for _, finding in reports_a]
-            all_b = [finding for _, finding in reports_b]
-            for finding_a in all_a:
-                for finding_b in all_b:
-                    if finding_a.severity != finding_b.severity:
-                        continue
-                    if finding_a.file != finding_b.file:
-                        continue
-                    tokens_a = _normalize_tokens(finding_a.description)
-                    tokens_b = _normalize_tokens(finding_b.description)
-                    if _jaccard(tokens_a, tokens_b) >= JACCARD_THRESHOLD:
-                        return True
+    # Line-proximity post-pass (Path 1).
+    # Merges remaining buckets where ALL cross-bucket comparable pairs satisfy
+    # same-file, same-severity, and ≤3-line gap.  The all-pairs constraint is
+    # preserved to prevent transitive merging.
+    i = 0
+    while i < len(buckets):
+        j = i + 1
+        while j < len(buckets):
+            if _should_merge_line_proximity(buckets[i], buckets[j]):
+                buckets[i].extend(buckets.pop(j))
+            else:
+                j += 1
+        i += 1
 
-        return False
-
-    merged_reports: dict[str, list[tuple[str, ReviewFinding]]] = {
-        fp: list(reports) for fp, reports in fingerprint_to_reports.items()
-    }
-    fingerprint_keys = list(merged_reports)
-    for idx, fp_a in enumerate(fingerprint_keys):
-        if fp_a not in merged_reports:
-            continue
-        for fp_b in fingerprint_keys[idx + 1 :]:
-            if fp_b not in merged_reports:
-                continue
-            if not _should_merge(merged_reports[fp_a], merged_reports[fp_b]):
-                continue
-            if len({reviewer for reviewer, _ in merged_reports[fp_a]}) < len(
-                {reviewer for reviewer, _ in merged_reports[fp_b]}
-            ):
-                fp_a, fp_b = fp_b, fp_a
-            merged_reports[fp_a].extend(merged_reports.pop(fp_b))
+    # Build merged_reports keyed by a representative fingerprint for each bucket,
+    # matching the structure expected by the classification loop below.
+    merged_reports: dict[str, list[tuple[str, ReviewFinding]]] = {}
+    for bucket in buckets:
+        first_reviewer, first_finding = bucket[0]
+        fp = _fingerprint(
+            first_finding.severity,
+            first_finding.file,
+            first_finding.description,
+            first_finding.line,
+        )
+        merged_reports[fp] = bucket
 
     classified_this_cycle: list[FindingRecord] = []
 
