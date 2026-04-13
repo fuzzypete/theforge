@@ -192,3 +192,28 @@ class TestContractChangeTestRule:
     def test_contract_change_still_restricts_unrelated_tests(self, tmp_path: Path) -> None:
         prompt = self._make_prompt(tmp_path, contract_change=True)
         assert "Do NOT modify tests unrelated to the contract change" in prompt
+
+
+class TestProviderSdkIsolationRule:
+    """Verify that the provider SDK isolation rule is always present in dev prompts."""
+
+    def _make_prompt(self, tmp_path: Path, *, contract_change: bool) -> str:
+        task = _make_task(tmp_path)
+        return build_dev_prompt(
+            task,
+            workspace_path=tmp_path,
+            branch_name="feat/test",
+            story_content="# Test\n\nDo something.",
+            gate_command="make test",
+            contract_change=contract_change,
+        )
+
+    def test_rule_present_without_contract_change(self, tmp_path: Path) -> None:
+        prompt = self._make_prompt(tmp_path, contract_change=False)
+        assert "optional provider SDKs" in prompt
+        assert "mock or stub that boundary" in prompt
+
+    def test_rule_present_with_contract_change(self, tmp_path: Path) -> None:
+        prompt = self._make_prompt(tmp_path, contract_change=True)
+        assert "optional provider SDKs" in prompt
+        assert "mock or stub that boundary" in prompt
