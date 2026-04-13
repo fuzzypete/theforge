@@ -11,7 +11,6 @@ from pathlib import Path
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
 
-# Sentinel written to test log files to signal clean EOF (no redirect).
 _SENTINEL_EOF = "[forge test sentinel EOF]"
 
 
@@ -34,8 +33,7 @@ def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str,
                 time.sleep(0.1)
                 continue
 
-            # Partial write in progress — rewind and wait for the complete line.
-            if not line.endswith("\n"):
+            if not line.endswith("\n"):  # partial write — rewind and wait
                 fh.seek(pos)
                 time.sleep(0.1)
                 continue
@@ -56,9 +54,6 @@ def _follow_log_with_redirect(log_path: Path, current_run_id: str) -> tuple[str,
 
             if _seen_run_id and _seen_log_path:
                 return (_seen_run_id, Path(_seen_log_path))
-
-
-# ── Run-discovery helpers ─────────────────────────────────────────────────────
 
 
 def _find_active_run_id(project_root: Path) -> str | None:
@@ -267,9 +262,6 @@ def _show_single_run_status(run_id: str, project_root: Path) -> None:
     print(f"{run_id:<12}  {story_label:<30}  {phase:<12}  {cost_str:>7}  {elapsed_str:>8}")
 
 
-# ── Command handlers ─────────────────────────────────────────────────────────
-
-
 def cmd_status(args: object) -> int:
     """Show active forge runs and pending decisions."""
     from theforge import pending as _pending
@@ -434,6 +426,12 @@ def cmd_logs(args: object) -> int:
                 if new_log.exists():
                     break
                 time.sleep(0.1)
+            if not new_log.exists():
+                print(
+                    f"[forge] Timed out waiting for new log {new_log} — run may have exited",
+                    file=sys.stderr,
+                )
+                return 1
             current_run_id = new_run_id
             current_log = new_log
     except KeyboardInterrupt:

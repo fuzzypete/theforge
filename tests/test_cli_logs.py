@@ -173,3 +173,49 @@ class TestCmdLogs:
             result = cmd_logs(args)
 
         assert result == 1
+
+    def test_reexec_redirect_new_log_never_appears(self, tmp_path, capsys):
+        """forge logs returns error gracefully when the new log never appears after re-exec."""
+        from unittest.mock import patch
+
+        from theforge.cli import cmd_logs
+
+        old_run_id = "aabbccddee11"
+        new_run_id = "ff99887766aa"
+        slug = "my-slug"
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{old_run_id}.pid").write_text(f"12345\n{slug}\n")
+
+        log_dir = tmp_path / ".forge" / "logs" / slug
+        log_dir.mkdir(parents=True)
+
+        # The new log path is referenced in the redirect block but never created.
+        new_log = log_dir / f"run-{new_run_id}.log"
+
+        old_log = log_dir / f"run-{old_run_id}.log"
+        old_log.write_text(
+            "old run output\n"
+            "[forge] Run started in background\n"
+            f"[forge] Run ID:  {new_run_id}\n"
+            f"[forge] Log:     {new_log}\n"
+            f"[forge] Logs:    forge logs {new_run_id}\n"
+        )
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=old_run_id)
+
+        # Patch time.sleep so the wait loop runs instantly.
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.time.sleep"),
+        ):
+            result = cmd_logs(args)
+
+        assert result == 1
+        captured = capsys.readouterr()
+        assert "Timed out waiting for new log" in captured.err
