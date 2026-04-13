@@ -84,7 +84,16 @@ class ContextAssembler:
 
     @classmethod
     def from_config(cls, config: "ForgeConfig") -> "ContextAssembler":
-        return cls(config.project_root, budgets=config.context)
+        ctx = config.context
+        return cls(
+            config.project_root,
+            budgets=ContextBudgetConfig(
+                preflight_budget=ctx.preflight_budget,
+                plan_budget=ctx.plan_budget,
+                dev_budget=ctx.dev_budget,
+                review_budget=ctx.review_budget,
+            ),
+        )
 
     def assemble(
         self,
