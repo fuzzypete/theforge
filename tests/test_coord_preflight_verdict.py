@@ -258,10 +258,10 @@ class TestCoordinatorPreflight:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_unparseable_blocks(
+    def test_preflight_unparseable_falls_back_to_proceed(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """If preflight output is not valid YAML, execution is blocked."""
+        """Unparseable preflight output falls back to degraded PROCEED, not BLOCKED."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -281,26 +281,28 @@ class TestCoordinatorPreflight:
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert result.state.preflight_verdict == "BLOCKED"
-        assert len(result.state.dev_results) == 0
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "parse_error"
+        assert len(result.state.dev_results) >= 1
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_preflight_unknown_verdict_escalates(
+    def test_preflight_unknown_verdict_falls_back_to_proceed(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """Unknown preflight verdicts are treated as hard failures."""
+        """Unknown preflight verdicts fall back to degraded PROCEED, not hard failure."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "OK")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_preflight.return_value = _make_agent_result(
             success=True,
             output="""```yaml
@@ -314,18 +316,26 @@ likely_files:
             cost_usd=0.05,
             profile_name="review",
         )
+        dev_ok = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_agent
+        mock_agent.return_value = dev_ok
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert result.state.preflight_verdict == "BLOCKED"
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "parse_error"
         assert "unknown preflight verdict" in result.state.preflight_reason.lower()
+        # likely_files still parsed from the valid YAML even when verdict is unknown
         assert result.state.preflight_likely_files == [
             "src/theforge/coordinator/preflight_flow.py"
         ]
-        assert len(result.state.dev_results) == 0
-        mock_pool.assert_not_called()
+        assert len(result.state.dev_results) >= 1
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")

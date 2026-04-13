@@ -215,7 +215,11 @@ def _run_preflight_phase(
     log_agent_result(preflight_result, "PREFLIGHT")
 
     if preflight_result.success:
-        verdict, reason = _parse_preflight_verdict(preflight_result.output)
+        verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
+        if _parse_degraded:
+            state.preflight_degraded = True
+            state.preflight_degraded_reason = "parse_error"
+            _log("  ⚠ PREFLIGHT output malformed — fallback PROCEED (degraded)")
     else:
         verdict, reason = (
             "PROCEED",
