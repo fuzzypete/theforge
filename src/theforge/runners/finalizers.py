@@ -42,7 +42,7 @@ def _make_openai_chat_finalizer(
         schema_name = "plan_review_output"
         time_up_content = (
             "Time is up. Deliver your plan review verdict now as structured JSON. "
-            "Include verdict, summary, and findings."
+            "Include verdict, summary, findings, and criteria_coverage."
         )
     else:
         schema = review_json_schema()
@@ -113,7 +113,7 @@ def _make_deepseek_finalizer(
         if is_plan_review:
             time_up_content = (
                 "Time is up. Deliver your plan review verdict now as JSON. "
-                "Include verdict, summary, and findings. "
+                "Include verdict, summary, findings, and criteria_coverage. "
                 "Output only valid JSON with no markdown fences."
             )
         else:

@@ -290,6 +290,7 @@ class TestDeepSeekPlanReviewFinalizer:
         kwargs = mock_client.chat.completions.create.call_args[1]
         last_msg = kwargs["messages"][-1]["content"]
         assert "findings" in last_msg
+        assert "criteria_coverage" in last_msg
         assert "story_compliance" not in last_msg
         assert "test_coverage" not in last_msg
 
@@ -344,6 +345,7 @@ class TestOpenAIPlanReviewFinalizer:
         fn([{"role": "user", "content": "Review this plan."}])
         kwargs = mock_client.chat.completions.create.call_args[1]
         last_msg = kwargs["messages"][-1]["content"]
+        assert "criteria_coverage" in last_msg
         assert "story_compliance" not in last_msg
         assert "test_coverage" not in last_msg
 
