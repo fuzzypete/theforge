@@ -466,6 +466,8 @@ class TestRunGemini:
         assert result.exit_code == -1
 
     def test_gemini_command_structure(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
+        # The command may be wrapped by a platform sandbox (sandbox-exec / bwrap).
+        # Verify the Gemini CLI flags are present anywhere in the command, not at a fixed index.
         json_output = json.dumps({"result": "done"})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
@@ -476,7 +478,7 @@ class TestRunGemini:
             run_agent(prompt="review", profile=gemini_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
-        assert cmd[0] == "npx"
+        assert "npx" in cmd
         assert "@google/gemini-cli" in cmd
         assert "-p" in cmd
         assert "--yolo" in cmd
@@ -488,7 +490,11 @@ class TestRunGemini:
     def test_gemini_prompt_passed_via_flag(
         self, gemini_profile: ModelProfile, tmp_path: Path
     ) -> None:
-        """Prompt is passed via -p flag, not via stdin input=."""
+        """Prompt is passed via -p flag, not via stdin input=.
+
+        The command may be wrapped by a platform sandbox (sandbox-exec / bwrap),
+        so we find -p by index rather than assuming a fixed position.
+        """
         json_output = json.dumps({"result": "done"})
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
@@ -501,8 +507,12 @@ class TestRunGemini:
         call_kwargs = mock_run.call_args[1]
         assert "input" not in call_kwargs
         cmd = mock_run.call_args[0][0]
-        p_idx = cmd.index("-p")
-        assert cmd[p_idx + 1] == "my prompt"
+        # The command may be sandbox-wrapped (sandbox-exec also uses -p for its policy arg).
+        # Find -p that appears after @google/gemini-cli to get the prompt flag.
+        gemini_start = cmd.index("@google/gemini-cli")
+        gemini_args = cmd[gemini_start:]
+        p_idx = gemini_args.index("-p")
+        assert gemini_args[p_idx + 1] == "my prompt"
 
     def test_gemini_non_json_output(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = subprocess.CompletedProcess(

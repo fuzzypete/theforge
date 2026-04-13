@@ -17,6 +17,7 @@ from theforge.log_util import _log_line
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
+from .sandbox import workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -70,6 +71,40 @@ def _run_gemini(
     # NOTE: Gemini CLI has no --config flag for thinking config.
     # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.
     # The model uses its default thinking level.
+
+    # Gemini CLI has no native sandbox flag. When sandboxing is requested, wrap the
+    # command with the platform sandbox (macOS Seatbelt / Linux bwrap). This is the
+    # correct approach for Gemini — unlike #624 (which double-sandboxed claude-within-
+    # claude), wrapping the Gemini binary is safe because Gemini has no native sandbox
+    # of its own.
+    # Fail closed: if the platform sandbox is unavailable and sandbox_mode is not
+    # "none", return a failure result rather than running unsandboxed. The sibling
+    # detector has been removed, so running without containment would leave writes
+    # undetected. Set sandbox_mode: none explicitly to opt out of containment.
+    if profile.sandbox_mode != "none":
+        sandboxed_cmd = workspace_effect_sandbox_command(cmd, working_dir)
+        if sandboxed_cmd[0] == cmd[0]:
+            _log(
+                f"✗ gemini: sandbox_mode={profile.sandbox_mode!r} requested but platform "
+                "sandbox (sandbox-exec/bwrap) is unavailable — refusing to run unsandboxed. "
+                "Set sandbox_mode: none to explicitly opt out of write containment."
+            )
+            return AgentResult(
+                success=False,
+                output=(
+                    f"SANDBOX_UNAVAILABLE: sandbox_mode={profile.sandbox_mode!r} is set but "
+                    "the platform sandbox (sandbox-exec on macOS, bwrap on Linux) is not "
+                    "available on this host. Gemini CLI has no native sandbox flag. "
+                    "Set sandbox_mode: none to run without write containment."
+                ),
+                session_id=None,
+                cost_usd=None,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+                startup_failure=True,
+            )
+        cmd = sandboxed_cmd
 
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
     _gemini_env = {**os.environ, **(secrets or {})}

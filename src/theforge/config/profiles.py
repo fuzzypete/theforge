@@ -78,6 +78,9 @@ def _parse_model_spec(
     return primary, fallbacks
 
 
+_VALID_SANDBOX_MODES = {"workspace-write", "read-only", "none"}
+
+
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
     tools = data.get("allowed_tools")
@@ -88,6 +91,12 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         raise ValueError(
             f"reasoning_effort must be one of {sorted(_VALID_REASONING_EFFORTS)}, "
             f"got {reasoning_effort!r} in profile {base.name!r}"
+        )
+    sandbox_mode = data.get("sandbox_mode", base.sandbox_mode)
+    if sandbox_mode not in _VALID_SANDBOX_MODES:
+        raise ValueError(
+            f"sandbox_mode must be one of {sorted(_VALID_SANDBOX_MODES)}, "
+            f"got {sandbox_mode!r} in profile {base.name!r}"
         )
     timeout_medium_raw = data.get("timeout_medium_seconds", base.timeout_medium_seconds)
     timeout_large_raw = data.get("timeout_large_seconds", base.timeout_large_seconds)
@@ -120,6 +129,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         api_fallback=base.api_fallback,
         github_handle=data.get("github_handle", base.github_handle),
         phase=base.phase,
+        sandbox_mode=sandbox_mode,
     )
 
 
@@ -299,6 +309,12 @@ def _parse_profile(
     else:
         allowed_tools_tuple = default.allowed_tools
 
+    sandbox_mode = data.get("sandbox_mode", "workspace-write")
+    if sandbox_mode not in _VALID_SANDBOX_MODES:
+        raise ValueError(
+            f"sandbox_mode must be one of {sorted(_VALID_SANDBOX_MODES)}, "
+            f"got {sandbox_mode!r} in profile {name!r}"
+        )
     model_str, fallback_models = _parse_model_spec(data, default.model, (), name)
     return ModelProfile(
         name=name,
@@ -322,6 +338,7 @@ def _parse_profile(
         if (max_iter_raw := data.get("max_iterations")) is not None
         else None,
         github_handle=data.get("github_handle"),
+        sandbox_mode=sandbox_mode,
     )
 
 
@@ -400,4 +417,5 @@ def _apply_provider_fallback(
         api_fallback=fallback,
         github_handle=profile.github_handle,
         phase=profile.phase,
+        sandbox_mode=profile.sandbox_mode,
     )

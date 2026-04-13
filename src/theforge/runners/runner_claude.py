@@ -173,6 +173,21 @@ def _run_claude(
     if session_id:
         cmd.extend(["--resume", session_id])
 
+    # Engage Claude's native permission mode when sandboxing is requested.
+    # "default" prompts before writes outside cwd; in automated runs where there is
+    # no human to approve, out-of-worktree writes are effectively blocked.
+    # NOTE: Claude CLI has no mechanically-enforced read-only mode. When
+    # sandbox_mode == "read-only" we apply the same --permission-mode default and
+    # log a warning so operators know the read-only constraint is not syscall-enforced.
+    if profile.sandbox_mode == "read-only":
+        _log(
+            "  WARNING: sandbox_mode=read-only is not mechanically enforced by Claude CLI; "
+            "applying --permission-mode default (writes require permission approval). "
+            "Use a provider/API profile for true read-only enforcement."
+        )
+    if profile.sandbox_mode != "none":
+        cmd.extend(["--permission-mode", "default"])
+
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
     env = {**os.environ, **(secrets or {})}
     env.pop("CLAUDECODE", None)
