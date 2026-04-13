@@ -60,17 +60,23 @@ class TestNtfyPublishTimeout:
         ):
             _ntfy_publish("https://ntfy.sh/topic", "Title", "Body")
 
-    def test_failure_logs_warning(self, capsys):
-        """A publish failure logs a WARNING message to stderr so ops can diagnose it."""
-        with patch(
-            "theforge.coordinator.ntfy_client.urllib.request.urlopen",
-            side_effect=OSError("network unreachable"),
-        ):
-            _ntfy_publish("https://ntfy.sh/topic", "Title", "Body")
+    def test_failure_logs_warning(self, caplog):
+        """A publish failure logs a WARNING message via Python logging."""
+        import logging
 
-        captured = capsys.readouterr()
-        assert "WARNING" in captured.err, "failure must be logged as WARNING to stderr"
-        assert "ntfy" in captured.err.lower(), "log message should mention ntfy"
+        with caplog.at_level(logging.WARNING, logger="theforge.coordinator.ntfy_client"):
+            with patch(
+                "theforge.coordinator.ntfy_client.urllib.request.urlopen",
+                side_effect=OSError("network unreachable"),
+            ):
+                _ntfy_publish("https://ntfy.sh/topic", "Title", "Body")
+
+        assert any(r.levelno == logging.WARNING for r in caplog.records), (
+            "failure must be logged at WARNING level"
+        )
+        assert any("ntfy" in r.message.lower() for r in caplog.records), (
+            "log message should mention ntfy"
+        )
 
 
 class TestNtfyPollTimeouts:

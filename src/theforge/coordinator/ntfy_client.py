@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import unicodedata
 import urllib.request
 
-from . import util as _cu
+_logger = logging.getLogger(__name__)
 
 _BLOCKING_POLL_CHUNK = 300  # seconds per poll iteration in blocking mode
 
@@ -53,7 +54,7 @@ def _ntfy_publish(
         with urllib.request.urlopen(req, timeout=15):
             pass
     except Exception as exc:
-        _cu._log(f"WARNING: ntfy publish failed (continuing): {exc}")
+        _logger.warning("ntfy publish failed (continuing): %s", exc)
 
 
 def _ntfy_poll_reply(
