@@ -589,7 +589,6 @@ class TestParsePhaseNameUtility:
 
     def test_all_valid_names(self):
         expected = {
-            "init": Phase.INIT,
             "workspace": Phase.WORKSPACE,
             "preflight": Phase.PREFLIGHT,
             "plan": Phase.PLAN,
@@ -601,6 +600,11 @@ class TestParsePhaseNameUtility:
         }
         for name, phase in expected.items():
             assert parse_phase_name(name) == phase
+
+    def test_init_not_a_valid_stop_phase(self):
+        """'init' must not be accepted as a --until phase: it is a no-op."""
+        with pytest.raises(ValueError, match="Unknown phase name"):
+            parse_phase_name("init")
 
     def test_case_insensitive(self):
         assert parse_phase_name("DEV") == Phase.DEV

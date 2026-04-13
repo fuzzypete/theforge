@@ -378,7 +378,7 @@ def register_parser(subparsers: object) -> None:
         default=None,
         help=(
             "Stop pipeline after specified phase. "
-            "Valid phases: init, workspace, preflight, plan, plan-review, "
+            "Valid phases: workspace, preflight, plan, plan-review, "
             "dev, validate, review. Worktree preserved on stop. Exit code 0."
         ),
     )
