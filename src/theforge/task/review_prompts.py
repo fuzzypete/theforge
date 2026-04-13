@@ -208,16 +208,7 @@ def build_review_prompt(
 
         """)
 
-    fix_claim_warnings = ""
-    if fix_claim_flags:
-        warnings_block = "\n".join(f"- {flag}" for flag in fix_claim_flags)
-        fix_claim_warnings = dedent(f"""\
-
-            ⚠ Unsubstantiated fix claims detected (heuristic — verify independently):
-            {warnings_block}
-        """)
-
-    dev_notes_section = (
+    _dev_notes_base = (
         dedent(f"""\
 
             ## Developer Notes
@@ -229,10 +220,20 @@ def build_review_prompt(
             evidence — verify technical claims against the actual code before
             accepting them. Flag deviations that are unjustified, incorrect, or
             whose justification does not hold up on inspection.
-            {fix_claim_warnings}""")
+        """)
         if dev_notes
         else ""
     )
+
+    # Append fix-claim warnings after dedent so dynamic multi-line content does
+    # not interfere with dedent's common-indent calculation.
+    if _dev_notes_base and fix_claim_flags:
+        _warn_lines = ["⚠ Unsubstantiated fix claims detected (heuristic — verify independently):"]
+        for _flag in fix_claim_flags:
+            _warn_lines.append(f"- {_flag}")
+        dev_notes_section = _dev_notes_base + "\n".join(_warn_lines) + "\n"
+    else:
+        dev_notes_section = _dev_notes_base
 
     context_section = ""
     if assembled_context and assembled_context.content:

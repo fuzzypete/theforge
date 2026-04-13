@@ -196,12 +196,14 @@ def _run_review_pool(
 
         # Heuristic fix-claim check: flag confident fix assertions in the
         # handoff summary that reference a prior P1 but cite no test or invariant.
-        _prior_p1_descs: list[str] = [
-            desc
-            for ch in (state.cycle_history or [])
-            if ch.verdict == "REQUEST_CHANGES"
-            for desc in ch.p1_findings
-        ]
+        # Use only the most recent REQUEST_CHANGES cycle — its p1_findings are the
+        # currently unresolved findings. Earlier cycles may contain findings that
+        # were already fixed, and including them would cause false-positive flags.
+        _last_rc = next(
+            (ch for ch in reversed(state.cycle_history or []) if ch.verdict == "REQUEST_CHANGES"),
+            None,
+        )
+        _prior_p1_descs: list[str] = list(_last_rc.p1_findings) if _last_rc else []
         _parsed_handoff = _parse_dev_handoff(config, workspace_path)
         _claim_summary = (
             _parsed_handoff.summary
