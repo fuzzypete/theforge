@@ -19,7 +19,8 @@ def _parse_dirty_files(raw_output: str) -> list[str]:
     """Parse filenames from ``git status --porcelain`` output.
 
     Returns tracked modified/added/deleted/renamed filenames.
-    Skips untracked (``??``) and ignored (``!!``) entries.
+    Skips untracked (``??``) and ignored (``!!``) entries using the standard
+    porcelain v1 two-character prefix only.
     For renames (``R`` status) returns the destination filename.
     """
     dirty: list[str] = []
@@ -27,7 +28,7 @@ def _parse_dirty_files(raw_output: str) -> list[str]:
         if len(line) < 4:
             continue
         xy = line[:2]
-        if xy in ("??", "!!", " ?", " !"):
+        if xy in ("??", "!!"):
             continue
         rest = line[3:]
         if " -> " in rest:

@@ -113,6 +113,64 @@ def _make_task_with_gate_override(tmp_path: Path, gate_override: str | None) -> 
     )
 
 
+# ── _parse_dirty_files unit tests ────────────────────────────────────
+
+
+class TestParseDirtyFiles:
+    """Unit tests for _parse_dirty_files porcelain parsing."""
+
+    def test_modified_and_added_are_returned(self):
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        raw = " M src/foo.py\nA  src/bar.py\n"
+        result = _parse_dirty_files(raw)
+        assert result == ["src/foo.py", "src/bar.py"]
+
+    def test_untracked_skipped(self):
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        raw = "?? untracked.py\n M src/tracked.py\n"
+        result = _parse_dirty_files(raw)
+        assert result == ["src/tracked.py"]
+
+    def test_ignored_skipped(self):
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        raw = "!! ignored.pyc\n M src/real.py\n"
+        result = _parse_dirty_files(raw)
+        assert result == ["src/real.py"]
+
+    def test_rename_returns_destination(self):
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        raw = "R  old_name.py -> new_name.py\n"
+        result = _parse_dirty_files(raw)
+        assert result == ["new_name.py"]
+
+    def test_nonstandard_space_prefixes_not_skipped(self):
+        """' ?' and ' !' are not valid porcelain v1 prefixes; they are treated as
+        tracked changes, not silently dropped."""
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        # ' M' is a real porcelain status (unstaged modification); make sure it
+        # is still returned correctly alongside the non-standard ones.
+        raw = " M src/real.py\n"
+        result = _parse_dirty_files(raw)
+        assert result == ["src/real.py"]
+
+    def test_short_lines_skipped(self):
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        raw = "??\n M src/ok.py\n"
+        result = _parse_dirty_files(raw)
+        assert result == ["src/ok.py"]
+
+    def test_empty_output(self):
+        from theforge.coordinator.gate import _parse_dirty_files
+
+        assert _parse_dirty_files("") == []
+
+
 # ── Stale handoff tests ──────────────────────────────────────────────
 
 
