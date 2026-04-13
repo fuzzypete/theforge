@@ -442,12 +442,16 @@ def start_daemon(config: "ForgeConfig", *, no_daemonize: bool = False) -> None:
         pid_file.write_text(str(os.getpid()), encoding="utf-8")
 
     # ── Daemon process continues here (grandchild or foreground) ──────
+    # NOTE: _start_monotonic is captured by _sigterm_handler below via closure.
+    # Keep server setup and signal handler registration together in this function
+    # so the closure dependency remains explicit and intact.
     _start_monotonic = time.monotonic()
     print(f"[daemon] Starting (PID {os.getpid()})", flush=True)
 
     server = DaemonServer(forge_root, config)
 
-    # SIGTERM handler: log crash context and exit cleanly
+    # SIGTERM handler: log crash context and exit cleanly.
+    # Closes over _start_monotonic (uptime) and server (current sprint state).
     def _sigterm_handler(signum: int, frame: object) -> None:
         print("[daemon] Received SIGTERM — shutting down", flush=True)
         uptime = round(time.monotonic() - _start_monotonic, 1)
