@@ -43,19 +43,30 @@ class _BlockedSocket(_REAL_SOCKET):
     are always allowed; only TCP/UDP tuples are checked.
     """
 
-    def connect(self, address):  # type: ignore[override]
+    def _check_address(self, address: object) -> None:
         if isinstance(address, tuple):
             host = str(address[0])
             if not _is_loopback(host):
                 raise OSError(_GUARD_MSG.format(host=host))
+
+    def connect(self, address):  # type: ignore[override]
+        self._check_address(address)
         return super().connect(address)
 
     def connect_ex(self, address):  # type: ignore[override]
-        if isinstance(address, tuple):
-            host = str(address[0])
-            if not _is_loopback(host):
-                raise OSError(_GUARD_MSG.format(host=host))
+        self._check_address(address)
         return super().connect_ex(address)
+
+    def sendto(self, data, *args):  # type: ignore[override]
+        # sendto(data, address) or sendto(data, flags, address)
+        address = args[-1]
+        self._check_address(address)
+        return super().sendto(data, *args)
+
+    def sendmsg(self, buffers, ancdata=(), flags=0, address=None):  # type: ignore[override]
+        if address is not None:
+            self._check_address(address)
+        return super().sendmsg(buffers, ancdata, flags, address)
 
 
 # Install the guard before any test module is imported.
