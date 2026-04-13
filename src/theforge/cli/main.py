@@ -9,6 +9,7 @@ from theforge.cli import (
     audit,
     check_config,
     daemon,
+    eval_cmd,
     hooks,
     ideate,
     index,
@@ -55,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.register_parser(subparsers)
     telemetry.register_parser(subparsers)
     daemon.register_parser(subparsers)
+    eval_cmd.register_parser(subparsers)
     status.register_parsers(subparsers)
 
     return parser
@@ -87,6 +89,7 @@ def main() -> None:
         "audit": audit.cmd_audit,
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,
+        "eval-preflight": eval_cmd.cmd_eval_preflight,
         "status": status.cmd_status,
         "logs": status.cmd_logs,
         "stop": status.cmd_stop,

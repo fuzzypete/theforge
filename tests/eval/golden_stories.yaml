@@ -1,0 +1,353 @@
+# Golden story set for preflight model evaluation.
+#
+# Each entry represents a story with a known expected preflight outcome,
+# drawn from recent sprint history (issues #650–#704).
+#
+# Fields:
+#   id                  - unique identifier (use GH issue number where applicable)
+#   title               - human-readable story title
+#   story_text          - condensed story: title + acceptance criteria only
+#   expected_verdict    - PROCEED | ALREADY_DONE | BLOCKED
+#   expected_complexity - small | medium | large (omit if unknown)
+#   repo_snapshot_ref   - git ref at evaluation time (omit = use HEAD, triggers warning)
+#   notes               - informal hints (may be stale)
+#
+# Maintenance note: add new entries after each sprint cycle. Update
+# repo_snapshot_ref after major refactors to preserve reproducibility.
+
+- id: "gh-704"
+  title: "Preflight prompt hardening: bounded forensic classifier"
+  story_text: |
+    ## What
+    Harden the preflight prompt so the agent acts as a bounded forensic classifier,
+    not a planning or quality review agent.
+
+    ## Acceptance criteria
+    - Preflight prompt explicitly instructs the agent not to review code quality,
+      not to plan implementation, and not to critique requirements
+    - Agent is told its only job is sufficiency judgment
+    - Prompt constrains the agent to produce only PROCEED / ALREADY_DONE / BLOCKED
+    - Prompt enforces a hard tool-call budget (maximum iterations stated explicitly)
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Implemented in cec93e0. Expected PROCEED because this was a new constraint not yet in the prompt."
+
+- id: "gh-699"
+  title: "Coordinator: preflight failure is not story blockage"
+  story_text: |
+    ## What
+    When the preflight agent fails (non-zero exit, timeout, or garbage output),
+    the coordinator should not treat the story as BLOCKED. It should retry or
+    escalate with a distinct failure mode.
+
+    ## Acceptance criteria
+    - A preflight agent failure (exit_code != 0) does not emit verdict=BLOCKED
+    - The coordinator emits a distinct failure classification for agent failure
+      vs genuine BLOCKED verdict from the agent
+    - Audit trail distinguishes "preflight agent failed" from "preflight returned BLOCKED"
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Was implemented in a recent sprint. Expected PROCEED before implementation."
+
+- id: "gh-695"
+  title: "Dev agent runs pytest without xdist parallelism"
+  story_text: |
+    ## What
+    The dev agent runs pytest without the -n auto --dist worksteal flags, wasting
+    wall-clock time during the gate phase.
+
+    ## Acceptance criteria
+    - The dev prompt instructs the agent to use -n auto --dist worksteal when running pytest
+    - The gate command in forge.yaml uses the same parallel flags
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug report; fix was not in place before sprint. Expected PROCEED."
+
+- id: "gh-694"
+  title: "Sprint log lines have no timestamps"
+  story_text: |
+    ## What
+    Sprint log lines are emitted without timestamps, making it hard to measure
+    phase durations from the log output alone.
+
+    ## Acceptance criteria
+    - Every sprint log line is prefixed with an ISO 8601 timestamp (UTC)
+    - Timestamp is emitted before the log message content
+    - Existing log format tests still pass
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug fix; timestamps not present before sprint."
+
+- id: "gh-686"
+  title: "forge logs: follow re-exec redirect to successor run"
+  story_text: |
+    ## What
+    When a forge run re-execs into a successor process, `forge logs` follows the
+    redirect and tails the new log file rather than stopping at the old one.
+
+    ## Acceptance criteria
+    - `forge logs <run-id>` detects when the log file contains a redirect marker
+    - On detecting a redirect, `forge logs` opens and tails the successor log file
+    - The redirect detection handles at least one level of indirection
+    - A redirect to a non-existent log file emits a clear error message
+  expected_verdict: "PROCEED"
+  expected_complexity: "medium"
+  notes: "New feature; not previously implemented."
+
+- id: "gh-684"
+  title: "Add global test guard against real provider SDK calls in unit tests"
+  story_text: |
+    ## What
+    Unit tests occasionally import provider SDKs (anthropic, openai, etc.) and
+    make real network calls, causing CI failures when SDKs are not installed.
+    A global guard should prevent this class of failure.
+
+    ## Acceptance criteria
+    - A conftest.py fixture or autouse pytest plugin blocks any real provider SDK
+      network call during unit tests
+    - Tests that attempt real calls fail with a clear error message identifying
+      which call was blocked
+    - The guard is active by default (autouse) in the test suite
+    - Tests that legitimately need SDK access can opt out with a marker
+  expected_verdict: "PROCEED"
+  expected_complexity: "medium"
+  notes: "New test infrastructure; not present before sprint."
+
+- id: "gh-682"
+  title: "bug: gate passes locally but fails CI due to uninstalled provider SDKs"
+  story_text: |
+    ## What
+    The gate command passes locally when provider SDKs are installed but fails in
+    CI where SDKs are absent, because tests import SDK modules at the module level.
+
+    ## Acceptance criteria
+    - Tests that import provider SDKs do so lazily (inside test functions or fixtures)
+    - The test suite passes in an environment with no provider SDKs installed
+    - No test file has a top-level import of anthropic, openai, google.generativeai,
+      or deepseek SDK modules
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug fix; root cause was eager SDK imports."
+
+- id: "gh-681"
+  title: "bug: _extract_failed_tests parser records xdist worker IDs as test names"
+  story_text: |
+    ## What
+    When pytest-xdist is used, the failed-test extractor captures worker IDs
+    (e.g. gw0, gw1) as test names instead of actual test function names.
+
+    ## Acceptance criteria
+    - _extract_failed_tests correctly parses xdist output and returns only
+      test function names (not worker IDs)
+    - Extracted names match the format pytest expects for --last-failed
+    - Existing passing tests are unaffected
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug fix in test output parser."
+
+- id: "gh-675"
+  title: "bug: NoneType crash in cached preflight resume path"
+  story_text: |
+    ## What
+    When a sprint resumes and hits a cached preflight result, engine.py
+    _resume_body crashes with NoneType because the cached preflight data
+    is not fully rehydrated.
+
+    ## Acceptance criteria
+    - Resuming a sprint with a cached ALREADY_DONE preflight does not crash
+    - The coordinator correctly rehydrates all preflight fields from the cached
+      result before continuing
+    - A regression test covers the cached preflight resume path
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug fix; crash was reproducible on sprint resume."
+
+- id: "gh-674"
+  title: "bug: coordinator runs DEV on ALREADY_DONE stories in sprint/batch mode"
+  story_text: |
+    ## What
+    In sprint/batch mode, when preflight returns ALREADY_DONE, the coordinator
+    incorrectly enters the DEV phase instead of skipping to DONE.
+
+    ## Acceptance criteria
+    - A story with ALREADY_DONE verdict in sprint mode is routed to DONE, not DEV
+    - The fix applies to both single-story `forge run` and sprint batch mode
+    - Audit trail shows the correct phase transition (PREFLIGHT → DONE)
+    - Regression test covers batch-mode ALREADY_DONE routing
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug fix; ALREADY_DONE routing was broken in batch mode."
+
+- id: "gh-666"
+  title: "bug: multi-line AC bullets truncated by _extract_story_acceptance_criteria"
+  story_text: |
+    ## What
+    When a story has acceptance criteria with multi-line bullet points, the
+    extractor truncates at the first newline, losing the rest of the criterion.
+
+    ## Acceptance criteria
+    - _extract_story_acceptance_criteria preserves multi-line AC bullets
+    - Nested bullet points under an AC are included in the extracted text
+    - Single-line AC bullets are unaffected
+    - Existing tests still pass
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Bug fix in story parser."
+
+- id: "gh-662"
+  title: "bug: gate_command must include lint to match CI"
+  story_text: |
+    ## What
+    The gate_command in forge.yaml does not run ruff lint, so a story can
+    pass the local gate but fail CI due to lint errors.
+
+    ## Acceptance criteria
+    - forge.yaml gate_command runs both ruff check and ruff format --check
+    - The local gate now matches what CI checks
+    - No existing functionality is broken
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Config fix; lint was missing from gate_command."
+
+- id: "gh-661"
+  title: "bug: sprint must fail closed when base branch has diverged from origin"
+  story_text: |
+    ## What
+    When the local base branch has diverged from origin (e.g. someone force-pushed),
+    the sprint runner continues silently, potentially building on stale code.
+
+    ## Acceptance criteria
+    - Sprint startup checks that the local base branch is not behind origin
+    - If the base branch is behind, the sprint fails with a clear error message
+    - The check is skipped when no remote is configured
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Safety fix; divergence check was absent."
+
+- id: "gh-654"
+  title: "Use native CLI sandbox flags for write containment; retire sibling detector"
+  story_text: |
+    ## What
+    Replace the custom sibling-process detector for sandbox enforcement with
+    native CLI sandbox flags (Claude's --sandbox flag). Retire the sibling
+    detector entirely.
+
+    ## Acceptance criteria
+    - Claude CLI runner uses --sandbox or equivalent native flag for write containment
+    - The sibling-process detector module is removed from the codebase
+    - Existing sandbox behavior (workspace-write mode) is preserved
+    - Tests covering the old detector are replaced with tests for the new approach
+  expected_verdict: "PROCEED"
+  expected_complexity: "medium"
+  notes: "Refactor + feature; sibling detector was the previous approach."
+
+- id: "gh-650"
+  title: "fix: dev agent must not create scratch files outside standard project directories"
+  story_text: |
+    ## What
+    Dev agents sometimes create scratch/exploration files in the repository root
+    or outside src/, tests/, or docs/. These pollute the working tree and can
+    end up committed.
+
+    ## Acceptance criteria
+    - The dev prompt explicitly states that files must only be created under
+      src/, tests/, or docs/
+    - The dev prompt instructs the agent to delete any scratch files before committing
+    - Prompt update is reflected in existing prompt snapshot tests
+  expected_verdict: "PROCEED"
+  expected_complexity: "small"
+  notes: "Prompt constraint; rule was not explicit before this story."
+
+- id: "synthetic-already-done-1"
+  title: "Add frozen=True to TaskStory dataclass (already done)"
+  story_text: |
+    ## What
+    Make TaskStory immutable by adding frozen=True to its @dataclass decorator.
+
+    ## Acceptance criteria
+    - TaskStory dataclass has frozen=True
+    - Attempting to assign to a TaskStory field raises FrozenInstanceError
+  expected_verdict: "ALREADY_DONE"
+  expected_complexity: "small"
+  notes: >
+    TaskStory already has frozen=True (story.py:9). This is a synthetic golden
+    story to populate the ALREADY_DONE class. Expected: preflight should detect
+    this is already implemented.
+
+- id: "synthetic-already-done-2"
+  title: "Add SUPPORTED_PROVIDERS constant to config types (already done)"
+  story_text: |
+    ## What
+    Add a SUPPORTED_PROVIDERS set to config/types.py that lists all valid
+    provider names: anthropic, openai, google, deepseek.
+
+    ## Acceptance criteria
+    - config/types.py exports SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
+    - No other module defines a duplicate set of provider names
+  expected_verdict: "ALREADY_DONE"
+  expected_complexity: "small"
+  notes: >
+    SUPPORTED_PROVIDERS already exists at types.py:12. Synthetic story for
+    ALREADY_DONE evaluation.
+
+- id: "synthetic-blocked-1"
+  title: "Integrate with Jira for story tracking (external dependency)"
+  story_text: |
+    ## What
+    Replace the current GitHub-issues story tracking with Jira. All sprint
+    stories should be sourced from a Jira project board.
+
+    ## Acceptance criteria
+    - Sprint stories are loaded from Jira instead of GitHub issues
+    - Jira credentials are read from forge.yaml secrets section
+    - The Jira integration supports filtering by sprint name and label
+    - BLOCKED: Requires Jira API credentials and project configuration not
+      present in this repository; no Jira instance is configured
+  expected_verdict: "BLOCKED"
+  expected_complexity: "medium"
+  notes: >
+    Synthetic BLOCKED story — requires external Jira setup that does not exist.
+    Expected preflight to classify as BLOCKED due to missing external dependency.
+
+- id: "synthetic-proceed-feature"
+  title: "Add forge eval-preflight CLI subcommand"
+  story_text: |
+    ## What
+    Add a `forge eval-preflight` subcommand that runs the preflight evaluation
+    harness against a golden story set and prints a comparison report.
+
+    ## Acceptance criteria
+    - `forge eval-preflight --golden-set <path>` runs the harness
+    - `--models` flag accepts a comma-separated list of model identifiers
+    - `--output-format text|json` controls report format
+    - Harness scores each model on: timeout rate, invalid YAML rate,
+      false ALREADY_DONE rate, false BLOCKED rate, avg tool iterations,
+      wall-clock time, cost per preflight, complexity agreement rate,
+      rationale-cites-code rate
+    - Report prints a markdown table comparing models
+  expected_verdict: "PROCEED"
+  expected_complexity: "medium"
+  notes: >
+    This is the CLI subcommand for issue #701 itself. Useful as a self-referential
+    golden story — if the harness is already implemented, this will be ALREADY_DONE.
+    Initially expected PROCEED.
+
+- id: "synthetic-proceed-medium"
+  title: "Sprint DAG scheduler: parallelize stories with no shared dependencies"
+  story_text: |
+    ## What
+    The sprint DAG scheduler should run stories in parallel when they have no
+    shared dependency edges, up to a configurable concurrency limit.
+
+    ## Acceptance criteria
+    - Stories with no dependency edges run concurrently
+    - Concurrency is bounded by a forge.yaml setting (max_parallel_stories)
+    - A story that fails does not block unrelated parallel stories
+    - Audit trail records which stories ran concurrently
+    - The existing sequential fallback is preserved when max_parallel_stories=1
+  expected_verdict: "PROCEED"
+  expected_complexity: "medium"
+  notes: >
+    Synthetic medium-complexity PROCEED story. Parallel DAG scheduling has not
+    been implemented as described; this tests whether preflight correctly
+    classifies medium-complexity new features.
