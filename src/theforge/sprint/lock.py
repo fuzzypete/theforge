@@ -107,6 +107,13 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
                 if owner_pid is None or _is_pid_alive(owner_pid):
                     conflicted.append(slug)
                     break
+                # TOCTOU: a live process could acquire this lock and write its
+                # PID between the _is_pid_alive check above and unlink() below.
+                # If that happens, we delete a valid lock file and two callers
+                # may briefly believe they hold the lock.  The risk is
+                # acceptable: the window is extremely narrow, and the 3-attempt
+                # retry loop means any caller that loses the race will re-detect
+                # the conflict on the next flock attempt and back off cleanly.
                 try:
                     lock_path.unlink()
                 except FileNotFoundError:
