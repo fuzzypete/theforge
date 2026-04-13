@@ -210,6 +210,15 @@ def build_dev_prompt(
             "  implementation is wrong — fix your code, not the tests."
         )
 
+    provider_sdk_test_rule = (
+        "- Tests must not rely on optional provider SDKs (e.g. `openai`, `anthropic`,\n"
+        "  `google-generativeai`) being installed. If code under test performs a\n"
+        "  provider SDK import check, mock or stub that boundary so the test passes\n"
+        "  whether the environment has `.[dev]` or `.[all,dev]` installed. Only\n"
+        "  stories explicitly about real provider integration may skip this isolation\n"
+        "  requirement."
+    )
+
     return dedent(f"""\
         You are implementing **{task.name}**.
 
@@ -284,6 +293,7 @@ def build_dev_prompt(
         - Do not create files outside `src/`, `tests/`, or `docs/`. If you need a
           scratch file for exploration, delete it before committing.
         {test_rule}
+        {provider_sdk_test_rule}
         - If you cannot finish, commit what you have and list blockers in
           `deferred_items`.
     """)
