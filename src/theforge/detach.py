@@ -242,6 +242,22 @@ def suppress_app_nap() -> None:
 # ── Re-exec redirect sidecar ─────────────────────────────────────────
 
 
+def find_run_id_for_pid(project_root: Path, pid: int) -> str | None:
+    """Return the run_id whose PID file contains ``pid``, or None."""
+    runs_dir = project_root / ".forge" / "runs"
+    try:
+        for pf in runs_dir.glob("*.pid"):
+            try:
+                lines = pf.read_text(encoding="utf-8").splitlines()
+                if lines and int(lines[0].strip()) == pid:
+                    return pf.stem
+            except (OSError, ValueError):
+                continue
+    except OSError:
+        pass
+    return None
+
+
 def write_reexec_redirect(
     prev_run_id: str, new_run_id: str, new_log: Path, project_root: Path
 ) -> None:

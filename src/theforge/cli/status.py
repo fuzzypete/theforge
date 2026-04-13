@@ -16,21 +16,12 @@ _SENTINEL_EOF = "[forge test sentinel EOF]"
 
 
 def _follow_log_with_redirect(
-    log_path: Path,
-    current_run_id: str,
-    *,
-    runs_dir: Path | None = None,
+    log_path: Path, current_run_id: str, *, runs_dir: Path | None = None
 ) -> tuple[str, Path] | None:
-    """Stream log_path line-by-line, printing each line to stdout.
+    """Stream log_path to stdout; poll ``runs_dir/<current_run_id>.redirect`` on EOF.
 
-    Returns (new_run_id, new_log_path) when a re-exec redirect sidecar file
-    is found at ``runs_dir/<current_run_id>.redirect`` (written by the new
-    daemon process after a source-update re-exec).
-    Returns None when the sentinel EOF line is encountered (test use).
+    Returns (new_run_id, new_log_path) on redirect, None on sentinel EOF.
     Runs indefinitely on real EOF (tail-f style); caller catches KeyboardInterrupt.
-
-    ``runs_dir`` should be ``.forge/runs/``. Without it, no redirect detection
-    is performed (useful in tests that only exercise log-tailing behaviour).
     """
     redirect_file = (runs_dir / f"{current_run_id}.redirect") if runs_dir else None
 
@@ -39,17 +30,12 @@ def _follow_log_with_redirect(
             pos = fh.tell()
             line = fh.readline()
             if not line:
-                # On EOF, check the sidecar redirect file written by the new
-                # daemon after a re-exec.  This file is written by forge itself
-                # (not derived from log content), so LLM output cannot spoof it.
                 if redirect_file is not None and redirect_file.exists():
                     try:
-                        data = json.loads(redirect_file.read_text(encoding="utf-8"))
-                        new_run_id = data["new_run_id"]
-                        new_log = Path(data["new_log"])
-                        return (new_run_id, new_log)
+                        d = json.loads(redirect_file.read_text(encoding="utf-8"))
+                        return d["new_run_id"], Path(d["new_log"])
                     except (OSError, KeyError, ValueError, json.JSONDecodeError):
-                        pass  # incomplete or malformed write — keep tailing
+                        pass
                 time.sleep(0.1)
                 continue
 
