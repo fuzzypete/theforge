@@ -498,8 +498,11 @@ class TestClaudePermissionMode:
         idx = cmd.index("--permission-mode")
         assert cmd[idx + 1] == "default"
 
-    def test_read_only_adds_permission_mode(self, tmp_path: Path) -> None:
-        """sandbox_mode=read-only → --permission-mode default (most restrictive available)."""
+    def test_read_only_adds_permission_mode_with_warning(self, tmp_path: Path) -> None:
+        """sandbox_mode=read-only → --permission-mode default + WARNING that read-only is not
+        mechanically enforced by Claude CLI."""
+        import theforge.runners.runner_claude as _mod
+
         profile = ModelProfile(
             name="dev",
             cli="claude",
@@ -513,9 +516,15 @@ class TestClaudePermissionMode:
         with patch(
             "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
         ) as mock_popen:
-            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+            with patch.object(_mod, "_log") as mock_log:
+                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" in cmd
+        # A warning must be logged explaining that read-only is not mechanically enforced
+        log_calls = [str(c) for c in mock_log.call_args_list]
+        assert any(
+            "read-only" in call and "not mechanically enforced" in call for call in log_calls
+        )
 
     def test_none_omits_permission_mode(self, tmp_path: Path) -> None:
         """sandbox_mode=none → no --permission-mode flag in cmd."""

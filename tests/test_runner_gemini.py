@@ -91,22 +91,42 @@ class TestGeminiSandboxWrapper:
         actual_cmd = mock_run.call_args[0][0]
         assert actual_cmd[0] == "npx"
 
-    def test_sandbox_unavailable_logs_warning(self, tmp_path: Path, capsys) -> None:
-        """When sandbox wrapper returns cmd unchanged, a WARNING is logged."""
+    def test_sandbox_unavailable_fails_closed(self, tmp_path: Path) -> None:
+        """When sandbox wrapper returns cmd unchanged, the runner fails closed."""
         profile = _make_profile(sandbox_mode="workspace-write")
-        mock_proc = _make_subprocess_mock()
         # Return the original cmd unchanged → sandbox unavailable
         with patch(
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command",
             side_effect=lambda cmd, wd: list(cmd),
         ):
-            with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
-                with patch("theforge.runners.runner_gemini._log") as mock_log:
-                    _run_gemini(
-                        prompt="test",
-                        profile=profile,
-                        working_dir=tmp_path,
-                    )
-        # Check that a WARNING was emitted
-        warning_calls = [str(c) for c in mock_log.call_args_list]
-        assert any("WARNING" in call for call in warning_calls)
+            with patch("theforge.runners.runner_gemini.subprocess.run") as mock_run:
+                result = _run_gemini(
+                    prompt="test",
+                    profile=profile,
+                    working_dir=tmp_path,
+                )
+        # subprocess.run must NOT have been called — we fail before invoking the agent
+        mock_run.assert_not_called()
+        assert result.success is False
+        assert result.startup_failure is True
+        assert result.exit_code == -1
+        assert "SANDBOX_UNAVAILABLE" in result.output
+
+    def test_sandbox_unavailable_none_mode_still_runs(self, tmp_path: Path) -> None:
+        """sandbox_mode=none → sandbox wrapper not called, subprocess runs normally."""
+        profile = _make_profile(sandbox_mode="none")
+        mock_proc = _make_subprocess_mock()
+        with patch(
+            "theforge.runners.runner_gemini.workspace_effect_sandbox_command"
+        ) as mock_sandbox:
+            with patch(
+                "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+            ) as mock_run:
+                result = _run_gemini(
+                    prompt="debug run",
+                    profile=profile,
+                    working_dir=tmp_path,
+                )
+        mock_sandbox.assert_not_called()
+        mock_run.assert_called_once()
+        assert result.success is True

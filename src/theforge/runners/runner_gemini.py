@@ -76,14 +76,33 @@ def _run_gemini(
     # command with the platform sandbox (macOS Seatbelt / Linux bwrap). This is the
     # correct approach for Gemini — unlike #624 (which double-sandboxed claude-within-
     # claude), wrapping the Gemini binary is safe because Gemini has no native sandbox
-    # of its own. If the sandbox infrastructure is unavailable, log a warning and
-    # continue unsandboxed; operators can set sandbox_mode: none to suppress this.
+    # of its own.
+    # Fail closed: if the platform sandbox is unavailable and sandbox_mode is not
+    # "none", return a failure result rather than running unsandboxed. The sibling
+    # detector has been removed, so running without containment would leave writes
+    # undetected. Set sandbox_mode: none explicitly to opt out of containment.
     if profile.sandbox_mode != "none":
         sandboxed_cmd = workspace_effect_sandbox_command(cmd, working_dir)
         if sandboxed_cmd[0] == cmd[0]:
             _log(
-                f"  WARNING: sandbox_mode={profile.sandbox_mode!r} requested for gemini but "
-                "platform sandbox (sandbox-exec/bwrap) is unavailable — running unsandboxed"
+                f"✗ gemini: sandbox_mode={profile.sandbox_mode!r} requested but platform "
+                "sandbox (sandbox-exec/bwrap) is unavailable — refusing to run unsandboxed. "
+                "Set sandbox_mode: none to explicitly opt out of write containment."
+            )
+            return AgentResult(
+                success=False,
+                output=(
+                    f"SANDBOX_UNAVAILABLE: sandbox_mode={profile.sandbox_mode!r} is set but "
+                    "the platform sandbox (sandbox-exec on macOS, bwrap on Linux) is not "
+                    "available on this host. Gemini CLI has no native sandbox flag. "
+                    "Set sandbox_mode: none to run without write containment."
+                ),
+                session_id=None,
+                cost_usd=None,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+                startup_failure=True,
             )
         cmd = sandboxed_cmd
 
