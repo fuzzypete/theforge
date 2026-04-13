@@ -747,7 +747,10 @@ def _run_plan_agent_review(
                         " — continuing with current model"
                     )
 
-        if state.plan_regen_count > config.retry.max_plan_regen_attempts:
+        # Backtrack regen is separate from the patch-loop budget: exclude it from
+        # the ceiling count so an early backtrack does not consume a patch slot.
+        _patch_regen_count = state.plan_regen_count - (1 if state.plan_backtrack_used else 0)
+        if _patch_regen_count > config.retry.max_plan_regen_attempts:
             _disposition_now = state.plan_regen_disposition or "patch"
             if _disposition_now != "backtrack" or state.plan_backtrack_used:
                 state.plan_review_decision = "reject"
