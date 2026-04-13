@@ -131,8 +131,8 @@ run gh release create "v$VERSION" --repo fuzzypete/theforge \
     --notes "$RELEASE_NOTES"
 
 # --- 11. Create post-release doc review issue ---
-echo "==> Creating post-release doc review issue for $NEXT_MILESTONE..."
 NEXT_MILESTONE="v$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')"
+echo "==> Creating post-release doc review issue for $NEXT_MILESTONE..."
 DOC_REVIEW_BODY="## What
 
 Review all public-facing documentation after v$VERSION ships to ensure it matches what was released.
