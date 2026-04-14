@@ -25,6 +25,7 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = [".forge"]
 pythonpath = ["src", "tests"]
 addopts = "-n auto --dist worksteal"
 markers = [

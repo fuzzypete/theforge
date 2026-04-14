@@ -276,13 +276,13 @@ class TestRunAgentClaude:
         assert result.output == "some error"
 
     def test_timeout(self, tmp_path: Path) -> None:
-        # Use a 1-second timeout so the test completes quickly.
+        # Use a short timeout so the test completes very quickly.
         profile = ModelProfile(
             name="dev",
             cli="claude",
             model="sonnet",
             budget_usd=1.0,
-            timeout_seconds=1,
+            timeout_seconds=0.1,
             allowed_tools=(),
         )
 
@@ -290,7 +290,7 @@ class TestRunAgentClaude:
             """Simulates a stdout that blocks longer than the timeout."""
 
             def __iter__(self):
-                time.sleep(5)  # longer than timeout_seconds=1
+                time.sleep(0.5)  # longer than timeout_seconds=0.1
                 return iter([])
 
         mock_proc = MagicMock()
@@ -314,14 +314,14 @@ class TestRunAgentClaude:
             cli="claude",
             model="sonnet",
             budget_usd=1.0,
-            timeout_seconds=1,
+            timeout_seconds=0.1,
             allowed_tools=(),
         )
 
         class _PartialStdout:
             def __iter__(self):
                 yield json.dumps({"type": "assistant", "session_id": "sess-timeout"}) + "\n"
-                time.sleep(2)
+                time.sleep(0.5)
                 return
 
         mock_proc = MagicMock()
