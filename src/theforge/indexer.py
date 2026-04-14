@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -103,10 +104,16 @@ def _extract_string_list(node: ast.AST) -> list[str] | None:
 def _iter_python_files(project_root: Path) -> list[Path]:
     excluded = {".git", ".venv", ".forge"}
     files: list[Path] = []
-    for path in project_root.rglob("*.py"):
-        if any(part in excluded for part in path.parts):
-            continue
-        files.append(path)
+
+    # Using os.walk for faster directory skipping compared to rglob
+    for root, dirs, filenames in os.walk(project_root):
+        # In-place modify dirs to skip excluded ones from traversal
+        dirs[:] = [d for d in dirs if d not in excluded]
+
+        for name in filenames:
+            if name.endswith(".py"):
+                files.append(Path(root) / name)
+
     return sorted(files)
 
 
