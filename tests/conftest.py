@@ -190,19 +190,6 @@ def _block_real_notifications():
 
 
 @pytest.fixture(autouse=True)
-def _mock_pull_base_branch():
-    """Stub pull_base_branch to return True for all tests by default.
-
-    Tests that explicitly test pull behavior (e.g. workspace tests, pre-pull
-    tests) override this with their own patch. The autouse stub prevents the
-    new fail-closed behavior from breaking sprint tests that exercise parallel
-    scheduling, DAG logic, etc. but don't care about git pull semantics.
-    """
-    with patch("theforge.sprint.runner.pull_base_branch", return_value=True):
-        yield
-
-
-@pytest.fixture(autouse=True)
 def _block_real_coordinator_runners():
     """Require tests to stub coordinator runner entry points explicitly.
 
