@@ -661,3 +661,109 @@ def test_plan_reviewer_non_empty_when_no_auth(monkeypatch):
     decision = assign_models(agents, cfg, "large")
 
     assert len(decision.plan_reviewers) >= 1
+
+
+# ── Tier guardrail tests ───────────────────────────────────────────────
+
+
+def test_guardrail_cheap_not_assigned_medium_when_mid_available():
+    """cheap cannot be dev on MEDIUM; mid must be preferred when available."""
+    agents = [
+        AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    decision = assign_models(agents, cfg, "medium")
+
+    assert decision.dev.name != "haiku", (
+        f"cheap model haiku should not dev MEDIUM, got {decision.dev.name}"
+    )
+
+
+def test_guardrail_cheap_not_assigned_large_when_strong_available():
+    """cheap cannot be dev on HIGH (large); strong must be preferred when available."""
+    agents = [
+        AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    decision = assign_models(agents, cfg, "large")
+
+    assert decision.dev.name != "haiku", (
+        f"cheap model haiku should not dev HIGH, got {decision.dev.name}"
+    )
+
+
+def test_guardrail_mid_not_assigned_large_when_strong_available():
+    """mid cannot be dev on HIGH (large) when a strong agent is present."""
+    agents = [
+        AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+        AgentDef("opus", "anthropic", "opus", 8.0, 1200, "strong"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    decision = assign_models(agents, cfg, "large")
+
+    assert decision.dev.name == "opus", f"Expected strong agent for HIGH, got {decision.dev.name}"
+
+
+def test_guardrail_fallback_prefers_highest_tier_when_floor_unavailable():
+    """When no strong agent exists for HIGH, fallback picks mid (not cheap)."""
+    agents = [
+        AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap"),
+        AgentDef("sonnet", "anthropic", "sonnet", 5.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    decision = assign_models(agents, cfg, "large")
+
+    # No strong available — mid is the best we can do; cheap must not be selected
+    assert decision.dev.name == "sonnet", (
+        f"Expected mid (sonnet) as best-available for HIGH, got {decision.dev.name}"
+    )
+    assert "WARNING" in decision.rationale.get("dev", ""), (
+        "Rationale must warn when floor cannot be met"
+    )
+
+
+def test_guardrail_fallback_prefers_mid_over_cheap_for_medium_no_mid_no_strong(monkeypatch):
+    """When mid/strong have no auth for MEDIUM, fallback still warns and picks best available."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    agents = [
+        AgentDef("haiku", "anthropic", "haiku", 1.0, 300, "cheap"),
+        # sonnet needs OPENAI_API_KEY which we've removed
+        AgentDef("sonnet", "openai", "gpt-4o", 5.0, 900, "mid"),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+    decision = assign_models(agents, cfg, "medium")
+
+    # haiku is the only authed agent — must use it but rationale must warn
+    assert decision.dev.name == "haiku"
+    assert "WARNING" in decision.rationale.get("dev", ""), (
+        "Rationale must warn when only below-floor agent is available"
+    )
+
+
+def test_guardrail_mid_promoted_to_strong_for_large():
+    """Existing promotion logic: 2+ MEDIUM escalations promote mid → strong for LARGE."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=1)
+
+    # sonnet is the mid-tier dev for MEDIUM; build history with 2 escalations
+    history = [
+        EscalationRecord(
+            story=f"story-{i}",
+            complexity="MEDIUM",
+            dev_model="sonnet",
+            outcome="ESCALATE",
+        )
+        for i in range(2)
+    ]
+
+    # For HIGH (large) the base tier is already "strong" — promotion isn't triggered
+    # from mid. This test confirms strong (opus) is selected for large even with history.
+    decision = assign_models(agents, cfg, "large", escalation_history=history)
+
+    assert decision.dev.name == "opus", f"Expected strong (opus) for HIGH, got {decision.dev.name}"

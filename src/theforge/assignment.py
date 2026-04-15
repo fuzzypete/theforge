@@ -450,11 +450,32 @@ def assign_models(
 
         dev_agent = _pick_agent(agents, effective_dev_tier, secrets)
         if dev_agent is None:
-            # Fall back to any authed agent
+            # Guardrail: dev tier floor prevents cheap models on MEDIUM/HIGH and
+            # mid models on HIGH.  dev_base_tier is the floor (cheap/mid/strong
+            # for LOW/MEDIUM/HIGH respectively).
+            floor_idx = _TIER_ORDER.index(dev_base_tier) if dev_base_tier in _TIER_ORDER else 0
             authed = [a for a in agents if _has_auth(a, secrets)]
-            if authed:
-                dev_agent = sorted(authed, key=lambda a: a.budget_usd)[0]
-                rationale["dev"] += " (fallback: cheapest authed)"
+            floor_authed = [
+                a
+                for a in authed
+                if a.tier in _TIER_ORDER and _TIER_ORDER.index(a.tier) >= floor_idx
+            ]
+            if floor_authed:
+                dev_agent = sorted(floor_authed, key=lambda a: a.budget_usd)[0]
+                rationale["dev"] += " (fallback: cheapest authed at floor tier)"
+            elif authed:
+                # Floor cannot be met — pick highest available tier to minimise
+                # the violation rather than blindly choosing cheapest.
+                best_tier_idx = max(
+                    (_TIER_ORDER.index(a.tier) for a in authed if a.tier in _TIER_ORDER),
+                    default=0,
+                )
+                best_authed = [a for a in authed if a.tier == _TIER_ORDER[best_tier_idx]]
+                dev_agent = sorted(best_authed or authed, key=lambda a: a.budget_usd)[0]
+                rationale["dev"] += (
+                    f" (fallback: best available tier {_TIER_ORDER[best_tier_idx]};"
+                    f" WARNING: below {dev_base_tier} floor for {norm_complexity})"
+                )
             else:
                 dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
                 rationale["dev"] += " (fallback: cheapest, no auth checked)"
