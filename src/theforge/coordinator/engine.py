@@ -536,6 +536,7 @@ def run_task(
 
     # ── Structured logger ──────────────────────────────────────────
     _run_id = run_id or _generate_run_id()
+    state.run_id = _run_id
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,
