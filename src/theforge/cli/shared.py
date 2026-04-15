@@ -16,6 +16,7 @@ from theforge.config import (
     _validate_plan_provider,
 )
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.redact import redact
 from theforge.coordinator.state import CoordinatorResult
 from theforge.task import TaskStory, build_dev_prompt, build_review_prompt, load_story
 
@@ -126,7 +127,59 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
                 yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
         except Exception:
             pass  # best-effort
+    # Write per-run JSON record (Phase A dual-write).
+    _write_per_run_record(result, config, audit, audits_dir)
     return audit_path
+
+
+def _write_per_run_record(
+    result: CoordinatorResult,
+    config: ForgeConfig,
+    audit: dict,
+    audits_dir: Path,
+) -> None:
+    """Write a per-run JSON record to .forge/audits/runs/{run_id}.json.
+
+    The record is written exactly once at run termination, carries schema_version,
+    run_id, and parent_run_id (null for Phase A — resume lineage is not yet tracked),
+    and is scrubbed by a best-effort redaction pass before hitting disk.
+
+    Missing run_id (e.g. very old coordinator path) silently skips the write so
+    existing behaviour is unchanged.
+    """
+    run_id = result.state.run_id
+    if not run_id:
+        return
+
+    try:
+        runs_dir = audits_dir / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        run_file = runs_dir / f"{run_id}.json"
+        # Don't overwrite an already-written record (immutability contract).
+        if run_file.exists():
+            return
+
+        record: dict = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "parent_run_id": None,
+            "forge_version": audit.get("forge_version"),
+        }
+        record.update(audit)
+        # Ensure the envelope fields stay at the top (dict insertion order is preserved).
+        # Re-insert them so they shadow any same-named keys from audit.
+        record["schema_version"] = 1
+        record["run_id"] = run_id
+        record["parent_run_id"] = None
+        record["forge_version"] = audit.get("forge_version")
+
+        env_file = config.project_root / _SECRETS_FILE
+        redacted = redact(record, env_file if env_file.exists() else None)
+
+        with open(run_file, "w", encoding="utf-8") as f:
+            json.dump(redacted, f, default=str, indent=2)
+    except Exception:
+        pass  # best-effort — never block a run on audit write failure
 
 
 def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:

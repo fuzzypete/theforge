@@ -221,6 +221,7 @@ class CoordinatorState:
 
     phase: Phase = Phase.INIT
     started_at: str | None = None  # ISO timestamp set at INIT
+    run_id: str | None = None  # unique id for this run; set by run_task / _setup_resume_entry
     workspace_path: Path | None = None
     branch_name: str | None = None
     dev_session_id: str | None = None
