@@ -221,7 +221,8 @@ class CoordinatorState:
 
     phase: Phase = Phase.INIT
     started_at: str | None = None  # ISO timestamp set at INIT
-    run_id: str | None = None  # unique id for this run; set by run_task / _setup_resume_entry
+    run_id: str | None = None  # stable 12-char hex run identity; set at engine entry
+    story_content: str | None = None  # story text as loaded before any runtime mutation
     workspace_path: Path | None = None
     branch_name: str | None = None
     dev_session_id: str | None = None
@@ -293,6 +294,9 @@ class CoordinatorState:
         None  # contents of the worktree plan file, passed to dev (raw string for audit)
     )
     plan_structured: PlanData | None = None  # parsed structured plan; None if fallback to markdown
+    plan_attempt_plans: list[PlanData | None] = field(
+        default_factory=list
+    )  # per-attempt plan snapshots; appended before each regen overwrite of plan_structured
     plan_review_decision: str | None = None  # "approve" | "regenerate" | "abandon"
     plan_regen_count: int = 0  # number of plan regen attempts so far
     plan_review_waited_seconds: float | None = None
