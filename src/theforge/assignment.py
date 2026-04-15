@@ -257,6 +257,7 @@ def _enforce_budget(
     decision: AssignmentDecision,
     agents: list[AgentDef],
     budget_per_story_usd: float,
+    dev_floor_tier: str = "cheap",
 ) -> AssignmentDecision:
     """Downgrade highest-cost non-preflight model if over budget cap.
 
@@ -265,6 +266,8 @@ def _enforce_budget(
     Plan-phase models are included because for MEDIUM+ complexity their costs
     alone can exceed the cap, making it impossible to reach via dev/code_review
     downgrades alone.
+    The dev model is never downgraded below dev_floor_tier (the complexity-driven
+    tier floor) to preserve the assignment guardrail.
     """
     from dataclasses import replace as _dc_replace
 
@@ -327,10 +330,17 @@ def _enforce_budget(
 
         # Sort by budget descending to downgrade most expensive first
         candidates.sort(key=lambda x: x[1].budget_usd, reverse=True)
+        dev_floor_idx = _TIER_ORDER.index(dev_floor_tier) if dev_floor_tier in _TIER_ORDER else 0
         downgraded = False
         for role, profile in candidates:
             cheaper = _next_cheaper_profile(profile)
             if cheaper is not None:
+                # Guardrail: never downgrade dev below its complexity tier floor.
+                if role == "dev":
+                    cheaper_def = agent_by_name.get(cheaper.name)
+                    if cheaper_def is not None and cheaper_def.tier in _TIER_ORDER:
+                        if _TIER_ORDER.index(cheaper_def.tier) < dev_floor_idx:
+                            continue  # skip — would violate floor
                 if role == "dev":
                     decision = _dc_replace(decision, dev=cheaper)
                 elif role == "planner":
@@ -450,14 +460,46 @@ def assign_models(
 
         dev_agent = _pick_agent(agents, effective_dev_tier, secrets)
         if dev_agent is None:
-            # Fall back to any authed agent
+            # Guardrail: dev tier floor prevents cheap models on MEDIUM/HIGH and
+            # mid models on HIGH.  dev_base_tier is the floor (cheap/mid/strong
+            # for LOW/MEDIUM/HIGH respectively).
+            floor_idx = _TIER_ORDER.index(dev_base_tier) if dev_base_tier in _TIER_ORDER else 0
             authed = [a for a in agents if _has_auth(a, secrets)]
-            if authed:
-                dev_agent = sorted(authed, key=lambda a: a.budget_usd)[0]
-                rationale["dev"] += " (fallback: cheapest authed)"
+            floor_authed = [
+                a
+                for a in authed
+                if a.tier in _TIER_ORDER and _TIER_ORDER.index(a.tier) >= floor_idx
+            ]
+            if floor_authed:
+                dev_agent = sorted(floor_authed, key=lambda a: a.budget_usd)[0]
+                rationale["dev"] += " (fallback: cheapest authed at floor tier)"
             else:
-                dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
-                rationale["dev"] += " (fallback: cheapest, no auth checked)"
+                # No authed agent meets the floor — try unauthed floor-compliant
+                # agents before ever going below the floor.
+                floor_any = [
+                    a
+                    for a in agents
+                    if a.tier in _TIER_ORDER and _TIER_ORDER.index(a.tier) >= floor_idx
+                ]
+                if floor_any:
+                    dev_agent = sorted(floor_any, key=lambda a: a.budget_usd)[0]
+                    rationale["dev"] += " (fallback: cheapest at floor tier, no auth)"
+                elif authed:
+                    # No floor-compliant agent exists in the pool at all — pick
+                    # highest available tier to minimise the violation.
+                    best_tier_idx = max(
+                        (_TIER_ORDER.index(a.tier) for a in authed if a.tier in _TIER_ORDER),
+                        default=0,
+                    )
+                    best_authed = [a for a in authed if a.tier == _TIER_ORDER[best_tier_idx]]
+                    dev_agent = sorted(best_authed or authed, key=lambda a: a.budget_usd)[0]
+                    rationale["dev"] += (
+                        f" (fallback: best available tier {_TIER_ORDER[best_tier_idx]};"
+                        f" WARNING: below {dev_base_tier} floor for {norm_complexity})"
+                    )
+                else:
+                    dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
+                    rationale["dev"] += " (fallback: cheapest, no auth checked)"
         dev_profile = _agent_to_profile(dev_agent, role="dev")
 
     # ── Preflight ──────────────────────────────────────────────────────
@@ -551,8 +593,14 @@ def assign_models(
         rationale=rationale,
     )
 
-    # Enforce budget cap
-    decision = _enforce_budget(decision, agents, assignment_config.budget_per_story_usd)
+    # Enforce budget cap — pass dev floor so the enforcer never downgrades dev
+    # below the complexity-required tier.
+    decision = _enforce_budget(
+        decision,
+        agents,
+        assignment_config.budget_per_story_usd,
+        dev_floor_tier=dev_base_tier,
+    )
 
     return decision
 
