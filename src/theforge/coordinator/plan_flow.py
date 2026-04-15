@@ -921,6 +921,7 @@ def _run_plan_agent_review(
         ensure_parent_dir(worktree_plan_path)
         worktree_plan_path.write_text(plan_text, encoding="utf-8")
         state.plan_output = plan_text
+        state.plan_attempt_plans.append(state.plan_structured)
         state.plan_structured = parse_plan_output(plan_text)
         _log(
             "  ✓ PLAN (regenerated)  "
@@ -1103,6 +1104,7 @@ def _run_human_plan_review(
             ensure_parent_dir(worktree_plan_path)
             worktree_plan_path.write_text(plan_text, encoding="utf-8")
             state.plan_output = plan_text
+            state.plan_attempt_plans.append(state.plan_structured)
             state.plan_structured = parse_plan_output(plan_text)
             _log(
                 "  ✓ PLAN (regenerated)  "

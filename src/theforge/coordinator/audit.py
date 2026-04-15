@@ -120,6 +120,10 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             "cost_usd": round(state.total_plan_cost, 6),
             "duration_s": round(sum(state.plan_durations), 2) if state.plan_durations else None,
             "outcome": "success",
+            "plan_structured": state.plan_structured,
+            "attempt_plans": [
+                {"attempt": i, "plan": p} for i, p in enumerate(state.plan_attempt_plans)
+            ],
         }
 
     # ── plan_review ───────────────────────────────────────────────────────────
@@ -344,10 +348,14 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
 
     return {
         "forge_version": "0.1.0",
+        "schema_version": 2,
+        "run_id": state.run_id,
         "task": {
             "name": task.name,
             "slug": task.slug,
-            "story_path": str(task.story_path),
+            "story_path": str(task.story_path) if task.story_path is not None else None,
+            "story_text": state.story_content,
+            "github_issue": task.github_issue,
         },
         "outcome": {
             "success": result.success,

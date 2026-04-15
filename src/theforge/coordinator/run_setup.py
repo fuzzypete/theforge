@@ -216,6 +216,7 @@ def _setup_resume_entry(
     _task_start = time.monotonic()
 
     _run_id = run_id or _cu._generate_run_id()
+    state.run_id = _run_id
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,
@@ -274,5 +275,6 @@ def _setup_resume_entry(
     state.branch_name = branch_name
 
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
+    state.story_content = story_content
 
     return state, logger, branch_name, story_content, _task_start

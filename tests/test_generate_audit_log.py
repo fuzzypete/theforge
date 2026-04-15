@@ -639,3 +639,187 @@ def test_generate_audit_log_includes_context_manifests(tmp_path: Path) -> None:
     assert manifest["git_sha"] == "abc123"
     assert manifest["items_included"][0]["type"] == "invariant"
     assert manifest["items_dropped"][0]["reason"] == "out of scope"
+
+
+# ── Layer 1 knowledge capture tests ──────────────────────────────────────────
+
+
+class TestKnowledgeCaptureLayer1:
+    """Tests for Layer 1 audit enrichment: run_id, story_text, github_issue,
+    story_path null fix, schema_version, plan_structured, attempt_plans."""
+
+    def test_schema_version_present(self, tmp_path: Path) -> None:
+        """schema_version is always emitted in the audit record."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["schema_version"] == 2
+
+    def test_run_id_from_state(self, tmp_path: Path) -> None:
+        """run_id in audit record comes from state.run_id."""
+        state = CoordinatorState()
+        state.run_id = "abc123def456"
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["run_id"] == "abc123def456"
+
+    def test_run_id_none_when_not_set(self, tmp_path: Path) -> None:
+        """run_id is None when state.run_id was never set (backwards compat)."""
+        state = CoordinatorState()
+        assert state.run_id is None
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["run_id"] is None
+
+    def test_story_text_from_state(self, tmp_path: Path) -> None:
+        """task.story_text in audit comes from state.story_content."""
+        state = CoordinatorState()
+        state.story_content = "## Story\n\nDo the thing."
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["task"]["story_text"] == "## Story\n\nDo the thing."
+
+    def test_story_text_none_when_not_set(self, tmp_path: Path) -> None:
+        """task.story_text is None when state.story_content is not set."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["task"]["story_text"] is None
+
+    def test_github_issue_propagated(self, tmp_path: Path) -> None:
+        """task.github_issue from TaskStory appears in audit task block."""
+        state = CoordinatorState()
+        task = TaskStory(name="Test", slug="test", github_issue=42)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert log["task"]["github_issue"] == 42
+
+    def test_github_issue_none(self, tmp_path: Path) -> None:
+        """task.github_issue is None when no issue is linked."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["task"]["github_issue"] is None
+
+    def test_story_path_null_for_issue_sourced(self, tmp_path: Path) -> None:
+        """story_path serializes as None (not the string 'None') for issue-sourced tasks."""
+        state = CoordinatorState()
+        task = TaskStory(name="Test", slug="test", story_path=None)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), task, result)
+
+        assert log["task"]["story_path"] is None
+        assert log["task"]["story_path"] != "None"
+
+    def test_story_path_string_when_present(self, tmp_path: Path) -> None:
+        """story_path serializes as a string when a path is set."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert isinstance(log["task"]["story_path"], str)
+        assert log["task"]["story_path"] != "None"
+
+    def test_plan_structured_in_plan_block(self, tmp_path: Path) -> None:
+        """phases.plan.plan_structured contains the final parsed plan."""
+        state = CoordinatorState()
+        state.plan_results.append(_make_agent_result(cost_usd=0.10))
+        state.plan_durations.append(30.0)
+        state.plan_structured = {
+            "approach": "Refactor incrementally",
+            "steps": [
+                {
+                    "id": 1,
+                    "description": "Update types",
+                    "files": ["src/types.py"],
+                    "action": "modify",
+                    "details": "Add new fields",
+                }
+            ],
+        }
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        plan = log["phases"]["plan"]
+        assert plan is not None
+        assert plan["plan_structured"] is not None
+        assert plan["plan_structured"]["approach"] == "Refactor incrementally"
+        assert len(plan["plan_structured"]["steps"]) == 1
+
+    def test_plan_structured_none_when_fallback(self, tmp_path: Path) -> None:
+        """phases.plan.plan_structured is None when plan fell back to markdown."""
+        state = CoordinatorState()
+        state.plan_results.append(_make_agent_result(cost_usd=0.10))
+        state.plan_durations.append(30.0)
+        state.plan_structured = None
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["phases"]["plan"]["plan_structured"] is None
+
+    def test_attempt_plans_empty_when_no_regen(self, tmp_path: Path) -> None:
+        """phases.plan.attempt_plans is empty when no plan regeneration occurred."""
+        state = CoordinatorState()
+        state.plan_results.append(_make_agent_result(cost_usd=0.10))
+        state.plan_durations.append(30.0)
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["phases"]["plan"]["attempt_plans"] == []
+
+    def test_attempt_plans_lineage_preserved(self, tmp_path: Path) -> None:
+        """phases.plan.attempt_plans records prior plans with attempt numbers on regen."""
+        initial_plan = {
+            "approach": "Initial approach",
+            "steps": [],
+        }
+        state = CoordinatorState()
+        state.plan_results.append(_make_agent_result(cost_usd=0.10))
+        state.plan_durations.append(30.0)
+        state.plan_attempt_plans.append(initial_plan)  # simulates snapshot before regen
+        state.plan_structured = {
+            "approach": "Revised approach",
+            "steps": [],
+        }
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        attempts = log["phases"]["plan"]["attempt_plans"]
+        assert len(attempts) == 1
+        assert attempts[0]["attempt"] == 0
+        assert attempts[0]["plan"]["approach"] == "Initial approach"
+        # Final plan is in plan_structured, not attempt_plans
+        assert log["phases"]["plan"]["plan_structured"]["approach"] == "Revised approach"
+
+    def test_attempt_plans_multiple_regens(self, tmp_path: Path) -> None:
+        """Multiple regen cycles produce correctly indexed attempt entries."""
+        state = CoordinatorState()
+        state.plan_results.append(_make_agent_result(cost_usd=0.30))
+        state.plan_durations.append(90.0)
+        state.plan_attempt_plans.append({"approach": "Attempt 0", "steps": []})
+        state.plan_attempt_plans.append({"approach": "Attempt 1", "steps": []})
+        state.plan_structured = {"approach": "Final (attempt 2)", "steps": []}
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        attempts = log["phases"]["plan"]["attempt_plans"]
+        assert len(attempts) == 2
+        assert attempts[0]["attempt"] == 0
+        assert attempts[0]["plan"]["approach"] == "Attempt 0"
+        assert attempts[1]["attempt"] == 1
+        assert attempts[1]["plan"]["approach"] == "Attempt 1"
+
+    def test_attempt_plans_none_when_plan_not_run(self, tmp_path: Path) -> None:
+        """phases.plan is None when plan phase never ran (no attempt_plans key)."""
+        state = CoordinatorState()
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        assert log["phases"]["plan"] is None
