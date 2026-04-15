@@ -532,6 +532,7 @@ def run_task(
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
+    state.story_content = story_content
     _sprint_name = sprint_name  # passed to _make_story_log_dir for sprint nesting
 
     # ── Structured logger ──────────────────────────────────────────
@@ -1151,6 +1152,7 @@ def run_review_only(
     _ro_task_start = time.monotonic()
 
     _run_id = _generate_run_id()
+    state.run_id = _run_id
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,
@@ -1185,6 +1187,7 @@ def run_review_only(
     state.branch_name = branch_name
 
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
+    state.story_content = story_content
 
     return _run_review_only_phase(
         state,

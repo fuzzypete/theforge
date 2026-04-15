@@ -275,5 +275,6 @@ def _setup_resume_entry(
     state.branch_name = branch_name
 
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
+    state.story_content = story_content
 
     return state, logger, branch_name, story_content, _task_start
