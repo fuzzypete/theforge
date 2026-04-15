@@ -46,11 +46,31 @@ def _make_model_ref(
 
 
 def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
-    """Return a new ModelRef with fields replaced by values in overrides."""
+    """Return a new ModelRef with fields replaced by values in overrides.
+
+    Transport mutual exclusion: switching transports via overrides is supported.
+    If 'provider' is in overrides but 'cli' is not, cli is cleared to None so the
+    new ModelRef satisfies the mutual-exclusion constraint. The inverse applies when
+    'cli' is in overrides but 'provider' is not. If both are supplied, ModelRef's
+    __post_init__ will raise as expected (both supplied → invalid).
+    """
+    if "provider" in overrides and "cli" not in overrides:
+        # Switching to API transport — clear the derived cli value
+        new_cli: str | None = None
+        new_provider: str | None = overrides["provider"]
+    elif "cli" in overrides and "provider" not in overrides:
+        # Switching to CLI transport — clear the derived provider value
+        new_cli = overrides["cli"]
+        new_provider = None
+    else:
+        # Both present (error caught by ModelRef) or neither (keep derived values)
+        new_cli = overrides.get("cli", ref.cli)
+        new_provider = overrides.get("provider", ref.provider)
+
     return ModelRef(
         model=overrides.get("model", ref.model),
-        cli=overrides.get("cli", ref.cli),
-        provider=overrides.get("provider", ref.provider),
+        cli=new_cli,
+        provider=new_provider,
         budget_usd=overrides.get("budget_usd", ref.budget_usd),
         timeout_seconds=overrides.get("timeout_seconds", ref.timeout_seconds),
         fallback_models=overrides.get("fallback_models", ref.fallback_models),

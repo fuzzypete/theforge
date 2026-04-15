@@ -275,6 +275,30 @@ class TestDeriveRolesOverrides:
         )
         assert ra.plan.validate_spec is False
 
+    def test_switch_to_provider_transport_clears_cli(self):
+        """Overriding to 'provider' without explicit 'cli: None' must not raise ValueError.
+
+        derive_roles() produces refs with cli set (from ModelInfo). If _apply_ref_overrides
+        naively merged {'provider': 'anthropic'} without clearing cli, ModelRef.__post_init__
+        would raise 'cannot have both cli and provider set'.
+        """
+        ra = derive_roles(
+            ["claude/sonnet"],
+            overrides={"dev": {"provider": "anthropic"}},
+        )
+        assert ra.dev.ref.provider == "anthropic"
+        assert ra.dev.ref.cli is None  # cli must be cleared when provider is overridden
+
+    def test_switch_to_cli_transport_clears_provider(self):
+        """Overriding to 'cli' without explicit 'provider: None' must clear provider."""
+        # Build an assignment starting from a known model, then override dev to CLI
+        ra = derive_roles(
+            ["claude/sonnet"],
+            overrides={"dev": {"cli": "codex", "model": "gpt-5.4"}},
+        )
+        assert ra.dev.ref.cli == "codex"
+        assert ra.dev.ref.provider is None
+
     def test_synthesis_budget_override(self):
         # Need 3+ models so pool > 1 and synthesis is generated
         ra = derive_roles(
@@ -337,8 +361,10 @@ class TestRoleAssignmentToProfiles:
             "dev_profile",
             "preflight_profile",
             "plan_profile",
+            "plan_validate_spec",
             "review_pool",
             "synthesis_profile",
+            "plan_agent_review_profile",
         }
 
     def test_dev_profile_is_model_profile(self):
@@ -393,6 +419,42 @@ class TestRoleAssignmentToProfiles:
         ra = derive_roles(["claude/sonnet"])
         result = role_assignment_to_profiles(ra)
         assert result["synthesis_profile"] is None
+
+    def test_plan_validate_spec_preserved(self):
+        """validate_spec on PlanRoleConfig must not be silently dropped at the bridge boundary."""
+        ra = derive_roles(["claude/sonnet"], overrides={"plan": {"validate_spec": False}})
+        result = role_assignment_to_profiles(ra)
+        assert result["plan_validate_spec"] is False
+
+    def test_plan_validate_spec_default_preserved(self):
+        ra = derive_roles(["claude/sonnet"])
+        result = role_assignment_to_profiles(ra)
+        assert result["plan_validate_spec"] is True
+
+    def test_plan_agent_review_profile_none_by_default(self):
+        """plan_agent_review_profile is None when plan_agent_review is not configured."""
+        ra = derive_roles(["claude/sonnet"])
+        result = role_assignment_to_profiles(ra)
+        assert result["plan_agent_review_profile"] is None
+
+    def test_plan_agent_review_profile_when_set(self):
+        """plan_agent_review_profile is a ModelProfile when plan_agent_review is configured."""
+        ref = ModelRef(model="opus", cli="claude", budget_usd=0.5, timeout_seconds=300)
+        review_ref = ModelRef(model="sonnet", cli="claude", budget_usd=1.0, timeout_seconds=300)
+        plan_ref = ModelRef(model="sonnet", cli="claude", budget_usd=0.5, timeout_seconds=600)
+        ra = RoleAssignment(
+            dev=DevRoleConfig(ref=ref),
+            preflight=PreflightRoleConfig(ref=review_ref),
+            plan=PlanRoleConfig(ref=plan_ref),
+            review_pool=(ReviewRoleConfig(ref=review_ref),),
+            plan_agent_review=ReviewRoleConfig(ref=ref),
+        )
+        result = role_assignment_to_profiles(ra)
+        par: ModelProfile = result["plan_agent_review_profile"]  # type: ignore[assignment]
+        assert isinstance(par, ModelProfile)
+        assert par.name == "plan-agent-review"
+        assert par.model == "opus"
+        assert par.phase == "plan_review"
 
     def test_all_optional_ref_fields_propagate(self):
         """Optional ModelRef fields (reasoning_effort, base_url, etc.) flow to ModelProfile."""

@@ -115,6 +115,11 @@ class RoleAssignment:
     derive_roles() and returns a RoleAssignment without restructuring the type
     hierarchy. The bridge module (bridge.py) converts this to ModelProfile
     instances for the coordinator.
+
+    plan_agent_review replaces PlanAgentReviewConfig's transport fields: it
+    composes ReviewRoleConfig (which embeds ModelRef) instead of duplicating
+    cli/provider/model/budget_usd/timeout fields. None = plan agent review
+    disabled, matching PlanAgentReviewConfig's enabled=False default.
     """
 
     dev: DevRoleConfig
@@ -122,3 +127,4 @@ class RoleAssignment:
     plan: PlanRoleConfig
     review_pool: tuple[ReviewRoleConfig, ...]
     synthesis: ReviewRoleConfig | None = None
+    plan_agent_review: ReviewRoleConfig | None = None  # None = disabled
