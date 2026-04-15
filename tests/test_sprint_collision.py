@@ -6,7 +6,7 @@ from theforge.sprint.collision import (
     compute_synthetic_edges,
     inject_synthetic_deps,
 )
-from theforge.sprint.dag import StoryTriage
+from theforge.sprint.dag import StoryTriage, build_dag
 from theforge.sprint.runner import _register_resumed_story_footprints
 from theforge.task import TaskStory
 
@@ -71,6 +71,38 @@ def test_compute_synthetic_edges_falls_back_to_slug_order_when_issue_missing() -
     }
 
     assert compute_synthetic_edges(states, tasks) == {"b-story": ["a-story"]}
+
+
+def test_compute_synthetic_edges_skips_edges_that_would_cycle() -> None:
+    tasks = [
+        _task("issue-267", 267, depends_on=["issue-750"]),
+        _task("issue-750", 750),
+    ]
+    states = {
+        "issue-267": CoordinatorState(preflight_likely_files=["tests/test_config_load.py"]),
+        "issue-750": CoordinatorState(preflight_likely_files=["tests/test_config_load.py"]),
+    }
+
+    synthetic = compute_synthetic_edges(states, tasks)
+
+    assert synthetic == {}
+    build_dag(inject_synthetic_deps(tasks, synthetic))
+
+
+def test_compute_synthetic_edges_skips_already_serialized_collisions() -> None:
+    tasks = [
+        _task("issue-267", 267),
+        _task("issue-750", 750, depends_on=["issue-267"]),
+    ]
+    states = {
+        "issue-267": CoordinatorState(preflight_likely_files=["tests/test_config_load.py"]),
+        "issue-750": CoordinatorState(preflight_likely_files=["tests/test_config_load.py"]),
+    }
+
+    synthetic = compute_synthetic_edges(states, tasks)
+
+    assert synthetic == {}
+    build_dag(inject_synthetic_deps(tasks, synthetic))
 
 
 def test_register_resumed_story_footprints_reads_plan_md(tmp_path: Path) -> None:

@@ -205,6 +205,7 @@ def compute_synthetic_edges(
 ) -> dict[str, list[str]]:
     task_by_slug = {task.slug: task for task in tasks}
     file_to_slugs: dict[str, list[str]] = {}
+    deps: dict[str, set[str]] = {task.slug: set(task.depends_on) for task in tasks}
     synthetic: dict[str, set[str]] = {}
 
     for slug, state in preflight_states.items():
@@ -217,15 +218,39 @@ def compute_synthetic_edges(
         issue = task_by_slug[slug].github_issue
         return (issue if issue is not None else sys.maxsize, slug)
 
+    def _has_dependency_path(start: str, target: str) -> bool:
+        stack = list(deps.get(start, set()))
+        seen: set[str] = set()
+        while stack:
+            slug = stack.pop()
+            if slug == target:
+                return True
+            if slug in seen:
+                continue
+            seen.add(slug)
+            stack.extend(deps.get(slug, set()) - seen)
+        return False
+
     for path, slugs in sorted(file_to_slugs.items()):
         unique_slugs = sorted(set(slugs), key=_sort_key)
         if len(unique_slugs) <= 1:
             continue
         injected: list[str] = []
+        skipped: list[str] = []
         for prev, curr in zip(unique_slugs, unique_slugs[1:], strict=False):
+            if _has_dependency_path(curr, prev):
+                skipped.append(f"{curr} already depends_on {prev}")
+                continue
+            if _has_dependency_path(prev, curr):
+                skipped.append(f"{curr} depends_on {prev} would cycle")
+                continue
             synthetic.setdefault(curr, set()).add(prev)
+            deps.setdefault(curr, set()).add(prev)
             injected.append(f"{curr} depends_on {prev}")
-        _log(f"Collision detected for {path}: stories={unique_slugs}; injected={injected}")
+        detail = f"Collision detected for {path}: stories={unique_slugs}; injected={injected}"
+        if skipped:
+            detail += f"; skipped={skipped}"
+        _log(detail)
 
     return {slug: sorted(deps) for slug, deps in synthetic.items()}
 
