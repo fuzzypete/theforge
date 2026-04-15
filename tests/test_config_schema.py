@@ -222,6 +222,41 @@ class TestDeriveRolesHappyPath:
         assert "Read" in ra.preflight.allowed_tools
         assert "Edit" not in ra.preflight.allowed_tools
 
+    def test_reviewer_names_match_registry_key_format(self):
+        """Reviewer pool entries are named using the registry key format (e.g. 'claude-opus').
+
+        This ensures name-based profile overrides in load.py continue to match
+        auto-assigned pool entries when derive_roles is wired into the loader.
+        """
+        ra = derive_roles(["claude/sonnet", "claude/opus"])
+        # dev=sonnet, pool=[opus]; opus reviewer should be named "claude-opus"
+        assert ra.review_pool[0].name == "claude-opus"
+
+    def test_plan_agent_review_none_by_default(self):
+        """plan_agent_review is None when no overrides are provided."""
+        ra = derive_roles(["claude/sonnet"])
+        assert ra.plan_agent_review is None
+
+    def test_plan_agent_review_enabled_via_overrides(self):
+        """plan_agent_review is constructed when plan_agent_review overrides are provided."""
+        ra = derive_roles(
+            ["claude/sonnet"],
+            overrides={"plan_agent_review": {"budget_usd": 0.75}},
+        )
+        assert ra.plan_agent_review is not None
+        assert ra.plan_agent_review.ref.model == "sonnet"  # defaults to dev model
+        assert ra.plan_agent_review.ref.cli == "claude"
+        assert abs(ra.plan_agent_review.ref.budget_usd - 0.75) < 0.001
+
+    def test_plan_agent_review_model_override(self):
+        """plan_agent_review can override the model independently of dev."""
+        ra = derive_roles(
+            ["claude/sonnet", "claude/opus"],
+            overrides={"plan_agent_review": {"model": "opus", "budget_usd": 0.5}},
+        )
+        assert ra.plan_agent_review is not None
+        assert ra.plan_agent_review.ref.model == "opus"
+
     def test_empty_models_raises(self):
         with pytest.raises(ValueError, match="non-empty"):
             derive_roles([])

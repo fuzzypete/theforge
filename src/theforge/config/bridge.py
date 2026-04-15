@@ -86,7 +86,7 @@ def role_assignment_to_profiles(ra: RoleAssignment) -> dict[str, object]:
 
     review_pool: list[ModelProfile] = [
         _role_config_to_profile(
-            rc.ref.model.replace("/", "-"),
+            rc.name if rc.name else rc.ref.model.replace("/", "-"),
             rc,
             phase="review",
         )

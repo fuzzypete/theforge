@@ -13,6 +13,7 @@ from dotenv import dotenv_values
 
 from ._loaders import _parse_plan_agent_review, _parse_workspace
 from .auth import check_agent_auth
+from .bridge import role_assignment_to_profiles
 from .defaults import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -26,10 +27,10 @@ from .profiles import (
     CLI_PROVIDER_MAP,
     _apply_profile_overrides,
     _apply_provider_fallback,
-    _auto_assign_models,
     _parse_profile,
     _parse_provider_fallbacks,
 )
+from .role_derivation import derive_roles
 from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
@@ -162,9 +163,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         if budget_usd_val <= 0:
             raise ValueError("budget_usd must be positive")
 
-        dev_profile, preflight_profile, review_pool, synthesis_profile = _auto_assign_models(
-            [str(m) for m in models_list], budget_usd_val
-        )
+        _ra = derive_roles([str(m) for m in models_list], budget_usd=budget_usd_val)
+        _bridge = role_assignment_to_profiles(_ra)
+        dev_profile = _bridge["dev_profile"]
+        preflight_profile = _bridge["preflight_profile"]
+        review_pool = _bridge["review_pool"]
+        synthesis_profile = _bridge["synthesis_profile"]
 
         # Apply explicit profile overrides (partial override supported)
         profiles = raw.get("profiles", {})

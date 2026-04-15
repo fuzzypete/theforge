@@ -220,13 +220,16 @@ def derive_roles(
             ReviewRoleConfig(
                 ref=review_ref,
                 allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+                # Preserve registry key format ("claude-opus") so name-based profile
+                # overrides in the loader continue to match auto-assigned pool entries.
+                name=k.replace("/", "-"),
             )
         )
 
     # --- Build synthesis role ---
     synthesis_role: ReviewRoleConfig | None = None
     if has_synthesis:
-        _, synth_info = max(review_pairs, key=lambda x: x[1].capability)
+        synth_key, synth_info = max(review_pairs, key=lambda x: x[1].capability)
         synth_ref = _make_model_ref(
             model=synth_info.model,
             cli=synth_info.cli,
@@ -241,10 +244,28 @@ def derive_roles(
             allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
         )
 
+    # --- Build plan_agent_review role (None unless overrides enable it) ---
+    plan_agent_review_role: ReviewRoleConfig | None = None
+    par_overrides = effective_overrides.get("plan_agent_review", {})
+    if par_overrides:
+        # Default base: dev model at plan-phase budget; overrides can change any field
+        par_ref = _make_model_ref(
+            model=dev_info.model,
+            cli=dev_info.cli,
+            budget_usd=_DEFAULT_PLAN_BUDGET_USD,
+            timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
+        )
+        par_ref = _apply_ref_overrides(par_ref, par_overrides)
+        plan_agent_review_role = ReviewRoleConfig(
+            ref=par_ref,
+            allowed_tools=par_overrides.get("allowed_tools", DEFAULT_REVIEW_PROFILE.allowed_tools),
+        )
+
     return RoleAssignment(
         dev=dev_role,
         preflight=preflight_role,
         plan=plan_role,
         review_pool=tuple(review_pool),
         synthesis=synthesis_role,
+        plan_agent_review=plan_agent_review_role,
     )

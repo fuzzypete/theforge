@@ -104,6 +104,7 @@ class ReviewRoleConfig:
     ref: ModelRef
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
     allowed_tools: tuple[str, ...] = ("Read", "Bash", "Glob", "Grep")
+    name: str | None = None  # optional profile identifier; used by bridge for ModelProfile.name
 
 
 @dataclass(frozen=True)
