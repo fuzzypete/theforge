@@ -136,7 +136,7 @@ class TestWorkerTimeoutPrecedence:
             return (set(), set())
 
         with (
-            patch("theforge.sprint.runner.pull_base_branch", return_value=True),
+            patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
             patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
         ):
@@ -162,7 +162,7 @@ class TestWorkerTimeoutPrecedence:
             return (set(), set())
 
         with (
-            patch("theforge.sprint.runner.pull_base_branch", return_value=True),
+            patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
             patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
         ):
@@ -197,7 +197,7 @@ class TestWorkerTimeoutPrecedence:
             return (set(), set())
 
         with (
-            patch("theforge.sprint.runner.pull_base_branch", return_value=True),
+            patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
             patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
         ):
@@ -252,7 +252,7 @@ def test_timeout_error_message_uses_configured_value(tmp_path: Path) -> None:
             return _NeverDoneFuture()
 
     with (
-        patch("theforge.sprint.runner.pull_base_branch", return_value=True),
+        patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
         patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
         patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),

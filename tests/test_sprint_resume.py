@@ -970,7 +970,7 @@ class TestSprintDependencies:
 
         with patch("theforge.sprint.runner._triage_spec", return_value=review_triage):
             with patch("theforge.sprint.runner.run_from_review", return_value=coord_result):
-                with patch("theforge.sprint.runner.pull_base_branch", return_value=True):
+                with patch("theforge.coordinator.workspace.pull_base_branch", return_value=True):
                     with patch("theforge.sprint.runner.run_batch_preflight", return_value={}):
                         result = run_sprint(config, manifest_path, resume=True)
 
