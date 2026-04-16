@@ -500,12 +500,12 @@ class TestModelsKeyConfig:
         assert config.synthesis_profile is None
 
     def test_models_with_profile_override(self, tmp_path):
-        """Explicit profiles overlay auto-assigned values."""
+        """Explicit overrides overlay auto-assigned values (v0.8: overrides: key)."""
         config_path = _write_config(
             {
                 "models": ["claude/sonnet", "claude/opus"],
                 "budget_usd": 50.0,
-                "profiles": {
+                "overrides": {
                     "dev": {"budget_usd": 100.0},
                 },
             },
@@ -681,12 +681,12 @@ class TestModelsKeyReviewPoolOverride:
     """Tests for review_pool override in smart-config mode (P1 fix)."""
 
     def test_review_pool_override_by_name(self, tmp_path):
-        """profiles.review_pool entries are matched by name and override auto-assigned values."""
+        """overrides.review_pool entries are matched by name and override auto-assigned values."""
         config_path = _write_config(
             {
                 "models": ["claude/sonnet", "claude/opus"],
                 "budget_usd": 50.0,
-                "profiles": {
+                "overrides": {
                     "review_pool": [
                         {"name": "claude-opus", "budget_usd": 99.0},
                     ],
@@ -700,12 +700,12 @@ class TestModelsKeyReviewPoolOverride:
         assert abs(config.review_pool[0].budget_usd - 99.0) < 0.01
 
     def test_review_pool_override_partial(self, tmp_path):
-        """Overriding only budget_usd preserves auto-assigned cli/model."""
+        """Overriding only timeout_seconds preserves auto-assigned cli/model."""
         config_path = _write_config(
             {
                 "models": ["claude/sonnet", "claude/opus"],
                 "budget_usd": 50.0,
-                "profiles": {
+                "overrides": {
                     "review_pool": [
                         {"name": "claude-opus", "timeout_seconds": 600},
                     ],
@@ -724,7 +724,7 @@ class TestModelsKeyReviewPoolOverride:
             {
                 "models": ["claude/sonnet", "claude/opus"],
                 "budget_usd": 50.0,
-                "profiles": {
+                "overrides": {
                     "review_pool": [
                         {"name": "nonexistent", "budget_usd": 1.0},
                     ],

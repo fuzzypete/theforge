@@ -618,12 +618,12 @@ class TestLoadConfigTimeoutFields:
         assert config.plan.timeout_large is None
 
     def test_smart_config_applies_dev_timeout_overrides(self, tmp_path):
-        """Smart config (models:) path respects timeout_medium_seconds / timeout_large_seconds."""
+        """Smart config (models:) path respects timeout overrides via overrides: key."""
         config_path = _write_config(
             {
                 "models": ["claude/sonnet"],
                 "budget_usd": 10.0,
-                "profiles": {
+                "overrides": {
                     "dev": {
                         "timeout_seconds": 600,
                         "timeout_medium_seconds": 900,

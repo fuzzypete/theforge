@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 from dotenv import dotenv_values
 
-from ._loaders import _parse_plan_agent_review, _parse_workspace
+from ._loaders import _parse_plan_agent_review, _parse_workspace, _validate_v0_8_schema
 from .auth import check_agent_auth
 from .bridge import role_assignment_to_profiles
 from .defaults import (
@@ -42,6 +42,7 @@ from .types import (
     HooksConfig,
     LogConfig,
     ModelProfile,
+    PlanAgentReviewConfig,
     PlanConfig,
     PlanReviewConfig,
     RetryPolicy,
@@ -116,6 +117,8 @@ def load_config(config_path: Path) -> ForgeConfig:
     with open(config_path, encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
 
+    _validate_v0_8_schema(raw)
+
     provider_fallbacks = _parse_provider_fallbacks(
         raw.get("provider_fallbacks", {}),
         secrets=secrets,
@@ -143,6 +146,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     _review_pool_is_default = False
     _derived_plan_profile: ModelProfile | None = None
     _derived_plan_validate_spec: bool | None = None
+    _derived_par_profile: ModelProfile | None = None
 
     if "models" in raw:
         models_list = raw["models"]
@@ -165,7 +169,20 @@ def load_config(config_path: Path) -> ForgeConfig:
         if budget_usd_val <= 0:
             raise ValueError("budget_usd must be positive")
 
-        _ra = derive_roles([str(m) for m in models_list], budget_usd=budget_usd_val)
+        # v0.8: overrides: key replaces the classic profiles: key for partial overrides.
+        # plan_agent_review overrides are passed into derive_roles() so the bridge
+        # can lower them to a ModelProfile (fixes silent loss of that config).
+        overrides = raw.get("overrides", {})
+        _par_derive_overrides: dict[str, Any] | None = (
+            {"plan_agent_review": overrides["plan_agent_review"]}
+            if "plan_agent_review" in overrides
+            else None
+        )
+        _ra = derive_roles(
+            [str(m) for m in models_list],
+            overrides=_par_derive_overrides,
+            budget_usd=budget_usd_val,
+        )
         _bridge = role_assignment_to_profiles(_ra)
         dev_profile = _bridge["dev_profile"]
         preflight_profile = _bridge["preflight_profile"]
@@ -173,18 +190,18 @@ def load_config(config_path: Path) -> ForgeConfig:
         synthesis_profile = _bridge["synthesis_profile"]
         _derived_plan_profile = _bridge["plan_profile"]
         _derived_plan_validate_spec = _bridge["plan_validate_spec"]
+        _derived_par_profile = _bridge.get("plan_agent_review_profile")
 
         # Apply explicit profile overrides (partial override supported)
-        profiles = raw.get("profiles", {})
-        if "dev" in profiles:
-            dev_profile = _apply_profile_overrides(dev_profile, profiles["dev"])
-        if "preflight" in profiles:
-            preflight_profile = _apply_profile_overrides(preflight_profile, profiles["preflight"])
-        if synthesis_profile is not None and "synthesis" in profiles:
-            synthesis_profile = _apply_profile_overrides(synthesis_profile, profiles["synthesis"])
+        if "dev" in overrides:
+            dev_profile = _apply_profile_overrides(dev_profile, overrides["dev"])
+        if "preflight" in overrides:
+            preflight_profile = _apply_profile_overrides(preflight_profile, overrides["preflight"])
+        if synthesis_profile is not None and "synthesis" in overrides:
+            synthesis_profile = _apply_profile_overrides(synthesis_profile, overrides["synthesis"])
         # Apply per-reviewer overrides matched by name
-        if "review_pool" in profiles:
-            pool_overrides = profiles["review_pool"]
+        if "review_pool" in overrides:
+            pool_overrides = overrides["review_pool"]
             if isinstance(pool_overrides, list):
                 override_by_name: dict[str, dict[str, Any]] = {
                     e["name"]: e for e in pool_overrides if isinstance(e, dict) and "name" in e
@@ -371,14 +388,20 @@ def load_config(config_path: Path) -> ForgeConfig:
     ]
     assignment_cfg = _parse_assignment(raw.get("assignment", {}))
 
-    plan_agent_review_cfg = _parse_plan_agent_review(
-        raw.get("plan_agent_review", {}),
-        secrets,
-        plan_cfg,
-        agents_list,
-        assignment_cfg.enabled,
-        _plan_model_is_default,
-    )
+    _raw_par = raw.get("plan_agent_review", {})
+    if not _raw_par and _derived_par_profile is not None:
+        # v0.8: plan_agent_review was configured via overrides.plan_agent_review;
+        # the bridge lowered it to a ModelProfile. Wrap it in PlanAgentReviewConfig.
+        plan_agent_review_cfg = PlanAgentReviewConfig(enabled=True, pool=[_derived_par_profile])
+    else:
+        plan_agent_review_cfg = _parse_plan_agent_review(
+            _raw_par,
+            secrets,
+            plan_cfg,
+            agents_list,
+            assignment_cfg.enabled,
+            _plan_model_is_default,
+        )
     if plan_agent_review_cfg.pool:
         plan_agent_review_cfg = dataclasses.replace(
             plan_agent_review_cfg,
