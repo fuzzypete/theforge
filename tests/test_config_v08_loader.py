@@ -246,6 +246,50 @@ profiles:
     assert "overrides" in str(exc_info.value)
 
 
+# ── Edge cases ───────────────────────────────────────────────────────────────
+
+
+def test_v08_empty_overrides_key_does_not_crash(tmp_path):
+    """overrides: with null/empty value must not raise TypeError."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+overrides:
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+    # Overrides were empty — dev profile should use bridge defaults unchanged.
+    assert cfg.dev_profile.model == "sonnet"
+
+
+def test_v08_overrides_par_with_explicit_par_section_no_pool(tmp_path):
+    """overrides.plan_agent_review + explicit plan_agent_review: (no pool) → derived injected.
+
+    enabled: false avoids the planner-model independence check so we can test
+    pool injection in isolation without needing a second distinct model.
+    """
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+overrides:
+  plan_agent_review:
+    timeout_seconds: 999
+plan_agent_review:
+  enabled: false
+""",
+    )
+    with _auth_ok:
+        cfg = load_config(cfg_path)
+    # The derived profile from overrides must be injected — not silently dropped.
+    assert len(cfg.plan_agent_review.pool) == 1
+    assert cfg.plan_agent_review.pool[0].timeout_seconds == 999
+
+
 # ── Classic config still works ────────────────────────────────────────────────
 
 

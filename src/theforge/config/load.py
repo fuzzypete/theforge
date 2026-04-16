@@ -172,7 +172,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         # v0.8: overrides: key replaces the classic profiles: key for partial overrides.
         # plan_agent_review overrides are passed into derive_roles() so the bridge
         # can lower them to a ModelProfile (fixes silent loss of that config).
-        overrides = raw.get("overrides", {})
+        overrides = raw.get("overrides") or {}
         _par_derive_overrides: dict[str, Any] | None = (
             {"plan_agent_review": overrides["plan_agent_review"]}
             if "plan_agent_review" in overrides
@@ -402,6 +402,13 @@ def load_config(config_path: Path) -> ForgeConfig:
             assignment_cfg.enabled,
             _plan_model_is_default,
         )
+        # v0.8: if overrides.plan_agent_review provided a derived profile but the
+        # explicit plan_agent_review: section didn't specify a pool, inject the
+        # derived profile so overrides are never silently dropped.
+        if _derived_par_profile is not None and not plan_agent_review_cfg.pool:
+            plan_agent_review_cfg = dataclasses.replace(
+                plan_agent_review_cfg, pool=[_derived_par_profile]
+            )
     if plan_agent_review_cfg.pool:
         plan_agent_review_cfg = dataclasses.replace(
             plan_agent_review_cfg,
