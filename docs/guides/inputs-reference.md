@@ -104,6 +104,27 @@ stories:
 | `{issue: 123, depends_on: [other-slug]}` | Declare a dependency on another story in the sprint |
 | `{issue: 123, pytest_target: tests/test_foo.py}` | Override the pytest target for this story |
 
+### Declaring dependencies in GitHub issue bodies
+
+Forge extracts dependencies from prose in GitHub issue bodies. Use **`Depends on: #N`**
+as the preferred spelling when authoring or generating issues. `Blocked by #N` is
+supported as a compatibility alias.
+
+All of the following forms are recognized and normalized to `issue-N` slugs:
+
+- `Depends on #265` — simple hash form
+- `Depends on: #265` — colon form (preferred)
+- `depends on #265` — lowercase
+- `depends_on: #265` — underscore colon
+- `depends_on: issue-265` — slug form
+- `depends_on: [issue-265, issue-807]` — YAML list form (multiple dependencies)
+- Full GitHub issue URLs in any of the above positions
+- `Blocked by #265` — compatibility alias (still supported)
+
+Multiple dependencies in a single body are all extracted. Native GitHub
+`blocked_by` timeline relationships take precedence over body-text parsing
+when available.
+
 ### Behavior
 
 - Stories run in order. Each goes through the full pipeline.

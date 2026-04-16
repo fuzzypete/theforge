@@ -21,6 +21,14 @@ _BLOCKED_BY_BODY_RE = re.compile(
     r"blocked by\s+(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/)?#?(?P<number>\d+)",
     re.IGNORECASE,
 )
+# Matches "Depends on #N", "depends on: #N", "depends_on: #N", "depends_on: issue-N",
+# "depends_on: [issue-N, issue-M]", full GitHub issue URLs, etc.
+_DEPENDS_ON_BODY_RE = re.compile(
+    r"depends[_ ]on:?\s*"
+    r"(?:\[([^\]]*)\]|"  # bracketed list form: depends_on: [issue-1, issue-2]
+    r"(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/|issue-)?#?(\d+))",  # single ref
+    re.IGNORECASE,
+)
 
 
 class IssueClosedError(RuntimeError):
@@ -143,6 +151,16 @@ class GitHubIssueSource:
     def _parse_issue_blockers_from_body(self, body: str) -> list[int]:
         """Return blocker issue numbers referenced in body text."""
         blockers = {int(match.group("number")) for match in _BLOCKED_BY_BODY_RE.finditer(body)}
+        # Also parse "depends on" / "depends_on" forms.
+        _NUMBER_RE = re.compile(r"(?:issue-)?#?(\d+)", re.IGNORECASE)
+        for match in _DEPENDS_ON_BODY_RE.finditer(body):
+            bracket_content, single_number = match.group(1), match.group(2)
+            if bracket_content is not None:
+                # Bracketed list: extract all issue numbers from within the brackets.
+                for num_match in _NUMBER_RE.finditer(bracket_content):
+                    blockers.add(int(num_match.group(1)))
+            elif single_number is not None:
+                blockers.add(int(single_number))
         return sorted(blockers)
 
     def fetch(self, ref: str, project_root: Path) -> TaskStory:

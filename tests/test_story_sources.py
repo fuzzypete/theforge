@@ -112,6 +112,34 @@ class TestGitHubIssueSource:
         assert task.depends_on == ["issue-7", "issue-12"]
         assert task.inferred_dependencies == ["issue-7", "issue-12"]
 
+    @pytest.mark.parametrize(
+        "body, expected",
+        [
+            ("Depends on #265", [265]),
+            ("Depends on: #265", [265]),
+            ("depends on #265", [265]),
+            ("depends_on: #265", [265]),
+            ("depends_on: issue-265", [265]),
+            ("depends_on: [issue-265, issue-807]", [265, 807]),
+            (
+                "depends_on: https://github.com/acme/repo/issues/265",
+                [265],
+            ),
+            (
+                "This is blocked by #12 and depends on #265",
+                [12, 265],
+            ),
+            (
+                "depends_on: [issue-265, issue-807]\nblocked by #12",
+                [12, 265, 807],
+            ),
+        ],
+    )
+    def test_parse_issue_blockers_from_body(self, body: str, expected: list) -> None:
+        source = GitHubIssueSource()
+        result = source._parse_issue_blockers_from_body(body)
+        assert result == expected
+
     def test_fetch_raises_on_failure(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
