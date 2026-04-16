@@ -2,19 +2,72 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING
 
 import yaml
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
+from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelInfo, ModelProfile
 from theforge.review import ReviewFinding
 
 if TYPE_CHECKING:
     from .state import CoordinatorState
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
+
+_log = logging.getLogger(__name__)
+
+# Tier × complexity routing table (mirrors role_derivation._COMPLEXITY_TIER).
+# Not imported from there to avoid coordinator ↔ config coupling.
+_PHASE_COMPLEXITY_TIER: dict[str, dict[str, str]] = {
+    "dev": {"LOW": "cheap", "MEDIUM": "mid", "HIGH": "strong"},
+    "plan": {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"},
+    "review": {"LOW": "mid", "MEDIUM": "mid", "HIGH": "strong"},
+}
+
+_TIER_TO_RANK: dict[str, int] = {"cheap": 1, "mid": 2, "strong": 3}
+
+_COMPLEXITY_TO_LEVEL: dict[str, str] = {
+    "small": "LOW",
+    "medium": "MEDIUM",
+    "large": "HIGH",
+}
+
+
+def _build_pool_entries(model_keys: list[str]) -> list[tuple[int, str, ModelInfo]]:
+    """Build sorted (cost_rank, registry_key, ModelInfo) list from smart_config_models."""
+    from theforge.config.models import _resolve_model_info  # noqa: PLC0415
+
+    entries: list[tuple[int, str, ModelInfo]] = []
+    for key in model_keys:
+        info: ModelInfo = MODEL_REGISTRY.get(key) or _resolve_model_info(key)
+        entries.append((info.cost_rank, key, info))
+    entries.sort(key=lambda x: (x[0], -x[2].capability))
+    return entries
+
+
+def _pick_pool_entry_by_rank(
+    entries: list[tuple[int, str, ModelInfo]],
+    target_rank: int,
+) -> ModelInfo:
+    """Pick ModelInfo with target cost_rank; fall back to nearest available tier."""
+    exact = [i for r, _, i in entries if r == target_rank]
+    if exact:
+        return exact[0]
+
+    for rank in range(target_rank + 1, 4):
+        higher = [i for r, _, i in entries if r == rank]
+        if higher:
+            return higher[0]
+
+    for rank in range(target_rank - 1, 0, -1):
+        lower = [i for r, _, i in entries if r == rank]
+        if lower:
+            return lower[0]
+
+    return entries[0][2]
 
 
 def _parse_preflight_verdict(output: str) -> tuple[str, str, bool]:
@@ -419,57 +472,108 @@ def _escalate_dev_model(
 
 
 def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
-    """Adjust model assignments based on complexity signal.
+    """Adjust model assignments based on preflight complexity using tier × complexity routing.
 
-    Only applies when smart_config_models is set. Explicit profiles are unchanged.
-    - small: single cheapest reviewer, skip synthesis
-    - medium: no change (auto-assigned defaults)
-    - large: upgrade dev to strongest available model
+    Only applies when smart_config_models is set. Medium complexity is a no-op
+    (static defaults are balanced). For low/high, dev, plan, and review pool are
+    adjusted via in-place model/cli swap — load-time overrides (temperature, tools,
+    budget) on existing profiles are preserved.
+
+    LOW  → plan → mid, review → single mid/strong reviewer, synthesis cleared
+    HIGH → dev → strong, plan → strong, review → all mid/strong + synthesis
+
+    plan is only updated when plan_model_is_default is True (user has not explicitly
+    configured plan.model in forge.yaml). dev is only updated when dev_profile.model
+    is among the smart_config_models pool names (not an explicit custom profile).
     """
-    if config.smart_config_models is None or complexity == "medium":
+    if config.smart_config_models is None:
         return config
 
-    if complexity == "small":
-        if len(config.review_pool) <= 1:
-            return _dc_replace(config, synthesis_profile=None)
-        cheapest = min(
-            config.review_pool,
+    norm = _COMPLEXITY_TO_LEVEL.get(complexity.lower(), "MEDIUM")
+    if norm == "MEDIUM":
+        return config
+
+    pool_entries = _build_pool_entries(config.smart_config_models)
+    if not pool_entries:
+        return config
+
+    pool_model_names = {info.model for _, _, info in pool_entries}
+    new_config = config
+
+    if norm == "LOW":
+        # Plan → mid tier (upgrade from default cheap)
+        if config.plan_model_is_default:
+            target_plan_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["plan"]["LOW"]]
+            target_plan_info = _pick_pool_entry_by_rank(pool_entries, target_plan_rank)
+            if target_plan_info.model != config.plan.model:
+                new_plan = _dc_replace(
+                    config.plan, model=target_plan_info.model, cli=target_plan_info.cli
+                )
+                if target_plan_info.cli is not None:
+                    new_plan = _dc_replace(new_plan, provider=None)
+                new_config = _dc_replace(new_config, plan=new_plan)
+
+        # Review → single mid/strong reviewer (cost_rank >= 2), no synthesis
+        mid_strong = [p for p in config.review_pool if _find_registry_info_for_profile(p)[0] >= 2]
+        if not mid_strong:
+            _log.warning(
+                "complexity_adaptation: LOW review: no mid/strong reviewers in pool, "
+                "falling back to cheapest reviewer"
+            )
+        candidate_pool = mid_strong or list(config.review_pool)
+        single = min(
+            candidate_pool,
             key=lambda p: (
                 _find_registry_info_for_profile(p)[0],
                 -_find_registry_info_for_profile(p)[1],
             ),
         )
-        return _dc_replace(config, review_pool=[cheapest], synthesis_profile=None)
+        new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
 
-    if complexity == "large":
-        # Find strongest model across all profiles
-        candidates: list[ModelProfile] = list(config.review_pool) + [config.dev_profile]
-        if config.synthesis_profile is not None:
-            candidates.append(config.synthesis_profile)
-        strongest = max(candidates, key=lambda p: _find_registry_info_for_profile(p)[1])
-        new_dev = _dc_replace(config.dev_profile, cli=strongest.cli, model=strongest.model)
-        # Spec: large complexity always runs synthesis; materialize it if absent
+    elif norm == "HIGH":
+        # Dev → strong tier (only when dev is auto-assigned from pool, not explicitly overridden)
+        if config.dev_profile.model in pool_model_names:
+            dev_pool = [(r, k, i) for r, k, i in pool_entries if i.dev_capable] or pool_entries
+            target_dev_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["dev"]["HIGH"]]
+            target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
+            if target_dev_info.model != config.dev_profile.model:
+                new_dev = _dc_replace(
+                    config.dev_profile,
+                    cli=target_dev_info.cli,
+                    model=target_dev_info.model,
+                )
+                new_config = _dc_replace(new_config, dev_profile=new_dev)
+
+        # Plan → strong tier (only when plan is default)
+        if config.plan_model_is_default:
+            target_plan_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["plan"]["HIGH"]]
+            target_plan_info = _pick_pool_entry_by_rank(pool_entries, target_plan_rank)
+            if target_plan_info.model != config.plan.model:
+                new_plan = _dc_replace(
+                    config.plan, model=target_plan_info.model, cli=target_plan_info.cli
+                )
+                if target_plan_info.cli is not None:
+                    new_plan = _dc_replace(new_plan, provider=None)
+                new_config = _dc_replace(new_config, plan=new_plan)
+
+        # Review → all mid/strong reviewers + synthesis
+        mid_strong = [p for p in config.review_pool if _find_registry_info_for_profile(p)[0] >= 2]
+        review_for_high = mid_strong if mid_strong else list(config.review_pool)
+
         synthesis = config.synthesis_profile
         if synthesis is None:
-            # Derive a synthesis budget as 2% of dev budget (min $1)
+            # Materialize synthesis for HIGH complexity (mirrors existing large-complexity logic).
+            # Uses the strongest from the review pool (or dev as fallback).
+            synth_candidates = review_for_high or [new_config.dev_profile]
+            strongest = max(synth_candidates, key=lambda p: _find_registry_info_for_profile(p)[1])
             synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
-            synth_base = config.review_pool[0]
-            synthesis = _dc_replace(
-                synth_base,
-                name="synthesis",
-                cli=strongest.cli,
-                model=strongest.model,
-                budget_usd=synth_budget,
-            )
-        if (
-            new_dev.cli == config.dev_profile.cli
-            and new_dev.model == config.dev_profile.model
-            and synthesis is config.synthesis_profile
-        ):
-            return config  # already using strongest, synthesis unchanged
-        return _dc_replace(config, dev_profile=new_dev, synthesis_profile=synthesis)
+            synthesis = _dc_replace(strongest, name="synthesis", budget_usd=synth_budget)
 
-    return config
+        new_config = _dc_replace(
+            new_config, review_pool=review_for_high, synthesis_profile=synthesis
+        )
+
+    return new_config
 
 
 def _apply_preflight_config(
@@ -485,7 +589,26 @@ def _apply_preflight_config(
     _log_verbose = log_verbose or (lambda _msg: None)
 
     if config.smart_config_models is not None:
+        _config_before = config
         config = _apply_complexity_adaptation(config, complexity)
+        _dev_changed = config.dev_profile.model != _config_before.dev_profile.model
+        _plan_changed = config.plan.model != _config_before.plan.model
+        _review_changed = [p.model for p in config.review_pool] != [
+            p.model for p in _config_before.review_pool
+        ]
+        if _dev_changed or _plan_changed or _review_changed:
+            state.complexity_routing_audit = {
+                "complexity": complexity,
+                "derived_plan_model": config.plan.model,
+                "derived_dev_model": config.dev_profile.model,
+                "derived_review_pool": [p.model for p in config.review_pool],
+                "source": "complexity_adaptive",
+            }
+            _log_verbose(
+                f"[adaptive] complexity_routing: complexity={complexity} "
+                f"dev={config.dev_profile.model} plan={config.plan.model} "
+                f"review={[p.model for p in config.review_pool]}"
+            )
 
     if not (config.assignment.enabled and config.agents):
         return config

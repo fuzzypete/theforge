@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from .defaults import DEFAULT_DEV_PROFILE, DEFAULT_PREFLIGHT_PROFILE, DEFAULT_REVIEW_PROFILE
-from .models import _resolve_model_info
+from .models import ModelInfo, _resolve_model_info
 from .schema import (
     DevRoleConfig,
     ModelRef,
@@ -25,6 +25,56 @@ from .schema import (
 # Default plan budget and timeout, matching PlanConfig defaults in types.py
 _DEFAULT_PLAN_BUDGET_USD: float = 0.50
 _DEFAULT_PLAN_TIMEOUT_SECONDS: int = 600
+
+# Tier × complexity routing table.  The canonical reference for v0.8 role selection.
+# cost_rank integers: 1=cheap, 2=mid, 3=strong  (matching AgentDef tier vocabulary).
+# preflight is intentionally absent — it uses a static assignment regardless of complexity.
+_COMPLEXITY_TIER: dict[str, dict[str, str]] = {
+    "plan": {"LOW": "mid", "MEDIUM": "strong", "HIGH": "strong"},
+    "dev": {"LOW": "cheap", "MEDIUM": "mid", "HIGH": "strong"},
+    "review": {"LOW": "mid", "MEDIUM": "mid", "HIGH": "strong"},
+}
+
+# Bidirectional mapping between tier name and cost_rank integer.
+_COST_RANK_TO_TIER: dict[int, str] = {1: "cheap", 2: "mid", 3: "strong"}
+_TIER_TO_COST_RANK: dict[str, int] = {"cheap": 1, "mid": 2, "strong": 3}
+
+# Normalise loose complexity strings to canonical levels.
+_COMPLEXITY_NORM: dict[str, str] = {
+    "small": "LOW",
+    "low": "LOW",
+    "medium": "MEDIUM",
+    "large": "HIGH",
+    "high": "HIGH",
+}
+
+
+def _pick_by_tier(
+    candidates: list[tuple[str, ModelInfo]],
+    target_tier: str,
+) -> tuple[str, ModelInfo]:
+    """Pick the cheapest model matching target_tier; fall back to nearest available tier.
+
+    Candidates must be pre-sorted (cheapest cost_rank first, capability desc within rank).
+    Falls back upward (higher rank) before falling back downward (lower rank).
+    """
+    target_rank = _TIER_TO_COST_RANK.get(target_tier, 2)
+
+    exact = [(k, i) for k, i in candidates if i.cost_rank == target_rank]
+    if exact:
+        return exact[0]
+
+    for rank in range(target_rank + 1, 4):
+        higher = [(k, i) for k, i in candidates if i.cost_rank == rank]
+        if higher:
+            return higher[0]
+
+    for rank in range(target_rank - 1, 0, -1):
+        lower = [(k, i) for k, i in candidates if i.cost_rank == rank]
+        if lower:
+            return lower[0]
+
+    return candidates[0]
 
 
 def _make_model_ref(
@@ -90,6 +140,7 @@ def derive_roles(
     overrides: dict[str, Any] | None = None,
     *,
     budget_usd: float = 10.0,
+    complexity: str | None = None,
 ) -> RoleAssignment:
     """Map a simple model list to a RoleAssignment.
 
@@ -99,6 +150,13 @@ def derive_roles(
     3. preflight = cheapest "fast" tier, else same as dev
     4. review_pool = all models except dev (if only 1, pool = [dev])
     5. synthesis = highest-capability model from review_pool (skip if pool <= 1)
+
+    When ``complexity`` is provided ("small"/"medium"/"large" or "LOW"/"MEDIUM"/"HIGH"),
+    tier × complexity routing applies instead of the static cheapest-first rules:
+    - dev: LOW→cheap, MEDIUM→mid, HIGH→strong
+    - plan: LOW→mid, MEDIUM→strong, HIGH→strong
+    - review: LOW→single mid/strong reviewer (no synthesis), MEDIUM→default pool,
+      HIGH→all mid/strong reviewers + synthesis
 
     Budget distribution:
     - dev: 60% of total budget_usd
@@ -115,6 +173,8 @@ def derive_roles(
             sandbox_mode, etc.) can also be included. For "review_pool", the value
             is a list of per-reviewer override dicts (indexed by pool position).
         budget_usd: Total budget to distribute across all roles. Defaults to $10.
+        complexity: Optional complexity level; if supplied activates tier × complexity
+            routing. Accepts "small"/"medium"/"large" or "LOW"/"MEDIUM"/"HIGH".
 
     Returns:
         A RoleAssignment holding the four derived role configs plus optional synthesis.
@@ -127,24 +187,67 @@ def derive_roles(
 
     effective_overrides: dict[str, Any] = overrides or {}
 
+    # Normalise complexity to canonical level string, or None for static assignment.
+    norm_complexity: str | None = (
+        _COMPLEXITY_NORM.get(complexity.lower()) if complexity is not None else None
+    )
+
     # Build (model_key, ModelInfo) pairs and sort: cheapest first, then by capability desc
     infos = [(m, _resolve_model_info(m)) for m in models]
     sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
 
     # dev: cheapest dev-capable model; fall back to first if none are dev-capable
     dev_candidates = [(k, i) for k, i in sorted_models if i.dev_capable]
-    dev_key, dev_info = dev_candidates[0] if dev_candidates else sorted_models[0]
+    if not dev_candidates:
+        dev_candidates = sorted_models
 
-    # preflight: cheapest "fast" tier, else same as dev
+    # MEDIUM complexity: same as static (no change from cheapest-first rules).
+    # Only LOW and HIGH apply tier-based selection; this satisfies the requirement
+    # that "medium complexity produces no change to dev or plan model".
+    _apply_tier_routing = norm_complexity in ("LOW", "HIGH")
+
+    if _apply_tier_routing:
+        target_dev_tier = _COMPLEXITY_TIER["dev"][norm_complexity]
+        dev_key, dev_info = _pick_by_tier(dev_candidates, target_dev_tier)
+    else:
+        dev_key, dev_info = dev_candidates[0]
+
+    # preflight: cheapest "fast" tier, else same as dev (static — not complexity-adjusted)
     fast_models = [(k, i) for k, i in sorted_models if i.tier == "fast"]
     preflight_key, preflight_info = fast_models[0] if fast_models else (dev_key, dev_info)
+
+    # plan: defaults to same model as dev; LOW/HIGH apply tier-based selection
+    if _apply_tier_routing:
+        target_plan_tier = _COMPLEXITY_TIER["plan"][norm_complexity]
+        plan_candidates = [(k, i) for k, i in sorted_models if i.dev_capable] or sorted_models
+        _plan_key, plan_info = _pick_by_tier(plan_candidates, target_plan_tier)
+    else:
+        plan_info = dev_info
 
     # review_pool: all models except dev; if only one model total, pool = [dev]
     review_pairs = [(k, i) for k, i in sorted_models if k != dev_key]
     if not review_pairs:
         review_pairs = [(dev_key, dev_info)]
 
-    has_synthesis = len(review_pairs) > 1
+    # Complexity-aware review pool sizing (LOW and HIGH only; MEDIUM/None = static)
+    if norm_complexity == "LOW":
+        # Single mid/strong reviewer (cost_rank >= 2); fallback to cheapest if none
+        mid_strong = [(k, i) for k, i in review_pairs if i.cost_rank >= 2]
+        review_pairs = (
+            [min(mid_strong, key=lambda x: (x[1].cost_rank, -x[1].capability))]
+            if mid_strong
+            else [review_pairs[0]]
+        )
+        has_synthesis = False
+    elif norm_complexity == "HIGH":
+        # All mid/strong reviewers; fallback to full pool if none qualify
+        mid_strong = [(k, i) for k, i in review_pairs if i.cost_rank >= 2]
+        if mid_strong:
+            review_pairs = mid_strong
+        # Always create synthesis for HIGH complexity (even with single reviewer)
+        has_synthesis = True
+    else:
+        has_synthesis = len(review_pairs) > 1
 
     # Budget distribution
     preflight_budget = max(budget_usd * 0.02, 1.0)
@@ -186,10 +289,10 @@ def derive_roles(
         ),
     )
 
-    # --- Build plan role (defaults to same model as dev) ---
+    # --- Build plan role (defaults to same model as dev; complexity-aware: tier-based) ---
     plan_ref = _make_model_ref(
-        model=dev_info.model,
-        cli=dev_info.cli,
+        model=plan_info.model,
+        cli=plan_info.cli,
         budget_usd=_DEFAULT_PLAN_BUDGET_USD,
         timeout_seconds=_DEFAULT_PLAN_TIMEOUT_SECONDS,
     )
