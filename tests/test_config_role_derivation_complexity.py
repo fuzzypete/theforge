@@ -114,7 +114,9 @@ def _make_forge_config(
         review_pool=default_review,
         synthesis_profile=synthesis,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        smart_config_models=_GOLD_POOL if smart_config_models is _USE_GOLD else smart_config_models,
+        smart_config_models=(
+            _GOLD_POOL if smart_config_models is _USE_GOLD else smart_config_models
+        ),
         plan=plan,
         plan_model_is_default=plan_model_is_default,
     )
