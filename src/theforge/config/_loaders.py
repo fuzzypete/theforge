@@ -20,6 +20,53 @@ from .types import (
 
 log = logging.getLogger("theforge.config")
 
+# Keys that existed in the legacy (pre-v0.8) schema and are rejected when
+# the v0.8 `models:` key is also present. `agents:` is intentionally excluded
+# because it remains valid alongside `models:` for adaptive assignment.
+_V0_8_LEGACY_KEYS: frozenset[str] = frozenset({"profiles", "smart_config_models"})
+
+# Fields that were scalars on the top-level `plan_agent_review:` section before
+# v0.8. In v0.8 these move into an `overrides.plan_agent_review` ref dict or
+# into a pool entry. Presence of these scalars at the top level alongside
+# `models:` indicates a mixed-mode config.
+_LEGACY_PAR_SCALAR_FIELDS: frozenset[str] = frozenset({"model", "cli", "provider", "budget_usd"})
+
+
+def _validate_v0_8_schema(raw: dict[str, Any]) -> None:
+    """Reject configs that mix v0.8 `models:` with legacy keys.
+
+    Only called (and only raises) when `models:` is present; classic-only
+    configs (no `models:`) pass through so the existing classic branch in
+    load_config() continues to work.
+    """
+    if "models" not in raw:
+        return
+
+    found_legacy = _V0_8_LEGACY_KEYS & raw.keys()
+    if found_legacy:
+        replacements = {
+            "profiles": "models + overrides",
+            "smart_config_models": "models",
+        }
+        details = "; ".join(
+            f"'{k}' → use '{replacements.get(k, 'models')}' instead" for k in sorted(found_legacy)
+        )
+        raise ValueError(
+            f"forge.yaml mixes v0.8 'models:' with legacy key(s): {details}. "
+            "Remove the legacy keys or switch to the classic profiles: schema."
+        )
+
+    par_raw = raw.get("plan_agent_review")
+    if isinstance(par_raw, dict):
+        found_par_legacy = _LEGACY_PAR_SCALAR_FIELDS & par_raw.keys()
+        if found_par_legacy:
+            details = ", ".join(f"'{f}'" for f in sorted(found_par_legacy))
+            raise ValueError(
+                f"forge.yaml: plan_agent_review has legacy scalar field(s) {details} "
+                "alongside 'models:'. Move plan_agent_review configuration into "
+                "'overrides.plan_agent_review' as a ModelRef, or use a pool: list."
+            )
+
 
 def _parse_workspace(ws_data: dict[str, Any]) -> WorkspaceConfig:
     """Parse workspace section from raw YAML dict."""
