@@ -141,6 +141,8 @@ def load_config(config_path: Path) -> ForgeConfig:
     # ── Smart config: models key ──────────────────────────────────────
     smart_config_models: list[str] | None = None
     _review_pool_is_default = False
+    _derived_plan_profile: ModelProfile | None = None
+    _derived_plan_validate_spec: bool | None = None
 
     if "models" in raw:
         models_list = raw["models"]
@@ -169,6 +171,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         preflight_profile = _bridge["preflight_profile"]
         review_pool = _bridge["review_pool"]
         synthesis_profile = _bridge["synthesis_profile"]
+        _derived_plan_profile = _bridge["plan_profile"]
+        _derived_plan_validate_spec = _bridge["plan_validate_spec"]
 
         # Apply explicit profile overrides (partial override supported)
         profiles = raw.get("profiles", {})
@@ -294,17 +298,48 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     plan_timeout_medium_raw = plan_data.get("timeout_medium")
     plan_timeout_large_raw = plan_data.get("timeout_large")
+
+    # Smart-config: when the user supplies `models:` and has not overridden the
+    # plan section's transport/model, source PlanConfig from the derived plan
+    # role so adaptive routing actually reaches the PLAN phase. Otherwise fall
+    # back to the legacy defaults (cli=claude, model=sonnet).
+    if _derived_plan_profile is not None and _plan_model_is_default:
+        _plan_default_cli: str | None = _derived_plan_profile.cli
+        _plan_default_model: str = _derived_plan_profile.model
+        _plan_default_provider: str | None = _derived_plan_profile.provider
+        _plan_default_budget: float = _derived_plan_profile.budget_usd
+        _plan_default_timeout: int = _derived_plan_profile.timeout_seconds
+        _plan_default_timeout_medium: int | None = _derived_plan_profile.timeout_medium_seconds
+        _plan_default_timeout_large: int | None = _derived_plan_profile.timeout_large_seconds
+        _plan_default_validate_spec: bool = (
+            _derived_plan_validate_spec if _derived_plan_validate_spec is not None else True
+        )
+    else:
+        _plan_default_cli = "claude"
+        _plan_default_model = "sonnet"
+        _plan_default_provider = None
+        _plan_default_budget = 0.50
+        _plan_default_timeout = 600
+        _plan_default_timeout_medium = None
+        _plan_default_timeout_large = None
+        _plan_default_validate_spec = True
+
+    _plan_provider = plan_data.get("provider", _plan_default_provider)
+    _plan_cli = plan_data.get("cli", _plan_default_cli) if _plan_provider is None else None
     plan_cfg = PlanConfig(
         enabled=bool(plan_data.get("enabled", False)),
-        cli=plan_data.get("cli", "claude") if plan_data.get("provider") is None else None,
-        model=str(plan_data.get("model", "sonnet")),
-        provider=plan_data.get("provider"),
-        budget_usd=float(plan_data.get("budget_usd", 0.50)),
-        timeout=int(plan_data.get("timeout", 600)),
+        cli=_plan_cli,
+        model=str(plan_data.get("model", _plan_default_model)),
+        provider=_plan_provider,
+        budget_usd=float(plan_data.get("budget_usd", _plan_default_budget)),
+        timeout=int(plan_data.get("timeout", _plan_default_timeout)),
         timeout_medium=int(plan_timeout_medium_raw)
         if plan_timeout_medium_raw is not None
-        else None,
-        timeout_large=int(plan_timeout_large_raw) if plan_timeout_large_raw is not None else None,
+        else _plan_default_timeout_medium,
+        timeout_large=int(plan_timeout_large_raw)
+        if plan_timeout_large_raw is not None
+        else _plan_default_timeout_large,
+        validate_spec=bool(plan_data.get("validate_spec", _plan_default_validate_spec)),
     )
 
     # ── Load-time validation for plan section ────────────────────────────

@@ -581,6 +581,61 @@ class TestModelsKeyConfig:
         assert config.synthesis_profile is not None
         assert config.synthesis_profile.model == "opus"
 
+    def test_models_key_plan_uses_derived_role(self, tmp_path):
+        """Smart-config plan phase uses the derived plan role, not legacy sonnet.
+
+        Regression guard for #265: derive_roles() + bridge correctly produce a
+        plan_profile, but load_config used to drop it and build PlanConfig from
+        the hard-coded cli=claude/model=sonnet legacy defaults. The result was
+        that adaptive routing never reached the PLAN phase when the user opted
+        into smart config.
+        """
+        config_path = _write_config(
+            {
+                "models": ["openai/gpt-5.4", "claude/opus"],
+                "budget_usd": 50.0,
+                "plan": {"enabled": True},
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        # derive_roles picks the cheapest dev-capable model for dev AND plan.
+        # With [opus (rank 3), gpt-5.4 (rank 2)], dev = gpt-5.4.
+        assert config.dev_profile.cli == "codex"
+        assert config.dev_profile.model == "gpt-5.4"
+        # Plan must track the derived dev role, not the legacy sonnet default.
+        assert config.plan.enabled is True
+        assert config.plan.cli == "codex"
+        assert config.plan.model == "gpt-5.4"
+        assert config.plan.provider is None
+        # validate_spec flows through from the derived PlanRoleConfig default.
+        assert config.plan.validate_spec is True
+
+    def test_models_key_plan_explicit_override_wins(self, tmp_path):
+        """Explicit plan.model in forge.yaml overrides the derived plan role."""
+        config_path = _write_config(
+            {
+                "models": ["openai/gpt-5.4", "claude/opus"],
+                "budget_usd": 50.0,
+                "plan": {"enabled": True, "cli": "claude", "model": "opus"},
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        assert config.plan.model == "opus"
+
+    def test_classic_config_plan_defaults_unchanged(self, tmp_path):
+        """Classic config (no models: key) still gets the legacy plan defaults."""
+        config_path = _write_config(
+            {"project": "classic", "plan": {"enabled": True}},
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.plan.cli == "claude"
+        assert config.plan.model == "sonnet"
+        assert config.plan.provider is None
+
 
 class TestAutoAssignBudgetClamping:
     """Tests for budget clamping (P1 fix: reviewer budget must not exceed total)."""
