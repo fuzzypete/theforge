@@ -385,28 +385,6 @@ def _run_validate_phase(
                         message=state.error,
                     )
 
-    elif gate_decision == "CONTRADICTION":
-        state.phase = Phase.ESCALATE
-        state.error = (
-            "Gate exited non-zero but output indicated success — likely a test-runner quirk"
-            " (pytest-xdist, non-fatal warning exit). Human review required."
-        )
-        _log(f"✗ ESCALATE   {state.error}")
-        record_dev_iteration_telemetry(
-            state,
-            workspace_path,
-            max_iterations=config.retry.max_dev_iterations,
-            gate_result="CONTRADICTION",
-            gate_output_tail=gate_output_tail,
-        )
-        if logger:
-            logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
-            logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
-        _escalate_notify(task, state, notify, config)
-        return _ValidateOutcome.ESCALATE, CoordinatorResult(
-            success=False, phase=state.phase, state=state, message=state.error
-        )
-
     elif gate_decision in ("FAIL", "BLOCKED"):
         if state.budget.is_exhausted():
             state.phase = Phase.ESCALATE
