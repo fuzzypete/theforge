@@ -14,6 +14,7 @@ from typing import Any
 
 from theforge.agent_types import AgentResult
 from theforge.log_util import _log_line
+from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
@@ -31,6 +32,15 @@ def _log_verbose(msg: str) -> None:
 
     if _LOG_LEVEL >= LogLevel.VERBOSE:
         _log_line("[forge]", msg)
+
+
+def _try_parse_handoff(output: str) -> dict | None:
+    """Best-effort extraction of <forge_handoff> from agent output. Logs on parse error."""
+    try:
+        return extract_dev_handoff(output)
+    except ParseError as exc:
+        _log_verbose(f"  handoff parse error (non-fatal): {exc}")
+        return None
 
 
 # ── Gemini runner ─────────────────────────────────────────────────────
@@ -145,25 +155,29 @@ def _run_gemini(
     except (json.JSONDecodeError, ValueError):
         # Don't return "latest" on parse failure: the CLI may have exited before
         # creating a resumable session, so resuming would attach to stale context.
+        _nojson_output = proc.stdout or proc.stderr or "(no output)"
         return AgentResult(
             success=proc.returncode == 0,
-            output=proc.stdout or proc.stderr or "(no output)",
+            output=_nojson_output,
             session_id=None,
             cost_usd=None,
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
+            dev_handoff=_try_parse_handoff(_nojson_output),
         )
 
     # "latest" is only safe for sequential single-reviewer runs; parallel pools
     # would trample each other since --resume latest is not invocation-scoped.
     resume_sid = None if is_pool else "latest"
+    _gemini_output = result_json.get("response", result_json.get("result", proc.stdout))
     return AgentResult(
         success=proc.returncode == 0,
-        output=result_json.get("response", result_json.get("result", proc.stdout)),
+        output=_gemini_output,
         session_id=resume_sid,
         cost_usd=None,
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,
+        dev_handoff=_try_parse_handoff(_gemini_output),
     )

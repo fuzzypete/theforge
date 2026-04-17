@@ -17,6 +17,7 @@ from typing import Any
 
 from theforge.agent_types import AgentResult
 from theforge.log_util import _log_line
+from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
@@ -33,6 +34,15 @@ def _log_verbose(msg: str) -> None:
 
     if _LOG_LEVEL >= LogLevel.VERBOSE:
         _log_line("[forge]", msg)
+
+
+def _try_parse_handoff(output: str) -> dict | None:
+    """Best-effort extraction of <forge_handoff> from agent output. Logs on parse error."""
+    try:
+        return extract_dev_handoff(output)
+    except ParseError as exc:
+        _log_verbose(f"  handoff parse error (non-fatal): {exc}")
+        return None
 
 
 # ── Codex-specific helpers ────────────────────────────────────────────
@@ -192,14 +202,16 @@ def _run_codex(
         extracted_sid = None if is_pool else _get_codex_session_id(min_mtime=start_wall)
 
         if result_json:
+            _json_output = result_json.get("result", output_text)
             return AgentResult(
                 success=proc.returncode == 0,
-                output=result_json.get("result", output_text),
+                output=_json_output,
                 session_id=extracted_sid,
                 cost_usd=None,
                 exit_code=proc.returncode,
                 raw=result_json,
                 profile_name=profile.name,
+                dev_handoff=_try_parse_handoff(_json_output),
             )
 
         return AgentResult(
@@ -210,6 +222,7 @@ def _run_codex(
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
+            dev_handoff=_try_parse_handoff(output_text),
         )
     finally:
         try:

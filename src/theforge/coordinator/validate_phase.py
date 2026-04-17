@@ -19,7 +19,7 @@ from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
 from .gate import _is_gate_skip, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
-from .review_context import _get_handoff_content, _get_raw_dev_notes
+from .review_context import _get_handoff_content, _get_raw_dev_notes, _latest_forge_handoff_path
 from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
 from .util import _log, _log_phase, _log_verbose
 from .workspace import _deindex_forge_artifacts
@@ -347,7 +347,9 @@ def _run_validate_phase(
                 # Auto-commit: synthesize message from handoff, don't
                 # re-invoke the agent (full-prompt retry burns tokens and
                 # times out — the agent already wrote the code).
-                dev_notes = _get_raw_dev_notes(config, workspace_path)
+                dev_notes = _get_raw_dev_notes(
+                    config, workspace_path, forge_handoff_path=_latest_forge_handoff_path(state)
+                )
                 if dev_notes:
                     first_line = dev_notes.strip().splitlines()[0][:72]
                     commit_msg = first_line
@@ -404,7 +406,9 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        handoff_text = _get_handoff_content(config, workspace_path)
+        handoff_text = _get_handoff_content(
+            config, workspace_path, forge_handoff_path=_latest_forge_handoff_path(state)
+        )
         gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
         failed_test_feedback, existing_test_failures = _format_failed_test_feedback(

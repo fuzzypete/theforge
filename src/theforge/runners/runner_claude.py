@@ -16,6 +16,7 @@ from typing import Any
 
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
+from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 
 from ..config import ModelProfile
 
@@ -97,6 +98,15 @@ def _process_stream_event(line: str, label: str = "", *, label_prefix: str = "")
                 inp = item.get("input", {})
                 preview = _format_tool_input_preview(inp)
                 _log_verbose(f"  ↳ {label_prefix}{tool_name}: {preview}")
+
+
+def _try_parse_handoff(output: str) -> dict | None:
+    """Best-effort extraction of <forge_handoff> from agent output. Logs on parse error."""
+    try:
+        return extract_dev_handoff(output)
+    except ParseError as exc:
+        _log_verbose(f"  handoff parse error (non-fatal): {exc}")
+        return None
 
 
 def _get_claude_session_id(
@@ -257,9 +267,10 @@ def _run_claude(
 
     if timed_out:
         partial_output = "".join(lines)
+        _timeout_output = f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit"
         return AgentResult(
             success=False,
-            output=f"TIMEOUT: Agent exceeded {profile.timeout_seconds}s limit",
+            output=_timeout_output,
             session_id=_get_claude_session_id(
                 partial_output,
                 working_dir,
@@ -270,6 +281,7 @@ def _run_claude(
             exit_code=-9,
             raw={},
             profile_name=profile.name,
+            dev_handoff=_try_parse_handoff(partial_output),
         )
 
     elapsed = time.monotonic() - start
@@ -298,9 +310,10 @@ def _run_claude(
                 stderr_text = proc.stderr.read()
             except Exception:
                 pass
+        _noresult_output = raw_output or stderr_text or "(no output)"
         return AgentResult(
             success=proc.returncode == 0,
-            output=raw_output or stderr_text or "(no output)",
+            output=_noresult_output,
             session_id=_get_claude_session_id(
                 raw_output or stderr_text,
                 working_dir,
@@ -311,6 +324,7 @@ def _run_claude(
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
+            dev_handoff=_try_parse_handoff(_noresult_output),
         )
 
     try:
@@ -319,13 +333,15 @@ def _run_claude(
     except (TypeError, ValueError):
         cost = None
 
+    _success_output = result_json.get("result", "".join(lines))
     return AgentResult(
         success=proc.returncode == 0,
-        output=result_json.get("result", "".join(lines)),
+        output=_success_output,
         session_id=result_json.get("session_id"),
         cost_usd=cost,
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,
         model_usage=_parse_model_usage(result_json),
+        dev_handoff=_try_parse_handoff(_success_output),
     )

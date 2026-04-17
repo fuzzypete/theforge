@@ -39,3 +39,4 @@ class AgentResult:
     model_used: str | None = (
         None  # model that actually ran (set by runners; None for legacy results)
     )
+    dev_handoff: dict | None = None  # parsed <forge_handoff> block from agent output
