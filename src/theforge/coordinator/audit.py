@@ -417,6 +417,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "source_run_id": state.preflight_cached_from_run_id,
                 "degraded": state.preflight_degraded,
                 "degraded_reason": state.preflight_degraded_reason,
+                **(
+                    {"complexity_routing": state.complexity_routing_audit}
+                    if state.complexity_routing_audit is not None
+                    else {}
+                ),
             }
             if state.preflight_verdict is not None
             else None

@@ -363,6 +363,9 @@ class ForgeConfig:
     provider_fallbacks: dict[str, ApiFallbackConfig] = field(default_factory=dict)
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
+    dev_profile_is_default: bool = (
+        False  # True when dev_profile was auto-derived from models: (no overrides.dev)
+    )
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
     conventions_soft: list[str] = field(default_factory=list)  # [] = no soft conventions
     finding_classifier: FindingClassifierConfig = field(default_factory=FindingClassifierConfig)

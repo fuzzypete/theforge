@@ -376,6 +376,7 @@ class CoordinatorState:
     stop_phase: Phase | None = None  # --until <phase>: stop after this phase
     _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
     _explicit_roles: set = field(default_factory=set)  # roles with explicit forge.yaml config
+    complexity_routing_audit: dict | None = None  # set by _apply_complexity_adaptation
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.

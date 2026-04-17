@@ -640,15 +640,19 @@ def _make_smart_config(tmp_path: Path) -> ForgeConfig:
         synthesis_profile=synthesis,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
         smart_config_models=["claude/sonnet", "claude/opus", "openai/gpt-5.4"],
+        plan_model_is_default=True,
+        dev_profile_is_default=True,
+        review_pool_is_default=True,
     )
 
 
 class TestComplexityAdaptation:
-    def test_medium_no_change(self, tmp_path):
-        """medium complexity → config unchanged."""
+    def test_medium_routes_dev_to_mid_tier(self, tmp_path):
+        """medium complexity → dev_profile uses mid-tier model (AC: dev medium→mid)."""
         config = _make_smart_config(tmp_path)
         adapted = _apply_complexity_adaptation(config, "medium")
-        assert adapted is config
+        # Pool is [sonnet (cheap), opus (strong), gpt-5.4 (mid)] → mid=gpt-5.4
+        assert adapted.dev_profile.model == "gpt-5.4"
 
     def test_small_reduces_review_pool(self, tmp_path):
         """small complexity → single cheapest reviewer, no synthesis."""
