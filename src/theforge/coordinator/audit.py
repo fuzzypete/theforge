@@ -428,7 +428,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         ),
         "context_manifests": context_manifests,
         "dev_handoffs": [
-            {"iteration": i + 1, "handoff": snap}
+            {
+                "iteration": i + 1,
+                "source": snap.get("source") if isinstance(snap, dict) else None,
+                "path": snap.get("path") if isinstance(snap, dict) else None,
+                "handoff": snap.get("handoff") if isinstance(snap, dict) else snap,
+            }
             for i, snap in enumerate(state.dev_handoff_snapshots)
         ],
         "dev_prompt_injections": [

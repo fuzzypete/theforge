@@ -116,6 +116,22 @@ def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: st
         )
 
 
+def _write_gate_decision_to_forge(
+    forge_artifact_path: Path, gate_decision_key: str, decision: str
+) -> None:
+    """Merge gate_decision into the forge artifact YAML (non-fatal on error)."""
+    try:
+        data = yaml.safe_load(forge_artifact_path.read_text(encoding="utf-8")) or {}
+        if isinstance(data, dict):
+            data[gate_decision_key] = decision
+            forge_artifact_path.write_text(
+                yaml.dump(data, allow_unicode=True, default_flow_style=False),
+                encoding="utf-8",
+            )
+    except Exception as exc:  # noqa: BLE001
+        _cu._log(f"Warning: could not update forge artifact with gate_decision: {exc}")
+
+
 def _run_gate_full(
     config: ForgeConfig,
     workspace_path: Path,

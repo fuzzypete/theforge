@@ -285,6 +285,31 @@ def build_dev_prompt(
         if handoff_file
         else ""
     }
+        6. Emit a `<forge_handoff>` block in your **final message** (outside any code
+           fence, exactly once). This allows the orchestrator to capture your handoff
+           without reading the filesystem. The block must contain a YAML mapping with
+           the same keys as the `dev_notes` section above:
+
+           ```
+           <forge_handoff>
+           summary: "One paragraph: what you implemented and how."
+           commits:
+             - sha: "abc1234"
+               message: "feat(scope): what this commit does"
+           acceptance_criteria:
+             - criterion: "AC text from the spec"
+               status: MET | PARTIAL | NOT_MET
+               notes: "how it was met, or why not"
+           story_deviations: none
+           deferred_items: none
+           </forge_handoff>
+           ```
+
+           Rules for the block:
+           - Appear **once**, at the end of your message, outside any ``` fences.
+           - Content must be valid YAML (no embedded code fences inside the block).
+           - `commits` and `acceptance_criteria` must be lists (even if empty: `[]`).
+           - `story_deviations` and `deferred_items` may be the word `none` or a list.
 
         ## Rules
 

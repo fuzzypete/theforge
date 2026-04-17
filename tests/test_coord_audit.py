@@ -293,10 +293,12 @@ class TestDevHandoffsInAudit:
     """dev_handoffs key must appear in audit log and contain per-iteration snapshots."""
 
     def test_dev_handoffs_in_audit(self, tmp_path: Path) -> None:
-        """Audit log must include dev_handoffs with one entry per dev invocation."""
+        """Audit log must include dev_handoffs with source, path, and handoff per iteration."""
         state = CoordinatorState()
-        snap1 = {"gate_decision": "PASS", "dev_notes": "iteration 1 notes"}
-        snap2 = {"gate_decision": "PASS", "dev_notes": "iteration 2 notes"}
+        content1 = {"gate_decision": "PASS", "dev_notes": "iteration 1 notes"}
+        content2 = {"gate_decision": "PASS", "dev_notes": "iteration 2 notes"}
+        snap1 = {"source": "file", "path": None, "handoff": content1}
+        snap2 = {"source": "structured_output", "path": "/some/path.yaml", "handoff": content2}
         state.dev_handoff_snapshots.append(snap1)
         state.dev_handoff_snapshots.append(snap2)
 
@@ -306,9 +308,12 @@ class TestDevHandoffsInAudit:
         handoffs = log["dev_handoffs"]
         assert len(handoffs) == 2
         assert handoffs[0]["iteration"] == 1
-        assert handoffs[0]["handoff"] == snap1
+        assert handoffs[0]["source"] == "file"
+        assert handoffs[0]["path"] is None
+        assert handoffs[0]["handoff"] == content1
         assert handoffs[1]["iteration"] == 2
-        assert handoffs[1]["handoff"] == snap2
+        assert handoffs[1]["source"] == "structured_output"
+        assert handoffs[1]["handoff"] == content2
 
     def test_dev_handoffs_empty_when_no_dev_calls(self, tmp_path: Path) -> None:
         """dev_handoffs is an empty list when no dev invocations occurred."""
@@ -317,11 +322,12 @@ class TestDevHandoffsInAudit:
         assert log["dev_handoffs"] == []
 
     def test_dev_handoffs_none_entry_when_handoff_absent(self, tmp_path: Path) -> None:
-        """A None snapshot (handoff file absent) is preserved as None in the audit."""
+        """A missing snapshot uses source=missing and handoff=None in the audit."""
         state = CoordinatorState()
-        state.dev_handoff_snapshots.append(None)
+        state.dev_handoff_snapshots.append({"source": "missing", "path": None, "handoff": None})
         log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
         assert log["dev_handoffs"][0]["handoff"] is None
+        assert log["dev_handoffs"][0]["source"] == "missing"
 
     def test_dev_prompt_injections_in_audit(self, tmp_path: Path) -> None:
         """Audit log includes finding IDs injected into each dev prompt."""
