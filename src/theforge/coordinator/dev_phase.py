@@ -205,19 +205,7 @@ def _capture_dev_handoff(
         )
         return _forge_artifact_path
     else:
-        _handoff_snap: dict | None = None
-        _handoff_source = "missing"
-        if config.validation.handoff_file:
-            try:
-                _handoff_path = workspace_path / config.validation.handoff_file
-                _handoff_snap = yaml.safe_load(_handoff_path.read_text(encoding="utf-8"))
-                if _handoff_snap is not None:
-                    _handoff_source = "file"
-            except Exception:
-                pass
-        state.dev_handoff_snapshots.append(
-            {"source": _handoff_source, "path": None, "handoff": _handoff_snap}
-        )
+        state.dev_handoff_snapshots.append({"source": "missing", "path": None, "handoff": None})
         return None
 
 
@@ -296,7 +284,6 @@ def _run_dev_phase(
                 iteration=state.dev_iteration,
                 cycle_history=state.cycle_history or None,
                 escalation_note=state.escalation_note,
-                handoff_file=config.validation.handoff_file,
                 plan_output=state.plan_structured
                 if state.plan_structured is not None
                 else state.plan_output,
@@ -348,7 +335,6 @@ def _run_dev_phase(
                 iteration=state.dev_iteration,
                 escalation_note=state.escalation_note,
                 cycle_history=state.cycle_history or None,
-                handoff_file=config.validation.handoff_file,
                 preflight_sufficiency=state.preflight_sufficiency,
                 contract_change=state.preflight_contract_change,
                 conventions=config.conventions_soft,

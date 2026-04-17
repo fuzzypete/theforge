@@ -11,7 +11,6 @@ from theforge.review import ReviewFinding, ReviewResult, review_to_dev_handoff
 from theforge.task import (
     TaskStory,
     build_dev_prompt,
-    build_handoff_fix_prompt,
     build_plan_review_prompt,
     build_review_prompt,
 )
@@ -497,7 +496,7 @@ class TestBuildDevPromptDevNotesInstruction:
             gate_skipped=False,
         )
         assert "dev_notes" in prompt
-        assert "handoff.yaml" in prompt
+        assert "forge_handoff" in prompt
 
     def test_gate_skipped_excludes_gate_command(self, tmp_path: Path) -> None:
         spec = tmp_path / "spec.md"
@@ -557,85 +556,6 @@ class TestBuildPlanReviewPrompt:
             rejection_findings=None,
         )
         assert "Previous Rejection Findings" not in prompt
-
-
-class TestBuildHandoffFixPrompt:
-    def test_contains_validation_errors(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        errors = ["summary must be a non-empty string", "story_deviations is required"]
-        prompt = build_handoff_fix_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            validation_errors=errors,
-        )
-        assert "summary must be a non-empty string" in prompt
-        assert "story_deviations is required" in prompt
-
-    def test_contains_workspace_info(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        ws = tmp_path / "ws"
-        prompt = build_handoff_fix_prompt(
-            task,
-            workspace_path=ws,
-            branch_name="feat/test",
-            validation_errors=["error"],
-        )
-        assert str(ws) in prompt
-        assert "feat/test" in prompt
-
-    def test_contains_required_format(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        prompt = build_handoff_fix_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            validation_errors=["error"],
-        )
-        assert "story_deviations" in prompt
-        assert "deferred_items" in prompt
-        assert "summary" in prompt
-        assert "commits" in prompt
-        assert "acceptance_criteria" in prompt
-
-    def test_instructs_no_code_changes(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        prompt = build_handoff_fix_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            validation_errors=["error"],
-        )
-        assert "Do NOT change any code" in prompt
-        assert "Do NOT re-run the gate" in prompt
-
-    def test_includes_active_story_when_provided(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        prompt = build_handoff_fix_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            validation_errors=["criterion text not found in story acceptance criteria"],
-            story_content="# Story\n\n## Acceptance Criteria\n- Do the thing",
-        )
-        assert "## Active Story" in prompt
-        assert "criterion text not found in story acceptance criteria" in prompt
-        assert "- Do the thing" in prompt
-        assert "previous or unrelated story" in prompt
-
-    def test_uses_configured_handoff_file(self, tmp_path: Path) -> None:
-        task = _make_task(tmp_path)
-        prompt = build_handoff_fix_prompt(
-            task,
-            workspace_path=tmp_path / "ws",
-            branch_name="feat/test",
-            validation_errors=["error"],
-            handoff_file=".forge/handoff.yaml",
-        )
-        assert ".forge/handoff.yaml" in prompt
-        assert "Write the updated handoff file to disk and stop" in prompt
-        assert "git add .forge/handoff.yaml" not in prompt
-        assert "git commit -m" not in prompt
 
 
 # ── Notes section convention tests ──────────────────────────────────────

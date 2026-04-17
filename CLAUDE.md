@@ -49,15 +49,15 @@ All interactive dev work — whether by a human or Claude in an interactive sess
    ```
    Every commit must reference the issue number. Do not commit directly to main.
 
-4. **Produce a handoff for Review** — run `make gate` and print the handoff here
-   in the CLI session (do not write it to a file unless explicitly asked).
+4. **Verify the gate passes** — run `make gate` locally to confirm lint, format, and
+   tests all pass (exit 0). Print the summary here in the CLI session.
    ```bash
-   make gate   # runs tests + writes .forge/handoff.yaml
+   make gate   # lint + format check + pytest; passes on exit 0
    ```
-   The handoff is the exit artifact. Work is not done until it exists and tests pass.
+   Work is not done until `make gate` exits 0 and all tests pass.
 
 **None of these steps are optional.** Starting to code before the issue exists, or
-closing the session without a handoff, leaves work unreviewed and untracked.
+finishing without a passing gate, leaves work unreviewed and untracked.
 
 ---
 
@@ -96,7 +96,7 @@ Key modules:
 make fmt        # ruff format + ruff check --fix (auto-fix)
 make lint       # ruff check + ruff format --check (no auto-fix)
 make test       # pytest tests/ -v
-make gate       # run tests + write handoff.yaml
+make gate       # lint + format check + tests (exit code only, no file written)
 ```
 
 ### Language and toolchain agnosticism

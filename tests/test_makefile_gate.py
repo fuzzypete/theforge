@@ -4,7 +4,7 @@ from pathlib import Path
 def test_gate_runs_index_before_pytest() -> None:
     makefile = Path("Makefile").read_text()
     gate_start = makefile.index("gate:\n")
-    gate_end = makefile.index("\n\ngate-serial:")
+    gate_end = makefile.index("gate-serial:")
     gate_block = makefile[gate_start:gate_end]
 
     index_cmd = "forge index"

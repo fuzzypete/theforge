@@ -20,31 +20,20 @@ test:
 test-parallel:
 	PYTHONPATH=src python -m pytest tests/ -v -n auto --dist worksteal
 
-# Gate: run tests and write .forge/handoff.yaml
+# Gate: run lint, format check, and tests. Exit 0 = PASS, non-zero = FAIL.
+# The coordinator reads the exit code; no handoff file is written.
 gate:
 	@mkdir -p .forge/index .forge && \
 	forge index && \
-	PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal && \
-	python -c "\
-import yaml, pathlib; \
-pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'PASS', 'scope_completed': [], 'deferred_followups': [], 'next_recommended_step': 'merge'})); \
-print('[gate] PASS')" || \
-	python -c "\
-import yaml, pathlib; \
-pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'FAIL', 'scope_completed': [], 'deferred_followups': ['fix test failures'], 'next_recommended_step': 'fix failing tests'})); \
-print('[gate] FAIL')"
+	ruff check src/ tests/ && \
+	ruff format --check src/ tests/ && \
+	PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal
 
+# Serial gate: same checks without xdist, useful for debugging hangs.
 gate-serial:
-	@mkdir -p .forge && \
-	PYTHONPATH=src python -m pytest tests/ -q && \
-	python -c "\
-import yaml, pathlib; \
-pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'PASS', 'scope_completed': [], 'deferred_followups': [], 'next_recommended_step': 'merge'})); \
-print('[gate] PASS')" || \
-	python -c "\
-import yaml, pathlib; \
-pathlib.Path('.forge/handoff.yaml').write_text(yaml.dump({'gate_decision': 'FAIL', 'scope_completed': [], 'deferred_followups': ['fix test failures'], 'next_recommended_step': 'fix failing tests'})); \
-print('[gate] FAIL')"
+	@ruff check src/ tests/ && \
+	ruff format --check src/ tests/ && \
+	PYTHONPATH=src python -m pytest tests/ -q
 
 clean:
-	rm -rf .forge/worktrees/ .forge/handoff.yaml .forge/audit.yaml
+	rm -rf .forge/worktrees/ .forge/audit.yaml

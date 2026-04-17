@@ -208,7 +208,7 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
     totals = {
         "cost_usd": round(state.total_cost, 6),
         "duration_s": round(sum(all_durations), 2),
-        "dev_attempts_total": len(state.dev_results) + len(state.dev_handoff_fix_results),
+        "dev_attempts_total": len(state.dev_results),
         "dev_iterations_productive": len(state.dev_results),
         "review_cycles_total": state.review_cycle,
         # kept for backward compatibility with older audit readers
@@ -374,7 +374,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "branch": state.branch_name,
         },
         "iterations": {
-            "dev_attempts_total": len(state.dev_results) + len(state.dev_handoff_fix_results),
+            "dev_attempts_total": len(state.dev_results),
             "dev_iterations_productive": len(state.dev_results),
             "review_cycles_total": state.review_cycle,
             # kept for backward compatibility with older audit readers
@@ -398,9 +398,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "total_usd": state.total_cost,
             "dev_usd": state.total_dev_cost,
             "review_usd": state.total_review_cost,
-            "dev_invocations": len(state.dev_results) + len(state.dev_handoff_fix_results),
-            "dev_productive_invocations": len(state.dev_results),
-            "dev_handoff_fix_invocations": len(state.dev_handoff_fix_results),
+            "dev_invocations": len(state.dev_results),
             "review_invocations": len(state.review_agent_results),
             "agents": agents,
         },

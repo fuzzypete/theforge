@@ -128,10 +128,16 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Validation
     val_data = raw.get("validation", {})
+    _stale_keys = [k for k in ("handoff_file", "gate_decision_key") if k in val_data]
+    if _stale_keys:
+        raise ValueError(
+            f"forge.yaml sets {_stale_keys} under validation: "
+            "— these fields were removed in v0.8. "
+            "Gate pass/fail is now determined by exit code only. "
+            "Remove handoff_file and gate_decision_key from your forge.yaml."
+        )
     validation = ValidationConfig(
         gate_command=val_data.get("gate_command", DEFAULT_VALIDATION.gate_command),
-        handoff_file=val_data.get("handoff_file", DEFAULT_VALIDATION.handoff_file),
-        gate_decision_key=val_data.get("gate_decision_key", DEFAULT_VALIDATION.gate_decision_key),
         gate_timeout=val_data.get("gate_timeout"),
         gate_output_tail_chars=int(
             val_data.get("gate_output_tail_chars", DEFAULT_VALIDATION.gate_output_tail_chars)
@@ -286,7 +292,6 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
-        max_handoff_retries=int(retry_data.get("max_handoff_retries", 2)),
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),

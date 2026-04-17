@@ -20,7 +20,7 @@ Transitions:
     PLAN_REVIEW → DEV:      Human approves the plan
     PLAN_REVIEW → stop:     Human abandons the run
     DEV → VALIDATE:         Dev agent finished (success or failure)
-    VALIDATE → REVIEW:      Gate produced handoff.yaml with PASS
+    VALIDATE → REVIEW:      Gate exited 0 (PASS)
     VALIDATE → DEV:         Gate failed, retries remaining
     VALIDATE → ESCALATE:    Gate failed, no retries left
     REVIEW → DONE:          Review verdict is APPROVE
@@ -40,14 +40,11 @@ from pathlib import Path
 from theforge.artifacts import (
     PLAN_PATH,
     ensure_parent_dir,
-    resolve_handoff_path,
 )
 from theforge.config import ForgeConfig
 from theforge.review import ReviewFinding, ReviewResult
-from theforge.sessions import save_sessions
 from theforge.task import (
     TaskStory,
-    build_handoff_fix_prompt,
     load_story,
     parse_plan_output,
 )
@@ -78,14 +75,12 @@ from .util import (
     _log,
     _log_phase,
     _log_verbose,
-    _run_worktree_eval,
 )
 from .workspace import _check_behind_origin, _create_workspace
 from .workspace_scrub import _scrub_forge_history
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
-# engine.run_agent owns the handoff-fix retry path only.
 # Preflight: patch theforge.coordinator.preflight_flow.run_agent
 # DEV:       patch theforge.coordinator.dev_phase.run_agent
 run_agent = None
@@ -212,7 +207,6 @@ def _run_log_context(
 
 # ── Phase handlers ────────────────────────────────────────────────────
 from .dev_phase import _run_dev_phase  # noqa: E402
-from .review_context import _parse_dev_handoff  # noqa: E402
 from .review_phase import _ReviewOutcome, _run_review_only_phase, _run_review_phase  # noqa: E402
 from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402
 from .validate_phase import _run_validate_phase, _ValidateOutcome  # noqa: E402
@@ -364,104 +358,8 @@ def _coordinator_loop(
                 message=f"Stopped at --until {stop_phase.name.lower()}",
             )
 
-        # ── DEV HANDOFF VALIDATION ────────────────────────────
-        # Validate structured dev handoff after gate passes.
-        # Retry up to max_handoff_retries; if still invalid, hard stop.
-        _handoff = _parse_dev_handoff(config, workspace_path)
-        _handoff_errors = list(_handoff.parse_errors) if _handoff is not None else []
-        if _handoff is not None and not _handoff_errors:
-            _hc_result = _run_worktree_eval(
-                workspace_path,
-                "check_handoff_consistency",
-                {
-                    "acceptance_criteria": _handoff.acceptance_criteria,
-                    "story_content": story_content,
-                },
-            )
-            _handoff_errors.extend(_hc_result["errors"])
-        if _handoff is not None and _handoff_errors:
-            _max_hf_retries = config.retry.max_handoff_retries
-            for _hf_attempt in range(_max_hf_retries):
-                _log_verbose(
-                    f"Dev handoff validation failed "
-                    f"(attempt {_hf_attempt + 1}/{_max_hf_retries}): "
-                    f"{_handoff_errors}"
-                )
-                _log(f"  ⚠ HANDOFF   invalid → retry {_hf_attempt + 1}/{_max_hf_retries}")
-                _hf_prompt = build_handoff_fix_prompt(
-                    task,
-                    workspace_path=workspace_path,
-                    branch_name=branch_name,
-                    validation_errors=_handoff_errors,
-                    story_content=story_content,
-                    handoff_file=config.validation.handoff_file,
-                )
-                _hf_result = run_agent(
-                    prompt=_hf_prompt,
-                    profile=config.dev_profile,
-                    working_dir=workspace_path,
-                    session_id=state.dev_session_id,
-                    secrets=config.secrets,
-                )
-                state.dev_handoff_fix_results.append(_hf_result)
-                state.dev_session_id = _hf_result.session_id or state.dev_session_id
-                save_sessions(
-                    workspace_path,
-                    state.dev_session_id,
-                    state.reviewer_session_ids,
-                    state.plan_review_session_ids,
-                )
-                log_agent_result(_hf_result, "DEV/handoff-fix")
-                _handoff = _parse_dev_handoff(config, workspace_path)
-                _handoff_errors = []
-                if _handoff is not None:
-                    _handoff_errors.extend(_handoff.parse_errors)
-                    if not _handoff_errors:
-                        _hc_result = _run_worktree_eval(
-                            workspace_path,
-                            "check_handoff_consistency",
-                            {
-                                "acceptance_criteria": _handoff.acceptance_criteria,
-                                "story_content": story_content,
-                            },
-                        )
-                        _handoff_errors.extend(_hc_result["errors"])
-                if _handoff is None or not _handoff_errors:
-                    _log("  ✓ HANDOFF   valid")
-                    break
-            else:
-                _handoff_reason = (
-                    f"Dev handoff remained invalid after "
-                    f"{_max_hf_retries} retries: {_handoff_errors}"
-                )
-                state.phase = Phase.ESCALATE
-                state.error = _handoff_reason
-                state.error_type = "invalid_dev_handoff"
-                state.escalate_reason = _handoff_reason
-                _log(f"  ✗ ESCALATE   {_handoff_reason}")
-                if logger:
-                    logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
-                    logger._safe_emit("escalate", reason=_handoff_reason, phase="VALIDATE")
-                _escalate_notify(task, state, notify, config)
-                return CoordinatorResult(
-                    success=False,
-                    phase=Phase.ESCALATE,
-                    state=state,
-                    message=_handoff_reason,
-                )
-
         if logger:
             logger._safe_emit("phase_end", phase="VALIDATE", outcome="pass")
-
-        # ── Persist handoff to logs ────────────────────────────
-        if config.validation.handoff_file and state.log_dir is not None:
-            try:
-                _hf_src = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-                if _hf_src is not None and _hf_src.exists():
-                    _hf_dest = state.log_dir / f"handoff-iter-{state.dev_iteration}.yaml"
-                    _hf_dest.write_bytes(_hf_src.read_bytes())
-            except Exception:
-                pass  # best-effort, never block pipeline
 
         # ── REVIEW ────────────────────────────────────────────
         _rev_outcome, _rev_result, config = _run_review_phase(

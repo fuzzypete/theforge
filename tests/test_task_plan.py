@@ -57,8 +57,8 @@ class TestBuildDevPromptStructuredHandoff:
         assert "summary" in prompt
         assert "commits" in prompt
         assert "acceptance_criteria" in prompt
-        # Explains why structured handoff matters
-        assert "your voice in the review" in prompt.lower()
+        # Explains why structured handoff matters — dev emits a forge_handoff block
+        assert "forge_handoff" in prompt.lower()
 
 
 _VALID_PLAN_YAML = """\

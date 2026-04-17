@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from theforge.artifacts import PLAN_PATH, resolve_handoff_path, resolve_plan_path
+from theforge.artifacts import PLAN_PATH, resolve_plan_path
 from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import (
     _SECRETS_FILE,
@@ -210,20 +210,6 @@ def cmd_run(args: "argparse.Namespace") -> int:
                     f"({expected_wt / PLAN_PATH}; "
                     f"legacy fallback: {legacy_plan_in_wt}). "
                     "Provide --plan <file> to inject a plan.",
-                    file=sys.stderr,
-                )
-                return 1
-
-        if start_phase == Phase.REVIEW:
-            # Dev handoff must exist
-            handoff_in_wt = resolve_handoff_path(expected_wt, config.validation.handoff_file)
-            if handoff_in_wt is None or not handoff_in_wt.exists():
-                legacy_handoff_in_wt = expected_wt / "handoff.yaml"
-                print(
-                    "✗ --from review: handoff file not found in worktree "
-                    f"({expected_wt / config.validation.handoff_file}; "
-                    f"legacy fallback: {legacy_handoff_in_wt}). "
-                    "Run dev + validate first.",
                     file=sys.stderr,
                 )
                 return 1

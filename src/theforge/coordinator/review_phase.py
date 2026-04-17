@@ -1022,10 +1022,10 @@ def _run_review_only_phase(
     diff_content = _get_diff_content(workspace_path, config.workspace.base_branch)
     commit_diffs = _get_commit_diffs(workspace_path, config.workspace.base_branch)
     _forge_path = _latest_forge_handoff_path(state)
-    handoff_content = _get_handoff_content(config, workspace_path, forge_handoff_path=_forge_path)
-    dev_notes = _get_dev_notes(config, workspace_path, forge_handoff_path=_forge_path)
+    handoff_content = _get_handoff_content(forge_handoff_path=_forge_path)
+    dev_notes = _get_dev_notes(workspace_path, forge_handoff_path=_forge_path)
     handoff_commit_warning = _get_handoff_commit_warning(
-        config, workspace_path, config.workspace.base_branch, forge_handoff_path=_forge_path
+        workspace_path, config.workspace.base_branch, forge_handoff_path=_forge_path
     )
     if logger:
         logger._safe_emit(

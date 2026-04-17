@@ -850,67 +850,6 @@ class TestFromPhaseSkip:
         assert mock_pool.call_count == 1
 
 
-class TestHandoffPersistence:
-    """Test that handoff.yaml is copied to .forge/logs after VALIDATE."""
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_handoff_copied_to_log_dir(
-        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """handoff.yaml is copied to .forge/logs/<slug>/ after a passing gate."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is True
-        log_dir = tmp_path / ".forge" / "logs" / "test-task"
-        assert log_dir.exists(), "log directory was not created"
-        handoff_copies = list(log_dir.glob("handoff-iter-*.yaml"))
-        assert len(handoff_copies) >= 1, "handoff was not copied to log dir"
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_handoff_copy_failure_does_not_block_pipeline(
-        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """A failure writing handoff to logs must not cause the pipeline to fail."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        with patch(
-            "theforge.coordinator.engine.resolve_handoff_path",
-            side_effect=OSError("disk full"),
-        ):
-            result = run_task(config, task)
-
-        assert result.success is True
-        assert result.phase == Phase.DONE
-
-
 class TestStartupFailureEscalation:
     """Test that a dev agent startup failure escalates immediately."""
 

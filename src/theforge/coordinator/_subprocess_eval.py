@@ -59,24 +59,6 @@ def _cmd_check_conventions(data: dict) -> dict:
         return {"violations": [_v_to_dict(v) for v in violations]}
 
 
-def _cmd_check_handoff_consistency(data: dict) -> dict:
-    """Run check_handoff_story_consistency."""
-    from theforge.devhandoff import DevHandoff, check_handoff_story_consistency
-
-    handoff = DevHandoff(
-        summary="",
-        commits=[],
-        acceptance_criteria=data["acceptance_criteria"],
-        story_deviations=[],
-        deferred_items=[],
-        gate_result=None,
-        parse_errors=[],
-        raw={},
-    )
-    errors = check_handoff_story_consistency(handoff, data["story_content"])
-    return {"errors": errors}
-
-
 def _cmd_update_finding_registry(data: dict) -> dict:
     """Run finding_classifier.update_finding_registry.
 
@@ -185,7 +167,6 @@ def _cmd_classify_families(data: dict) -> dict:
 
 _COMMANDS = {
     "check_conventions": _cmd_check_conventions,
-    "check_handoff_consistency": _cmd_check_handoff_consistency,
     "update_finding_registry": _cmd_update_finding_registry,
     "classify_families": _cmd_classify_families,
 }

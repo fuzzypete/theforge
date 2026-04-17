@@ -7,91 +7,6 @@ from .conventions import render_conventions_block
 from .story import TaskStory
 
 
-def build_handoff_fix_prompt(
-    task: TaskStory,
-    *,
-    workspace_path: Path,
-    branch_name: str,
-    validation_errors: list[str],
-    story_content: str | None = None,
-    handoff_file: str = "handoff.yaml",
-) -> str:
-    """Build a focused prompt to fix dev handoff formatting.
-
-    Used when the gate passed but the dev_notes field in the configured handoff
-    file doesn't conform to the required YAML schema. The agent only needs
-    to rewrite dev_notes — not re-implement anything.
-    """
-    error_list = "\n".join(f"- {e}" for e in validation_errors)
-    story_section = ""
-    if story_content:
-        story_section = dedent(f"""\
-
-            ## Active Story
-
-            Use this story as the source of truth when rewriting `dev_notes`.
-            The repaired handoff must describe this story's acceptance criteria,
-            not text from a previous or unrelated story.
-
-            {story_content}
-        """)
-
-    return dedent(f"""\
-        You are fixing the dev handoff for **{task.name}**.
-
-        ## Working Directory
-
-        `{workspace_path}`  (branch: `{branch_name}`)
-
-        You are already in the correct workspace. Do NOT create a new worktree.
-
-        ## Problem
-
-        Your implementation passed the gate, but the `dev_notes` field in
-        `{handoff_file}` does not conform to the required structure.
-
-        **Validation errors:**
-
-        {error_list}
-{story_section}
-
-        ## Required Format
-
-        The `dev_notes` field in `{handoff_file}` must contain valid YAML with
-        this exact structure:
-
-        ```yaml
-        dev_notes: |
-          summary: "One paragraph: what you implemented and how."
-          commits:
-            - sha: "abc1234"
-              message: "feat(scope): what this commit does"
-          acceptance_criteria:
-            - criterion: "AC text from the spec"
-              status: MET | PARTIAL | NOT_MET
-              notes: "how it was met, or why not"
-          story_deviations:
-            - description: "What deviated from spec"
-              justification: "Why you deviated"
-          deferred_items:
-            - description: "What was deferred"
-              reason: "Why it was deferred"
-        ```
-
-        Use `story_deviations: none` if you followed the spec exactly.
-        Use `deferred_items: none` if nothing was deferred.
-        List ALL commits (use `git log --oneline` for shas).
-        List EVERY acceptance criterion from the spec with its status.
-
-        ## Your Task
-
-        1. Open `{handoff_file}` and fix ONLY the `dev_notes` field.
-        2. Do NOT change any code. Do NOT re-run the gate.
-        3. Write the updated handoff file to disk and stop.
-           Do NOT run `git add` or `git commit` for `{handoff_file}`.
-    """)
-
-
 def _build_task_framing(surviving_families: list[dict] | None) -> tuple[str, int]:
     """Build the first numbered task item(s) for the 'Your Task' section.
 
@@ -131,7 +46,6 @@ def build_fix_prompt(
     iteration: int = 2,
     cycle_history: list[CycleHistory] | None = None,
     escalation_note: str | None = None,
-    handoff_file: str = "handoff.yaml",
     plan_output: str | dict | None = None,
     prior_open_p1s: list | None = None,  # list[FindingRecord]
     classified_p1s: list | None = None,  # list[FindingRecord]
@@ -319,23 +233,14 @@ def build_fix_prompt(
 
         {_task_framing}
         {_fmt_step}. Run `make fmt` to auto-fix formatting.
-        {_commit_step}. Commit your changes (do NOT commit `{handoff_file}` — it is gitignored):
+        {_commit_step}. Commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "fix(<scope>): address review findings (iter {iteration})"
            ```
-        {
-        f"{_handoff_step}. **Update `dev_notes` in `"
-        + handoff_file
-        + "`** to reflect what you changed"
-        + '''
-           in this iteration. The reviewer reads `dev_notes` before the diff —
-           stale notes from a previous iteration will confuse the next review.
-           Update the `summary`, `commits`, and `acceptance_criteria` fields.
-           Do NOT `git add` this file — it is read from disk, not from git.'''
-        if handoff_file
-        else ""
-    }
+        {_handoff_step}. Emit an updated `<forge_handoff>` block in your **final message** to
+           reflect what you changed in this iteration. The reviewer reads it before
+           the diff — stale notes from a previous iteration will confuse the next review.
 
         ## Important
 

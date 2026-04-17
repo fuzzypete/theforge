@@ -1,12 +1,11 @@
-"""Tests for coordinator dev phase: budget enforcement, dev notes, and handoff validation.
+"""Tests for coordinator dev phase: budget enforcement and dev notes.
 
 Covers: budget limits for dev and review agents, dev notes injection into review
-prompts, and structured handoff validation after gate passes.
+prompts.
 """
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,10 +32,9 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import run_from_review, run_task
+from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase
 from theforge.runners import AgentResult
-from theforge.task import TaskStory
 
 
 class TestCoordinatorBudgetEnforcement:
@@ -214,39 +212,29 @@ class TestCoordinatorDevNotes:
     def test_dev_notes_passed_to_review_prompt(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Coordinator reads dev_notes from handoff.yaml and injects into review prompt."""
+        """Coordinator injects dev_notes from forge handoff artifact into review prompt."""
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        # Write handoff.yaml with structured dev_notes containing the deviation
-        dev_notes_yaml = (
-            'summary: "I deviated from spec because it was better."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "It works"\n'
-            "    status: MET\n"
-            '    notes: "tested"\n'
-            "story_deviations:\n"
-            '  - description: "I deviated from spec because it was better."\n'
-            '    justification: "Better approach"\n'
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-        handoff = {
-            "gate_decision": "PASS",
-            "validation": {"make_fmt": {"status": "PASS"}},
-            "scope_completed": ["test item"],
-            "dev_notes": dev_notes_yaml,
+        # dev_handoff dict simulates the parsed <forge_handoff> block from the agent output
+        dev_handoff_dict = {
+            "summary": "I deviated from spec because it was better.",
+            "commits": [{"sha": "abc1234", "message": "feat: implement"}],
+            "acceptance_criteria": [{"criterion": "It works", "status": "MET", "notes": "tested"}],
+            "story_deviations": [
+                {
+                    "description": "I deviated from spec because it was better.",
+                    "justification": "Better approach",
+                }
+            ],
+            "deferred_items": "none",
+            "gate_result": "PASS",
         }
-        (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                (Path(cwd) / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
                 return (True, "OK")
             stale_resp = _handle_stale_check_cmd(cmd)
             if stale_resp is not None:
@@ -257,7 +245,9 @@ class TestCoordinatorDevNotes:
 
         mock_shell.side_effect = shell_side_effect
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_agent.return_value = _make_agent_result(
+            success=True, output="Implemented.", dev_handoff=dev_handoff_dict
+        )
 
         captured_prompts: list[str] = []
 
@@ -425,56 +415,6 @@ class TestCoordinatorDevNotes:
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_legacy_handoff_escalates_when_unfixable(
-        self, mock_shell, mock_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Unstructured dev_notes that can't be repaired escalate (hard stop)."""
-        config = dataclasses.replace(
-            _make_config(tmp_path),
-            validation=dataclasses.replace(
-                _make_config(tmp_path).validation,
-                handoff_file=".forge/handoff.yaml",
-            ),
-        )
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        handoff = {
-            "gate_decision": "PASS",
-            "validation": {"make_fmt": {"status": "PASS"}},
-            "scope_completed": ["test item"],
-            "dev_notes": "Legacy root handoff content.",
-        }
-        (workspace / "handoff.yaml").write_text(yaml.dump(handoff), encoding="utf-8")
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.return_value = _make_agent_result(success=True, output="Unused.")
-        mock_engine_agent.return_value = _make_agent_result(success=True, output="Unused.")
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_from_review(config, task, workspace)
-
-        assert result.success is False
-        assert result.state.phase.name == "ESCALATE"
-        assert result.state.error_type == "invalid_dev_handoff"
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
     def test_review_to_dev_handoff_used_on_request_changes(
@@ -510,552 +450,3 @@ class TestCoordinatorDevNotes:
         # last_review_findings should contain the richer format from review_to_dev_handoff
         assert result.state.last_review_findings is not None
         assert "## Review Summary" in result.state.last_review_findings
-
-
-# ── Dev handoff validation tests ──────────────────────────────────────
-
-
-class TestCoordinatorDevHandoffValidation:
-    """Test that coordinator validates structured dev handoff after gate passes."""
-
-    def _make_structured_handoff(
-        self, workspace: Path, dev_notes: str, handoff_file: str = "handoff.yaml"
-    ) -> None:
-        """Write handoff.yaml with structured dev_notes."""
-        handoff = {
-            "gate_decision": "PASS",
-            "validation": {"make_fmt": {"status": "PASS"}},
-            "scope_completed": ["test item"],
-            "dev_notes": dev_notes,
-        }
-        handoff_path = workspace / handoff_file
-        handoff_path.parent.mkdir(parents=True, exist_ok=True)
-        handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_valid_structured_handoff_passes_to_review(
-        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Valid structured dev handoff is formatted and passed to reviewer."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        structured_notes = (
-            'summary: "Implemented feature X with full test coverage."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "Feature X works"\n'
-            "    status: MET\n"
-            '    notes: "Tested in test_x.py"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                self._make_structured_handoff(Path(cwd), structured_notes)
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-
-        captured_prompts: list[str] = []
-
-        def pool_side_effect(**kwargs):
-            prompt = kwargs.get("prompt", "")
-            if isinstance(prompt, list):
-                captured_prompts.extend(prompt)
-            elif isinstance(prompt, str):
-                captured_prompts.append(prompt)
-            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
-
-        mock_pool.side_effect = pool_side_effect
-
-        result = run_task(config, task)
-
-        assert result.success is True
-        # Structured summary should appear in review prompt
-        assert any("Implemented feature X" in p for p in captured_prompts)
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_invalid_handoff_triggers_retry(
-        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Invalid dev handoff triggers a handoff fix retry."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text(
-            "# Test Spec\n\n## Acceptance Criteria\n- It works\n",
-            encoding="utf-8",
-        )
-        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        # First handoff is malformed (missing required fields)
-        bad_notes = "just some unstructured text"
-        good_notes = (
-            'summary: "Implemented the thing."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "It works"\n'
-            "    status: MET\n"
-            '    notes: "yes"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-
-        fix_call_idx = {"n": 0}
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                self._make_structured_handoff(Path(cwd), bad_notes)
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-
-        # handoff fix agent writes valid handoff on first attempt
-        def engine_agent_side_effect(**kwargs):
-            fix_call_idx["n"] += 1
-            self._make_structured_handoff(workspace, good_notes)
-            return _make_agent_result(success=True, output="Fixed handoff.")
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_engine_agent.side_effect = engine_agent_side_effect
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is True
-        # Should have called handoff fix once
-        assert fix_call_idx["n"] == 1
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_invalid_handoff_escalates_after_max_retries(
-        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Invalid dev handoff escalates after max retries exhausted."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        bad_notes = "just some unstructured text"
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                self._make_structured_handoff(Path(cwd), bad_notes)
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-
-        hf_call_idx = {"n": 0}
-
-        def engine_agent_side_effect(**kwargs):
-            hf_call_idx["n"] += 1
-            # Failed handoff fixes (don't write valid handoff)
-            return _make_agent_result(success=True, output="Done.")
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Done.")
-        mock_engine_agent.side_effect = engine_agent_side_effect
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        # Should escalate — invalid handoff is now a hard stop
-        assert result.success is False
-        assert result.state.phase.name == "ESCALATE"
-        assert result.state.error_type == "invalid_dev_handoff"
-        # max_handoff_retries (2 by default)
-        assert hf_call_idx["n"] == 2
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_missing_dev_notes_triggers_retry(
-        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """PASS gate with no dev_notes triggers the handoff retry path."""
-        config = dataclasses.replace(
-            _make_config(tmp_path),
-            validation=dataclasses.replace(
-                _make_config(tmp_path).validation,
-                handoff_file=".forge/handoff.yaml",
-            ),
-        )
-        spec = tmp_path / "spec.md"
-        spec.write_text(
-            "# Test Spec\n\n## Acceptance Criteria\n- It works\n",
-            encoding="utf-8",
-        )
-        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        good_notes = (
-            'summary: "Implemented the thing."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "It works"\n'
-            "    status: MET\n"
-            '    notes: "yes"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-
-        def _write_handoff_no_dev_notes(ws: Path) -> None:
-            handoff = {
-                "gate_decision": "PASS",
-                "validation": {"make_fmt": {"status": "PASS"}},
-                "scope_completed": ["test item"],
-            }
-            handoff_path = ws / ".forge" / "handoff.yaml"
-            handoff_path.parent.mkdir(parents=True, exist_ok=True)
-            handoff_path.write_text(yaml.dump(handoff), encoding="utf-8")
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                # Write handoff.yaml WITHOUT dev_notes
-                _write_handoff_no_dev_notes(Path(cwd))
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-
-        captured_fix_prompts: list[str] = []
-
-        def engine_agent_side_effect(**kwargs):
-            # handoff fix agent — write valid handoff with dev_notes
-            captured_fix_prompts.append(kwargs.get("prompt", ""))
-            self._make_structured_handoff(workspace, good_notes, ".forge/handoff.yaml")
-            return _make_agent_result(success=True, output="Fixed handoff.")
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_engine_agent.side_effect = engine_agent_side_effect
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is True
-        # handoff fix called once
-        assert len(captured_fix_prompts) == 1
-        assert any(".forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
-        assert any(
-            "dev_notes field is missing or blank in .forge/handoff.yaml" in prompt
-            for prompt in captured_fix_prompts
-        )
-        assert any(
-            "Write the updated handoff file to disk and stop" in prompt
-            for prompt in captured_fix_prompts
-        )
-        assert not any("git add .forge/handoff.yaml" in prompt for prompt in captured_fix_prompts)
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_repaired_handoff_with_wrong_story_content_triggers_retry(
-        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Schema-valid repaired handoff must still match the active story."""
-        config = dataclasses.replace(
-            _make_config(tmp_path),
-            validation=dataclasses.replace(
-                _make_config(tmp_path).validation,
-                handoff_file=".forge/handoff.yaml",
-            ),
-        )
-        spec = tmp_path / "spec.md"
-        spec.write_text(
-            "# Test Spec\n\n## Acceptance Criteria\n- Active criterion\n",
-            encoding="utf-8",
-        )
-        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        bad_notes = "just some unstructured text"
-        wrong_story_notes = (
-            'summary: "Implemented the thing."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "Wrong criterion"\n'
-            "    status: MET\n"
-            '    notes: "yes"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-        good_notes = (
-            'summary: "Implemented the thing."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "Active criterion"\n'
-            "    status: MET\n"
-            '    notes: "yes"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                self._make_structured_handoff(Path(cwd), bad_notes, ".forge/handoff.yaml")
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-
-        captured_fix_prompts: list[str] = []
-        fix_call_idx = {"n": 0}
-
-        def engine_agent_side_effect(**kwargs):
-            fix_call_idx["n"] += 1
-            captured_fix_prompts.append(kwargs.get("prompt", ""))
-            notes = wrong_story_notes if fix_call_idx["n"] == 1 else good_notes
-            self._make_structured_handoff(workspace, notes, ".forge/handoff.yaml")
-            return _make_agent_result(success=True, output="Fixed handoff.")
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_engine_agent.side_effect = engine_agent_side_effect
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is True
-        assert fix_call_idx["n"] == 2
-        assert any("## Active Story" in prompt for prompt in captured_fix_prompts)
-        assert any("Wrong criterion" in prompt for prompt in captured_fix_prompts)
-        assert any("- Active criterion" in prompt for prompt in captured_fix_prompts)
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_schema_valid_wrong_story_handoff_triggers_retry_on_first_pass(
-        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Schema-valid handoff with wrong-story ACs triggers retry even on first parse."""
-        config = _make_config(tmp_path)
-        spec = tmp_path / "spec.md"
-        spec.write_text(
-            "# Test Spec\n\n## Acceptance Criteria\n- Real criterion\n",
-            encoding="utf-8",
-        )
-        task = TaskStory(name="Test Task", story_path=spec, slug="test-task")
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        # Schema-valid but wrong story criteria
-        wrong_story_notes = (
-            'summary: "Implemented."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "Completely unrelated criterion"\n'
-            "    status: MET\n"
-            '    notes: "yes"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-        good_notes = (
-            'summary: "Implemented."\n'
-            "commits:\n"
-            '  - sha: "abc1234"\n'
-            '    message: "feat: implement"\n'
-            "acceptance_criteria:\n"
-            '  - criterion: "Real criterion"\n'
-            "    status: MET\n"
-            '    notes: "yes"\n'
-            "story_deviations: none\n"
-            "deferred_items: none\n"
-            "gate_result: PASS\n"
-        )
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                self._make_structured_handoff(Path(cwd), wrong_story_notes)
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-
-        fix_call_idx = {"n": 0}
-
-        def engine_agent_side_effect(**kwargs):
-            fix_call_idx["n"] += 1
-            self._make_structured_handoff(workspace, good_notes)
-            return _make_agent_result(success=True, output="Fixed handoff.")
-
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Implemented.")
-        mock_engine_agent.side_effect = engine_agent_side_effect
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        result = run_task(config, task)
-
-        assert result.success is True
-        # Handoff fix was called because first-pass story consistency failed
-        assert fix_call_idx["n"] >= 1
-
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.preflight_flow.run_agent")
-    @patch("theforge.coordinator.engine.run_agent")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch("theforge.coordinator.util._run_shell")
-    def test_invalid_handoff_escalate_emits_logger_event(
-        self, mock_shell, mock_dev_agent, mock_engine_agent, mock_preflight, mock_pool, tmp_path
-    ):
-        """Invalid handoff emits phase_end(VALIDATE, escalate) before escalate event."""
-        config = _make_config(tmp_path)
-        task = _make_task(tmp_path)
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-
-        bad_notes = "just some unstructured text"
-
-        def shell_side_effect(cmd, cwd, **kwargs):
-            if "gate" in cmd:
-                self._make_structured_handoff(Path(cwd), bad_notes)
-                return (True, "OK")
-            stale_resp = _handle_stale_check_cmd(cmd)
-            if stale_resp is not None:
-                return stale_resp
-            if "git status --porcelain" in cmd:
-                return (True, "")
-            return (True, "OK")
-
-        mock_shell.side_effect = shell_side_effect
-        mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_dev_agent.return_value = _make_agent_result(success=True, output="Done.")
-        mock_engine_agent.return_value = _make_agent_result(success=True, output="Done.")
-        mock_pool.return_value = [
-            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
-        ]
-
-        captured: list[dict] = []
-
-        from theforge.coordinator.logging import StructuredLogger
-
-        original_safe_emit = StructuredLogger._safe_emit
-
-        def _capturing_safe_emit(self_logger, event: str, **fields: object) -> None:
-            captured.append({"event": event, **fields})
-            original_safe_emit(self_logger, event, **fields)
-
-        with patch.object(StructuredLogger, "_safe_emit", _capturing_safe_emit):
-            result = run_task(config, task)
-
-        assert result.success is False
-        assert result.state.phase.name == "ESCALATE"
-        assert result.state.escalate_reason
-        reason = result.state.escalate_reason
-        assert "invalid" in reason.lower() or "retries" in reason
-
-        # Regression: invalid-handoff hard-stop must emit phase_end(VALIDATE, escalate)
-        # before the escalate event, matching all other VALIDATE escalation paths.
-        validate_events = [e for e in captured if e.get("phase") == "VALIDATE"]
-        phase_end_ev = next(
-            (
-                e
-                for e in validate_events
-                if e["event"] == "phase_end" and e.get("outcome") == "escalate"
-            ),
-            None,
-        )
-        assert phase_end_ev is not None, (
-            "Expected phase_end(phase=VALIDATE, outcome=escalate) on invalid-handoff ESCALATE; "
-            f"VALIDATE events seen: {validate_events}"
-        )
-        escalate_ev = next(
-            (e for e in validate_events if e["event"] == "escalate"),
-            None,
-        )
-        assert escalate_ev is not None, "Expected escalate event with phase=VALIDATE"
-        # phase_end must come before escalate
-        phase_end_idx = next(i for i, e in enumerate(captured) if e is phase_end_ev)
-        escalate_idx = next(i for i, e in enumerate(captured) if e is escalate_ev)
-        assert phase_end_idx < escalate_idx, (
-            f"phase_end must precede escalate; "
-            f"phase_end at {phase_end_idx}, escalate at {escalate_idx}"
-        )

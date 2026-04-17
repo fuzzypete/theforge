@@ -17,8 +17,6 @@ validation:
   gate_command: ".venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/ && .venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
   gate_debug_command: ".venv/bin/python -m pytest tests/ -x -v -n 0 --timeout=10"
   test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
-  handoff_file: ".forge/handoff.yaml"
-  gate_decision_key: "gate_decision"
   gate_timeout: 45
 
 conventions:

@@ -16,7 +16,7 @@ from theforge.task import TaskStory
 
 from . import util as _cu
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
-from .gate import _is_gate_skip, _run_gate_full, _write_gate_decision_to_forge
+from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import _get_handoff_content, _get_raw_dev_notes, _latest_forge_handoff_path
@@ -176,14 +176,6 @@ def _run_validate_phase(
             config, workspace_path, task=task, iter_num=state.dev_iteration
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
-        # When structured capture was used, propagate gate_decision into the forge
-        # artifact so REVIEW sees the complete handoff (not just the pre-gate snapshot).
-        if gate_decision is not None:
-            _forge_artifact = _latest_forge_handoff_path(state)
-            if _forge_artifact is not None:
-                _write_gate_decision_to_forge(
-                    _forge_artifact, config.validation.gate_decision_key, gate_decision
-                )
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)
     if logger:
@@ -216,109 +208,25 @@ def _run_validate_phase(
             gate_output_tail=gate_output_tail or gate_err,
             is_timeout=is_timeout,
         )
-        use_exit_code = not config.validation.handoff_file
-        if use_exit_code:
-            _log(f"✗ ESCALATE   {gate_err}")
-            state.phase = Phase.ESCALATE
-            state.error = gate_err
-            if logger:
-                logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
-                logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
-            _escalate_notify(task, state, notify, config)
-            return _ValidateOutcome.ESCALATE, CoordinatorResult(
-                success=False, phase=state.phase, state=state, message=state.error
-            )
-        _log_verbose(f"Gate error: {gate_err}")
-        if state.budget.is_exhausted():
-            state.phase = Phase.ESCALATE
-            state.error = f"Gate failed after {state.dev_iteration} attempts: {gate_err}"
-            _log(f"✗ ESCALATE   {state.error}")
-            if logger:
-                logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
-                logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
-            _escalate_notify(task, state, notify, config)
-            return _ValidateOutcome.ESCALATE, CoordinatorResult(
-                success=False, phase=state.phase, state=state, message=state.error
-            )
-        gate_cmd = resolved_gate_cmd
-        partial = ""
-        failed_test_feedback, existing_test_failures = _format_failed_test_feedback(
-            gate_output_tail, workspace_path, contract_change=state.preflight_contract_change
-        )
-        if gate_output_tail and gate_output_tail != gate_err:
-            tail_chars = config.validation.gate_output_tail_chars
-            partial = f"\n\nPartial gate output (last {tail_chars} chars):\n{gate_output_tail}"
-            _log(f"  Gate partial output captured ({len(gate_output_tail)} chars)")
-        if is_timeout:
-            debug_cmd = config.validation.gate_debug_command
-            if debug_cmd:
-                diag = f" To diagnose, run `{debug_cmd}` to isolate the hanging or failing test."
-            else:
-                diag = (
-                    f" Run `{gate_cmd}` yourself to reproduce, find"
-                    " what is hanging or failing, and isolate the test."
-                )
-            state.human_feedback = (
-                f"The full test suite (`{gate_cmd}`) {gate_err}."
-                " Your changes caused a test to hang or the suite to"
-                f" take too long.{diag}"
-                " Fix the root cause — do not increase timeouts."
-                f" Then run the full suite (`{gate_cmd}`) to verify."
-                f"{failed_test_feedback}"
-                f"{partial}"
-            )
-        else:
-            state.human_feedback = (
-                f"The full test suite (`{gate_cmd}`) {gate_err}."
-                " Your changes broke something. Run the full test suite in"
-                " the worktree, diagnose the root cause, and fix it."
-                f"{failed_test_feedback}"
-                f"{partial}"
-            )
-        state.retry_reason = RetryReason.GATE_FAIL
-        if state.dev_iteration_telemetry:
-            state.dev_iteration_telemetry[-1] = dataclasses.replace(
-                state.dev_iteration_telemetry[-1],
-                existing_test_failures=existing_test_failures,
-            )
+        # Check consecutive identical failures (including timeouts) before escalating.
         if _is_identical_failure(state.dev_iteration_telemetry):
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Identical gate failure on consecutive iterations"
-                f" (iteration {state.dev_iteration}): {gate_err}."
+                f" (iteration {state.dev_iteration}): gate error: {gate_err}."
                 f" Remaining retry budget: {state.budget.remaining()}."
             )
-            _log(f"✗ ESCALATE   {state.error}")
-            if logger:
-                logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
-                logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
-            _escalate_notify(task, state, notify, config)
-            return _ValidateOutcome.ESCALATE, CoordinatorResult(
-                success=False, phase=state.phase, state=state, message=state.error
-            )
-        if _cv_violations:
-            _blocking_cv = [v for v in _cv_violations if v.blocking]
-            _followup_cv = [v for v in _cv_violations if not v.blocking]
-            state.convention_violations = [
-                {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
-                for v in _cv_violations
-            ]
-            if _blocking_cv:
-                lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _blocking_cv]
-                state.human_feedback += (
-                    "\n\nAdditionally, hard convention violations were detected:\n"
-                    + "\n".join(lines)
-                )
-            for v in _followup_cv:
-                _log(f"  Convention follow-up [hygiene]: {v.rule} in {v.file} — {v.detail}")
-            _log(
-                f"  ✗ VALIDATE   convention violations also found"
-                f" ({len(_blocking_cv)} blocking, {len(_followup_cv)} follow-up)"
-            )
-        _log(f"  ✗ VALIDATE   FAIL  (iter={state.dev_iteration} → retrying)")
+        else:
+            state.phase = Phase.ESCALATE
+            state.error = gate_err
+        _log(f"✗ ESCALATE   {state.error}")
         if logger:
-            logger._safe_emit("phase_end", phase="VALIDATE", outcome="fail")
-        return _ValidateOutcome.RETRY_DEV, None
+            logger._safe_emit("phase_end", phase="VALIDATE", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="VALIDATE")
+        _escalate_notify(task, state, notify, config)
+        return _ValidateOutcome.ESCALATE, CoordinatorResult(
+            success=False, phase=state.phase, state=state, message=state.error
+        )
 
     assert gate_decision is not None
     state.gate_decisions.append(gate_decision)
@@ -339,24 +247,16 @@ def _run_validate_phase(
         _deindex_forge_artifacts(workspace_path)
         dirty_ok, dirty_out = _cu._run_shell("git status --porcelain", workspace_path)
         if dirty_ok and dirty_out.strip():
-            handoff_file = config.validation.handoff_file
-            if handoff_file:
-                dirty_lines = [
-                    line
-                    for line in dirty_out.splitlines()
-                    if line.strip() and not line.endswith(handoff_file)
-                ]
-            else:
-                dirty_lines = [line for line in dirty_out.splitlines() if line.strip()]
-            if dirty_lines:
-                raw_names = ", ".join(line.strip().split(maxsplit=1)[-1] for line in dirty_lines)
+            dirty_files = _parse_dirty_files(dirty_out)
+            if dirty_files:
+                raw_names = ", ".join(dirty_files)
                 _log(f"Dirty worktree detected: {raw_names}")
 
                 # Auto-commit: synthesize message from handoff, don't
                 # re-invoke the agent (full-prompt retry burns tokens and
                 # times out — the agent already wrote the code).
                 dev_notes = _get_raw_dev_notes(
-                    config, workspace_path, forge_handoff_path=_latest_forge_handoff_path(state)
+                    forge_handoff_path=_latest_forge_handoff_path(state)
                 )
                 if dev_notes:
                     first_line = dev_notes.strip().splitlines()[0][:72]
@@ -414,9 +314,7 @@ def _run_validate_phase(
             return _ValidateOutcome.ESCALATE, CoordinatorResult(
                 success=False, phase=state.phase, state=state, message=state.error
             )
-        handoff_text = _get_handoff_content(
-            config, workspace_path, forge_handoff_path=_latest_forge_handoff_path(state)
-        )
+        handoff_text = _get_handoff_content(forge_handoff_path=_latest_forge_handoff_path(state))
         gate_cmd = resolved_gate_cmd
         tail_chars = config.validation.gate_output_tail_chars
         failed_test_feedback, existing_test_failures = _format_failed_test_feedback(

@@ -84,6 +84,7 @@ def _make_agent_result(
     cost_usd: float = 0.50,
     profile_name: str = "",
     startup_failure: bool = False,
+    dev_handoff: dict | None = None,
 ) -> AgentResult:
     return AgentResult(
         success=success,
@@ -94,6 +95,7 @@ def _make_agent_result(
         raw={},
         profile_name=profile_name,
         startup_failure=startup_failure,
+        dev_handoff=dev_handoff,
     )
 
 

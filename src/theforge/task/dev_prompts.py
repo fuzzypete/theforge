@@ -26,7 +26,6 @@ def build_dev_prompt(
     iteration: int = 1,
     escalation_note: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
-    handoff_file: str = "handoff.yaml",
     preflight_sufficiency: str | None = None,
     contract_change: bool = False,
     conventions: list[str] | None = None,
@@ -252,40 +251,12 @@ def build_dev_prompt(
         1. Implement the spec. Write tests for new functionality.
         2. Run `make fmt` then `make lint`. Fix any failures.
         3. {gate_section}
-        4. Only after the gate passes, commit your changes (do NOT commit `{
-        handoff_file
-    }` — it is gitignored):
+        4. Only after the gate passes, commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
            ```
-        {
-        "5. Write a `dev_notes` section in `"
-        + handoff_file
-        + "` with this structure:"
-        + '''
-
-           ```yaml
-           dev_notes: |
-             summary: "One paragraph: what you implemented and how."
-             commits:
-               - sha: "abc1234"
-                 message: "feat(scope): what this commit does"
-             acceptance_criteria:
-               - criterion: "AC text from the spec"
-                 status: MET | PARTIAL | NOT_MET
-                 notes: "how it was met, or why not"
-             story_deviations: none  # or list deviations with justification
-             deferred_items: none   # or list with reason
-           ```
-
-           List ALL commits (`git log --oneline`). List EVERY acceptance criterion.
-           This is your voice in the review — the reviewer reads it before the diff.
-           Do NOT `git add` this file — it is read from disk, not from git.'''
-        if handoff_file
-        else ""
-    }
-        6. Emit a `<forge_handoff>` block in your **final message** (outside any code
+        5. Emit a `<forge_handoff>` block in your **final message** (outside any code
            fence, exactly once). This allows the orchestrator to capture your handoff
            without reading the filesystem. The block must contain a YAML mapping with
            the same keys as the `dev_notes` section above:

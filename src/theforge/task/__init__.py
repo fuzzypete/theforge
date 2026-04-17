@@ -6,7 +6,7 @@ from .context_assembler import (
 )
 from .conventions import render_conventions_block
 from .dev_prompts import build_dev_prompt
-from .fix_prompts import build_fix_prompt, build_handoff_fix_prompt
+from .fix_prompts import build_fix_prompt
 from .plan_parser import PlanData, PlanStep, parse_plan_output
 from .plan_prompts import build_plan_prompt, build_plan_review_prompt, build_preflight_prompt
 from .review_prompts import build_review_prompt, build_synthesis_prompt
@@ -27,7 +27,6 @@ __all__ = [
     "render_conventions_block",
     "build_dev_prompt",
     "build_fix_prompt",
-    "build_handoff_fix_prompt",
     "PlanData",
     "PlanStep",
     "parse_plan_output",
