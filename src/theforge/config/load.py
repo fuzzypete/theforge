@@ -144,6 +144,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     # ── Smart config: models key ──────────────────────────────────────
     smart_config_models: list[str] | None = None
     _review_pool_is_default = False
+    _dev_profile_is_default = False
     _derived_plan_profile: ModelProfile | None = None
     _derived_plan_validate_spec: bool | None = None
     _derived_par_profile: ModelProfile | None = None
@@ -214,9 +215,11 @@ def load_config(config_path: Path) -> ForgeConfig:
                 ]
 
         smart_config_models = [str(m) for m in models_list]
-        # The review pool is auto-assigned from the models list, not user-specified.
-        # Treat it as default so the assignment reviewer auth guard applies.
-        _review_pool_is_default = True
+        # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
+        # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
+        # roles so explicit overrides bypass routing.
+        _dev_profile_is_default = "dev" not in overrides
+        _review_pool_is_default = "review_pool" not in overrides
 
     else:
         # ── Classic config: profiles key ──────────────────────────────────
@@ -589,6 +592,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         provider_fallbacks=provider_fallbacks,
         review_pool_is_default=_review_pool_is_default,
         plan_model_is_default=_plan_model_is_default,
+        dev_profile_is_default=_dev_profile_is_default,
         conventions_hard=conventions_hard_cfg,
         conventions_soft=conventions_soft_list,
         finding_classifier=finding_classifier_cfg,

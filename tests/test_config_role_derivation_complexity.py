@@ -61,6 +61,8 @@ def _make_forge_config(
     plan_model: str = "sonnet",
     plan_cli: str | None = "claude",
     plan_model_is_default: bool = True,
+    dev_profile_is_default: bool = True,
+    review_pool_is_default: bool = True,
     smart_config_models: Any = _USE_GOLD,
     review_pool: list[ModelProfile] | None = None,
 ) -> ForgeConfig:
@@ -119,6 +121,8 @@ def _make_forge_config(
         ),
         plan=plan,
         plan_model_is_default=plan_model_is_default,
+        dev_profile_is_default=dev_profile_is_default,
+        review_pool_is_default=review_pool_is_default,
     )
 
 
@@ -186,13 +190,34 @@ class TestDeriveRolesComplexityMatrix:
         ra = derive_roles(_GOLD_POOL, complexity="large")
         assert ra.synthesis is not None
 
-    def test_medium_complexity_review_pool_same_as_static(self):
-        """MEDIUM complexity → same review pool as static (no complexity arg)."""
-        ra_static = derive_roles(_GOLD_POOL)
-        ra_medium = derive_roles(_GOLD_POOL, complexity="medium")
-        static_models = [r.ref.model for r in ra_static.review_pool]
-        medium_models = [r.ref.model for r in ra_medium.review_pool]
-        assert static_models == medium_models
+    def test_medium_complexity_dev_routes_to_mid_tier(self):
+        """MEDIUM complexity → dev role uses mid-tier model (AC: dev medium→mid)."""
+        ra = derive_roles(_GOLD_POOL, complexity="medium")
+        rank = _cost_rank_of(ra.dev.ref.cli, ra.dev.ref.model)
+        assert rank == _TIER_TO_COST_RANK["mid"], (
+            f"Expected mid tier (rank=2) for MEDIUM dev, got rank={rank} "
+            f"(model={ra.dev.ref.model})"
+        )
+
+    def test_medium_complexity_plan_routes_to_strong_tier(self):
+        """MEDIUM complexity → plan role uses strong-tier model (AC: plan medium→strong)."""
+        ra = derive_roles(_GOLD_POOL, complexity="medium")
+        rank = _cost_rank_of(ra.plan.ref.cli, ra.plan.ref.model)
+        assert rank == _TIER_TO_COST_RANK["strong"], (
+            f"Expected strong tier (rank=3) for MEDIUM plan, got rank={rank} "
+            f"(model={ra.plan.ref.model})"
+        )
+
+    def test_medium_complexity_review_pool_is_mid_strong(self):
+        """MEDIUM complexity → review pool contains only mid/strong models (broader pool)."""
+        ra = derive_roles(_GOLD_POOL, complexity="medium")
+        for reviewer in ra.review_pool:
+            rank = _cost_rank_of(reviewer.ref.cli, reviewer.ref.model)
+            assert rank >= _TIER_TO_COST_RANK["mid"], (
+                f"Review pool for MEDIUM should only contain mid/strong, "
+                f"got rank={rank} (model={reviewer.ref.model})"
+            )
+        assert ra.synthesis is not None, "MEDIUM complexity should have synthesis"
 
     def test_none_complexity_preserves_static_behavior(self):
         """No complexity → existing static cheapest-first assignment unchanged."""
@@ -280,6 +305,37 @@ class TestApplyComplexityAdaptationGold:
             f"LOW review should keep mid/strong reviewer, got rank={rank}"
         )
 
+    def test_medium_routes_dev_to_mid_tier(self, tmp_path):
+        """MEDIUM complexity → dev_profile swapped to mid-tier model (AC: dev medium→mid)."""
+        config = _make_forge_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "medium")
+        rank = _cost_rank_of(adapted.dev_profile.cli, adapted.dev_profile.model)
+        assert rank == _TIER_TO_COST_RANK["mid"], (
+            f"Expected mid tier for MEDIUM dev, got rank={rank} "
+            f"(model={adapted.dev_profile.model})"
+        )
+
+    def test_medium_routes_plan_to_strong_tier_when_default(self, tmp_path):
+        """MEDIUM complexity → plan.model swapped to strong tier (AC: plan medium→strong)."""
+        config = _make_forge_config(tmp_path, plan_model_is_default=True)
+        adapted = _apply_complexity_adaptation(config, "medium")
+        rank = _cost_rank_of(adapted.plan.cli, adapted.plan.model)
+        assert rank == _TIER_TO_COST_RANK["strong"], (
+            f"Expected strong tier for MEDIUM plan, got rank={rank} (model={adapted.plan.model})"
+        )
+
+    def test_medium_review_pool_is_mid_strong_with_synthesis(self, tmp_path):
+        """MEDIUM complexity → review pool = all mid/strong reviewers, synthesis present."""
+        config = _make_forge_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "medium")
+        for p in adapted.review_pool:
+            rank = _cost_rank_of(p.cli, p.model)
+            assert rank >= _TIER_TO_COST_RANK["mid"], (
+                f"MEDIUM review pool should only contain mid/strong, got rank={rank} "
+                f"(model={p.model})"
+            )
+        assert adapted.synthesis_profile is not None, "MEDIUM complexity should have synthesis"
+
 
 # ── Override bypass ────────────────────────────────────────────────────────────
 
@@ -295,26 +351,38 @@ class TestComplexityOverrideBypass:
         adapted = _apply_complexity_adaptation(config, "large")
         assert adapted.plan.model == "sonnet"
 
-    def test_dev_not_changed_when_not_in_pool(self, tmp_path):
-        """Custom dev model not in smart_config_models → dev unchanged."""
+    def test_dev_not_changed_when_explicit_override(self, tmp_path):
+        """Explicit overrides.dev in forge.yaml → dev unchanged even if model is in pool.
+
+        Regression guard (Codex review of PR #822): the previous heuristic used
+        pool-membership to detect auto-derived dev, which silently rewrote an
+        explicit overrides.dev.model that happened to be in the pool.
+        """
         config = _make_forge_config(
             tmp_path,
-            dev_model="custom-model",  # not in smart_config_models
+            dev_model="sonnet",  # sonnet IS in the pool — but explicitly overridden
+            dev_cli="claude",
+            dev_profile_is_default=False,
         )
         adapted = _apply_complexity_adaptation(config, "large")
-        assert adapted.dev_profile.model == "custom-model"
+        assert adapted.dev_profile.model == "sonnet", (
+            "Explicit overrides.dev must bypass complexity routing "
+            "even when the overridden model is in the pool"
+        )
 
-    def test_medium_no_change_to_dev(self, tmp_path):
-        """MEDIUM complexity → dev_profile unchanged."""
-        config = _make_forge_config(tmp_path)
-        adapted = _apply_complexity_adaptation(config, "medium")
-        assert adapted.dev_profile.model == config.dev_profile.model
-
-    def test_medium_no_change_to_plan(self, tmp_path):
-        """MEDIUM complexity → plan.model unchanged."""
-        config = _make_forge_config(tmp_path, plan_model_is_default=True)
-        adapted = _apply_complexity_adaptation(config, "medium")
-        assert adapted.plan.model == config.plan.model
+    def test_review_pool_not_changed_when_explicit_override(self, tmp_path):
+        """Explicit overrides.review_pool → review pool unchanged for LOW/HIGH."""
+        config = _make_forge_config(
+            tmp_path,
+            review_pool_is_default=False,
+        )
+        original_models = [p.model for p in config.review_pool]
+        original_synth = config.synthesis_profile
+        adapted_low = _apply_complexity_adaptation(config, "small")
+        adapted_high = _apply_complexity_adaptation(config, "large")
+        assert [p.model for p in adapted_low.review_pool] == original_models
+        assert adapted_low.synthesis_profile is original_synth
+        assert [p.model for p in adapted_high.review_pool] == original_models
 
     def test_no_smart_config_is_noop(self, tmp_path):
         """Without smart_config_models, complexity adaptation is always a no-op."""
@@ -322,8 +390,10 @@ class TestComplexityOverrideBypass:
         # smart_config_models=None → returns config unchanged
         adapted_high = _apply_complexity_adaptation(config, "large")
         adapted_low = _apply_complexity_adaptation(config, "small")
+        adapted_medium = _apply_complexity_adaptation(config, "medium")
         assert adapted_high is config
         assert adapted_low is config
+        assert adapted_medium is config
 
 
 # ── Fallback when pool lacks target tier ──────────────────────────────────────
@@ -356,10 +426,10 @@ class TestComplexityTierFallback:
         rank = _cost_rank_of(adapted.plan.cli, adapted.plan.model)
         assert rank >= 1  # some valid tier assigned
 
-    def test_complexity_none_via_apply_no_change(self, tmp_path):
-        """_apply_complexity_adaptation is not called with None; medium is the sentinel."""
+    def test_unknown_complexity_is_noop(self, tmp_path):
+        """Unrecognised complexity string → adaptation returns config unchanged."""
         config = _make_forge_config(tmp_path)
-        adapted = _apply_complexity_adaptation(config, "medium")
+        adapted = _apply_complexity_adaptation(config, "definitely-not-a-level")
         assert adapted is config
 
     def test_review_pool_all_cheap_low_falls_back(self, tmp_path):

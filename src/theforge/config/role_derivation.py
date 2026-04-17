@@ -201,10 +201,9 @@ def derive_roles(
     if not dev_candidates:
         dev_candidates = sorted_models
 
-    # MEDIUM complexity: same as static (no change from cheapest-first rules).
-    # Only LOW and HIGH apply tier-based selection; this satisfies the requirement
-    # that "medium complexity produces no change to dev or plan model".
-    _apply_tier_routing = norm_complexity in ("LOW", "HIGH")
+    # Tier × complexity routing applies at all defined complexity levels.
+    # When norm_complexity is None (not supplied), static cheapest-first rules apply.
+    _apply_tier_routing = norm_complexity is not None
 
     if _apply_tier_routing:
         target_dev_tier = _COMPLEXITY_TIER["dev"][norm_complexity]
@@ -216,7 +215,7 @@ def derive_roles(
     fast_models = [(k, i) for k, i in sorted_models if i.tier == "fast"]
     preflight_key, preflight_info = fast_models[0] if fast_models else (dev_key, dev_info)
 
-    # plan: defaults to same model as dev; LOW/HIGH apply tier-based selection
+    # plan: tier-based selection when complexity is supplied; else same as dev
     if _apply_tier_routing:
         target_plan_tier = _COMPLEXITY_TIER["plan"][norm_complexity]
         plan_candidates = [(k, i) for k, i in sorted_models if i.dev_capable] or sorted_models
@@ -229,9 +228,11 @@ def derive_roles(
     if not review_pairs:
         review_pairs = [(dev_key, dev_info)]
 
-    # Complexity-aware review pool sizing (LOW and HIGH only; MEDIUM/None = static)
+    # Complexity-aware review pool sizing
+    #   LOW → single mid/strong reviewer, no synthesis
+    #   MEDIUM/HIGH → all mid/strong reviewers + synthesis
+    #   None → static (all except dev)
     if norm_complexity == "LOW":
-        # Single mid/strong reviewer (cost_rank >= 2); fallback to cheapest if none
         mid_strong = [(k, i) for k, i in review_pairs if i.cost_rank >= 2]
         review_pairs = (
             [min(mid_strong, key=lambda x: (x[1].cost_rank, -x[1].capability))]
@@ -239,12 +240,11 @@ def derive_roles(
             else [review_pairs[0]]
         )
         has_synthesis = False
-    elif norm_complexity == "HIGH":
-        # All mid/strong reviewers; fallback to full pool if none qualify
+    elif norm_complexity in ("MEDIUM", "HIGH"):
         mid_strong = [(k, i) for k, i in review_pairs if i.cost_rank >= 2]
         if mid_strong:
             review_pairs = mid_strong
-        # Always create synthesis for HIGH complexity (even with single reviewer)
+        # Always create synthesis for MEDIUM/HIGH (even with single reviewer)
         has_synthesis = True
     else:
         has_synthesis = len(review_pairs) > 1

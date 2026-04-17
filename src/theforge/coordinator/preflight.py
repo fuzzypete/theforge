@@ -474,104 +474,91 @@ def _escalate_dev_model(
 def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
     """Adjust model assignments based on preflight complexity using tier × complexity routing.
 
-    Only applies when smart_config_models is set. Medium complexity is a no-op
-    (static defaults are balanced). For low/high, dev, plan, and review pool are
-    adjusted via in-place model/cli swap — load-time overrides (temperature, tools,
-    budget) on existing profiles are preserved.
+    Only applies when smart_config_models is set. Per-role bypass flags guard each
+    mutation so explicit forge.yaml overrides are preserved:
+    - plan updates require config.plan_model_is_default
+    - dev updates require config.dev_profile_is_default
+    - review_pool updates require config.review_pool_is_default
 
-    LOW  → plan → mid, review → single mid/strong reviewer, synthesis cleared
-    HIGH → dev → strong, plan → strong, review → all mid/strong + synthesis
-
-    plan is only updated when plan_model_is_default is True (user has not explicitly
-    configured plan.model in forge.yaml). dev is only updated when dev_profile.model
-    is among the smart_config_models pool names (not an explicit custom profile).
+    Tier × complexity routing (applied in-place via _dc_replace so load-time profile
+    overrides like temperature/tools/budget are preserved on the updated profile):
+      plan:   LOW → mid,    MEDIUM → strong,   HIGH → strong
+      dev:    LOW → cheap,  MEDIUM → mid,      HIGH → strong
+      review: LOW → single mid/strong reviewer (no synthesis)
+              MEDIUM/HIGH → all mid/strong reviewers + synthesis
     """
     if config.smart_config_models is None:
         return config
 
-    norm = _COMPLEXITY_TO_LEVEL.get(complexity.lower(), "MEDIUM")
-    if norm == "MEDIUM":
+    norm = _COMPLEXITY_TO_LEVEL.get(complexity.lower())
+    if norm is None:
         return config
 
     pool_entries = _build_pool_entries(config.smart_config_models)
     if not pool_entries:
         return config
 
-    pool_model_names = {info.model for _, _, info in pool_entries}
     new_config = config
 
-    if norm == "LOW":
-        # Plan → mid tier (upgrade from default cheap)
-        if config.plan_model_is_default:
-            target_plan_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["plan"]["LOW"]]
-            target_plan_info = _pick_pool_entry_by_rank(pool_entries, target_plan_rank)
-            if target_plan_info.model != config.plan.model:
-                new_plan = _dc_replace(
-                    config.plan, model=target_plan_info.model, cli=target_plan_info.cli
-                )
-                if target_plan_info.cli is not None:
-                    new_plan = _dc_replace(new_plan, provider=None)
-                new_config = _dc_replace(new_config, plan=new_plan)
-
-        # Review → single mid/strong reviewer (cost_rank >= 2), no synthesis
-        mid_strong = [p for p in config.review_pool if _find_registry_info_for_profile(p)[0] >= 2]
-        if not mid_strong:
-            _log.warning(
-                "complexity_adaptation: LOW review: no mid/strong reviewers in pool, "
-                "falling back to cheapest reviewer"
+    # ── plan ───────────────────────────────────────────────────────
+    if config.plan_model_is_default:
+        target_plan_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["plan"][norm]]
+        target_plan_info = _pick_pool_entry_by_rank(pool_entries, target_plan_rank)
+        if target_plan_info.model != config.plan.model:
+            new_plan = _dc_replace(
+                config.plan, model=target_plan_info.model, cli=target_plan_info.cli
             )
-        candidate_pool = mid_strong or list(config.review_pool)
-        single = min(
-            candidate_pool,
-            key=lambda p: (
-                _find_registry_info_for_profile(p)[0],
-                -_find_registry_info_for_profile(p)[1],
-            ),
-        )
-        new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
+            if target_plan_info.cli is not None:
+                new_plan = _dc_replace(new_plan, provider=None)
+            new_config = _dc_replace(new_config, plan=new_plan)
 
-    elif norm == "HIGH":
-        # Dev → strong tier (only when dev is auto-assigned from pool, not explicitly overridden)
-        if config.dev_profile.model in pool_model_names:
-            dev_pool = [(r, k, i) for r, k, i in pool_entries if i.dev_capable] or pool_entries
-            target_dev_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["dev"]["HIGH"]]
-            target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
-            if target_dev_info.model != config.dev_profile.model:
-                new_dev = _dc_replace(
-                    config.dev_profile,
-                    cli=target_dev_info.cli,
-                    model=target_dev_info.model,
-                )
-                new_config = _dc_replace(new_config, dev_profile=new_dev)
+    # ── dev ────────────────────────────────────────────────────────
+    if config.dev_profile_is_default:
+        dev_pool = [(r, k, i) for r, k, i in pool_entries if i.dev_capable] or pool_entries
+        target_dev_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["dev"][norm]]
+        target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
+        if target_dev_info.model != config.dev_profile.model:
+            new_dev = _dc_replace(
+                config.dev_profile,
+                cli=target_dev_info.cli,
+                model=target_dev_info.model,
+            )
+            new_config = _dc_replace(new_config, dev_profile=new_dev)
 
-        # Plan → strong tier (only when plan is default)
-        if config.plan_model_is_default:
-            target_plan_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["plan"]["HIGH"]]
-            target_plan_info = _pick_pool_entry_by_rank(pool_entries, target_plan_rank)
-            if target_plan_info.model != config.plan.model:
-                new_plan = _dc_replace(
-                    config.plan, model=target_plan_info.model, cli=target_plan_info.cli
-                )
-                if target_plan_info.cli is not None:
-                    new_plan = _dc_replace(new_plan, provider=None)
-                new_config = _dc_replace(new_config, plan=new_plan)
-
-        # Review → all mid/strong reviewers + synthesis
+    # ── review_pool ────────────────────────────────────────────────
+    if config.review_pool_is_default:
         mid_strong = [p for p in config.review_pool if _find_registry_info_for_profile(p)[0] >= 2]
-        review_for_high = mid_strong if mid_strong else list(config.review_pool)
 
-        synthesis = config.synthesis_profile
-        if synthesis is None:
-            # Materialize synthesis for HIGH complexity (mirrors existing large-complexity logic).
-            # Uses the strongest from the review pool (or dev as fallback).
-            synth_candidates = review_for_high or [new_config.dev_profile]
-            strongest = max(synth_candidates, key=lambda p: _find_registry_info_for_profile(p)[1])
-            synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
-            synthesis = _dc_replace(strongest, name="synthesis", budget_usd=synth_budget)
-
-        new_config = _dc_replace(
-            new_config, review_pool=review_for_high, synthesis_profile=synthesis
-        )
+        if norm == "LOW":
+            # Single mid/strong reviewer, no synthesis
+            if not mid_strong:
+                _log.warning(
+                    "complexity_adaptation: LOW review: no mid/strong reviewers in pool, "
+                    "falling back to cheapest reviewer"
+                )
+            candidate_pool = mid_strong or list(config.review_pool)
+            single = min(
+                candidate_pool,
+                key=lambda p: (
+                    _find_registry_info_for_profile(p)[0],
+                    -_find_registry_info_for_profile(p)[1],
+                ),
+            )
+            new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
+        else:
+            # MEDIUM/HIGH → all mid/strong reviewers + synthesis
+            review_broader = mid_strong if mid_strong else list(config.review_pool)
+            synthesis = config.synthesis_profile
+            if synthesis is None:
+                synth_candidates = review_broader or [new_config.dev_profile]
+                strongest = max(
+                    synth_candidates, key=lambda p: _find_registry_info_for_profile(p)[1]
+                )
+                synth_budget = max(config.dev_profile.budget_usd * 0.02, 1.0)
+                synthesis = _dc_replace(strongest, name="synthesis", budget_usd=synth_budget)
+            new_config = _dc_replace(
+                new_config, review_pool=review_broader, synthesis_profile=synthesis
+            )
 
     return new_config
 
