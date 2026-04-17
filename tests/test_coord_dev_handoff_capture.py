@@ -7,6 +7,7 @@ Covers:
 - validate_phase falls back to workspace handoff file when forge artifact absent
 - audit snapshot carries correct source field
 - review_context helpers prefer forge artifact over file
+- gate_decision is written into forge artifact after gate runs
 """
 
 from __future__ import annotations
@@ -26,6 +27,8 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.dev_phase import _capture_dev_handoff
+from theforge.coordinator.gate import _write_gate_decision_to_forge
 from theforge.coordinator.review_context import (
     _get_handoff_content,
     _get_raw_dev_notes,
@@ -90,47 +93,7 @@ def _make_agent_result_with_handoff(handoff: dict | None = None) -> AgentResult:
 
 
 class TestDevPhaseForgeArtifact:
-    """dev_phase writes/reads handoff based on AgentResult.dev_handoff."""
-
-    def _run_dev_phase_core(self, state, config, task, workspace_path, dev_result):
-        """Invoke the handoff-capture portion of dev_phase directly."""
-        import yaml as _yaml
-
-        # Simulate what dev_phase does after run_agent returns
-        state.dev_results.append(dev_result)
-        state.dev_durations.append(1.0)
-
-        if dev_result.dev_handoff is not None:
-            _forge_handoff_dir = config.project_root / ".forge" / "handoffs" / task.slug
-            _forge_handoff_dir.mkdir(parents=True, exist_ok=True)
-            _forge_artifact_path = _forge_handoff_dir / f"iter_{state.dev_iteration}.yaml"
-            _forge_artifact_path.write_text(
-                _yaml.dump(dev_result.dev_handoff, allow_unicode=True, default_flow_style=False),
-                encoding="utf-8",
-            )
-            state.dev_handoff_snapshots.append(
-                {
-                    "source": "structured_output",
-                    "path": str(_forge_artifact_path),
-                    "handoff": dev_result.dev_handoff,
-                }
-            )
-        else:
-            _handoff_snap = None
-            _handoff_source = "missing"
-            if config.validation.handoff_file:
-                try:
-                    _handoff_path = workspace_path / config.validation.handoff_file
-                    _handoff_snap = _yaml.safe_load(_handoff_path.read_text(encoding="utf-8"))
-                    if _handoff_snap is not None:
-                        _handoff_source = "file"
-                except Exception:
-                    pass
-            state.dev_handoff_snapshots.append(
-                {"source": _handoff_source, "path": None, "handoff": _handoff_snap}
-            )
-
-        return _forge_artifact_path if dev_result.dev_handoff is not None else None
+    """_capture_dev_handoff writes/reads handoff based on AgentResult.dev_handoff."""
 
     def test_forge_artifact_written_when_dev_handoff_present(self, tmp_path):
         config = _make_config(tmp_path)
@@ -142,7 +105,7 @@ class TestDevPhaseForgeArtifact:
         handoff = _sample_handoff_dict()
         dev_result = _make_agent_result_with_handoff(handoff)
 
-        artifact_path = self._run_dev_phase_core(state, config, task, workspace, dev_result)
+        artifact_path = _capture_dev_handoff(state, config, task, workspace, dev_result)
 
         assert artifact_path is not None
         assert artifact_path.exists()
@@ -159,7 +122,7 @@ class TestDevPhaseForgeArtifact:
         state.dev_iteration = 2
         dev_result = _make_agent_result_with_handoff(_sample_handoff_dict())
 
-        artifact_path = self._run_dev_phase_core(state, config, task, workspace, dev_result)
+        artifact_path = _capture_dev_handoff(state, config, task, workspace, dev_result)
 
         expected = tmp_path / ".forge" / "handoffs" / "my-feature" / "iter_2.yaml"
         assert artifact_path == expected
@@ -173,7 +136,7 @@ class TestDevPhaseForgeArtifact:
         state.dev_iteration = 1
         dev_result = _make_agent_result_with_handoff(_sample_handoff_dict())
 
-        self._run_dev_phase_core(state, config, task, workspace, dev_result)
+        _capture_dev_handoff(state, config, task, workspace, dev_result)
 
         snap = state.dev_handoff_snapshots[-1]
         assert snap["source"] == "structured_output"
@@ -195,7 +158,7 @@ class TestDevPhaseForgeArtifact:
         state.dev_iteration = 1
         dev_result = _make_agent_result_with_handoff(None)  # no structured output
 
-        self._run_dev_phase_core(state, config, task, workspace, dev_result)
+        _capture_dev_handoff(state, config, task, workspace, dev_result)
 
         snap = state.dev_handoff_snapshots[-1]
         assert snap["source"] == "file"
@@ -211,10 +174,23 @@ class TestDevPhaseForgeArtifact:
         state.dev_iteration = 1
         dev_result = _make_agent_result_with_handoff(None)
 
-        self._run_dev_phase_core(state, config, task, workspace, dev_result)
+        _capture_dev_handoff(state, config, task, workspace, dev_result)
 
         snap = state.dev_handoff_snapshots[-1]
         assert snap["source"] == "missing"
+
+    def test_returns_none_when_no_structured_output(self, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+        state = CoordinatorState()
+        state.dev_iteration = 1
+        dev_result = _make_agent_result_with_handoff(None)
+
+        result = _capture_dev_handoff(state, config, task, workspace, dev_result)
+
+        assert result is None
 
 
 # ── _latest_forge_handoff_path ────────────────────────────────────────
@@ -250,6 +226,71 @@ class TestLatestForgeHandoffPath:
             }
         )
         assert _latest_forge_handoff_path(state) is None
+
+
+# ── gate_decision propagated into forge artifact ──────────────────────
+
+
+class TestWriteGateDecisionToForge:
+    """_write_gate_decision_to_forge merges gate_decision into forge artifact."""
+
+    def test_gate_decision_written_to_existing_forge_artifact(self, tmp_path):
+        p = tmp_path / "forge_handoff.yaml"
+        p.write_text(
+            yaml.dump(_sample_handoff_dict(), allow_unicode=True, default_flow_style=False),
+            encoding="utf-8",
+        )
+
+        _write_gate_decision_to_forge(p, "gate_result", "PASS")
+
+        data = yaml.safe_load(p.read_text())
+        assert data["gate_result"] == "PASS"
+        assert data["summary"] == "Implemented the feature end-to-end."
+
+    def test_gate_decision_fail_written(self, tmp_path):
+        p = tmp_path / "forge_handoff.yaml"
+        p.write_text(yaml.dump({"summary": "done", "commits": []}), encoding="utf-8")
+
+        _write_gate_decision_to_forge(p, "gate_result", "FAIL")
+
+        data = yaml.safe_load(p.read_text())
+        assert data["gate_result"] == "FAIL"
+
+    def test_gate_decision_overwrites_existing_key(self, tmp_path):
+        p = tmp_path / "forge_handoff.yaml"
+        p.write_text(yaml.dump({"gate_result": "FAIL", "summary": "done"}), encoding="utf-8")
+
+        _write_gate_decision_to_forge(p, "gate_result", "PASS")
+
+        data = yaml.safe_load(p.read_text())
+        assert data["gate_result"] == "PASS"
+
+    def test_nonfatal_on_missing_file(self, tmp_path):
+        p = tmp_path / "nonexistent.yaml"
+        # Should not raise
+        _write_gate_decision_to_forge(p, "gate_result", "PASS")
+
+    def test_forge_artifact_has_gate_decision_after_full_capture_and_gate(self, tmp_path):
+        """End-to-end: capture handoff, then write gate_decision into forge artifact."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+        state = CoordinatorState()
+        state.dev_iteration = 1
+        dev_result = _make_agent_result_with_handoff(_sample_handoff_dict())
+
+        artifact_path = _capture_dev_handoff(state, config, task, workspace, dev_result)
+        assert artifact_path is not None
+
+        # Simulate gate running and writing decision to forge artifact
+        forge_path = _latest_forge_handoff_path(state)
+        assert forge_path is not None
+        _write_gate_decision_to_forge(forge_path, config.validation.gate_decision_key, "PASS")
+
+        data = yaml.safe_load(artifact_path.read_text())
+        assert data[config.validation.gate_decision_key] == "PASS"
+        assert data["summary"] == "Implemented the feature end-to-end."
 
 
 # ── validate_phase: forge artifact preferred ──────────────────────────

@@ -167,6 +167,60 @@ def _ensure_runners() -> None:
         log_agent_result = _r.log_agent_result
 
 
+def _capture_dev_handoff(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    workspace_path: Path,
+    dev_result: object,
+) -> Path | None:
+    """Capture the handoff snapshot from a completed dev agent result.
+
+    Writes the forge artifact when structured output is present; falls back to
+    reading the workspace handoff file. Appends to state.dev_handoff_snapshots.
+    Returns the forge artifact path when written, else None.
+    """
+    from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
+
+    if not isinstance(dev_result, _AgentResult):
+        raise TypeError(f"Expected AgentResult, got {type(dev_result)}")
+    if dev_result.dev_handoff is not None:
+        _forge_handoff_dir = config.project_root / ".forge" / "handoffs" / task.slug
+        _forge_handoff_dir.mkdir(parents=True, exist_ok=True)
+        _forge_artifact_path = _forge_handoff_dir / f"iter_{state.dev_iteration}.yaml"
+        try:
+            _forge_artifact_path.write_text(
+                yaml.dump(dev_result.dev_handoff, allow_unicode=True, default_flow_style=False),
+                encoding="utf-8",
+            )
+            _log(f"  Handoff artifact: {_forge_artifact_path}")
+        except Exception as _write_exc:  # noqa: BLE001
+            _log(f"  ⚠ Failed to write handoff artifact: {_write_exc}")
+        state.dev_handoff_snapshots.append(
+            {
+                "source": "structured_output",
+                "path": str(_forge_artifact_path),
+                "handoff": dev_result.dev_handoff,
+            }
+        )
+        return _forge_artifact_path
+    else:
+        _handoff_snap: dict | None = None
+        _handoff_source = "missing"
+        if config.validation.handoff_file:
+            try:
+                _handoff_path = workspace_path / config.validation.handoff_file
+                _handoff_snap = yaml.safe_load(_handoff_path.read_text(encoding="utf-8"))
+                if _handoff_snap is not None:
+                    _handoff_source = "file"
+            except Exception:
+                pass
+        state.dev_handoff_snapshots.append(
+            {"source": _handoff_source, "path": None, "handoff": _handoff_snap}
+        )
+        return None
+
+
 def _run_dev_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -351,42 +405,7 @@ def _run_dev_phase(
         )
     state.dev_results.append(dev_result)
     state.dev_durations.append(_dev_elapsed)
-    # Capture handoff snapshot for audit trail
-    if dev_result.dev_handoff is not None:
-        # Structured output captured from agent message — write forge artifact
-        _forge_handoff_dir = config.project_root / ".forge" / "handoffs" / task.slug
-        _forge_handoff_dir.mkdir(parents=True, exist_ok=True)
-        _forge_artifact_path = _forge_handoff_dir / f"iter_{state.dev_iteration}.yaml"
-        try:
-            _forge_artifact_path.write_text(
-                yaml.dump(dev_result.dev_handoff, allow_unicode=True, default_flow_style=False),
-                encoding="utf-8",
-            )
-            _log(f"  Handoff artifact: {_forge_artifact_path}")
-        except Exception as _write_exc:  # noqa: BLE001
-            _log(f"  ⚠ Failed to write handoff artifact: {_write_exc}")
-        state.dev_handoff_snapshots.append(
-            {
-                "source": "structured_output",
-                "path": str(_forge_artifact_path),
-                "handoff": dev_result.dev_handoff,
-            }
-        )
-    else:
-        # Fall back to file-based handoff (existing behavior)
-        _handoff_snap: dict | None = None
-        _handoff_source = "missing"
-        if config.validation.handoff_file:
-            try:
-                _handoff_path = workspace_path / config.validation.handoff_file
-                _handoff_snap = yaml.safe_load(_handoff_path.read_text(encoding="utf-8"))
-                if _handoff_snap is not None:
-                    _handoff_source = "file"
-            except Exception:
-                pass
-        state.dev_handoff_snapshots.append(
-            {"source": _handoff_source, "path": None, "handoff": _handoff_snap}
-        )
+    _capture_dev_handoff(state, config, task, workspace_path, dev_result)
     state.dev_session_id = dev_result.session_id or state.dev_session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")

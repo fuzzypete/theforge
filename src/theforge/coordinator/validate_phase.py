@@ -16,7 +16,7 @@ from theforge.task import TaskStory
 
 from . import util as _cu
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
-from .gate import _is_gate_skip, _run_gate_full
+from .gate import _is_gate_skip, _run_gate_full, _write_gate_decision_to_forge
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import _get_handoff_content, _get_raw_dev_notes, _latest_forge_handoff_path
@@ -176,6 +176,14 @@ def _run_validate_phase(
             config, workspace_path, task=task, iter_num=state.dev_iteration
         )
         gate_result_for_telemetry = gate_decision or "ERROR"
+        # When structured capture was used, propagate gate_decision into the forge
+        # artifact so REVIEW sees the complete handoff (not just the pre-gate snapshot).
+        if gate_decision is not None:
+            _forge_artifact = _latest_forge_handoff_path(state)
+            if _forge_artifact is not None:
+                _write_gate_decision_to_forge(
+                    _forge_artifact, config.validation.gate_decision_key, gate_decision
+                )
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)
     if logger:
