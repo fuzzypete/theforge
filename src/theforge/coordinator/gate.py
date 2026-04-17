@@ -14,15 +14,6 @@ from theforge.traces import write_trace
 
 from . import util as _cu
 
-# Phrases that unambiguously indicate the test runner reported success.
-# Used to detect the contradiction where exit code is non-zero but output says success.
-_GATE_SUCCESS_PATTERNS: tuple[str, ...] = (
-    "all checks passed",
-    "passed, no failures",
-    "0 failed",
-    "no failures detected",
-)
-
 
 def _parse_dirty_files(raw_output: str) -> list[str]:
     """Parse filenames from ``git status --porcelain`` output.
@@ -176,11 +167,7 @@ def _run_gate_full(
 
     # Gate decision comes from exit code. Write it into handoff.yaml (merging, not
     # overwriting) so downstream validation sees gate_decision alongside dev notes.
-    if not ok and any(p in output.lower() for p in _GATE_SUCCESS_PATTERNS):
-        decision = "CONTRADICTION"
-        _cu._log(f"Gate contradiction: exit non-zero but output indicates success: {output_tail}")
-    else:
-        decision = "PASS" if ok else "FAIL"
+    decision = "PASS" if ok else "FAIL"
     if config.validation.handoff_file:
         _write_gate_decision(config, workspace_path, decision)
     if decision == "FAIL":
