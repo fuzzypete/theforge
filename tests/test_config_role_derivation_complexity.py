@@ -336,6 +336,62 @@ class TestApplyComplexityAdaptationGold:
             )
         assert adapted.synthesis_profile is not None, "MEDIUM complexity should have synthesis"
 
+    def test_medium_review_pool_excludes_new_dev_model(self, tmp_path):
+        """MEDIUM reroutes dev→gpt-5.4; review pool must exclude gpt-5.4 (self-review guard).
+
+        Regression guard (Codex review of PR #822 commit b4bc2d9): previously the
+        review pool was filtered from the load-time pool, which still contained
+        the mid-tier reviewer that dev had just been rerouted to. Matches
+        derive_roles() which excludes the selected dev model before tier filtering.
+        """
+        config = _make_forge_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "medium")
+        assert adapted.dev_profile.model == "gpt-5.4"
+        assert all(p.model != "gpt-5.4" for p in adapted.review_pool), (
+            f"Review pool must not include new dev model gpt-5.4; "
+            f"got {[p.model for p in adapted.review_pool]}"
+        )
+
+    def test_high_review_pool_excludes_new_dev_model(self, tmp_path):
+        """HIGH reroutes dev→opus; review pool must exclude opus when alternatives exist."""
+        config = _make_forge_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "large")
+        assert adapted.dev_profile.model == "opus"
+        assert all(p.model != "opus" for p in adapted.review_pool), (
+            f"Review pool must not include new dev model opus; "
+            f"got {[p.model for p in adapted.review_pool]}"
+        )
+
+    def test_low_reviewer_excludes_new_dev_model(self, tmp_path):
+        """LOW routes dev to cheap; single reviewer must not be the same model."""
+        config = _make_forge_config(tmp_path)
+        adapted = _apply_complexity_adaptation(config, "small")
+        assert adapted.dev_profile.model != adapted.review_pool[0].model, (
+            f"LOW single reviewer must not match dev; "
+            f"dev={adapted.dev_profile.model} reviewer={adapted.review_pool[0].model}"
+        )
+
+    def test_self_review_allowed_when_no_alternative(self, tmp_path):
+        """Fall back to self-review only when there is no alternative reviewer."""
+        only_opus = ModelProfile(
+            name="claude-opus",
+            cli="claude",
+            model="opus",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+        )
+        config = _make_forge_config(
+            tmp_path,
+            dev_model="opus",
+            dev_cli="claude",
+            smart_config_models=["claude/opus"],
+            review_pool=[only_opus],
+        )
+        adapted = _apply_complexity_adaptation(config, "large")
+        # Only opus is available — self-review is unavoidable; guard must not produce empty pool.
+        assert len(adapted.review_pool) >= 1
+
 
 # ── Override bypass ────────────────────────────────────────────────────────────
 

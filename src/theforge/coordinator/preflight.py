@@ -527,7 +527,16 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
 
     # ── review_pool ────────────────────────────────────────────────
     if config.review_pool_is_default:
-        mid_strong = [p for p in config.review_pool if _find_registry_info_for_profile(p)[0] >= 2]
+        # Self-review guard: if dev was rerouted into a model that's also in the
+        # review pool, exclude it from review candidates. Match derive_roles()'s
+        # load-time behavior where dev is excluded from review_pairs before tier
+        # filtering. Only drop when alternatives exist — otherwise self-review is
+        # the only option.
+        new_dev_model = new_config.dev_profile.model
+        non_dev_reviewers = [p for p in config.review_pool if p.model != new_dev_model]
+        review_candidates = non_dev_reviewers if non_dev_reviewers else list(config.review_pool)
+
+        mid_strong = [p for p in review_candidates if _find_registry_info_for_profile(p)[0] >= 2]
 
         if norm == "LOW":
             # Single mid/strong reviewer, no synthesis
@@ -536,7 +545,7 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
                     "complexity_adaptation: LOW review: no mid/strong reviewers in pool, "
                     "falling back to cheapest reviewer"
                 )
-            candidate_pool = mid_strong or list(config.review_pool)
+            candidate_pool = mid_strong or review_candidates
             single = min(
                 candidate_pool,
                 key=lambda p: (
@@ -547,7 +556,7 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
             new_config = _dc_replace(new_config, review_pool=[single], synthesis_profile=None)
         else:
             # MEDIUM/HIGH → all mid/strong reviewers + synthesis
-            review_broader = mid_strong if mid_strong else list(config.review_pool)
+            review_broader = mid_strong if mid_strong else review_candidates
             synthesis = config.synthesis_profile
             if synthesis is None:
                 synth_candidates = review_broader or [new_config.dev_profile]
