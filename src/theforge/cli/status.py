@@ -208,7 +208,9 @@ def _show_recent_runs(project_root: Path) -> int:
                 mtime = log_file.stat().st_mtime
             except OSError:
                 continue
-            rows.append((mtime, run_id, "single", "completed", "—", "—"))
+            outcome = _detach.read_run_ended(run_id, project_root)
+            status_str = outcome if outcome is not None else "orphaned"
+            rows.append((mtime, run_id, "single", status_str, "—", "—"))
             seen_ids.add(run_id)
 
     if not rows:
@@ -467,6 +469,7 @@ def cmd_stop(args: object) -> int:
     except ProcessLookupError:
         print(f"Process {pid} not found — cleaning up stale PID file")
         _detach.remove_pid(run_id, project_root)
+        _detach.write_run_ended(run_id, project_root, "stopped", force=True)
         return 1
     except OSError as exc:
         print(f"Could not signal process {pid}: {exc}", file=sys.stderr)
@@ -483,6 +486,7 @@ def cmd_stop(args: object) -> int:
         time.sleep(0.1)
 
     if not _detach._is_pid_alive(pid):
+        _detach.write_run_ended(run_id, project_root, "stopped", force=True)
         print(f"[forge] Run {run_id} has stopped.")
         return 0
 
@@ -491,6 +495,48 @@ def cmd_stop(args: object) -> int:
         file=sys.stderr,
     )
     return 1
+
+
+def cmd_runs_clean(args: object) -> int:
+    """Mark orphaned runs (no PID, no .ended) by writing a .ended sentinel."""
+    from theforge import detach as _detach
+
+    config_path = _find_config()
+    if config_path is None or not config_path.exists():
+        print("forge.yaml not found.", file=sys.stderr)
+        return 1
+    config = load_config(config_path)
+    project_root = config.project_root
+
+    logs_dir = project_root / ".forge" / "logs"
+    runs_dir = project_root / ".forge" / "runs"
+    if not logs_dir.exists():
+        print("No runs found.")
+        return 0
+
+    # Collect run IDs that are currently alive (have a live PID).
+    active_pids: set[str] = set()
+    for run in _detach.list_active_runs(project_root):
+        active_pids.add(run["run_id"])
+
+    cleaned = 0
+    for log_file in logs_dir.rglob("run-*.log"):
+        run_id = log_file.stem[4:]
+        if run_id in active_pids:
+            continue
+        ended_file = runs_dir / f"{run_id}.ended"
+        if ended_file.exists():
+            continue
+        # Orphan: has a log, no live process, no terminal marker.
+        _detach.write_run_ended(run_id, project_root, "orphaned")
+        print(f"[forge] Marked {run_id} as orphaned")
+        cleaned += 1
+
+    if cleaned == 0:
+        print("No orphaned runs found.")
+    else:
+        print(f"Cleaned {cleaned} orphaned run(s).")
+    return 0
 
 
 def cmd_decide(args: object) -> int:
@@ -581,6 +627,12 @@ def register_parsers(subparsers: object) -> None:
         default=60,
         metavar="N",
         help="Seconds to wait for process exit (default 60)",
+    )
+
+    # forge runs-clean
+    subparsers.add_parser(
+        "runs-clean",
+        help="Mark orphaned runs (no terminal marker) so forge status shows correct state",
     )
 
     # forge decide

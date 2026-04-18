@@ -191,6 +191,98 @@ class TestDaemonizeRun:
                 detach.daemonize_run("run123", "slug", tmp_path)
 
 
+# ── Terminal marker (.ended) ──────────────────────────────────────────
+
+
+class TestWriteRunEnded:
+    def test_creates_ended_file(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path, "stopped")
+        ended = tmp_path / ".forge" / "runs" / "abc123.ended"
+        assert ended.exists()
+        assert ended.read_text() == "stopped"
+
+    def test_default_outcome_is_stopped(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path)
+        assert (tmp_path / ".forge" / "runs" / "abc123.ended").read_text() == "stopped"
+
+    def test_no_overwrite_by_default(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path, "stopped")
+        detach.write_run_ended("abc123", tmp_path, "completed")
+        assert (tmp_path / ".forge" / "runs" / "abc123.ended").read_text() == "stopped"
+
+    def test_force_overwrites(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path, "stopped")
+        detach.write_run_ended("abc123", tmp_path, "completed", force=True)
+        assert (tmp_path / ".forge" / "runs" / "abc123.ended").read_text() == "completed"
+
+
+class TestReadRunEnded:
+    def test_returns_outcome_when_file_exists(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path, "stopped")
+        assert detach.read_run_ended("abc123", tmp_path) == "stopped"
+
+    def test_returns_none_when_missing(self, tmp_path):
+        assert detach.read_run_ended("no-such-run", tmp_path) is None
+
+
+class TestReadRunStatus:
+    def test_returns_stopped_when_ended_file_exists(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path, "stopped")
+        st = detach.read_run_status("abc123", "my-slug", tmp_path)
+        assert st["phase"] == "STOPPED"
+
+    def test_returns_completed_when_ended_file_says_completed(self, tmp_path):
+        detach.write_run_ended("abc123", tmp_path, "completed")
+        st = detach.read_run_status("abc123", "my-slug", tmp_path)
+        assert st["phase"] == "COMPLETED"
+
+    def test_returns_orphaned_when_no_pid_no_ended(self, tmp_path):
+        # No PID file, no .ended — process exited without writing a terminal marker.
+        log_dir = tmp_path / ".forge" / "logs" / "my-slug"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run-abc123.log").write_text("some log content\n")
+        st = detach.read_run_status("abc123", "my-slug", tmp_path)
+        assert st["phase"] == "ORPHANED"
+
+    def test_returns_running_when_pid_file_exists(self, tmp_path):
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "abc123.pid").write_text(f"{os.getpid()}\nmy-slug\n")
+        st = detach.read_run_status("abc123", "my-slug", tmp_path)
+        assert st["phase"] == "RUNNING"
+
+    def test_ended_takes_priority_over_pid_file(self, tmp_path):
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "abc123.pid").write_text(f"{os.getpid()}\nmy-slug\n")
+        detach.write_run_ended("abc123", tmp_path, "stopped")
+        st = detach.read_run_status("abc123", "my-slug", tmp_path)
+        assert st["phase"] == "STOPPED"
+
+
+class TestInstallCleanupHandlerWritesEnded:
+    def test_sigterm_writes_ended_and_removes_pid(self, tmp_path):
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        pid_file = runs_dir / "abc123.pid"
+        pid_file.write_text(f"{os.getpid()}\nmy-slug\n")
+
+        import signal
+
+        detach.install_cleanup_handler("abc123", tmp_path)
+        try:
+            # Simulate SIGTERM inline by calling the handler directly.
+            signal.raise_signal(signal.SIGTERM)
+        except SystemExit:
+            pass
+
+        assert not pid_file.exists()
+        assert detach.read_run_ended("abc123", tmp_path) == "stopped"
+
+        # Restore default SIGTERM handler to avoid interfering with other tests.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+
 def test_find_log_path_prefers_per_run_log(tmp_path):
     log_path = tmp_path / ".forge" / "logs" / "my-slug" / "run-run123.log"
     log_path.parent.mkdir(parents=True)

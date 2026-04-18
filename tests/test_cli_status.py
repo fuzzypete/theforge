@@ -261,6 +261,49 @@ class TestCmdStatusRouting:
         mock_recent.assert_called_once_with(config.project_root)
 
 
+# ── Regression: forge stop writes .ended; forge status shows STOPPED ─────────
+
+
+class TestStopWritesTerminalMarker:
+    def test_stopped_run_shows_stopped_not_running(self, tmp_path: Path) -> None:
+        """Regression: after forge stop, forge status shows STOPPED not RUNNING.
+
+        Simulates SIGTERM stop: writes .ended 'stopped', removes PID file.
+        Then verifies read_run_status returns STOPPED, not RUNNING.
+        """
+        from theforge import detach
+
+        # Set up a log file so read_run_status has something to work with.
+        log_dir = tmp_path / ".forge" / "logs" / "issues-828"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run-6f59d22b.log").write_text("✓ PREFLIGHT PROCEED\n")
+
+        # Simulate what forge stop does: write .ended, no PID file present.
+        detach.write_run_ended("6f59d22b", tmp_path, "stopped", force=True)
+
+        st = detach.read_run_status("6f59d22b", "issues-828", tmp_path)
+        assert st["phase"] == "STOPPED", f"Expected STOPPED, got {st['phase']!r}"
+
+    def test_orphaned_run_shows_orphaned_not_running(self, tmp_path: Path) -> None:
+        """Regression: a run that died silently shows ORPHANED, not RUNNING.
+
+        Simulates a silent crash: log file exists, no PID file, no .ended.
+        forge status should detect this as ORPHANED.
+        """
+        from theforge import detach
+
+        # Set up a log file — process wrote some output but no terminal marker.
+        log_dir = tmp_path / ".forge" / "logs" / "issues-828"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run-deadbeef.log").write_text("✓ PREFLIGHT PROCEED\n")
+
+        # No PID file (stale PID cleaned up by list_active_runs).
+        # No .ended file (process crashed without writing one).
+
+        st = detach.read_run_status("deadbeef", "issues-828", tmp_path)
+        assert st["phase"] == "ORPHANED", f"Expected ORPHANED, got {st['phase']!r}"
+
+
 # ── Parser-level coverage ─────────────────────────────────────────────────────
 
 

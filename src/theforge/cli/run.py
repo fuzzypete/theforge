@@ -286,7 +286,10 @@ def cmd_run(args: "argparse.Namespace") -> int:
 
         return 0 if result.success else 1
     finally:
-        # Remove PID file unconditionally — ensures cleanup even if run_task raises
+        # Write terminal marker then remove PID — ensures status is accurate even
+        # if run_task raises. SIGTERM handler may have already written "stopped";
+        # write_run_ended is a no-op when the file already exists.
+        _detach.write_run_ended(run_id, config.project_root, "completed")
         _detach.remove_pid(run_id, config.project_root)
 
 
