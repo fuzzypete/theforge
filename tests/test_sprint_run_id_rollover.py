@@ -30,7 +30,11 @@ from theforge.sprint.audit import (
     _save_accumulated_stories,
 )
 from theforge.sprint.dag import StoryTriage
-from theforge.sprint.status_reader import read_completed_status
+from theforge.sprint.status_reader import (
+    _follow_redirect_chain,
+    find_sprint_summary,
+    read_completed_status,
+)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -252,6 +256,12 @@ class TestRunIdRolloverReporting:
         # sprint_id field is present
         assert summary["sprint"].get("sprint_id") == sprint_id
 
+        # Aggregate totals must include costs from both runs
+        assert summary["sprint"]["total_cost_usd"] == pytest.approx(1.18 + 9.26)
+        assert summary["sprint"]["specs_succeeded"] == 2
+        assert summary["sprint"]["specs_failed"] == 0
+        assert summary["sprint"]["specs_skipped"] == 0
+
     def test_read_completed_status_shows_all_stories(self, tmp_path: Path) -> None:
         """read_completed_status returns entries for all stories including prior-run ones."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -357,3 +367,78 @@ class TestRunIdRolloverReporting:
         sprint_entries = [ln for ln in lines if "sprint" in ln and "specs" in ln]
         assert sprint_entries, "No sprint-level history entry found"
         assert sprint_entries[0]["sprint"].get("sprint_id") == sprint_id
+
+
+# ── redirect chain: earlier run_id finds terminal summary ────────────────────
+
+
+class TestRedirectChainResolution:
+    def test_follow_redirect_chain_no_redirect(self, tmp_path: Path) -> None:
+        result = _follow_redirect_chain("run-abc", tmp_path)
+        assert result == "run-abc"
+
+    def test_follow_redirect_chain_single_hop(self, tmp_path: Path) -> None:
+        import json
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-a.redirect").write_text(
+            json.dumps({"new_run_id": "run-b"}), encoding="utf-8"
+        )
+        result = _follow_redirect_chain("run-a", tmp_path)
+        assert result == "run-b"
+
+    def test_follow_redirect_chain_multi_hop(self, tmp_path: Path) -> None:
+        import json
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-a.redirect").write_text(
+            json.dumps({"new_run_id": "run-b"}), encoding="utf-8"
+        )
+        (runs_dir / "run-b.redirect").write_text(
+            json.dumps({"new_run_id": "run-c"}), encoding="utf-8"
+        )
+        result = _follow_redirect_chain("run-a", tmp_path)
+        assert result == "run-c"
+
+    def test_find_sprint_summary_with_earlier_run_id(self, tmp_path: Path) -> None:
+        """find_sprint_summary() called with an earlier run_id returns the terminal summary."""
+        import json
+
+        # Create redirect: run-a → run-b (terminal)
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "run-a.redirect").write_text(
+            json.dumps({"new_run_id": "run-b"}), encoding="utf-8"
+        )
+
+        # Write a summary file that records run_id = "run-b"
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "My Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        import yaml
+
+        summary_path.write_text(
+            yaml.dump({"sprint": {"name": "My Sprint", "run_id": "run-b"}}),
+            encoding="utf-8",
+        )
+
+        # Querying with the earlier run_id should still find the summary
+        found = find_sprint_summary("run-a", tmp_path)
+        assert found == summary_path
+
+    def test_find_sprint_summary_direct_match_still_works(self, tmp_path: Path) -> None:
+        """Direct run_id match (no redirect) continues to work."""
+        import yaml
+
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "My Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        summary_path.write_text(
+            yaml.dump({"sprint": {"name": "My Sprint", "run_id": "run-xyz"}}),
+            encoding="utf-8",
+        )
+
+        found = find_sprint_summary("run-xyz", tmp_path)
+        assert found == summary_path

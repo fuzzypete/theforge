@@ -495,9 +495,19 @@ def _write_sprint_summary(
             }
         )
 
-    # When prior stories were merged in, recompute specs_total so it reflects
-    # the full logical sprint rather than just the stories run this invocation.
+    # Recompute all aggregate metrics from spec_entries so prior-run stories
+    # contributed by the accumulated state are included in the totals.
     effective_specs_total = len(spec_entries)
+    effective_cost_usd = round(sum(e.get("cost_usd", 0.0) for e in spec_entries), 4)
+    effective_succeeded = sum(
+        1 for e in spec_entries if e.get("outcome") in ("DONE", "ALREADY_DONE")
+    )
+    effective_failed = sum(
+        1
+        for e in spec_entries
+        if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", None)
+    )
+    effective_skipped = sum(1 for e in spec_entries if e.get("outcome") in ("SKIPPED", None))
 
     summary = {
         "sprint": {
@@ -507,14 +517,14 @@ def _write_sprint_summary(
             "run_id": run_id,
             "sprint_id": sprint_id,
             "run_log": f"run-{run_id}.log" if run_id else None,
-            "total_cost_usd": round(result.total_cost_usd, 4),
+            "total_cost_usd": effective_cost_usd,
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_seconds": round(duration, 1),
             "specs_total": effective_specs_total,
-            "specs_succeeded": result.specs_succeeded,
-            "specs_failed": result.specs_failed,
-            "specs_skipped": result.specs_skipped,
+            "specs_succeeded": effective_succeeded,
+            "specs_failed": effective_failed,
+            "specs_skipped": effective_skipped,
             "stopped_reason": result.stopped_reason,
             "ci_break_slug": ci_break_slug,
         },

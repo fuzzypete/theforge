@@ -23,11 +23,43 @@ class StoryStatusEntry:
     detail: str = ""
 
 
+def _follow_redirect_chain(run_id: str, project_root: Path, max_hops: int = 20) -> str:
+    """Follow .forge/runs/<run_id>.redirect files to find the terminal run_id.
+
+    Each redirect file contains JSON with a ``new_run_id`` key written when the
+    daemon hands off to a new worker process.  Returns the original run_id if no
+    redirect chain exists.
+    """
+    import json  # noqa: PLC0415
+
+    current = run_id
+    runs_dir = project_root / ".forge" / "runs"
+    for _ in range(max_hops):
+        redirect_file = runs_dir / f"{current}.redirect"
+        if not redirect_file.exists():
+            break
+        try:
+            data = json.loads(redirect_file.read_text(encoding="utf-8"))
+            new_id = data.get("new_run_id", "")
+            if not new_id or new_id == current:
+                break
+            current = new_id
+        except Exception:
+            break
+    return current
+
+
 def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
     """Scan .forge/logs/*/sprint-summary.yaml for the file containing run_id.
 
+    After a run_id rollover the summary is written under the terminal run_id.
+    Follows the redirect chain so earlier run_ids resolve to the same summary.
+
     Returns the Path to the matching sprint-summary.yaml, or None if not found.
     """
+    terminal_run_id = _follow_redirect_chain(run_id, project_root)
+    candidate_ids = {run_id, terminal_run_id}
+
     logs_dir = project_root / ".forge" / "logs"
     if not logs_dir.exists():
         return None
@@ -44,7 +76,7 @@ def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
                 data = yaml.safe_load(f)
             if isinstance(data, dict):
                 sprint_info = data.get("sprint", {})
-                if isinstance(sprint_info, dict) and sprint_info.get("run_id") == run_id:
+                if isinstance(sprint_info, dict) and sprint_info.get("run_id") in candidate_ids:
                     return summary_path
         except Exception:
             continue
