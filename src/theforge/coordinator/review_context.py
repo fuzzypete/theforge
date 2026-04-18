@@ -11,8 +11,6 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from theforge.artifacts import resolve_handoff_path
-from theforge.config import ForgeConfig
 from theforge.devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
 
 from . import util as _cu
@@ -117,13 +115,12 @@ def _handoff_commit_lines(handoff: DevHandoff | None) -> list[str] | None:
 
 
 def _get_handoff_commit_mismatch(
-    config: ForgeConfig,
     workspace_path: Path,
     base_branch: str,
     forge_handoff_path: Path | None = None,
 ) -> str | None:
     """Compare self-reported handoff commits to git log and return mismatch details."""
-    handoff = _parse_dev_handoff(config, workspace_path, forge_handoff_path=forge_handoff_path)
+    handoff = _parse_dev_handoff(forge_handoff_path=forge_handoff_path)
     handoff_lines = _handoff_commit_lines(handoff)
     if handoff_lines is None:
         return None
@@ -151,14 +148,13 @@ def _get_handoff_commit_mismatch(
 
 
 def _get_handoff_commit_warning(
-    config: ForgeConfig,
     workspace_path: Path,
     base_branch: str,
     forge_handoff_path: Path | None = None,
 ) -> str | None:
     """Compare self-reported handoff commits to git log and return a warning if mismatched."""
     mismatch = _get_handoff_commit_mismatch(
-        config, workspace_path, base_branch, forge_handoff_path=forge_handoff_path
+        workspace_path, base_branch, forge_handoff_path=forge_handoff_path
     )
     if mismatch is None:
         return None
@@ -166,112 +162,41 @@ def _get_handoff_commit_warning(
 
 
 def _get_handoff_content(
-    config: ForgeConfig,
-    workspace_path: Path,
     forge_handoff_path: Path | None = None,
 ) -> str:
-    """Read the configured handoff content as text for the reviewer.
-
-    Prefers the forge artifact (structured_output source) when provided and present,
-    prepending a source label. Falls back to the workspace handoff file.
-    """
-    import logging  # noqa: PLC0415
-
-    _logger = logging.getLogger(__name__)
-
+    """Read the forge artifact handoff content as text for the reviewer."""
     if forge_handoff_path is not None and forge_handoff_path.exists():
-        _logger.info("handoff source: structured_output (%s)", forge_handoff_path)
         raw = forge_handoff_path.read_text(encoding="utf-8")
         return f"[Captured from agent structured output]\n{raw}"
-    if forge_handoff_path is not None:
-        _logger.info(
-            "handoff source: file (forge artifact %s not found, falling back)",
-            forge_handoff_path,
-        )
-    if not config.validation.handoff_file:
-        return "(exit-code gate mode — no handoff file)"
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is not None and handoff_path.exists():
-        _logger.info("handoff source: file (%s)", handoff_path)
-        return handoff_path.read_text(encoding="utf-8")
-    return f"({config.validation.handoff_file} not found)"
+    return "(no forge handoff artifact)"
 
 
 def _get_raw_dev_notes(
-    config: ForgeConfig,
-    workspace_path: Path,
     forge_handoff_path: Path | None = None,
 ) -> str | None:
-    """Extract raw dev_notes from the handoff source, or None if absent.
-
-    When forge_handoff_path is provided and exists, reads from the forge artifact
-    (structured dict) and serializes it back to YAML so parse_dev_handoff can
-    consume it directly. Falls back to the workspace handoff file.
-    """
+    """Extract raw dev_notes from the forge artifact, or None if absent."""
     if forge_handoff_path is not None and forge_handoff_path.exists():
         try:
             data = yaml.safe_load(forge_handoff_path.read_text(encoding="utf-8"))
         except Exception:
             data = None
         if isinstance(data, dict):
-            # The forge artifact is already the parsed keys; serialize for parse_dev_handoff
             return yaml.dump(data, allow_unicode=True, default_flow_style=False)
-    if not config.validation.handoff_file:
-        return None
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is None or not handoff_path.exists():
-        return None
-    try:
-        data = yaml.safe_load(handoff_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    val = data.get("dev_notes")
-    if isinstance(val, str) and val.strip():
-        return val
     return None
 
 
 def _parse_dev_handoff(
-    config: ForgeConfig,
-    workspace_path: Path,
     forge_handoff_path: Path | None = None,
 ) -> DevHandoff | None:
-    """Parse and validate the dev handoff from the best available source.
+    """Parse and validate the dev handoff from the forge artifact.
 
-    Returns None only when there's no handoff file at all (exit-code gate mode)
-    and no forge artifact. Returns DevHandoff with parse_errors when dev_notes
-    is missing/blank or fails schema validation.
+    Returns None when no forge artifact is present.
+    Returns DevHandoff with parse_errors when the artifact is unreadable or invalid.
     """
-    # Forge artifact present → use it directly
-    if forge_handoff_path is not None and forge_handoff_path.exists():
-        raw = _get_raw_dev_notes(config, workspace_path, forge_handoff_path=forge_handoff_path)
-        if raw is None:
-            return DevHandoff(
-                summary="",
-                commits=[],
-                acceptance_criteria=[],
-                story_deviations=[],
-                deferred_items=[],
-                gate_result=None,
-                parse_errors=[f"forge handoff artifact unreadable: {forge_handoff_path}"],
-                raw={},
-            )
-        return parse_dev_handoff(raw)
-
-    # Fall back to workspace handoff file
-    if not config.validation.handoff_file:
+    if forge_handoff_path is None or not forge_handoff_path.exists():
         return None
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is None or not handoff_path.exists():
-        return None
-    raw = _get_raw_dev_notes(config, workspace_path)
+    raw = _get_raw_dev_notes(forge_handoff_path=forge_handoff_path)
     if raw is None:
-        try:
-            handoff_label = str(handoff_path.relative_to(workspace_path))
-        except ValueError:
-            handoff_label = str(handoff_path)
         return DevHandoff(
             summary="",
             commits=[],
@@ -279,28 +204,27 @@ def _parse_dev_handoff(
             story_deviations=[],
             deferred_items=[],
             gate_result=None,
-            parse_errors=[f"dev_notes field is missing or blank in {handoff_label}"],
+            parse_errors=[f"forge handoff artifact unreadable: {forge_handoff_path}"],
             raw={},
         )
     return parse_dev_handoff(raw)
 
 
 def _get_dev_notes(
-    config: ForgeConfig,
     workspace_path: Path,
     forge_handoff_path: Path | None = None,
 ) -> str | None:
-    """Extract dev_notes from the best available source as reviewer text.
+    """Extract dev_notes from the forge artifact as reviewer text.
 
     If the dev handoff is valid structured YAML, formats it as structured
     markdown sections. Falls back to raw text if parsing fails.
+    workspace_path is accepted but unused — kept for call-site compatibility.
     """
-    raw = _get_raw_dev_notes(config, workspace_path, forge_handoff_path=forge_handoff_path)
+    raw = _get_raw_dev_notes(forge_handoff_path=forge_handoff_path)
     if raw is None:
         return None
     handoff = parse_dev_handoff(raw)
     if handoff.parse_errors:
-        # Fall back to raw text when structured parsing fails
         return raw
     formatted = dev_handoff_to_reviewer_text(handoff)
     return formatted if formatted else raw

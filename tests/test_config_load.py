@@ -1407,8 +1407,6 @@ class TestValidationTestCommand:
             {
                 "validation": {
                     "gate_command": "make gate",
-                    "handoff_file": "handoff.yaml",
-                    "gate_decision_key": "gate_decision",
                     "test_command": "pytest tests/ -v -n auto",
                 }
             },
@@ -1422,11 +1420,24 @@ class TestValidationTestCommand:
             {
                 "validation": {
                     "gate_command": "make gate",
-                    "handoff_file": "handoff.yaml",
-                    "gate_decision_key": "gate_decision",
                 }
             },
             tmp_path,
         )
         config = load_config(config_path)
         assert config.validation.test_command is None
+
+    def test_handoff_file_raises_value_error(self, tmp_path):
+        """handoff_file and gate_decision_key are removed in v0.8 and must raise ValueError."""
+        config_path = _write_config(
+            {
+                "validation": {
+                    "gate_command": "make gate",
+                    "handoff_file": "handoff.yaml",
+                    "gate_decision_key": "gate_decision",
+                }
+            },
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="v0.8"):
+            load_config(config_path)

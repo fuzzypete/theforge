@@ -161,16 +161,11 @@ class ApiFallbackConfig:
 class ValidationConfig:
     """How to validate agent output.
 
-    Two gate modes:
-    1. Handoff-based (default for theforge): gate_command writes a handoff file
-       with a gate_decision_key. Set handoff_file and gate_decision_key.
-    2. Exit-code-based: gate passes if the command exits 0, fails otherwise.
-       Set handoff_file to "" (empty) to use this mode.
+    Gate mode: passes if the gate_command exits 0, fails otherwise.
+    The coordinator reads no file for the pass/fail decision.
     """
 
-    gate_command: str  # e.g. "make gate" or "make fmt && pytest"
-    handoff_file: str  # e.g. "handoff.yaml", or "" for exit-code mode
-    gate_decision_key: str  # YAML key to read for pass/fail
+    gate_command: str  # e.g. "make fmt && pytest"
     gate_timeout: int | None = None  # seconds; None = default 600
     gate_output_tail_chars: int = 2000  # chars of gate output to surface on FAIL
     gate_debug_command: str | None = (
@@ -187,7 +182,6 @@ class RetryPolicy:
     max_dev_iterations: int = 3  # retries within a single review cycle
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
-    max_handoff_retries: int = 2  # dev handoff rewrite retries after gate passes
     max_plan_regen_attempts: int = 3  # plan review rejection → regen cycles before escalating
     demotion_threshold: int = 2  # parse failures per reviewer per run before exclusion; 0 disables
     plan_escalation_threshold: int = (

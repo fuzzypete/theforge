@@ -57,7 +57,6 @@ class TestConventionViolationRouting:
             retry=base_config.retry.__class__(
                 max_dev_iterations=base_config.retry.max_dev_iterations,
                 max_review_cycles=2,
-                max_handoff_retries=base_config.retry.max_handoff_retries,
             ),
         )
         task = _make_task(tmp_path)
@@ -129,7 +128,6 @@ class TestConventionViolationRouting:
             retry=base_config.retry.__class__(
                 max_dev_iterations=base_config.retry.max_dev_iterations,
                 max_review_cycles=1,
-                max_handoff_retries=base_config.retry.max_handoff_retries,
             ),
         )
         task = _make_task(tmp_path)
@@ -176,7 +174,6 @@ class TestConventionViolationRouting:
             retry=base_config.retry.__class__(
                 max_dev_iterations=1,
                 max_review_cycles=2,
-                max_handoff_retries=base_config.retry.max_handoff_retries,
             ),
         )
         task = _make_task(tmp_path)

@@ -49,8 +49,6 @@ def _make_config(project="test-project", base_branch="main", post_run=None, post
         ),
         validation=ValidationConfig(
             gate_command="make gate",
-            handoff_file="handoff.yaml",
-            gate_decision_key="gate_decision",
         ),
         dev_profile=DEFAULT_DEV_PROFILE,
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,

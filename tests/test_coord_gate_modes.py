@@ -13,7 +13,6 @@ from coord_test_helpers import (
     _make_agent_result,
     _make_config,
     _shell_with_gate,
-    _write_handoff,
 )
 
 from theforge.config import (
@@ -33,7 +32,7 @@ from theforge.task import TaskStory
 
 
 def _make_exit_code_config(tmp_path: Path) -> ForgeConfig:
-    """Config with exit-code gate mode (empty handoff_file)."""
+    """Config with exit-code gate mode."""
     return ForgeConfig(
         project="test",
         project_root=tmp_path,
@@ -44,8 +43,6 @@ def _make_exit_code_config(tmp_path: Path) -> ForgeConfig:
         ),
         validation=ValidationConfig(
             gate_command="pytest {pytest_target} -q",
-            handoff_file="",
-            gate_decision_key="",
             gate_timeout=120,
         ),
         dev_profile=DEFAULT_DEV_PROFILE,
@@ -218,7 +215,7 @@ class TestExitCodeGateMode:
     def test_dirty_worktree_blocked_in_exit_code_mode(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Dirty worktree is still caught in exit-code mode (empty handoff_file)."""
+        """Dirty worktree is still caught in exit-code mode."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -247,7 +244,7 @@ class TestExitCodeGateMode:
     def test_exit_code_dirty_worktree_detected(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Exit-code mode: dirty files detected (empty handoff_file must not cause false-clean)."""
+        """Exit-code mode: dirty files detected correctly."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -488,7 +485,6 @@ class TestGateOverride:
             # Track any gate-related shell calls
             if "gate" in cmd:
                 gate_calls.append(cmd)
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -531,7 +527,6 @@ class TestGateOverride:
         def shell_side_effect(cmd, cwd, **kwargs):
             called_cmds.append(cmd)
             if "make lint" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
@@ -684,7 +679,6 @@ class TestGateOverride:
             def shell_side_effect(cmd, cwd, **kwargs):
                 if "gate" in cmd:
                     gate_calls.append(cmd)
-                    _write_handoff(Path(cwd), "PASS")
                     return (True, "OK")
                 if "git status --porcelain" in cmd:
                     return (True, "")

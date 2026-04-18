@@ -60,8 +60,6 @@ def build_agent_entries(state: CoordinatorState, config: ForgeConfig) -> list[di
     for i, r in enumerate(state.dev_results):
         dur = state.dev_durations[i] if i < len(state.dev_durations) else None
         agents.append(_agent_entry(r, "dev", config.dev_profile.name, dur))
-    for r in state.dev_handoff_fix_results:
-        agents.append(_agent_entry(r, "dev/handoff-fix", config.dev_profile.name, None))
     for i, r in enumerate(state.review_agent_results):
         dur = state.review_durations[i] if i < len(state.review_durations) else None
         role = "synthesis" if r.profile_name == "synthesis" else "review"

@@ -1,9 +1,8 @@
-"""Tests for gate execution helpers: stale handoff, gate decision fallback,
-dirty worktree detection, and zero-change guard."""
+"""Tests for gate execution helpers: stale handoff, dirty worktree detection,
+and zero-change guard."""
 
 from __future__ import annotations
 
-import dataclasses
 import signal
 import subprocess
 from pathlib import Path
@@ -11,7 +10,6 @@ from unittest import mock
 from unittest.mock import patch
 
 import pytest
-import yaml
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
@@ -29,65 +27,12 @@ from theforge.config import (
     DEFAULT_VALIDATION,
     ForgeConfig,
     RetryPolicy,
-    ValidationConfig,
     WorkspaceConfig,
 )
 from theforge.coordinator import util as _cu
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.gate import _read_gate_decision
 from theforge.coordinator.state import Phase
 from theforge.task import TaskStory
-
-# ── Local helpers ─────────────────────────────────────────────────────
-
-
-def _make_exit_code_config(tmp_path: Path) -> ForgeConfig:
-    """Config with exit-code gate mode (empty handoff_file)."""
-    return ForgeConfig(
-        project="test",
-        project_root=tmp_path,
-        workspace=WorkspaceConfig(
-            create_command="mkdir -p {slug}",
-            path_pattern="{slug}",
-            branch_pattern="forge/{slug}",
-        ),
-        validation=ValidationConfig(
-            gate_command="pytest {pytest_target} -q",
-            handoff_file="",
-            gate_decision_key="",
-            gate_timeout=120,
-        ),
-        dev_profile=DEFAULT_DEV_PROFILE,
-        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
-        review_pool=[DEFAULT_REVIEW_PROFILE],
-        synthesis_profile=None,
-        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-    )
-
-
-def _shell_exit_code(pass_on_call: int | None = None, gate_marker: str = "pytest"):
-    """Shell side_effect for exit-code gate mode.
-
-    If pass_on_call is None, all gate calls pass.
-    If pass_on_call is N, gate fails until the Nth call.
-    gate_marker: string to detect which shell command is the gate command.
-    """
-    gate_idx = {"n": 0}
-
-    def side_effect(cmd, cwd, **kwargs):
-        if gate_marker in cmd:
-            gate_idx["n"] += 1
-            if pass_on_call is not None and gate_idx["n"] < pass_on_call:
-                return (False, "FAILED: 1 error")
-            return (True, "passed")
-        if "git status --porcelain" in cmd:
-            return (True, "")
-        stale_resp = _handle_stale_check_cmd(cmd)
-        if stale_resp is not None:
-            return stale_resp
-        return (True, "OK")
-
-    return side_effect
 
 
 def _make_task(tmp_path: Path) -> TaskStory:
@@ -219,49 +164,6 @@ class TestCoordinatorStaleHandoff:
         assert "Gate" in result.message or "gate" in result.message
 
 
-class TestGateDecisionFallback:
-    def test_prefers_configured_handoff_path(self, tmp_path):
-        config = dataclasses.replace(
-            _make_config(tmp_path),
-            validation=dataclasses.replace(
-                _make_config(tmp_path).validation,
-                handoff_file=".forge/handoff.yaml",
-            ),
-        )
-        workspace = tmp_path / "test-task"
-        (workspace / ".forge").mkdir(parents=True)
-        (workspace / ".forge" / "handoff.yaml").write_text(
-            yaml.dump({"gate_decision": "PASS"}), encoding="utf-8"
-        )
-        (workspace / "handoff.yaml").write_text(
-            yaml.dump({"gate_decision": "FAIL"}), encoding="utf-8"
-        )
-
-        decision, error = _read_gate_decision(config, workspace)
-
-        assert error is None
-        assert decision == "PASS"
-
-    def test_falls_back_to_legacy_root_handoff(self, tmp_path):
-        config = dataclasses.replace(
-            _make_config(tmp_path),
-            validation=dataclasses.replace(
-                _make_config(tmp_path).validation,
-                handoff_file=".forge/handoff.yaml",
-            ),
-        )
-        workspace = tmp_path / "test-task"
-        workspace.mkdir()
-        (workspace / "handoff.yaml").write_text(
-            yaml.dump({"gate_decision": "PASS"}), encoding="utf-8"
-        )
-
-        decision, error = _read_gate_decision(config, workspace)
-
-        assert error is None
-        assert decision == "PASS"
-
-
 # ── Dirty worktree tests ─────────────────────────────────────────────
 
 
@@ -287,7 +189,6 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py\n M src/theforge/config.py")
@@ -339,7 +240,6 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py")
@@ -393,7 +293,6 @@ class TestCoordinatorDirtyWorktree:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/runner.py")
@@ -435,7 +334,6 @@ class TestCoordinatorDirtyWorktree:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 # Only handoff.yaml is dirty — that's expected
@@ -462,15 +360,14 @@ class TestCoordinatorDirtyWorktree:
     def test_handoff_dirty_worktree_unchanged(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Regression guard: handoff mode still filters handoff.yaml from dirty check."""
-        config = _make_config(tmp_path)  # handoff_file="handoff.yaml"
+        """Regression guard: handoff.yaml as untracked file (??) is filtered from dirty check."""
+        config = _make_config(tmp_path)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 # handoff.yaml is the only dirty file — should be filtered out
@@ -517,7 +414,6 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/ideate.py")
@@ -570,7 +466,6 @@ class TestCoordinatorDirtyWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             shell_cmds.append(cmd)
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/ideate.py\n?? new_scratch.py")
@@ -614,7 +509,6 @@ class TestDevZeroChangeGuard:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")  # no dirty files
@@ -695,7 +589,6 @@ class TestDevZeroChangeGuard:
 
         def shell_side_effect(cmd, cwd, **kwargs):
             if "gate" in cmd:
-                _write_handoff(Path(cwd), "PASS")
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, " M src/theforge/config.py")
@@ -767,11 +660,9 @@ class TestDevZeroChangeGuard:
                 gate_calls["n"] += 1
                 if gate_calls["n"] == 1:
                     # First gate: FAIL → triggers dev retry
-                    _write_handoff(Path(cwd), "FAIL")
-                    return (True, "FAIL")
+                    return (False, "FAIL: tests failed")
                 # Second gate: PASS
-                _write_handoff(Path(cwd), "PASS")
-                return (True, "abc1234 feat: implement")
+                return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
             stale_resp = _handle_stale_check_cmd(cmd)
@@ -843,11 +734,9 @@ class TestDevZeroChangeGuard:
                 gate_calls["n"] += 1
                 if gate_calls["n"] == 2:
                     # Second gate (after review retry dev): FAIL → triggers gate retry
-                    _write_handoff(Path(cwd), "FAIL")
-                    return (True, "FAIL")
+                    return (False, "FAIL: tests failed")
                 # All others: PASS
-                _write_handoff(Path(cwd), "PASS")
-                return (True, "abc1234 feat: implement")
+                return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")
             stale_resp = _handle_stale_check_cmd(cmd)

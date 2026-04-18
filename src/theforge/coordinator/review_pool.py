@@ -182,12 +182,10 @@ def _run_review_pool(
         diff_content = _get_diff_content(workspace_path, config.workspace.base_branch)
         commit_diffs = _get_commit_diffs(workspace_path, config.workspace.base_branch)
         _forge_path = _latest_forge_handoff_path(state)
-        handoff_content = _get_handoff_content(
-            config, workspace_path, forge_handoff_path=_forge_path
-        )
-        dev_notes = _get_dev_notes(config, workspace_path, forge_handoff_path=_forge_path)
+        handoff_content = _get_handoff_content(forge_handoff_path=_forge_path)
+        dev_notes = _get_dev_notes(workspace_path, forge_handoff_path=_forge_path)
         handoff_commit_warning = _get_handoff_commit_warning(
-            config, workspace_path, config.workspace.base_branch, forge_handoff_path=_forge_path
+            workspace_path, config.workspace.base_branch, forge_handoff_path=_forge_path
         )
 
         _emit_review_git_context(
@@ -208,9 +206,7 @@ def _run_review_pool(
             None,
         )
         _prior_p1_descs: list[str] = list(_last_rc.p1_findings) if _last_rc else []
-        _parsed_handoff = _parse_dev_handoff(
-            config, workspace_path, forge_handoff_path=_forge_path
-        )
+        _parsed_handoff = _parse_dev_handoff(forge_handoff_path=_forge_path)
         _claim_summary = (
             _parsed_handoff.summary
             if _parsed_handoff is not None and not _parsed_handoff.parse_errors

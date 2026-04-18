@@ -40,8 +40,6 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         ),
         validation=ValidationConfig(
             gate_command="make gate",
-            handoff_file="handoff.yaml",
-            gate_decision_key="gate_result",
         ),
         dev_profile=DEFAULT_DEV_PROFILE,
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,

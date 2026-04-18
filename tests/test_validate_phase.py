@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -145,10 +144,7 @@ def test_run_validate_phase_records_dirty_pass_iteration_once(tmp_path: Path) ->
 
 
 def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -> None:
-    config = dataclasses.replace(
-        _make_config(tmp_path),
-        validation=dataclasses.replace(_make_config(tmp_path).validation, handoff_file=None),
-    )
+    config = _make_config(tmp_path)
     task = _make_task(tmp_path)
     state = CoordinatorState(dev_iteration=1)
     state.budget.max_iterations = config.retry.max_dev_iterations
@@ -241,8 +237,8 @@ def test_run_validate_phase_retry_feedback_includes_extracted_failures(tmp_path:
         patch(
             "theforge.coordinator.validate_phase._run_gate_full",
             return_value=(
+                "FAIL",
                 None,
-                "failed",
                 "FAILED tests/test_existing.py::test_breaks\n"
                 "FAILED generated/test_new.py::test_agent",
                 "pytest tests/",

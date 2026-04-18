@@ -244,9 +244,6 @@ class CoordinatorState:
     )  # unified retry budget; owns cycle_count and total_count
     dev_trace_count: int = 0  # monotonically increasing across all cycles; never reset
     dev_results: list[AgentResult] = field(default_factory=list)
-    dev_handoff_fix_results: list[AgentResult] = field(
-        default_factory=list
-    )  # handoff-fix retries, separate from productive dev calls
     dev_durations: list[float] = field(default_factory=list)  # wall-clock seconds per dev call
     review_agent_results: list[AgentResult] = field(default_factory=list)
     review_durations: list[float] = field(
@@ -386,9 +383,7 @@ class CoordinatorState:
 
     @property
     def total_dev_cost(self) -> float:
-        return sum(r.cost_usd or 0.0 for r in self.dev_results) + sum(
-            r.cost_usd or 0.0 for r in self.dev_handoff_fix_results
-        )
+        return sum(r.cost_usd or 0.0 for r in self.dev_results)
 
     @property
     def total_review_cost(self) -> float:

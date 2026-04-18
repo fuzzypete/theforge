@@ -12,8 +12,6 @@ workspace:
 
 validation:
   gate_command: "python -m pytest tests/ -q"
-  handoff_file: "handoff.yaml"
-  gate_decision_key: "gate_decision"
 
 profiles:
   dev:

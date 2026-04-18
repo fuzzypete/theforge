@@ -5,9 +5,6 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
-import yaml
-
-from theforge.artifacts import ensure_parent_dir, resolve_handoff_path
 from theforge.config import ForgeConfig
 from theforge.task import TaskStory
 from theforge.traces import write_trace
@@ -68,79 +65,16 @@ def _is_gate_skip(gate_override: str | None) -> bool:
     return isinstance(gate_override, str) and gate_override.lower() == "none"
 
 
-def _read_gate_decision(
-    config: ForgeConfig, workspace_path: Path
-) -> tuple[str | None, str | None]:
-    """Read gate decision from handoff.yaml. Returns (decision, error)."""
-    handoff_path = resolve_handoff_path(workspace_path, config.validation.handoff_file)
-    if handoff_path is None or not handoff_path.exists():
-        return None, (f"handoff file not found: {workspace_path / config.validation.handoff_file}")
-
-    try:
-        with open(handoff_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except yaml.YAMLError as e:
-        return None, f"Failed to parse handoff YAML: {e}"
-    except OSError as e:
-        return None, f"Failed to read handoff file: {e}"
-
-    decision = data.get(config.validation.gate_decision_key)
-    if decision is None:
-        try:
-            handoff_label = str(handoff_path.relative_to(workspace_path))
-        except ValueError:
-            handoff_label = str(handoff_path)
-        return None, (f"Key {config.validation.gate_decision_key!r} not found in {handoff_label}")
-
-    return str(decision).upper(), None
-
-
-def _write_gate_decision(config: ForgeConfig, workspace_path: Path, decision: str) -> None:
-    """Merge gate_decision into handoff.yaml without overwriting other keys."""
-    handoff_path = workspace_path / config.validation.handoff_file
-    try:
-        data: dict = {}
-        if handoff_path.exists():
-            with open(handoff_path, encoding="utf-8") as f:
-                loaded = yaml.safe_load(f)
-            # Only reuse the file if it parsed as a mapping; otherwise start fresh.
-            if isinstance(loaded, dict):
-                data = loaded
-        data[config.validation.gate_decision_key] = decision
-        ensure_parent_dir(handoff_path)
-        with open(handoff_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, allow_unicode=True)
-    except (OSError, yaml.YAMLError) as e:
-        _cu._log(
-            f"Warning: could not write gate_decision to {config.validation.handoff_file}: {e}"
-        )
-
-
-def _write_gate_decision_to_forge(
-    forge_artifact_path: Path, gate_decision_key: str, decision: str
-) -> None:
-    """Merge gate_decision into the forge artifact YAML (non-fatal on error)."""
-    try:
-        data = yaml.safe_load(forge_artifact_path.read_text(encoding="utf-8")) or {}
-        if isinstance(data, dict):
-            data[gate_decision_key] = decision
-            forge_artifact_path.write_text(
-                yaml.dump(data, allow_unicode=True, default_flow_style=False),
-                encoding="utf-8",
-            )
-    except Exception as exc:  # noqa: BLE001
-        _cu._log(f"Warning: could not update forge artifact with gate_decision: {exc}")
-
-
 def _run_gate_full(
     config: ForgeConfig,
     workspace_path: Path,
     task: TaskStory | None = None,
     iter_num: int | None = None,
 ) -> tuple[str | None, str | None, str, str]:
-    """Run the gate command and read the decision.
+    """Run the gate command and determine pass/fail from exit code.
 
     Returns (decision, error, output_tail, resolved_gate_cmd).
+    decision is "PASS" or "FAIL"; error is set only on infrastructure failure.
     """
     has_override = (
         task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
@@ -181,11 +115,7 @@ def _run_gate_full(
     if output.startswith("ERROR:"):
         return None, f"Gate infrastructure error: {output[:300]}", output_tail, gate_cmd
 
-    # Gate decision comes from exit code. Write it into handoff.yaml (merging, not
-    # overwriting) so downstream validation sees gate_decision alongside dev notes.
     decision = "PASS" if ok else "FAIL"
-    if config.validation.handoff_file:
-        _write_gate_decision(config, workspace_path, decision)
     if decision == "FAIL":
         _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
     return decision, None, output_tail, gate_cmd

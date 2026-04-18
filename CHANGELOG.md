@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **File-based handoff contract removed (breaking):** `handoff_file` and `gate_decision_key` are
+  no longer accepted under `validation:` in `forge.yaml`. The gate now signals pass/fail via exit
+  code only. Remove these keys from your `forge.yaml` — the config loader will error on startup if
+  they are present. The `make gate` target no longer writes `.forge/handoff.yaml`. (#825)
 
 ## [0.7.0] — 2026-04-13
 

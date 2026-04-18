@@ -44,8 +44,6 @@ DEFAULT_WORKSPACE = WorkspaceConfig(
 
 DEFAULT_VALIDATION = ValidationConfig(
     gate_command="make gate",
-    handoff_file="handoff.yaml",
-    gate_decision_key="gate_decision",
 )
 
 # CLIs supported by the runner. Unsupported CLIs are rejected at config load.
@@ -82,10 +80,8 @@ workspace:
   branch_pattern: "forge/{slug}"
 
 validation:
-  # Command to run all validation checks and produce a gate artifact.
+  # Command to run validation checks. Gate passes on exit 0, fails on non-zero.
   gate_command: "make gate"
-  handoff_file: "handoff.yaml"
-  gate_decision_key: "gate_decision"  # YAML key in handoff_file: PASS | FAIL | BLOCKED
 
 profiles:
   dev:

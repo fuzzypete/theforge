@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import signal as _signal
 import warnings
 from pathlib import Path
@@ -275,25 +274,6 @@ class TestCmdRunFromFlag:
         assert rc == 1
         mock_run.assert_not_called()
 
-    def test_from_review_no_handoff_returns_1(self, tmp_path):
-        """--from review with worktree but no .forge/handoff.yaml → exit code 1."""
-        config = _make_forge_config(tmp_path)
-        slug = "story"
-        args = _make_run_args(tmp_path, from_phase="review", slug=slug)
-
-        # Create worktree without .forge/handoff.yaml
-        wt = tmp_path / slug
-        wt.mkdir()
-
-        with (
-            patch("theforge.cli.run.load_config", return_value=config),
-            patch("theforge.cli.run.run_task") as mock_run,
-        ):
-            rc = cmd_run(args)
-
-        assert rc == 1
-        mock_run.assert_not_called()
-
     def test_from_dev_with_plan_md_succeeds(self, tmp_path):
         """--from dev with worktree + .forge/plan.md passes preconditions."""
         config = _make_forge_config(tmp_path)
@@ -335,30 +315,6 @@ class TestCmdRunFromFlag:
 
         assert rc == 0
         assert mock_run.call_args.kwargs.get("start_phase") == Phase.DEV
-
-    def test_from_review_with_legacy_root_handoff_succeeds(self, tmp_path):
-        """--from review accepts legacy handoff.yaml when configured .forge file is absent."""
-        config = _make_forge_config(tmp_path)
-        config = dataclasses.replace(
-            config,
-            validation=dataclasses.replace(config.validation, handoff_file=".forge/handoff.yaml"),
-        )
-        slug = "story"
-        args = _make_run_args(tmp_path, from_phase="review", slug=slug)
-
-        wt = tmp_path / slug
-        wt.mkdir()
-        (wt / "handoff.yaml").write_text("gate_decision: PASS\n", encoding="utf-8")
-
-        with (
-            patch("theforge.cli.run.load_config", return_value=config),
-            patch("theforge.cli.run.run_task", return_value=_stub_result()) as mock_run,
-            patch("theforge.cli.run._write_audit"),
-        ):
-            rc = cmd_run(args)
-
-        assert rc == 0
-        assert mock_run.call_args.kwargs.get("start_phase") == Phase.REVIEW
 
 
 # ── TestCmdRunConfigOverrides ─────────────────────────────────────────
