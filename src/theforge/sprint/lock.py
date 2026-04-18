@@ -9,7 +9,31 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import yaml
+
 from theforge.pid import _is_pid_alive
+
+
+def _is_escalated_worktree(worktree_path: Path) -> bool:
+    """Return True when the worktree's audit marks it as an escalated, preserved run.
+
+    Escalated worktrees are intentionally kept for human triage after the
+    coordinator terminates in the ESCALATE phase.  They are not collisions.
+    """
+    audit_path = worktree_path / ".forge" / "audit.yaml"
+    if not audit_path.exists():
+        return False
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    outcome = data.get("outcome")
+    if not isinstance(outcome, dict):
+        return False
+    return outcome.get("final_phase") == "ESCALATE"
 
 
 class SprintConflictError(Exception):
@@ -32,6 +56,28 @@ def _read_lock_pid(fd) -> int | None:
         return None
 
 
+def check_escalated_worktrees(
+    slugs: list[str],
+    path_pattern: str,
+    project_root: Path,
+) -> list[str]:
+    """Return slugs whose on-disk worktree is marked escalated (preserved).
+
+    Companion to :func:`check_active_worktrees` — the two cases are disjoint:
+    an escalated worktree is intentionally held for human triage and must not
+    be rescheduled, whereas an *active* worktree is a genuine collision that
+    must be handled as a conflict.
+    """
+    escalated: list[str] = []
+    for slug in slugs:
+        worktree_path = project_root / path_pattern.format(slug=slug)
+        if not worktree_path.exists():
+            continue
+        if _is_escalated_worktree(worktree_path):
+            escalated.append(slug)
+    return escalated
+
+
 def check_active_worktrees(
     slugs: list[str],
     path_pattern: str,
@@ -43,6 +89,8 @@ def check_active_worktrees(
     for slug in slugs:
         worktree_path = project_root / path_pattern.format(slug=slug)
         if not worktree_path.exists():
+            continue
+        if _is_escalated_worktree(worktree_path):
             continue
         result = subprocess.run(
             [

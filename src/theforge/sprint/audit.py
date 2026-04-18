@@ -107,12 +107,14 @@ def _write_sprint_audit(
     tasks_by_slug: "dict[str, TaskStory] | None" = None,
     ci_break_slug: str | None = None,
     sprint_id: str | None = None,
+    dropped_slugs: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
     batch_assignments = batch_assignments or {}
     slug_map = slug_map or {}
     tasks_by_slug = tasks_by_slug or {}
+    dropped_slugs = dropped_slugs or {}
 
     # Build per-spec entries
     spec_entries = []
@@ -226,14 +228,23 @@ def _write_sprint_audit(
                 entry["finished_at"] = None
             entry["batch"] = batch_assignments.get(slug, 0)
         else:
-            # Skipped due to budget or pre-skip (resume)
+            # Dropped by launch guard (active-worktree collision, lock held,
+            # or preserved-escalated) takes precedence over the generic
+            # SKIPPED path — operators need to see drop reasons explicitly.
+            drop_reason = dropped_slugs.get(slug)
+            if drop_reason == "preserved-escalated":
+                drop_outcome = "PRESERVED"
+            elif drop_reason is not None:
+                drop_outcome = "DROPPED"
+            else:
+                drop_outcome = "SKIPPED"
             entry = {
                 "path": display_key,
-                "outcome": "SKIPPED",
+                "outcome": drop_outcome,
                 "cost_usd": 0.0,
                 "preflight": None,
-                "error": None,
-                "error_type": None,
+                "error": drop_reason,
+                "error_type": "dropped" if drop_reason else None,
                 "merge": False,
                 "reviews": [],
                 "depends_on": task.depends_on if task else [],
@@ -249,6 +260,8 @@ def _write_sprint_audit(
                 "finished_at": None,
                 "batch": batch_assignments.get(slug, 0),
             }
+            if drop_reason:
+                entry["drop_reason"] = drop_reason
         spec_entries.append(entry)
 
     usage_distribution = []
@@ -330,6 +343,7 @@ def _write_sprint_summary(
     ci_break_slug: str | None = None,
     sprint_id: str | None = None,
     project_root: Path | None = None,
+    dropped_slugs: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -343,6 +357,7 @@ def _write_sprint_summary(
     batch_assignments = batch_assignments or {}
     slug_map = slug_map or {}
     tasks_by_slug = tasks_by_slug or {}
+    dropped_slugs = dropped_slugs or {}
 
     # Load prior accumulated story entries from the sprint-level state file.
     # Keyed by canonical_ref so we can substitute them for stories not in
@@ -449,19 +464,28 @@ def _write_sprint_summary(
             spec_entries.append(entry)
             accumulated_for_state.append(prior)
         else:
+            drop_reason = dropped_slugs.get(slug)
+            if drop_reason == "preserved-escalated":
+                drop_outcome = "PRESERVED"
+            elif drop_reason is not None:
+                drop_outcome = "DROPPED"
+            else:
+                drop_outcome = "SKIPPED"
             entry = {
                 "path": display_key,
                 "slug": slug,
-                "outcome": "SKIPPED",
+                "outcome": drop_outcome,
                 "verdict": None,
                 "cost_usd": 0.0,
                 "preflight": None,
-                "error": None,
-                "error_type": None,
+                "error": drop_reason,
+                "error_type": "dropped" if drop_reason else None,
                 "merge": False,
                 "batch": batch_assignments.get(slug, 0),
                 "depends_on": list(getattr(tasks_by_slug.get(slug), "depends_on", None) or []),
             }
+            if drop_reason:
+                entry["drop_reason"] = drop_reason
             spec_entries.append(entry)
 
     # Persist accumulated state so future runs can find stories from this invocation.
@@ -505,9 +529,11 @@ def _write_sprint_summary(
     effective_failed = sum(
         1
         for e in spec_entries
-        if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", None)
+        if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", "PRESERVED", None)
     )
-    effective_skipped = sum(1 for e in spec_entries if e.get("outcome") in ("SKIPPED", None))
+    effective_skipped = sum(
+        1 for e in spec_entries if e.get("outcome") in ("SKIPPED", "PRESERVED", None)
+    )
 
     summary = {
         "sprint": {

@@ -131,16 +131,20 @@ def cmd_sprint(args: object) -> int:
         return 1
 
     slugs = parse_manifest_slugs(config, manifest_path)
-    locked_fds, launch_error = _acquire_launch_locks(slugs=slugs, config=config, resume=resume)
+    reexec = _is_reexec()
+    locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
+        slugs=slugs, config=config, resume=resume, allow_drop=reexec
+    )
     if launch_error is not None:
         return launch_error
 
+    live_slugs = [s for s in slugs if s not in dropped_slugs]
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
         run_id = _generate_run_id()
         slug = manifest_path.stem
         _detach.daemonize_run(run_id, slug, config.project_root)
         locked_fds = reacquire_story_locks_in_daemon(
-            slugs,
+            live_slugs,
             config.project_root,
             locked_fds,
         )
@@ -182,6 +186,7 @@ def cmd_sprint(args: object) -> int:
             resume=resume,
             no_pull=no_pull,
             run_id=run_id,
+            dropped_slugs=dropped_slugs,
         )
     except Exception as exc:
         import traceback
@@ -199,13 +204,31 @@ def cmd_sprint(args: object) -> int:
 
 
 def _acquire_launch_locks(
-    slugs: list[str], config: object, resume: bool
-) -> tuple[list, int | None]:
+    slugs: list[str],
+    config: object,
+    resume: bool,
+    *,
+    allow_drop: bool = False,
+) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
         slugs=slugs,
         config=config,
         resume=resume,
+        allow_drop=allow_drop,
     )
+
+
+def _is_reexec() -> bool:
+    """Return True when the current process was started by a forge re-exec.
+
+    ``FORGE_PREV_RUN_ID`` is set by coordinator workspace.py just before
+    ``os.execv``; it is only popped inside ``daemonize_run``.  Seeing it here
+    (before daemonization) is the authoritative signal that we are running a
+    re-exec of a mid-sprint forge.
+    """
+    import os
+
+    return bool(os.environ.get("FORGE_PREV_RUN_ID"))
 
 
 def _run_query_mode(
@@ -336,9 +359,14 @@ def _run_query_mode(
 
     # ── Lock acquisition using resolved slugs (no manifest path needed) ──
     slugs = [task.slug for task, _src, _ref in resolved.stories]
-    locked_fds, launch_error = _acquire_launch_locks(slugs=slugs, config=config, resume=resume)
+    reexec = _is_reexec()
+    locked_fds, launch_error, dropped_slugs = _acquire_launch_locks(
+        slugs=slugs, config=config, resume=resume, allow_drop=reexec
+    )
     if launch_error is not None:
         return launch_error
+
+    live_slugs = [s for s in slugs if s not in dropped_slugs]
 
     # ── Daemonization: slug from sprint name, not manifest filename ───────
     run_id = _generate_run_id()
@@ -347,7 +375,7 @@ def _run_query_mode(
     if not getattr(args, "fg", False) and not getattr(args, "detach", False):
         _detach.daemonize_run(run_id, sprint_slug, config.project_root)
         locked_fds = reacquire_story_locks_in_daemon(
-            slugs,
+            live_slugs,
             config.project_root,
             locked_fds,
         )
@@ -374,6 +402,7 @@ def _run_query_mode(
             resume=resume,
             no_pull=no_pull,
             run_id=run_id,
+            dropped_slugs=dropped_slugs,
         )
     except Exception as exc:
         import traceback
