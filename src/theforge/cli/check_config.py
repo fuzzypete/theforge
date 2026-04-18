@@ -10,6 +10,7 @@ from theforge.cli.shared import _find_config
 from theforge.config import ForgeConfig, ModelProfile, load_config
 from theforge.config.auth import check_agent_auth
 from theforge.config.profiles import _apply_provider_fallback
+from theforge.config.role_derivation import derive_roles
 from theforge.config.types import PlanConfig
 
 
@@ -66,6 +67,102 @@ def _thinking_budget_label(profile: ModelProfile) -> str:
     return f"  thinking_budget={profile.thinking_budget}"
 
 
+def _provider_label(model_key: str) -> str:
+    """Return a short human-readable label for a model key like 'claude/sonnet'."""
+    provider = model_key.split("/", 1)[0] if "/" in model_key else model_key
+    _CLI_PROVIDERS = {"claude"}
+    suffix = "cli" if provider in _CLI_PROVIDERS else "api"
+    return f"{provider} {suffix}"
+
+
+def _ref_transport_label(cli: str | None, provider: str | None, model: str) -> str:
+    transport = cli if cli is not None else (provider or "?")
+    return f"{transport} / {model}"
+
+
+def _format_complexity_aware_section(
+    models: list[str],
+    budget_usd: float,
+    overrides: dict | None,
+) -> list[str]:
+    """Build the DERIVED ROLES section for v0.8 simple-mode configs.
+
+    Calls derive_roles() at each complexity level and renders the tier×complexity
+    routing table so the operator can verify complexity-aware routing at a glance.
+    """
+    _ov = overrides or {}
+    ra_low = derive_roles(models, _ov, budget_usd=budget_usd, complexity="LOW")
+    ra_mid = derive_roles(models, _ov, budget_usd=budget_usd, complexity="MEDIUM")
+    ra_high = derive_roles(models, _ov, budget_usd=budget_usd, complexity="HIGH")
+
+    lines: list[str] = []
+    lines.append("DERIVED ROLES (complexity-aware)")
+    lines.append("  Role selection is driven by preflight complexity. See #807 for tier mapping.")
+    lines.append("")
+
+    # Preflight: always static (runs before complexity is known)
+    pre = ra_low.preflight.ref
+    pre_label = _ref_transport_label(pre.cli, pre.provider, pre.model)
+    lines.append(f"  {'preflight:':<14}{pre_label:<28} (static — runs before complexity known)")
+
+    # Plan: show per-complexity, collapsing equal adjacent levels
+    def _plan_label(ra) -> str:  # type: ignore[no-untyped-def]
+        r = ra.plan.ref
+        return _ref_transport_label(r.cli, r.provider, r.model)
+
+    pl, pm, ph = _plan_label(ra_low), _plan_label(ra_mid), _plan_label(ra_high)
+    plan_parts = _collapse_complexity_labels({"LOW": pl, "MEDIUM": pm, "HIGH": ph})
+    lines.append(f"  {'plan:':<14}{plan_parts}")
+
+    # Dev: show per-complexity
+    def _dev_label(ra) -> str:  # type: ignore[no-untyped-def]
+        r = ra.dev.ref
+        return _ref_transport_label(r.cli, r.provider, r.model)
+
+    dl, dm, dh = _dev_label(ra_low), _dev_label(ra_mid), _dev_label(ra_high)
+    dev_parts = _collapse_complexity_labels({"LOW": dl, "MEDIUM": dm, "HIGH": dh})
+    lines.append(f"  {'dev:':<14}{dev_parts}")
+
+    # Review pool: show pool size + synthesis info per complexity
+    def _review_label(ra) -> str:  # type: ignore[no-untyped-def]
+        n = len(ra.review_pool)
+        synth = " + synthesis" if ra.synthesis is not None else ""
+        return f"{n} reviewer{'s' if n != 1 else ''}{synth}"
+
+    rl, rm, rh = _review_label(ra_low), _review_label(ra_mid), _review_label(ra_high)
+    review_parts = _collapse_complexity_labels({"LOW": rl, "MEDIUM": rm, "HIGH": rh})
+    lines.append(f"  {'code_review:':<14}{review_parts}")
+
+    lines.append("")
+    has_overrides = bool(_ov) and any(k != "plan_agent_review" for k in _ov)
+    lines.append(f"  Advanced overrides: {'none' if not has_overrides else ', '.join(_ov.keys())}")
+
+    return lines
+
+
+def _collapse_complexity_labels(mapping: dict[str, str]) -> str:
+    """Collapse {'LOW': A, 'MEDIUM': B, 'HIGH': B} → 'A (LOW) / B (MEDIUM, HIGH)'.
+
+    Groups consecutive identical labels under shared complexity annotations.
+    """
+    order = ["LOW", "MEDIUM", "HIGH"]
+    groups: list[tuple[str, list[str]]] = []
+    for level in order:
+        label = mapping[level]
+        if groups and groups[-1][0] == label:
+            groups[-1][1].append(level)
+        else:
+            groups.append((label, [level]))
+
+    if len(groups) == 1:
+        return groups[0][0]
+
+    parts = []
+    for label, levels in groups:
+        parts.append(f"{label:<28} ({', '.join(levels)})")
+    return ("\n" + " " * 16).join(parts)
+
+
 def _format_config(
     config: ForgeConfig,
     auth_results: AuthResults,
@@ -80,9 +177,31 @@ def _format_config(
 
     # ── Header ────────────────────────────────────────────────────────────
     lines.append(f"Project: {config.project}")
-    if config.assignment.enabled:
+    if config.models_budget_usd is not None:
+        lines.append("Mode:    simple")
+        lines.append(f"Budget:  ${config.models_budget_usd:.2f}/story")
+        if config.smart_config_models:
+            seen: set[str] = set()
+            provider_labels: list[str] = []
+            for mk in config.smart_config_models:
+                lbl = _provider_label(mk)
+                if lbl not in seen:
+                    seen.add(lbl)
+                    provider_labels.append(lbl)
+            lines.append(f"Providers: {', '.join(provider_labels)}")
+    elif config.assignment.enabled:
         lines.append(f"Budget:  ${config.assignment.budget_per_story_usd:.2f}/story")
     lines.append("")
+
+    # ── DERIVED ROLES (v0.8 simple mode) ─────────────────────────────────
+    if config.smart_config_models and config.models_budget_usd is not None:
+        derived_lines = _format_complexity_aware_section(
+            config.smart_config_models,
+            config.models_budget_usd,
+            overrides=None,
+        )
+        lines.extend(derived_lines)
+        lines.append("")
 
     # ── PHASES ────────────────────────────────────────────────────────────
     lines.append("PHASES")

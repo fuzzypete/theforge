@@ -670,3 +670,129 @@ class TestCheckConfigSandboxReadiness:
         out = capsys.readouterr().out
         assert "api-bash-reviewer" in out
         assert "workspace sandbox unavailable" in out
+
+
+# ── v0.8 simple-mode complexity-aware display ────────────────────────────────
+
+
+class TestComplexityAwareDisplay:
+    """Tests for the DERIVED ROLES section shown in v0.8 simple-mode configs."""
+
+    def _make_v08_forge_config(self, tmp_path: Path) -> ForgeConfig:
+        """ForgeConfig as produced by the v0.8 loader path (smart_config_models set)."""
+        return ForgeConfig(
+            project="test-v08",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="feat/{slug}",
+                on_approve="none",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=ModelProfile(
+                name="dev",
+                cli="claude",
+                model="sonnet",
+                budget_usd=30.0,
+                timeout_seconds=600,
+                allowed_tools=("Read",),
+            ),
+            preflight_profile=ModelProfile(
+                name="preflight",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=("Read",),
+            ),
+            review_pool=[
+                ModelProfile(
+                    name="claude-opus",
+                    cli="claude",
+                    model="opus",
+                    budget_usd=9.0,
+                    timeout_seconds=300,
+                    allowed_tools=("Read",),
+                )
+            ],
+            synthesis_profile=None,
+            retry=RetryPolicy(),
+            plan=PlanConfig(enabled=True),
+            log=LogConfig(enabled=False),
+            smart_config_models=["claude/sonnet", "claude/opus"],
+            models_budget_usd=50.0,
+        )
+
+    def test_derived_roles_section_shown_for_v08_config(self, tmp_path: Path, capsys) -> None:
+        config = self._make_v08_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "DERIVED ROLES (complexity-aware)" in out
+        assert "preflight:" in out
+        assert "dev:" in out
+        assert "plan:" in out
+        assert "code_review:" in out
+
+    def test_mode_simple_shown_in_header(self, tmp_path: Path, capsys) -> None:
+        config = self._make_v08_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "Mode:    simple" in out
+        assert "Budget:  $50.00/story" in out
+
+    def test_providers_listed_in_header(self, tmp_path: Path, capsys) -> None:
+        config = self._make_v08_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "Providers:" in out
+        assert "claude cli" in out
+
+    def test_derived_roles_not_shown_for_classic_config(self, tmp_path: Path, capsys) -> None:
+        config = _make_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "DERIVED ROLES" not in out
+        assert "Mode:    simple" not in out
+
+    def test_preflight_marked_static(self, tmp_path: Path, capsys) -> None:
+        config = self._make_v08_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "static" in out
+
+    def test_advanced_overrides_none_shown(self, tmp_path: Path, capsys) -> None:
+        config = self._make_v08_forge_config(tmp_path)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "Advanced overrides: none" in out

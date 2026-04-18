@@ -1,6 +1,16 @@
 # forge.yaml — TheForge developing itself
 project: theforge
 
+# v0.8 simple model list — complexity-aware roles derived automatically at runtime
+# See: docs/guides/getting-started.md for the full schema reference
+models:
+  - claude/sonnet
+  - claude/opus
+  - openai/gpt-5.4
+  - google/gemini-3.1-pro-preview
+
+budget_usd: 50.0
+
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"
   setup_command: "test -d .venv || ({forge_python} -m venv .venv && .venv/bin/pip install -e '.[all,dev]' -q)"
@@ -15,7 +25,6 @@ workspace:
 
 validation:
   gate_command: ".venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/ && .venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
-  gate_debug_command: ".venv/bin/python -m pytest tests/ -x -v -n 0 --timeout=10"
   test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
   gate_timeout: 45
 
@@ -39,75 +48,8 @@ retry:
   max_dev_iterations: 3
   max_review_cycles: 3
 
-# Explicit profiles until adaptive assignment is stable
-profiles:
-  dev:
-    cli: claude
-    model: claude-sonnet-4-6
-    budget_usd: 50.00
-    timeout_seconds: 600
-    timeout_medium_seconds: 900
-    timeout_large_seconds: 1800
-  preflight:
-    cli: claude
-    model: claude-opus-4-6
-    budget_usd: 5.00
-    timeout_seconds: 300
-  review_pool:
-    - name: openai-reviewer
-      provider: openai
-      model: gpt-5.4
-      review_role: correctness
-      budget_usd: 5.00
-      timeout_seconds: 600
-      reasoning_effort: medium
-      max_iterations: 20
-    - name: gemini-reviewer
-      provider: google
-      model: gemini-3.1-pro-preview
-      review_role: architecture
-      budget_usd: 2.00
-      timeout_seconds: 300
-      thinking_budget: 8192
-      max_iterations: 20
-
-# Plan uses Claude CLI directly on this machine
 plan:
   enabled: true
-  cli: claude
-  model: claude-sonnet-4-6
-  budget_usd: 3.00
-  timeout: 600
-  timeout_medium: 900
-  timeout_large: 1800
-
-plan_agent_review:
-  enabled: true
-  pool:
-    - name: ds-plan-reviewer
-      provider: openai
-      model: gpt-5.4
-      review_role: correctness
-      budget_usd: 0.50
-      timeout_seconds: 300
-      reasoning_effort: medium
-      max_iterations: 20
-    - name: gemini-plan-reviewer
-      provider: google
-      model: gemini-3.1-pro-preview
-      review_role: architecture
-      budget_usd: 0.50
-      timeout_seconds: 300
-      thinking_budget: 4096
-      max_iterations: 20
-
-# smart_config_models disabled pending validation —
-# adaptive complexity assignment (#496, now fixed) is stable for most cases
-# but full end-to-end validation in self-hosting is still in progress.
-# smart_config_models:
-#   - deepseek/deepseek-reasoner
-#   - openai/gpt-5.4
-#   - google/gemini-3.1-pro-preview
 
 hooks:
   pre_run: .forge/hooks/pre_run.sh

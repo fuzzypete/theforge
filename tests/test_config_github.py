@@ -10,17 +10,8 @@ def test_load_config_parses_github_enabled(tmp_path):
 project: test
 github:
   enabled: true
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
-  review:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
+models:
+  - claude/sonnet
 """,
         encoding="utf-8",
     )
@@ -35,17 +26,8 @@ def test_load_config_defaults_github_disabled_when_absent(tmp_path):
     config_path.write_text(
         """
 project: test
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
-  review:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
+models:
+  - claude/sonnet
 """,
         encoding="utf-8",
     )
