@@ -760,16 +760,24 @@ def run_sprint(
         specs_skipped += 1
 
     # Stories dropped pre-launch (e.g. re-exec collision) never enter the DAG.
-    # They surface as FAILED in the sprint audit and live status so operators
-    # can see exactly which stories did not run and why — a silent WARNING is
-    # not enough visibility.
+    # They surface with a distinct DROPPED/PRESERVED outcome in sprint-audit and
+    # the live state file so operators can see exactly which stories did not
+    # run and why — a silent WARNING is not enough visibility.
+    #
+    # ``preserved-escalated`` is a disjoint case: the worktree is intentionally
+    # kept for human review, and counts as skipped (not failed) in aggregates.
     _dropped_slugs: dict[str, str] = dict(dropped_slugs or {})
     for slug, reason in _dropped_slugs.items():
         if slug not in slug_to_context:
             continue
-        _log(f"DROPPED {slug} (reason: {reason})")
-        dag.mark_skipped(slug)
-        specs_failed += 1
+        if reason == "preserved-escalated":
+            _log(f"PRESERVED {slug} (escalated worktree held for review)")
+            dag.mark_skipped(slug)
+            specs_skipped += 1
+        else:
+            _log(f"DROPPED {slug} (reason: {reason})")
+            dag.mark_skipped(slug)
+            specs_failed += 1
 
     # Initialise live state file for forge sprint-status (only when a CLI run_id
     # is present — headless/test invocations without a run_id skip this).
@@ -785,7 +793,10 @@ def run_sprint(
             )
             _blocked_by = list(blocked_slugs.get(_slug, []))
             _drop_reason = _dropped_slugs.get(_slug)
-            if _drop_reason:
+            if _drop_reason == "preserved-escalated":
+                _status = "preserved"
+                _blocked_by = [f"preserved: {_drop_reason}"]
+            elif _drop_reason:
                 _status = "failed"
                 _blocked_by = [f"dropped: {_drop_reason}"]
             elif _blocked_by:
@@ -1412,6 +1423,7 @@ def run_sprint(
         tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
         ci_break_slug=ci_halt_slug,
         sprint_id=_sprint_id,
+        dropped_slugs=_dropped_slugs,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -1432,6 +1444,7 @@ def run_sprint(
             ci_break_slug=ci_halt_slug,
             sprint_id=_sprint_id,
             project_root=config.project_root,
+            dropped_slugs=_dropped_slugs,
         )
 
     # Remove live state file now that sprint-summary.yaml is the permanent record.

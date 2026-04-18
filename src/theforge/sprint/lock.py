@@ -56,6 +56,28 @@ def _read_lock_pid(fd) -> int | None:
         return None
 
 
+def check_escalated_worktrees(
+    slugs: list[str],
+    path_pattern: str,
+    project_root: Path,
+) -> list[str]:
+    """Return slugs whose on-disk worktree is marked escalated (preserved).
+
+    Companion to :func:`check_active_worktrees` — the two cases are disjoint:
+    an escalated worktree is intentionally held for human triage and must not
+    be rescheduled, whereas an *active* worktree is a genuine collision that
+    must be handled as a conflict.
+    """
+    escalated: list[str] = []
+    for slug in slugs:
+        worktree_path = project_root / path_pattern.format(slug=slug)
+        if not worktree_path.exists():
+            continue
+        if _is_escalated_worktree(worktree_path):
+            escalated.append(slug)
+    return escalated
+
+
 def check_active_worktrees(
     slugs: list[str],
     path_pattern: str,
