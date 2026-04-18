@@ -198,7 +198,7 @@ def _format_config(
         derived_lines = _format_complexity_aware_section(
             config.smart_config_models,
             config.models_budget_usd,
-            overrides=None,
+            overrides=config.models_overrides,
         )
         lines.extend(derived_lines)
         lines.append("")

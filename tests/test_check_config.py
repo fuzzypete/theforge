@@ -796,3 +796,128 @@ class TestComplexityAwareDisplay:
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
         assert "Advanced overrides: none" in out
+
+    def test_advanced_overrides_listed_when_present(self, tmp_path: Path, capsys) -> None:
+        """models_overrides populated → 'Advanced overrides' shows actual keys."""
+        config = ForgeConfig(
+            project="test-v08-overrides",
+            project_root=tmp_path,
+            workspace=WorkspaceConfig(
+                create_command="mkdir -p {slug}",
+                path_pattern="{slug}",
+                branch_pattern="feat/{slug}",
+                on_approve="none",
+            ),
+            validation=DEFAULT_VALIDATION,
+            dev_profile=ModelProfile(
+                name="dev",
+                cli="claude",
+                model="sonnet",
+                budget_usd=30.0,
+                timeout_seconds=1200,
+                allowed_tools=("Read",),
+            ),
+            preflight_profile=ModelProfile(
+                name="preflight",
+                cli="claude",
+                model="sonnet",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                allowed_tools=("Read",),
+            ),
+            review_pool=[
+                ModelProfile(
+                    name="claude-opus",
+                    cli="claude",
+                    model="opus",
+                    budget_usd=9.0,
+                    timeout_seconds=300,
+                    allowed_tools=("Read",),
+                )
+            ],
+            synthesis_profile=None,
+            retry=RetryPolicy(),
+            plan=PlanConfig(enabled=False),
+            log=LogConfig(enabled=False),
+            smart_config_models=["claude/sonnet", "claude/opus"],
+            models_budget_usd=50.0,
+            models_overrides={"dev": {"timeout_seconds": 1200}},
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "Advanced overrides: none" not in out
+        assert "dev" in out
+
+
+# ── Integration tests: real YAML → check_config output ───────────────────────
+
+
+class TestCheckConfigIntegration:
+    """Integration tests: load real YAML via load_config (no patching), verify display."""
+
+    _auth_ok = patch(
+        "theforge.config._loaders.check_agent_auth",
+        return_value=(True, ""),
+    )
+
+    def _write_yaml(self, tmp_path: Path, text: str) -> Path:
+        p = tmp_path / "forge.yaml"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_v08_yaml_produces_simple_mode_header(self, tmp_path: Path, capsys) -> None:
+        """Real v0.8 YAML loaded through load_config produces simple-mode header."""
+        from theforge.config import load_config
+
+        cfg_path = self._write_yaml(
+            tmp_path,
+            """
+project: integration-test
+models:
+  - claude/sonnet
+  - claude/opus
+budget_usd: 30.0
+""",
+        )
+        with (
+            self._auth_ok,
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            config = load_config(cfg_path)
+            output, _ = __import__(
+                "theforge.cli.check_config", fromlist=["_format_config"]
+            )._format_config(config, {})
+        assert "Mode:    simple" in output
+        assert "Budget:  $30.00/story" in output
+        assert "DERIVED ROLES (complexity-aware)" in output
+        assert "Advanced overrides: none" in output
+
+    def test_v08_yaml_with_overrides_shows_override_keys(self, tmp_path: Path) -> None:
+        """v0.8 YAML with overrides: → display lists the override keys, not 'none'."""
+        from theforge.cli.check_config import _format_config
+        from theforge.config import load_config
+
+        cfg_path = self._write_yaml(
+            tmp_path,
+            """
+project: integration-test-ov
+models:
+  - claude/sonnet
+  - claude/opus
+budget_usd: 30.0
+overrides:
+  dev:
+    timeout_seconds: 1200
+""",
+        )
+        with self._auth_ok:
+            config = load_config(cfg_path)
+        output, _ = _format_config(config, {})
+        assert "DERIVED ROLES (complexity-aware)" in output
+        assert "Advanced overrides: none" not in output
+        assert "dev" in output
