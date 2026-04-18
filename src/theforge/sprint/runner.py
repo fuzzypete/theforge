@@ -23,7 +23,12 @@ from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
 from ..log_util import _log_line
 from ..task import TaskStory
-from .audit import _write_sprint_audit, _write_sprint_summary, _write_story_audit
+from .audit import (
+    _get_or_create_sprint_id,
+    _write_sprint_audit,
+    _write_sprint_summary,
+    _write_story_audit,
+)
 from .ci_checks import poll_required_checks
 from .collision import (
     compute_bundle_assignments,
@@ -635,6 +640,14 @@ def run_sprint(
     except Exception:
         _sprint_log_dir = None  # type: ignore[assignment]
 
+    # Stable sprint_id — does not change across run_id rollovers or --resume.
+    # Used to aggregate story outcomes across all worker-process boundaries.
+    _sprint_id: str | None = None
+    try:
+        _sprint_id = _get_or_create_sprint_id(resolved.name, config.project_root)
+    except Exception:
+        pass
+
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0
     prior_cost = 0.0
@@ -807,7 +820,7 @@ def run_sprint(
 
         if not all(dep in merged_slugs for dep in task.depends_on):
             result.landing_status = "pending_integration"
-            _write_story_audit(config, task, result)
+            _write_story_audit(config, task, result, sprint_id=_sprint_id)
             return False
 
         branch = config.workspace.branch_pattern.format(slug=slug)
@@ -852,7 +865,7 @@ def run_sprint(
         if merge_info.get("merged"):
             merged_slugs.add(slug)
             dag.mark_complete(slug)
-            _write_story_audit(config, task, result)
+            _write_story_audit(config, task, result, sprint_id=_sprint_id)
             if effective_on_approve == "merge-pr" and not merge_info.get(
                 "auto_merge_queued", False
             ):
@@ -877,13 +890,13 @@ def run_sprint(
 
         if merge_info.get("merge_queued"):
             queued_prs[slug] = (task, result, merge_info["pr_url"])
-            _write_story_audit(config, task, result)
+            _write_story_audit(config, task, result, sprint_id=_sprint_id)
             _log(f"INFO {slug}: PR auto-merge queued; waiting for GitHub to report MERGED")
             return True
 
         result.state.error = merge_info.get("error") or "integration failed"
         _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
-        _write_story_audit(config, task, result)
+        _write_story_audit(config, task, result, sprint_id=_sprint_id)
         return True
 
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
@@ -906,7 +919,7 @@ def run_sprint(
                             merged_slugs.add(dep)
                             dag.mark_complete(dep)
                             del queued_prs[dep]
-                            _write_story_audit(config, dep_task, dep_result)
+                            _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                         else:
                             dep_result.landing_status = "failed"
                             dep_result.success = False
@@ -920,7 +933,7 @@ def run_sprint(
                                     f"Queued PR {poll_result['status']}: {dep_pr_url}"
                                 )
                             del queued_prs[dep]
-                            _write_story_audit(config, dep_task, dep_result)
+                            _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
                             _log(
                                 f"✗ {dep}: queued PR {poll_result['status']} "
                                 "before dependent dispatch"
@@ -1049,7 +1062,7 @@ def run_sprint(
                         dag.mark_complete(_qp_slug)
                         _qp_result.landing_status = "landed"
                         del queued_prs[_qp_slug]
-                        _write_story_audit(config, _qp_task, _qp_result)
+                        _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
                     else:
                         specs_succeeded -= 1
@@ -1066,7 +1079,7 @@ def run_sprint(
                                 f"Queued PR {_qp_poll['status']}: {_qp_pr_url}"
                             )
                         del queued_prs[_qp_slug]
-                        _write_story_audit(config, _qp_task, _qp_result)
+                        _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
                 continue
 
@@ -1131,7 +1144,9 @@ def run_sprint(
                     )
                     story_times[slug] = (story_started_at, timed_out_at)
                     results.append((spec_str, _timeout_result))
-                    _write_story_audit(config, slug_to_context[slug][0], _timeout_result)
+                    _write_story_audit(
+                        config, slug_to_context[slug][0], _timeout_result, sprint_id=_sprint_id
+                    )
                     if _state_writer is not None:
                         _state_writer.update(slug, status="failed", phase="ESCALATE")
                     dag.mark_skipped(slug)
@@ -1169,7 +1184,9 @@ def run_sprint(
                     )
                     story_times[slug] = (story_started_at, failed_at)
                     results.append((spec_str, _exc_result))
-                    _write_story_audit(config, slug_to_context[slug][0], _exc_result)
+                    _write_story_audit(
+                        config, slug_to_context[slug][0], _exc_result, sprint_id=_sprint_id
+                    )
                     if _state_writer is not None:
                         _state_writer.update(slug, status="failed", phase="ESCALATE")
                     dag.mark_skipped(slug)
@@ -1243,7 +1260,7 @@ def run_sprint(
                                     specs_failed += 1
                                 changed = True
                 else:
-                    _write_story_audit(config, task, result)
+                    _write_story_audit(config, task, result, sprint_id=_sprint_id)
 
                 # Fire StorySource lifecycle callbacks
                 ctx = slug_to_context.get(slug)
@@ -1290,7 +1307,7 @@ def run_sprint(
                 else:
                     result.state.error = f"Queued PR {poll_result['status']}: {pr_url}"
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
-            _write_story_audit(config, task, result)
+            _write_story_audit(config, task, result, sprint_id=_sprint_id)
             del queued_prs[slug]
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
@@ -1373,6 +1390,7 @@ def run_sprint(
         slug_map=slug_map,
         tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
         ci_break_slug=ci_halt_slug,
+        sprint_id=_sprint_id,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -1391,6 +1409,8 @@ def run_sprint(
             run_id=run_id,
             tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
             ci_break_slug=ci_halt_slug,
+            sprint_id=_sprint_id,
+            project_root=config.project_root,
         )
 
     # Remove live state file now that sprint-summary.yaml is the permanent record.
