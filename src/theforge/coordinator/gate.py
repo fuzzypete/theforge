@@ -6,6 +6,7 @@ import shlex
 from pathlib import Path
 
 from theforge.config import ForgeConfig
+from theforge.coordinator.state import GateDebugTelemetry
 from theforge.task import TaskStory
 from theforge.traces import write_trace
 
@@ -119,6 +120,47 @@ def _run_gate_full(
     if decision == "FAIL":
         _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
     return decision, None, output_tail, gate_cmd
+
+
+def _run_gate_debug_command(
+    config: ForgeConfig,
+    workspace_path: Path,
+    *,
+    iter_num: int,
+) -> GateDebugTelemetry | None:
+    """Run the configured gate debug command after a gate timeout."""
+    debug_cmd = config.validation.gate_debug_command
+    if not debug_cmd:
+        return None
+
+    gate_timeout = config.validation.gate_timeout or 600
+    debug_timeout = config.validation.gate_debug_timeout or gate_timeout
+    _cu._log(f"  Running gate debug command after timeout: {debug_cmd}")
+    ok, output, exit_code, _timed_out = _cu._run_shell_detailed(
+        debug_cmd,
+        workspace_path,
+        timeout=debug_timeout,
+    )
+    if output.startswith("TIMEOUT") and exit_code is None:
+        _cu._log(f"  Gate debug command timed out after {debug_timeout}s")
+    elif not ok:
+        _cu._log(f"  Gate debug command exited non-zero: {exit_code}")
+
+    tail_chars = config.validation.gate_output_tail_chars
+    output_tail = output[-tail_chars:]
+    write_trace(
+        workspace_path / ".forge/traces" / f"{iter_num}-gate-debug.txt",
+        output,
+    )
+    return GateDebugTelemetry(
+        iteration=iter_num,
+        command=debug_cmd,
+        ran=True,
+        timeout_s=debug_timeout,
+        exit_code=exit_code,
+        output_tail=output_tail,
+        output_truncated=len(output) > len(output_tail),
+    )
 
 
 def _run_gate(

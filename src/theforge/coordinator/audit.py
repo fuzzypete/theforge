@@ -150,13 +150,16 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 
     # ── validate ──────────────────────────────────────────────────────────────
     validate_block: dict | None = None
-    if state.gate_decisions:
+    if state.gate_decisions or state.gate_debug_telemetry or state.validate_durations:
         validate_block = {
             "cost_usd": 0.0,
             "duration_s": round(sum(state.validate_durations), 2)
             if state.validate_durations
             else None,
-            "outcome": state.gate_decisions[-1].lower() if state.gate_decisions else None,
+            "outcome": state.gate_decisions[-1].lower()
+            if state.gate_decisions
+            else ("error" if state.validate_durations else None),
+            "gate_debug": _serialize_gate_debug_metrics(state),
         }
 
     # ── review ────────────────────────────────────────────────────────────────
@@ -278,6 +281,21 @@ def _serialize_dev_iteration_metrics(state: CoordinatorState) -> list[dict]:
     ]
 
 
+def _serialize_gate_debug_metrics(state: CoordinatorState) -> list[dict]:
+    return [
+        {
+            "iteration": item.iteration,
+            "command": item.command,
+            "ran": item.ran,
+            "timeout_s": item.timeout_s,
+            "exit_code": item.exit_code,
+            "output_tail": item.output_tail,
+            "output_truncated": item.output_truncated,
+        }
+        for item in state.gate_debug_telemetry
+    ]
+
+
 def _serialize_review_iteration_metrics(state: CoordinatorState) -> list[dict]:
     return [
         {
@@ -382,6 +400,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "dev_iterations": len(state.dev_results),
             "gate_decisions": state.gate_decisions,
             "dev_loop": _serialize_dev_iteration_metrics(state),
+            "gate_debug": _serialize_gate_debug_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),
             "usage_summary": _build_iteration_usage_summary(state, config),
             "budget_consumption_log": [

@@ -178,6 +178,19 @@ class DevIterationTelemetry:
 
 
 @dataclass(frozen=True)
+class GateDebugTelemetry:
+    """Diagnostic command telemetry captured when the validation gate times out."""
+
+    iteration: int
+    command: str
+    ran: bool
+    timeout_s: int
+    exit_code: int | None
+    output_tail: str
+    output_truncated: bool
+
+
+@dataclass(frozen=True)
 class ReviewIterationTelemetry:
     """Per-review-cycle telemetry captured for audit output."""
 
@@ -325,6 +338,7 @@ class CoordinatorState:
     dev_prompt_injected_finding_ids: list[list[str]] = field(default_factory=list)
     dev_handoff_snapshots: list[dict[str, Any] | None] = field(default_factory=list)
     dev_iteration_telemetry: list[DevIterationTelemetry] = field(default_factory=list)
+    gate_debug_telemetry: list[GateDebugTelemetry] = field(default_factory=list)
     review_iteration_telemetry: list[ReviewIterationTelemetry] = field(default_factory=list)
     context_manifests: list[dict] = field(default_factory=list)
     # One entry per dev invocation (same index as dev_results).

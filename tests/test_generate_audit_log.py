@@ -19,6 +19,7 @@ from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.state import (
     CoordinatorResult,
     CoordinatorState,
+    GateDebugTelemetry,
     Phase,
     ReviewCycleMetadata,
 )
@@ -504,6 +505,32 @@ class TestPhasesBlock:
         assert validate is not None
         assert validate["duration_s"] == pytest.approx(12.0)
         assert validate["outcome"] == "pass"
+
+    def test_validate_phase_records_gate_debug_timeout_audit(self, tmp_path: Path) -> None:
+        """Gate timeout diagnostics appear in validate phase and iteration audit."""
+        state = CoordinatorState()
+        state.validate_durations.append(45.0)
+        state.gate_debug_telemetry.append(
+            GateDebugTelemetry(
+                iteration=1,
+                command="pytest -x -v -n 0",
+                ran=True,
+                timeout_s=45,
+                exit_code=5,
+                output_tail="debug tail",
+                output_truncated=True,
+            )
+        )
+        result = _make_coordinator_result(state)
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+        validate = log["phases"]["validate"]
+        assert validate is not None
+        assert validate["outcome"] == "error"
+        assert validate["gate_debug"][0]["ran"] is True
+        assert validate["gate_debug"][0]["exit_code"] == 5
+        assert validate["gate_debug"][0]["output_tail"] == "debug tail"
+        assert log["iterations"]["gate_debug"][0]["command"] == "pytest -x -v -n 0"
 
     def test_review_phase_per_reviewer(self, tmp_path: Path) -> None:
         """phases.review.per_reviewer groups agents by profile, cross-refs verdict."""
