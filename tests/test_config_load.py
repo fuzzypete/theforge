@@ -1427,6 +1427,21 @@ class TestValidationTestCommand:
         config = load_config(config_path)
         assert config.validation.test_command is None
 
+    def test_gate_debug_timeout_parsed_when_present(self, tmp_path):
+        config_path = _write_config(
+            {
+                "validation": {
+                    "gate_command": "make gate",
+                    "gate_debug_command": "pytest -x -v -n 0",
+                    "gate_debug_timeout": 90,
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.validation.gate_debug_command == "pytest -x -v -n 0"
+        assert config.validation.gate_debug_timeout == 90
+
     def test_handoff_file_raises_value_error(self, tmp_path):
         """handoff_file and gate_decision_key are removed in v0.8 and must raise ValueError."""
         config_path = _write_config(

@@ -118,10 +118,10 @@ def _kill_process_group(proc: subprocess.Popen[str]) -> None:
         pass
 
 
-def _run_shell(
+def _run_shell_detailed(
     cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
-) -> tuple[bool, str]:
-    """Run a shell command. Returns (success, combined output).
+) -> tuple[bool, str, int | None, bool]:
+    """Run a shell command. Returns (success, combined output, exit_code, timed_out).
 
     On abnormal exit, kills the entire process group so child processes (e.g.
     pytest-xdist workers) don't outlive the shell and consume unbounded memory.
@@ -138,11 +138,11 @@ def _run_shell(
             start_new_session=True,
         )
     except Exception as e:
-        return False, f"ERROR: {e}"
+        return False, f"ERROR: {e}", None, False
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
         output = (stdout + stderr).strip()
-        return proc.returncode == 0, output
+        return proc.returncode == 0, output, proc.returncode, False
     except subprocess.TimeoutExpired as te:
         # Kill the whole process group before draining pipes so grandchildren
         # such as pytest-xdist workers cannot keep writing indefinitely after
@@ -164,8 +164,8 @@ def _run_shell(
             pass
         header = f"TIMEOUT after {timeout}s: {cmd}"
         if partial_out:
-            return False, f"{header}\n{partial_out}"
-        return False, header
+            return False, f"{header}\n{partial_out}", None, True
+        return False, header, None, True
     except BaseException:
         _kill_process_group(proc)
         proc.wait()
@@ -178,6 +178,19 @@ def _run_shell(
                     stream.close()
                 except Exception:
                     pass
+
+
+def _run_shell(
+    cmd: str, cwd: Path, timeout: int = 120, env: dict[str, str] | None = None
+) -> tuple[bool, str]:
+    """Run a shell command. Returns (success, combined output)."""
+    ok, output, _exit_code, _timed_out = _run_shell_detailed(
+        cmd,
+        cwd,
+        timeout=timeout,
+        env=env,
+    )
+    return ok, output
 
 
 # ── Worktree project-code evaluation ────────────────────────────────────

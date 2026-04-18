@@ -16,7 +16,7 @@ from theforge.task import TaskStory
 
 from . import util as _cu
 from .dev_phase import _extract_failed_tests, record_dev_iteration_telemetry
-from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_full
+from .gate import _is_gate_skip, _parse_dirty_files, _run_gate_debug_command, _run_gate_full
 from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .review_context import _get_handoff_content, _get_raw_dev_notes, _latest_forge_handoff_path
@@ -200,6 +200,20 @@ def _run_validate_phase(
 
     if gate_err:
         is_timeout = "timed out" in (gate_err or "").lower()
+        if is_timeout:
+            debug_telemetry = _run_gate_debug_command(
+                config,
+                workspace_path,
+                iter_num=state.dev_iteration,
+            )
+            if debug_telemetry is not None:
+                state.gate_debug_telemetry.append(debug_telemetry)
+                gate_err = (
+                    f"{gate_err}. Gate debug command ran; see audit "
+                    f"iterations.gate_debug[-1] and trace "
+                    f".forge/traces/{state.dev_iteration}-gate-debug.txt."
+                    f"\nGate debug output tail:\n{debug_telemetry.output_tail}"
+                )
         record_dev_iteration_telemetry(
             state,
             workspace_path,

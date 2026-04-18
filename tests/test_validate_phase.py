@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -178,6 +179,97 @@ def test_run_validate_phase_records_gate_error_escalation_once(tmp_path: Path) -
     assert telemetry.gate_result == "ERROR"
     assert telemetry.failed_tests == []
     assert telemetry.existing_test_failures is False
+
+
+def test_run_validate_phase_runs_gate_debug_command_on_timeout(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(
+            config.validation,
+            gate_debug_command="pytest -x -v -n 0",
+            gate_debug_timeout=7,
+            gate_output_tail_chars=40,
+        ),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    def shell_side_effect(cmd, cwd, **kwargs):
+        if cmd == "pytest -x -v -n 0":
+            assert kwargs["timeout"] == 7
+            return False, "debug stdout\n" + ("x" * 80) + "\ndebug stderr", 5, False
+        return True, "", 0, False
+
+    with (
+        patch(
+            "theforge.coordinator.validate_phase._run_gate_full",
+            return_value=(
+                None,
+                "Gate timed out after 120s",
+                "TIMEOUT after 120s: pytest tests/",
+                "pytest tests/",
+            ),
+        ),
+        patch("theforge.coordinator.util._run_shell_detailed", side_effect=shell_side_effect),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.success is False
+    assert "Gate debug command ran" in result.message
+    assert "iterations.gate_debug[-1]" in result.message
+    assert "debug stderr" in result.message
+    assert len(state.gate_debug_telemetry) == 1
+    debug = state.gate_debug_telemetry[0]
+    assert debug.ran is True
+    assert debug.exit_code == 5
+    assert debug.timeout_s == 7
+    assert debug.output_truncated is True
+    trace = tmp_path / ".forge" / "traces" / "1-gate-debug.txt"
+    assert trace.read_text(encoding="utf-8").startswith("debug stdout")
+
+
+def test_run_validate_phase_timeout_without_gate_debug_command_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1)
+    state.budget.max_iterations = config.retry.max_dev_iterations
+    state.dev_results.append(_make_agent_result())
+    state.dev_durations.append(1.5)
+    state.last_dev_start_commit = "HEAD"
+
+    with patch(
+        "theforge.coordinator.validate_phase._run_gate_full",
+        return_value=(None, "Gate timed out after 120s", "", "pytest tests/"),
+    ):
+        outcome, result = _run_validate_phase(
+            state,
+            config,
+            task,
+            tmp_path,
+            notify=False,
+            logger=None,
+        )
+
+    assert outcome is _ValidateOutcome.ESCALATE
+    assert result is not None
+    assert result.message == "Gate timed out after 120s"
+    assert state.gate_debug_telemetry == []
 
 
 def _git(repo: Path, *args: str) -> str:

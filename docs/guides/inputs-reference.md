@@ -192,6 +192,8 @@ workspace:
 validation:
   gate_command: "make gate"            # must exit 0 on success
   gate_timeout: 600                    # seconds; default varies
+  gate_debug_command: ~                # optional: runs after gate_timeout for diagnostics
+  gate_debug_timeout: ~                # seconds; default: same resolved value as gate_timeout
   pre_validate_command: ~              # optional: run before dirty check
 
 # ── Retry policy ───────────────────────────────────────────

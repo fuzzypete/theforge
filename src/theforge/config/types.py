@@ -171,6 +171,7 @@ class ValidationConfig:
     gate_debug_command: str | None = (
         None  # diagnostic command on timeout (e.g. "pytest -x -v -n 0")
     )
+    gate_debug_timeout: int | None = None  # seconds; None = same resolved value as gate_timeout
     test_command: str | None = None  # canonical command for intermediate test runs in dev loop
     pre_validate_command: str | None = None  # optional command run before dirty check
 

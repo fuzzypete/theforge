@@ -143,6 +143,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             val_data.get("gate_output_tail_chars", DEFAULT_VALIDATION.gate_output_tail_chars)
         ),
         gate_debug_command=val_data.get("gate_debug_command"),
+        gate_debug_timeout=val_data.get("gate_debug_timeout"),
         test_command=val_data.get("test_command"),
         pre_validate_command=val_data.get("pre_validate_command"),
     )
