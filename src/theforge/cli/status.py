@@ -209,7 +209,13 @@ def _show_recent_runs(project_root: Path) -> int:
             except OSError:
                 continue
             outcome = _detach.read_run_ended(run_id, project_root)
-            status_str = outcome if outcome is not None else "orphaned"
+            if outcome is not None:
+                status_str = outcome
+            else:
+                # Cross-check: a PID file means a run started after the
+                # initial list_active_runs scan — label it active, not orphaned.
+                pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
+                status_str = "active" if pid_file.exists() else "orphaned"
             rows.append((mtime, run_id, "single", status_str, "—", "—"))
             seen_ids.add(run_id)
 

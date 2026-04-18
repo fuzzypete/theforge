@@ -304,6 +304,61 @@ class TestStopWritesTerminalMarker:
         assert st["phase"] == "ORPHANED", f"Expected ORPHANED, got {st['phase']!r}"
 
 
+# ── Race window: run starts between scans ────────────────────────────────────
+
+
+class TestShowRecentRunsRaceWindow:
+    """_show_recent_runs must not label a live run as orphaned.
+
+    Regression for: a run that starts between list_active_runs and the log
+    file scan would have a .pid file but no .ended file and should be shown
+    as 'active', not 'orphaned'.
+    """
+
+    def test_run_with_pid_file_but_no_ended_shows_active(
+        self, tmp_path: Path, capsys: object
+    ) -> None:
+        from theforge.cli.status import _show_recent_runs
+
+        # Create a log file so the run appears in the historical scan.
+        log_dir = tmp_path / ".forge" / "logs" / "issues-test"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run-abcd1234.log").write_text("starting\n")
+
+        # Simulate a PID file present (run started after initial active scan).
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "abcd1234.pid").write_text("99999\nissues-test\n")
+
+        # No .ended file — process is alive but appeared after list_active_runs.
+        with patch("theforge.detach.list_active_runs", return_value=[]):
+            _show_recent_runs(tmp_path)
+
+        out = capsys.readouterr().out
+        assert "active" in out, f"Expected 'active' in output, got:\n{out}"
+        assert "orphaned" not in out, f"Unexpected 'orphaned' in output:\n{out}"
+
+    def test_run_without_pid_file_and_no_ended_shows_orphaned(
+        self, tmp_path: Path, capsys: object
+    ) -> None:
+        from theforge.cli.status import _show_recent_runs
+
+        # Create a log file so the run appears in the historical scan.
+        log_dir = tmp_path / ".forge" / "logs" / "issues-test"
+        log_dir.mkdir(parents=True)
+        (log_dir / "run-dead1234.log").write_text("starting\n")
+
+        # No PID file, no .ended file — truly orphaned.
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+
+        with patch("theforge.detach.list_active_runs", return_value=[]):
+            _show_recent_runs(tmp_path)
+
+        out = capsys.readouterr().out
+        assert "orphaned" in out, f"Expected 'orphaned' in output, got:\n{out}"
+
+
 # ── Parser-level coverage ─────────────────────────────────────────────────────
 
 
