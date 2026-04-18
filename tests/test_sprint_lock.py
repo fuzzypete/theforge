@@ -219,6 +219,45 @@ class TestCheckActiveWorktrees:
 
         assert active == []
 
+    def test_escalated_worktree_is_not_active(self, tmp_path: Path) -> None:
+        """Worktrees with final_phase == ESCALATE are preserved, not collisions."""
+        import yaml as _yaml
+
+        worktree = tmp_path / ".forge" / "worktrees" / "story-a"
+        (worktree / ".forge").mkdir(parents=True)
+        (worktree / ".forge" / "audit.yaml").write_text(
+            _yaml.dump({"outcome": {"final_phase": "ESCALATE"}}),
+            encoding="utf-8",
+        )
+        # Worktree has commits ahead — git check would report "active" if reached.
+        completed = MagicMock(returncode=0, stdout="5\n")
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed) as mock_run:
+            active = check_active_worktrees(
+                ["story-a"], ".forge/worktrees/{slug}", "main", tmp_path
+            )
+
+        assert active == []
+        # Short-circuit: git rev-list must not have been invoked for escalated wt.
+        mock_run.assert_not_called()
+
+    def test_non_escalated_audit_is_still_active(self, tmp_path: Path) -> None:
+        """Worktrees whose audit shows DONE (or any non-ESCALATE phase) still count."""
+        import yaml as _yaml
+
+        worktree = tmp_path / ".forge" / "worktrees" / "story-a"
+        (worktree / ".forge").mkdir(parents=True)
+        (worktree / ".forge" / "audit.yaml").write_text(
+            _yaml.dump({"outcome": {"final_phase": "DEV"}}),
+            encoding="utf-8",
+        )
+        completed = MagicMock(returncode=0, stdout="3\n")
+        with patch("theforge.sprint.lock.subprocess.run", return_value=completed):
+            active = check_active_worktrees(
+                ["story-a"], ".forge/worktrees/{slug}", "main", tmp_path
+            )
+
+        assert active == ["story-a"]
+
     def test_git_failure_is_not_active(self, tmp_path: Path) -> None:
         worktree = tmp_path / ".forge" / "worktrees" / "story-a"
         worktree.mkdir(parents=True)

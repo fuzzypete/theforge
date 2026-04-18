@@ -205,7 +205,7 @@ class TestPidFileCleanupOnException:
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint._acquire_launch_locks",
-                return_value=([], None),
+                return_value=([], None, {}),
             ),
             patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
         ):
@@ -243,7 +243,7 @@ class TestPidFileCleanupOnException:
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint._acquire_launch_locks",
-                return_value=([], None),
+                return_value=([], None, {}),
             ),
             patch("theforge.detach.remove_pid", side_effect=_fake_remove_pid),
         ):
@@ -284,7 +284,7 @@ class TestPidFileCleanupOnException:
             patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
             patch(
                 "theforge.cli.sprint._acquire_launch_locks",
-                return_value=([], None),
+                return_value=([], None, {}),
             ),
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
@@ -357,7 +357,7 @@ class TestPidFileCleanupOnException:
             patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
             patch(
                 "theforge.cli.sprint._acquire_launch_locks",
-                return_value=([], None),
+                return_value=([], None, {}),
             ),
             patch("theforge.cli.sprint.release_story_locks"),
             patch("theforge.cli.sprint.run_sprint", return_value=stub_result),
