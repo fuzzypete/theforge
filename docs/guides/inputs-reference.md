@@ -150,8 +150,6 @@ workspace:
 
 validation:
   gate_command: "python -m pytest tests/ -q"
-  handoff_file: "handoff.yaml"
-  gate_decision_key: "gate_decision"
 
 profiles:
   dev:
@@ -193,8 +191,6 @@ workspace:
 # ── Validation gate ────────────────────────────────────────
 validation:
   gate_command: "make gate"            # must exit 0 on success
-  handoff_file: "handoff.yaml"         # YAML artifact with gate decision
-  gate_decision_key: "gate_decision"   # key in handoff: PASS | FAIL
   gate_timeout: 600                    # seconds; default varies
   pre_validate_command: ~              # optional: run before dirty check
 
@@ -203,7 +199,6 @@ retry:
   max_dev_iterations: 3      # dev attempts within one review cycle
   max_review_cycles: 2       # full dev→review loops before ESCALATE
   max_review_parse_retries: 2  # reviewer output parse/schema error retries
-  max_handoff_retries: 2     # dev handoff rewrite attempts after gate PASS
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
 
 # ── Agent profiles ─────────────────────────────────────────

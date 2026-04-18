@@ -62,8 +62,6 @@ workspace:
 
 validation:
   gate_command: "python -m pytest tests/ -q"   # your test command
-  handoff_file: "handoff.yaml"
-  gate_decision_key: "gate_decision"
 ```
 
 **Key things to customize:**
