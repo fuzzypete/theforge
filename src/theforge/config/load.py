@@ -154,6 +154,8 @@ def load_config(config_path: Path) -> ForgeConfig:
     _derived_plan_profile: ModelProfile | None = None
     _derived_plan_validate_spec: bool | None = None
     _derived_par_profile: ModelProfile | None = None
+    budget_usd_val: float | None = None
+    _raw_overrides: dict[str, Any] | None = None
 
     if "models" in raw:
         models_list = raw["models"]
@@ -180,6 +182,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         # plan_agent_review overrides are passed into derive_roles() so the bridge
         # can lower them to a ModelProfile (fixes silent loss of that config).
         overrides = raw.get("overrides") or {}
+        _raw_overrides = dict(overrides) if overrides else None
         _par_derive_overrides: dict[str, Any] | None = (
             {"plan_agent_review": overrides["plan_agent_review"]}
             if "plan_agent_review" in overrides
@@ -601,4 +604,6 @@ def load_config(config_path: Path) -> ForgeConfig:
         conventions_hard=conventions_hard_cfg,
         conventions_soft=conventions_soft_list,
         finding_classifier=finding_classifier_cfg,
+        models_budget_usd=budget_usd_val,
+        models_overrides=_raw_overrides,
     )

@@ -187,17 +187,8 @@ class TestLogConfigParsing:
             "logging:\n"
             "  log_file: /tmp/test_forge.log\n"
             "  enabled: false\n"
-            "profiles:\n"
-            "  dev:\n"
-            "    cli: claude\n"
-            "    model: sonnet\n"
-            "    budget_usd: 1.0\n"
-            "    timeout_seconds: 300\n"
-            "  review:\n"
-            "    cli: claude\n"
-            "    model: opus\n"
-            "    budget_usd: 1.0\n"
-            "    timeout_seconds: 300\n",
+            "models:\n"
+            "  - claude/sonnet\n",
             encoding="utf-8",
         )
         config = load_config(forge_yaml)
@@ -209,18 +200,7 @@ class TestLogConfigParsing:
 
         forge_yaml = tmp_path / "forge.yaml"
         forge_yaml.write_text(
-            "project: myproj\n"
-            "profiles:\n"
-            "  dev:\n"
-            "    cli: claude\n"
-            "    model: sonnet\n"
-            "    budget_usd: 1.0\n"
-            "    timeout_seconds: 300\n"
-            "  review:\n"
-            "    cli: claude\n"
-            "    model: opus\n"
-            "    budget_usd: 1.0\n"
-            "    timeout_seconds: 300\n",
+            "project: myproj\nmodels:\n  - claude/sonnet\n",
             encoding="utf-8",
         )
         config = load_config(forge_yaml)

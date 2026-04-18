@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .models import AgentDef
@@ -363,6 +363,8 @@ class ForgeConfig:
     conventions_hard: HardConventionsConfig | None = None  # None = no section = no checks
     conventions_soft: list[str] = field(default_factory=list)  # [] = no soft conventions
     finding_classifier: FindingClassifierConfig = field(default_factory=FindingClassifierConfig)
+    models_budget_usd: float | None = None  # set when models: key is used (v0.8 path)
+    models_overrides: dict[str, Any] | None = None  # raw overrides: dict from v0.8 YAML
 
     @property
     def review_profile(self) -> ModelProfile:

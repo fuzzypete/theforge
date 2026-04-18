@@ -48,11 +48,19 @@ This creates:
 
 ## 3. Edit forge.yaml
 
-The generated config uses Claude for both dev and review. Adjust to match your
-project:
+The minimal config is a model list and a budget. TheForge figures out role
+assignment automatically — dev, preflight, plan, and review pool are all
+derived from the list using **complexity-aware routing** (see below).
 
 ```yaml
 project: my-project
+
+# v0.8 simple config: list your models, set a budget, done.
+models:
+  - claude/sonnet    # cheap tier  — dev for small stories
+  - claude/opus      # strong tier — dev for large stories, reviewers
+
+budget_usd: 30.0
 
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
@@ -65,10 +73,47 @@ validation:
 ```
 
 **Key things to customize:**
+- `models` — list of model keys (`provider/name`). TheForge sorts them into
+  cheap/mid/strong tiers and picks the right one based on story complexity.
+- `budget_usd` — total budget per story, distributed across all roles.
 - `setup_command` — how to install dependencies in a fresh worktree
   (`npm install`, `poetry install`, `pip install -e .`, etc.)
 - `gate_command` — your test/lint command. Must exit 0 on success.
-- `budget_usd` — cost ceiling per agent. Start low ($2-5) while learning.
+
+### How complexity-aware routing works
+
+When preflight classifies a story as small/medium/large, TheForge
+automatically selects the appropriate model tier for each phase:
+
+| Phase | small | medium | large |
+|-------|-------|--------|-------|
+| dev | cheap | mid | strong |
+| plan | mid | strong | strong |
+| preflight | fast/cheap | (static) | (static) |
+| code review | 1 mid reviewer | pool + synthesis | pool + synthesis |
+
+This is the v0.8 behavior described in [#807](https://github.com/fuzzypete/theforge/issues/807).
+Run `forge check-config` to see the full derived role table for your model list.
+
+### Advanced: partial overrides
+
+If you need to override a specific role without leaving simple mode, use the
+`overrides:` key instead of the classic `profiles:` key:
+
+```yaml
+models:
+  - claude/sonnet
+  - claude/opus
+
+budget_usd: 30.0
+
+overrides:
+  dev:
+    timeout_seconds: 1200   # extend dev timeout for large repos
+```
+
+The classic `profiles:` key still works and is supported indefinitely for
+configs that need full manual control.
 
 ## 4. Set up API keys (optional)
 
