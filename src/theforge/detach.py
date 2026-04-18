@@ -45,6 +45,35 @@ def remove_pid(run_id: str, project_root: Path) -> None:
         pass
 
 
+def write_run_ended(
+    run_id: str, project_root: Path, outcome: str = "stopped", *, force: bool = False
+) -> None:
+    """Write .forge/runs/<run_id>.ended with the terminal outcome.
+
+    outcome is a short string: "stopped", "completed", or "orphaned".
+    When force=False (default) the file is not overwritten if it already
+    exists — the first writer (usually the SIGTERM handler) wins.
+    """
+    runs_dir = project_root / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    ended_file = runs_dir / f"{run_id}.ended"
+    if not force and ended_file.exists():
+        return
+    try:
+        ended_file.write_text(outcome, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def read_run_ended(run_id: str, project_root: Path) -> str | None:
+    """Return the terminal outcome recorded in .forge/runs/<run_id>.ended, or None."""
+    ended_file = project_root / ".forge" / "runs" / f"{run_id}.ended"
+    try:
+        return ended_file.read_text(encoding="utf-8").strip() or None
+    except FileNotFoundError:
+        return None
+
+
 def _read_pid_file(pid_file: Path) -> tuple[int, str] | None:
     """Parse a PID file. Returns (pid, slug) or None on error."""
     try:
@@ -110,47 +139,34 @@ def _is_pid_alive(pid: int) -> bool:
 
 
 def read_run_status(run_id: str, slug: str, project_root: Path) -> dict:
-    """Return best-effort status dict for a running process.
+    """Return best-effort status dict for a run (active, terminal, or orphaned).
 
-    Searches the run log for the most recent phase marker and
-    computes elapsed from the log file's creation time.
+    Checks in order:
+    1. .ended sentinel → returns terminal outcome as phase (STOPPED, COMPLETED, …).
+    2. Active PID file → reads phase from log (existing behaviour).
+    3. No PID and no .ended → run exited without writing a terminal marker → ORPHANED.
 
     Returns dict with keys: phase, cost_usd, elapsed_seconds, log_path.
     """
     log_path = _find_log_path(slug, run_id, project_root)
-
-    phase = "RUNNING"
-    cost_usd: float | None = None
     elapsed_seconds: float | None = None
+    cost_usd: float | None = None
 
+    # Compute elapsed and cost once; reused across all return paths.
     if log_path is not None and log_path.exists():
-        # Extract elapsed from file mtime vs creation time
         try:
             stat = log_path.stat()
-            # Use st_birthtime (macOS) or st_ctime as creation proxy
             created = getattr(stat, "st_birthtime", stat.st_ctime)
             elapsed_seconds = time.time() - created
         except OSError:
             pass
 
-        # Scan log for most recent phase marker and cost
         try:
-            content = log_path.read_text(encoding="utf-8", errors="replace")
-            lines = content.splitlines()
-            for line in reversed(lines):
-                if "[forge] ▸ " in line:
-                    # e.g. "[forge] ▸ DEV   $1.23 elapsed"
-                    parts = line.split("[forge] ▸ ", 1)
-                    if len(parts) == 2:
-                        phase_part = parts[1].split()[0] if parts[1].split() else phase
-                        phase = phase_part
-                    break
-            # Find most recent cost line
-            for line in reversed(lines):
-                if "Total cost:" in line or "total_cost" in line:
-                    # e.g. "  Total cost: $1.234"
-                    import re
+            import re
 
+            content = log_path.read_text(encoding="utf-8", errors="replace")
+            for line in reversed(content.splitlines()):
+                if "Total cost:" in line or "total_cost" in line:
                     m = re.search(r"\$([0-9]+\.[0-9]+)", line)
                     if m:
                         cost_usd = float(m.group(1))
@@ -158,12 +174,32 @@ def read_run_status(run_id: str, slug: str, project_root: Path) -> dict:
         except OSError:
             pass
 
-    return {
-        "phase": phase,
-        "cost_usd": cost_usd,
-        "elapsed_seconds": elapsed_seconds,
-        "log_path": log_path,
-    }
+    base = {"cost_usd": cost_usd, "elapsed_seconds": elapsed_seconds, "log_path": log_path}
+
+    # 1. Terminal marker — written by forge stop or normal exit.
+    outcome = read_run_ended(run_id, project_root)
+    if outcome is not None:
+        return {**base, "phase": outcome.upper()}
+
+    # 2. Active run — PID file exists; read phase from log.
+    pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
+    if pid_file.exists():
+        phase = "RUNNING"
+        if log_path is not None and log_path.exists():
+            try:
+                lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                for line in reversed(lines):
+                    if "[forge] ▸ " in line:
+                        parts = line.split("[forge] ▸ ", 1)
+                        if len(parts) == 2:
+                            phase = parts[1].split()[0] if parts[1].split() else phase
+                        break
+            except OSError:
+                pass
+        return {**base, "phase": phase}
+
+    # 3. No PID, no .ended → process exited without writing a terminal marker.
+    return {**base, "phase": "ORPHANED"}
 
 
 def _find_log_path(slug: str, run_id: str, project_root: Path) -> Path | None:
@@ -356,10 +392,11 @@ def daemonize_run(run_id: str, slug: str, project_root: Path) -> None:
 
 
 def install_cleanup_handler(run_id: str, project_root: Path) -> None:
-    """Install SIGTERM handler that removes the PID file on clean shutdown."""
+    """Install SIGTERM handler that writes a terminal marker and removes the PID file."""
     original_handler = signal.getsignal(signal.SIGTERM)
 
     def _handler(signum: int, frame: object) -> None:
+        write_run_ended(run_id, project_root, "stopped")
         remove_pid(run_id, project_root)
         if callable(original_handler):
             original_handler(signum, frame)  # type: ignore[call-arg]

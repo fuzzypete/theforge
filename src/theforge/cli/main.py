@@ -91,6 +91,7 @@ def main() -> None:
         "logs": status.cmd_logs,
         "stop": status.cmd_stop,
         "decide": status.cmd_decide,
+        "runs-clean": status.cmd_runs_clean,
         "version": cmd_version,
     }
 

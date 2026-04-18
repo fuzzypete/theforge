@@ -197,7 +197,10 @@ def cmd_sprint(args: object) -> int:
         return 1
     finally:
         release_story_locks(locked_fds)
-        # Remove PID file unconditionally — ensures cleanup even if run_sprint raises
+        # Write terminal marker then remove PID — ensures status is accurate even
+        # if run_sprint raises. SIGTERM handler may have already written "stopped";
+        # write_run_ended is a no-op when the file already exists.
+        _detach.write_run_ended(run_id, config.project_root, "completed")
         _detach.remove_pid(run_id, config.project_root)
 
     return 0 if result.specs_failed == 0 else 1
@@ -413,7 +416,8 @@ def _run_query_mode(
         return 1
     finally:
         release_story_locks(locked_fds)
-        # Remove PID file unconditionally — ensures cleanup even if run_sprint raises
+        # Write terminal marker then remove PID — same pattern as manifest mode.
+        _detach.write_run_ended(run_id, config.project_root, "completed")
         _detach.remove_pid(run_id, config.project_root)
 
     return 0 if result.specs_failed == 0 else 1
