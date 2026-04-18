@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -162,8 +163,6 @@ def read_run_status(run_id: str, slug: str, project_root: Path) -> dict:
             pass
 
         try:
-            import re
-
             content = log_path.read_text(encoding="utf-8", errors="replace")
             for line in reversed(content.splitlines()):
                 if "Total cost:" in line or "total_cost" in line:
