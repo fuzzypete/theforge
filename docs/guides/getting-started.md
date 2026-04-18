@@ -326,8 +326,7 @@ your-project/
 │   └── worktrees/                     # GENERATED — managed git worktrees
 │       └── my-feature/                # GENERATED — one per story run
 │           ├── <all repo files>       # GENERATED — full worktree copy on feature branch
-│           ├── forge_audit.yaml       # GENERATED — worktree copy of audit trail
-│           └── handoff.yaml           # GENERATED — gate output (PASS/FAIL + details)
+│           └── forge_audit.yaml       # GENERATED — worktree copy of audit trail
 ```
 
 ### Ownership and lifecycle
@@ -342,7 +341,6 @@ your-project/
 | `.forge/audits/forge_audit.yaml` | Generated | Yes | Overwritten each run |
 | `.forge/worktrees/<slug>/` | Generated | Yes | After merge or abandonment |
 | `.forge/worktrees/<slug>/forge_audit.yaml` | Generated | Yes | After merge or abandonment |
-| `.forge/worktrees/<slug>/handoff.yaml` | Generated | Yes | After merge or abandonment |
 
 ### Mental model
 
