@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from theforge.config import (
     DEFAULT_VALIDATION,
     BackendConfig,
     ForgeConfig,
+    ModelProfile,
     NotificationConfig,
     RetryPolicy,
     WorkspaceConfig,
@@ -193,6 +195,75 @@ class TestRunSprint:
             run_sprint(config, manifest_path)
 
         mock_scrub.assert_called_once_with(config)
+
+    def test_api_non_claude_agents_do_not_emit_cost_tracking_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Claude CLI plus OpenAI/Google API agents should not warn about cost tracking."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        config = replace(
+            config,
+            review_pool=[
+                replace(
+                    DEFAULT_REVIEW_PROFILE,
+                    name="openai-reviewer",
+                    cli=None,
+                    provider="openai",
+                    model="gpt-5.4",
+                ),
+                ModelProfile(
+                    name="google-reviewer",
+                    cli=None,
+                    provider="google",
+                    model="gemini-3.1-pro-preview",
+                    budget_usd=1.0,
+                    timeout_seconds=300,
+                    allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+                ),
+            ],
+            synthesis_profile=None,
+        )
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
+            run_sprint(config, manifest_path)
+
+        captured = capsys.readouterr()
+        assert "Cost not tracked" not in captured.err
+        assert "Budget tracks Claude costs only" not in captured.err
+
+    def test_codex_cli_reviewer_emits_targeted_cost_tracking_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A CLI Codex reviewer should produce a targeted warning naming that reviewer."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
+        config = _make_config(tmp_path)
+        config = replace(
+            config,
+            review_pool=[
+                replace(
+                    DEFAULT_REVIEW_PROFILE,
+                    name="plan_reviewer",
+                    cli="codex",
+                    provider=None,
+                    model="gpt-5.4",
+                )
+            ],
+        )
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
+            run_sprint(config, manifest_path)
+
+        captured = capsys.readouterr()
+        assert (
+            "⚠ Cost not tracked for plan_reviewer (codex CLI, gpt-5.4). "
+            "Audit totals will exclude this agent's usage."
+        ) in captured.err
+        assert "Budget tracks Claude costs only" not in captured.err
 
     def test_success_path(self, tmp_path: Path) -> None:
         """Two specs both succeed, costs accumulate, audit written."""

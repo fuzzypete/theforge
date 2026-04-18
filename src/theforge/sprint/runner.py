@@ -57,6 +57,8 @@ from .query import normalize_dependency_plan
 from .sources import StorySource
 from .state_writer import SprintStateWriter
 
+_UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"codex", "gemini"})
+
 
 def _log(msg: str) -> None:
     slug = get_worker_slug()
@@ -82,6 +84,64 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
         return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
     except (OSError, ValueError, TypeError):
         return 0.0
+
+
+def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
+    """Return sprint-start warnings for configured CLI agents with unknown cost."""
+
+    agents: list[tuple[str, str | None, str | None, str]] = [
+        (
+            config.preflight_profile.name,
+            config.preflight_profile.cli,
+            config.preflight_profile.provider,
+            config.preflight_profile.model,
+        ),
+        (
+            config.dev_profile.name,
+            config.dev_profile.cli,
+            config.dev_profile.provider,
+            config.dev_profile.model,
+        ),
+    ]
+
+    if config.plan.enabled:
+        agents.append(("planner", config.plan.cli, config.plan.provider, config.plan.model))
+
+    if config.plan_agent_review.enabled:
+        agents.extend(
+            (profile.name, profile.cli, profile.provider, profile.model)
+            for profile in config.plan_agent_review.profiles
+        )
+
+    agents.extend(
+        (profile.name, profile.cli, profile.provider, profile.model)
+        for profile in config.review_pool
+    )
+
+    if config.synthesis_profile is not None:
+        agents.append(
+            (
+                config.synthesis_profile.name,
+                config.synthesis_profile.cli,
+                config.synthesis_profile.provider,
+                config.synthesis_profile.model,
+            )
+        )
+
+    warnings: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for name, cli, provider, model in agents:
+        if provider is not None or cli not in _UNTRACKED_COST_CLIS:
+            continue
+        key = (name, cli, model)
+        if key in seen:
+            continue
+        seen.add(key)
+        warnings.append(
+            f"⚠ Cost not tracked for {name} ({cli} CLI, {model}). "
+            "Audit totals will exclude this agent's usage."
+        )
+    return warnings
 
 
 def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
@@ -613,7 +673,8 @@ def run_sprint(
         file=sys.stderr,
         flush=True,
     )
-    _log("⚠ Budget tracks Claude costs only (Codex/Gemini report $0.00)")
+    for warning in _agent_cost_tracking_warnings(config):
+        _log(warning)
 
     # Sprint-level structured logger
     _cli_run_id = run_id
