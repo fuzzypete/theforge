@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -45,6 +46,10 @@ class NormalizedDependencyPlan:
 
 def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
+
+
+def _is_issue_slug(slug: str) -> bool:
+    return re.fullmatch(r"issue-\d+", slug) is not None
 
 
 def _gh_api_paginate_issues(
@@ -251,7 +256,9 @@ def normalize_dependency_plan(
     """Normalize external dependencies and classify stories blocked before scheduling.
 
     External dependencies already listed in ``satisfied`` are removed from the
-    DAG inputs. Unresolved external dependencies are preserved in ``blocked`` so
+    DAG inputs. Unresolved issue-backed dependencies remain in the DAG so a live
+    scheduler can re-check GitHub issue state and unblock them on a later tick.
+    Other unresolved external dependencies are preserved in ``blocked`` so
     callers can keep the affected stories out of the runnable graph while still
     reporting the blocker chain explicitly.
     """
@@ -260,7 +267,9 @@ def normalize_dependency_plan(
         task.slug: sorted(
             dep_slug
             for dep_slug in task.depends_on
-            if dep_slug not in known_slugs and dep_slug not in satisfied
+            if dep_slug not in known_slugs
+            and dep_slug not in satisfied
+            and not _is_issue_slug(dep_slug)
         )
         for task in tasks
     }
@@ -271,7 +280,9 @@ def normalize_dependency_plan(
             depends_on=[
                 dep_slug
                 for dep_slug in task.depends_on
-                if dep_slug in known_slugs or dep_slug in satisfied
+                if dep_slug in known_slugs
+                or dep_slug in satisfied
+                or (dep_slug not in known_slugs and _is_issue_slug(dep_slug))
             ],
         )
         for task in tasks

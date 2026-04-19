@@ -11,7 +11,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from theforge.sprint.dag import StoryDAG, _is_branch_merged, build_dag
+from theforge.sprint.dag import (
+    StoryDAG,
+    _is_branch_merged,
+    build_dag,
+    resolve_satisfied_dependencies,
+)
+from theforge.sprint.runner import _refresh_external_satisfied
 from theforge.task import TaskStory
 
 
@@ -39,6 +45,15 @@ def test_build_dag_dep_not_in_manifest_but_satisfied_no_error() -> None:
     stories = [_make_story("story-b", depends_on=["story-a"])]
     dag = build_dag(stories, satisfied={"story-a"})
     assert dag is not None
+
+
+def test_build_dag_external_issue_dep_blocks_without_error() -> None:
+    """An external GitHub issue slug can block until a live state refresh satisfies it."""
+    stories = [_make_story("issue-831", depends_on=["issue-807"])]
+    dag = build_dag(stories)
+
+    assert dag.ready() == []
+    assert dag.unmet_deps("issue-831") == ["issue-807"]
 
 
 def test_build_dag_satisfied_returns_story_dag() -> None:
@@ -139,6 +154,60 @@ def test_story_dag_satisfied_not_in_tasks() -> None:
     dag = StoryDAG(stories, satisfied={"story-a"})
     assert "story-a" not in dag._tasks
     assert "story-b" in dag._tasks
+
+
+def test_resolve_satisfied_dependencies_closed_issue(tmp_path: Path) -> None:
+    """A CLOSED external issue dependency is treated as satisfied."""
+    stories = [_make_story("issue-831", depends_on=["issue-807"])]
+    with (
+        patch("theforge.sprint.dag._is_branch_merged", return_value=False),
+        patch("theforge.sprint.dag._is_issue_closed", return_value=True) as is_issue_closed,
+    ):
+        satisfied = resolve_satisfied_dependencies(
+            stories,
+            project_root=tmp_path,
+            base_branch="main",
+            branch_pattern="forge/{slug}",
+        )
+
+    assert "issue-807" in satisfied
+    is_issue_closed.assert_called_once_with(807, tmp_path)
+
+
+def test_scheduler_tick_unblocks_on_issue_close(tmp_path: Path) -> None:
+    """A live scheduler refresh marks a newly CLOSED external issue dep satisfied."""
+    from types import SimpleNamespace
+
+    ready = _make_story("issue-749")
+    blocked = _make_story("issue-751", depends_on=["issue-750"])
+    all_tasks = [ready, blocked]
+    dag = build_dag(all_tasks)
+    config = SimpleNamespace(
+        project_root=tmp_path,
+        workspace=SimpleNamespace(base_branch="main", branch_pattern="forge/{slug}"),
+    )
+    issue_closed = False
+    merged_slugs: set[str] = set()
+
+    def _mock_issue_closed(issue_number: int, project_root: Path) -> bool:
+        assert issue_number == 750
+        assert project_root == tmp_path
+        return issue_closed
+
+    with (
+        patch("theforge.sprint.dag._is_branch_merged", return_value=False),
+        patch("theforge.sprint.dag._is_issue_closed", side_effect=_mock_issue_closed),
+    ):
+        assert {task.slug for task in dag.ready()} == {"issue-749"}
+        assert _refresh_external_satisfied(dag, all_tasks, config, merged_slugs) == set()
+        assert {task.slug for task in dag.ready()} == {"issue-749"}
+
+        issue_closed = True
+        assert _refresh_external_satisfied(dag, all_tasks, config, merged_slugs) == {"issue-750"}
+
+    assert "issue-750" in merged_slugs
+    assert {task.slug for task in dag.ready()} == {"issue-749", "issue-751"}
+    assert not dag.is_done()
 
 
 # ── _is_branch_merged: fast-forward merge regression ─────────────────

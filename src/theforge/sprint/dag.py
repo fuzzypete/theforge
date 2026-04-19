@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,13 @@ from .manifest import _build_task_from_story
 
 def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
+
+
+def _issue_number_from_slug(slug: str) -> int | None:
+    match = re.fullmatch(r"issue-(\d+)", slug)
+    if match is None:
+        return None
+    return int(match.group(1))
 
 
 @dataclass
@@ -131,6 +140,32 @@ def _is_branch_merged(
     return False
 
 
+def _is_issue_closed(issue_number: int, project_root: Path) -> bool:
+    """Return True when GitHub issue ``issue_number`` is not OPEN.
+
+    GitHub is the source of truth for issue-backed external dependencies. Any
+    CLI, parsing, or schema failure returns False so missing state does not
+    spuriously unblock dependent sprint work.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "issue", "view", str(issue_number), "--json", "state"],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+        data = json.loads(result.stdout)
+        state = data.get("state")
+        if not isinstance(state, str):
+            return False
+        return state.upper() != "OPEN"
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError):
+        return False
+
+
 class StoryDAG:
     """Dependency-aware scheduler for concurrent story execution.
 
@@ -164,7 +199,8 @@ class StoryDAG:
     def mark_complete(self, slug: str) -> None:
         """Story satisfied deps (merged / ALREADY_DONE). Unlocks dependents."""
         self._completed.add(slug)
-        self._finished.add(slug)
+        if slug in self._tasks:
+            self._finished.add(slug)
 
     def mark_skipped(self, slug: str) -> None:
         """Story finished without satisfying deps (failed / budget / blocked)."""
@@ -201,7 +237,11 @@ def build_dag(tasks: list[TaskStory], satisfied: set[str] | None = None) -> Stor
     # Validate all depends_on slugs exist in the manifest or are pre-satisfied
     for task in tasks:
         missing = [
-            dep for dep in task.depends_on if dep not in known_slugs and dep not in _satisfied
+            dep
+            for dep in task.depends_on
+            if dep not in known_slugs
+            and dep not in _satisfied
+            and _issue_number_from_slug(dep) is None
         ]
         if missing:
             raise ValueError(
@@ -211,7 +251,10 @@ def build_dag(tasks: list[TaskStory], satisfied: set[str] | None = None) -> Stor
 
     # Detect circular dependencies via DFS (gray/white/black coloring).
     # Exclude satisfied slugs — they are external and not in the DFS graph.
-    deps = {t.slug: [d for d in t.depends_on if d not in _satisfied] for t in tasks}
+    deps = {
+        t.slug: [d for d in t.depends_on if d not in _satisfied and d in known_slugs]
+        for t in tasks
+    }
     visited: set[str] = set()
     in_stack: set[str] = set()
 
@@ -258,6 +301,10 @@ def resolve_satisfied_dependencies(
             continue
         branch = branch_pattern.format(slug=dep_slug)
         if _is_branch_merged(branch, base_branch, project_root, slug=dep_slug):
+            satisfied_slugs.add(dep_slug)
+            continue
+        issue_number = _issue_number_from_slug(dep_slug)
+        if issue_number is not None and _is_issue_closed(issue_number, project_root):
             satisfied_slugs.add(dep_slug)
 
     return satisfied_slugs
