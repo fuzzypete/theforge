@@ -168,6 +168,16 @@ def test_macos_sandbox_profile_blocks_sibling_worktree_reads_in_practice(tmp_pat
     if shutil.which("sandbox-exec") is None:
         pytest.skip("sandbox-exec unavailable")
 
+    # Probe: some macOS environments deny sandbox-exec itself (SIP, CI entitlements).
+    probe = subprocess.run(
+        ["sandbox-exec", "-p", "(version 1)(allow default)", "true"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0 and "Operation not permitted" in (probe.stderr + probe.stdout):
+        pytest.skip("sandbox-exec present but denied by host environment")
+
     worktree = tmp_path / ".forge" / "worktrees" / "issue-592"
     sibling = tmp_path / ".forge" / "worktrees" / "issue-777"
     worktree.mkdir(parents=True)
