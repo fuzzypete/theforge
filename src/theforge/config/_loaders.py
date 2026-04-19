@@ -27,11 +27,25 @@ log = logging.getLogger("theforge.config")
 # `models:` indicates a mixed-mode config.
 _LEGACY_PAR_SCALAR_FIELDS: frozenset[str] = frozenset({"model", "cli", "provider", "budget_usd"})
 
+# Top-level keys removed in v0.8. Accepting them silently alongside `models:`
+# masks stale configs, so we reject the mixed shape explicitly. The parsing
+# paths for these keys are gone — this guard is rejection-only.
+_REMOVED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"profiles", "smart_config_models", "agents"})
+
 
 def _validate_v0_8_schema(raw: dict[str, Any]) -> None:
     """Reject mixed legacy/v0.8 shapes that are no longer supported."""
     if "models" not in raw:
         return
+
+    found_legacy = _REMOVED_TOP_LEVEL_KEYS & raw.keys()
+    if found_legacy:
+        details = ", ".join(f"'{k}'" for k in sorted(found_legacy))
+        raise ValueError(
+            f"forge.yaml: removed legacy top-level key(s) {details} present alongside "
+            "'models:'. These keys were deleted in v0.8 — remove them from forge.yaml. "
+            "Use 'models:' + 'overrides:' instead."
+        )
 
     par_raw = raw.get("plan_agent_review")
     if isinstance(par_raw, dict):

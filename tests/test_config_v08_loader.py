@@ -171,6 +171,53 @@ plan_agent_review:
         load_config(cfg_path)
 
 
+def test_v08_rejects_legacy_profiles_alongside_models(tmp_path):
+    """Removed legacy 'profiles:' key alongside 'models:' must fail fast."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+profiles:
+  dev:
+    model: sonnet
+""",
+    )
+    with _auth_ok, pytest.raises(ValueError, match="profiles"):
+        load_config(cfg_path)
+
+
+def test_v08_rejects_smart_config_models_alongside_models(tmp_path):
+    """Removed legacy 'smart_config_models:' key alongside 'models:' must fail fast."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+smart_config_models:
+  - claude/opus
+""",
+    )
+    with _auth_ok, pytest.raises(ValueError, match="smart_config_models"):
+        load_config(cfg_path)
+
+
+def test_v08_rejects_top_level_agents_alongside_models(tmp_path):
+    """Removed legacy top-level 'agents:' key alongside 'models:' must fail fast."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+agents:
+  - name: foo
+    model: opus
+""",
+    )
+    with _auth_ok, pytest.raises(ValueError, match="agents"):
+        load_config(cfg_path)
+
+
 # ── Edge cases ───────────────────────────────────────────────────────────────
 
 
