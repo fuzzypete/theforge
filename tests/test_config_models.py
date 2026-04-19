@@ -241,6 +241,25 @@ class TestModelsKeyConfig:
         models = {a.model for a in config.agents}
         assert models == {"sonnet", "opus", "gpt-5.4"}
 
+    def test_models_key_supports_deepseek_api_models(self, tmp_path):
+        """DeepSeek entries in models: derive API-backed profiles, not CLI profiles."""
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "deepseek/deepseek-reasoner"],
+                "budget_usd": 50.0,
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        deepseek_profiles = [
+            p
+            for p in [config.dev_profile, config.preflight_profile, *config.review_pool]
+            if p.model == "deepseek-reasoner"
+        ]
+        assert deepseek_profiles
+        assert all(p.cli is None for p in deepseek_profiles)
+        assert all(p.provider == "deepseek" for p in deepseek_profiles)
+
     def test_models_with_profile_override(self, tmp_path):
         """Explicit overrides overlay auto-assigned values (v0.8: overrides: key)."""
         config_path = _write_config(
@@ -701,11 +720,21 @@ class TestCurrentGenModelRegistry:
     """Current-gen Gemini 3.1 and GPT-5.4 family models are registered."""
 
     @pytest.mark.parametrize(
-        ("key", "cli", "model", "tier", "capability", "cost_rank", "dev_capable"),
+        (
+            "key",
+            "cli",
+            "provider",
+            "model",
+            "tier",
+            "capability",
+            "cost_rank",
+            "dev_capable",
+        ),
         [
             (
                 "google/gemini-3-flash-preview",
                 "gemini",
+                None,
                 "gemini-3-flash-preview",
                 "cheap",
                 7,
@@ -715,6 +744,7 @@ class TestCurrentGenModelRegistry:
             (
                 "google/gemini-3.1-pro-preview",
                 "gemini",
+                None,
                 "gemini-3.1-pro-preview",
                 "strong",
                 9,
@@ -722,8 +752,19 @@ class TestCurrentGenModelRegistry:
                 False,
             ),
             (
+                "deepseek/deepseek-reasoner",
+                None,
+                "deepseek",
+                "deepseek-reasoner",
+                "strong",
+                9,
+                2,
+                True,
+            ),
+            (
                 "openai/gpt-5.4-mini",
                 "codex",
+                None,
                 "gpt-5.4-mini",
                 "cheap",
                 7,
@@ -733,6 +774,7 @@ class TestCurrentGenModelRegistry:
             (
                 "openai/gpt-5.4-pro",
                 "codex",
+                None,
                 "gpt-5.4-pro",
                 "strong",
                 10,
@@ -742,10 +784,11 @@ class TestCurrentGenModelRegistry:
         ],
     )
     def test_current_gen_models_present_with_expected_metadata(
-        self, key, cli, model, tier, capability, cost_rank, dev_capable
+        self, key, cli, provider, model, tier, capability, cost_rank, dev_capable
     ):
         info = MODEL_REGISTRY[key]
         assert info.cli == cli
+        assert info.provider == provider
         assert info.model == model
         assert info.tier == tier
         assert info.capability == capability

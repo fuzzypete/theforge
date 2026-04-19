@@ -7,7 +7,7 @@ models:
   - claude/sonnet
   - claude/opus
   - openai/gpt-5.4
-  - google/gemini-3.1-pro-preview
+  - deepseek/deepseek-reasoner
 
 budget_usd: 50.0
 

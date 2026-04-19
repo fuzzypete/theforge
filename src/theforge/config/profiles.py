@@ -40,7 +40,7 @@ def _agents_from_models(models: list[str], budget_usd: float) -> list[AgentDef]:
         agents.append(
             AgentDef(
                 name=key.replace("/", "-"),
-                provider=None,
+                provider=info.provider,
                 model=info.model,
                 budget_usd=per_agent_budget,
                 timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
@@ -208,7 +208,7 @@ def _auto_assign_models(
     dev_profile = ModelProfile(
         name="dev",
         cli=dev_info.cli,
-        provider=None,
+        provider=dev_info.provider,
         model=dev_info.model,
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
@@ -218,7 +218,7 @@ def _auto_assign_models(
     preflight_profile = ModelProfile(
         name="preflight",
         cli=preflight_info.cli,
-        provider=None,
+        provider=preflight_info.provider,
         model=preflight_info.model,
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
@@ -229,7 +229,7 @@ def _auto_assign_models(
         ModelProfile(
             name=k.replace("/", "-"),
             cli=i.cli,
-            provider=None,
+            provider=i.provider,
             model=i.model,
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
@@ -244,7 +244,7 @@ def _auto_assign_models(
         synthesis_profile = ModelProfile(
             name="synthesis",
             cli=synth_info.cli,
-            provider=None,
+            provider=synth_info.provider,
             model=synth_info.model,
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,

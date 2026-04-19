@@ -12,12 +12,13 @@ from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile
 class ModelInfo:
     """Built-in metadata for a known model."""
 
-    cli: str  # "claude", "codex", "gemini"
+    cli: str | None  # "claude", "codex", "gemini"; None for API-backed providers
     model: str  # model identifier for the CLI
     tier: str  # "fast" or "strong"
     capability: int  # relative capability score (1-10)
     cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
     dev_capable: bool = True  # False for models whose CLI doesn't support dev tools
+    provider: str | None = None  # API transport, mutually exclusive with cli
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,22 @@ MODEL_REGISTRY: dict[str, ModelInfo] = {
     ),
     "openai/gpt-5.4-pro": ModelInfo(
         cli="codex", model="gpt-5.4-pro", tier="strong", capability=10, cost_rank=3
+    ),
+    "deepseek/deepseek-reasoner": ModelInfo(
+        cli=None,
+        provider="deepseek",
+        model="deepseek-reasoner",
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+    ),
+    "deepseek/deepseek-chat": ModelInfo(
+        cli=None,
+        provider="deepseek",
+        model="deepseek-chat",
+        tier="fast",
+        capability=7,
+        cost_rank=1,
     ),
     "google/gemini-3-flash-preview": ModelInfo(
         cli="gemini",

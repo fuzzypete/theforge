@@ -260,6 +260,7 @@ def derive_roles(
     dev_ref = _make_model_ref(
         model=dev_info.model,
         cli=dev_info.cli,
+        provider=dev_info.provider,
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
     )
@@ -276,6 +277,7 @@ def derive_roles(
     preflight_ref = _make_model_ref(
         model=preflight_info.model,
         cli=preflight_info.cli,
+        provider=preflight_info.provider,
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
     )
@@ -293,6 +295,7 @@ def derive_roles(
     plan_ref = _make_model_ref(
         model=plan_info.model,
         cli=plan_info.cli,
+        provider=plan_info.provider,
         budget_usd=_DEFAULT_PLAN_BUDGET_USD,
         timeout_seconds=_DEFAULT_PLAN_TIMEOUT_SECONDS,
     )
@@ -314,6 +317,7 @@ def derive_roles(
         review_ref = _make_model_ref(
             model=info.model,
             cli=info.cli,
+            provider=info.provider,
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
         )
@@ -336,6 +340,7 @@ def derive_roles(
         synth_ref = _make_model_ref(
             model=synth_info.model,
             cli=synth_info.cli,
+            provider=synth_info.provider,
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
         )
@@ -355,6 +360,7 @@ def derive_roles(
         par_ref = _make_model_ref(
             model=dev_info.model,
             cli=dev_info.cli,
+            provider=dev_info.provider,
             budget_usd=_DEFAULT_PLAN_BUDGET_USD,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
         )
