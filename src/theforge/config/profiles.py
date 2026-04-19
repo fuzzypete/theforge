@@ -15,8 +15,41 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import _resolve_model_info
+from .models import AgentDef, _resolve_model_info
 from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
+
+_COST_RANK_TO_TIER = {1: "cheap", 2: "mid", 3: "strong"}
+
+
+def _agents_from_models(models: list[str], budget_usd: float) -> list[AgentDef]:
+    """Derive AgentDef pool from the v0.8 models: list.
+
+    Each entry becomes one agent keyed by the slash-replaced model key so names
+    line up with the auto-assigned review_pool (see _auto_assign_models).
+    Tier is derived from ModelInfo.cost_rank: 1→cheap, 2→mid, 3→strong.
+    Budget is split evenly; per-role sizing is handled separately by the
+    auto-assigner — this pool feeds assign_models() for adaptive selection.
+    """
+    if not models:
+        return []
+    per_agent_budget = budget_usd / len(models)
+    agents: list[AgentDef] = []
+    for key in models:
+        info = _resolve_model_info(key)
+        tier = _COST_RANK_TO_TIER.get(info.cost_rank, "mid")
+        agents.append(
+            AgentDef(
+                name=key.replace("/", "-"),
+                provider=None,
+                model=info.model,
+                budget_usd=per_agent_budget,
+                timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
+                tier=tier,
+                cli=info.cli,
+            )
+        )
+    return agents
+
 
 CLI_PROVIDER_MAP: dict[str, str] = {
     "claude": "anthropic",

@@ -24,6 +24,7 @@ from .defaults import (
 )
 from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_assignment
 from .profiles import (
+    _agents_from_models,
     _apply_profile_overrides,
     _apply_provider_fallback,
     _parse_provider_fallbacks,
@@ -338,7 +339,11 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout_seconds=int(plan_review_data.get("timeout_seconds", 14400)),
     )
 
-    agents_list: list = []
+    # Derive the adaptive agent pool from the v0.8 models: list so adaptive
+    # assignment (assign_models) has candidates to pick from. When no models:
+    # key is configured, the pool is empty and assignment falls back to the
+    # static dev/review profiles above.
+    agents_list = _agents_from_models(models, budget_usd_val) if models else []
     assignment_cfg = _parse_assignment(raw.get("assignment", {}))
 
     _raw_par = raw.get("plan_agent_review", {})

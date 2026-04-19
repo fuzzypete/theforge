@@ -216,6 +216,31 @@ class TestModelsKeyConfig:
         assert config.review_pool[0].model == "opus"
         assert config.synthesis_profile is None
 
+    def test_models_key_populates_agents_for_assignment(self, tmp_path):
+        """v0.8 models: list produces a non-empty ForgeConfig.agents pool.
+
+        Regression guard: adaptive assignment (preflight + assign_models) needs
+        agents to be derived from models: so `assignment.enabled: true` doesn't
+        silently fall back to an empty pool.
+        """
+        config_path = _write_config(
+            {
+                "models": ["claude/sonnet", "claude/opus", "openai/gpt-5.4"],
+                "budget_usd": 50.0,
+                "assignment": {"enabled": True},
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.assignment.enabled is True
+        assert len(config.agents) == 3
+        tiers = {a.tier for a in config.agents}
+        # Pool must span multiple tiers so assign_models can pick for LOW/MED/HIGH
+        assert "cheap" in tiers
+        assert "strong" in tiers
+        models = {a.model for a in config.agents}
+        assert models == {"sonnet", "opus", "gpt-5.4"}
+
     def test_models_with_profile_override(self, tmp_path):
         """Explicit overrides overlay auto-assigned values (v0.8: overrides: key)."""
         config_path = _write_config(
