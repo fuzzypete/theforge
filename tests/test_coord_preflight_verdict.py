@@ -639,7 +639,7 @@ def _make_smart_config(tmp_path: Path) -> ForgeConfig:
         review_pool=[opus_reviewer, gpt_reviewer],
         synthesis_profile=synthesis,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        smart_config_models=["claude/sonnet", "claude/opus", "openai/gpt-5.4"],
+        models=["claude/sonnet", "claude/opus", "openai/gpt-5.4"],
         plan_model_is_default=True,
         dev_profile_is_default=True,
         review_pool_is_default=True,
@@ -697,8 +697,8 @@ class TestComplexityAdaptation:
         assert adapted.dev_profile.cli == "claude"
 
     def test_complexity_ignored_with_explicit_profiles(self, tmp_path):
-        """No smart_config_models → complexity is a no-op."""
-        config = _make_config(tmp_path)  # classic config, smart_config_models=None
+        """No models → complexity is a no-op."""
+        config = _make_config(tmp_path)  # classic config, models=None
         adapted = _apply_complexity_adaptation(config, "small")
         assert adapted is config  # unchanged
 
@@ -877,9 +877,9 @@ class TestComplexityParsedForAllPreflightsP1:
     """P1 fix: complexity parsed on all successful preflights, not just smart config."""
 
     def test_complexity_stored_for_classic_config(self, tmp_path):
-        """Complexity stored in preflight_complexity even when smart_config_models is None."""
-        config = _make_config(tmp_path)  # classic config, no smart_config_models
-        assert config.smart_config_models is None
+        """Complexity stored in preflight_complexity even when models is None."""
+        config = _make_config(tmp_path)  # classic config, no models
+        assert config.models is None
         task = _make_task(tmp_path)
         workspace = tmp_path / task.slug
         workspace.mkdir()

@@ -43,7 +43,7 @@ def _make_smart_config(
     models: list[str] | None = None,
     max_review_cycles: int = 3,
 ) -> ForgeConfig:
-    """Create a ForgeConfig with smart_config_models set (claude/sonnet as dev)."""
+    """Create a ForgeConfig with models set (claude/sonnet as dev)."""
     if models is None:
         models = ["claude/sonnet", "claude/opus"]
     dev_profile = ModelProfile(
@@ -76,7 +76,7 @@ def _make_smart_config(
         review_pool=[review_profile],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=max_review_cycles),
-        smart_config_models=models,
+        models=models,
     )
 
 

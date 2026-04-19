@@ -150,41 +150,6 @@ def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
     return candidate_models
 
 
-def _parse_agents(agents_raw: list[Any]) -> list[AgentDef]:
-    """Parse agents pool from raw YAML list."""
-    agents_list: list[AgentDef] = []
-    _VALID_TIERS = {"cheap", "mid", "strong"}
-    for agent_data in agents_raw:
-        if not isinstance(agent_data, dict):
-            raise ValueError(f"Each 'agents' entry must be a dict, got {type(agent_data)}")
-        agent_name = agent_data.get("name")
-        if not agent_name:
-            raise ValueError("Each 'agents' entry must have a 'name' field")
-        agent_tier = str(agent_data.get("tier", "mid"))
-        if agent_tier not in _VALID_TIERS:
-            raise ValueError(
-                f"Agent {agent_name!r}: tier must be one of {sorted(_VALID_TIERS)}, "
-                f"got {agent_tier!r}"
-            )
-        agent_cli = agent_data.get("cli")
-        agent_provider = agent_data.get("provider")
-        if not agent_cli and not agent_provider:
-            agent_provider = "anthropic"  # default for backward compat
-        agents_list.append(
-            AgentDef(
-                name=str(agent_name),
-                cli=str(agent_cli) if agent_cli else None,
-                provider=str(agent_provider) if agent_provider else None,
-                model=str(agent_data.get("model", "sonnet")),
-                budget_usd=float(agent_data.get("budget_usd", 1.0)),
-                timeout_seconds=int(agent_data.get("timeout_seconds", 300)),
-                tier=agent_tier,
-                strengths=tuple(agent_data.get("strengths", [])),
-            )
-        )
-    return agents_list
-
-
 def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
     """Parse assignment config from raw YAML dict."""
     return AssignmentConfig(

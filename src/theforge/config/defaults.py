@@ -83,19 +83,12 @@ validation:
   # Command to run validation checks. Gate passes on exit 0, fails on non-zero.
   gate_command: "make gate"
 
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 2.00
-    timeout_seconds: 900
-    allowed_tools: ["Read", "Edit", "Write", "Bash", "Glob", "Grep"]
-  review:
-    cli: claude
-    model: opus
-    budget_usd: 1.00
-    timeout_seconds: 300
-    allowed_tools: ["Read", "Bash", "Glob", "Grep"]
+# v0.8 simple model list — complexity-aware roles are derived automatically.
+models:
+  - claude/sonnet
+  - claude/opus
+
+budget_usd: 50.0
 
 retry:
   max_dev_iterations: 3    # retries within a review cycle
@@ -113,23 +106,4 @@ context:
 #     model: o4-mini
 #   google:
 #     model: gemini-2.5-flash
-
-# Multi-CLI review pool example:
-# review_pool:
-#   - name: claude-reviewer
-#     cli: claude
-#     model: opus
-#     budget_usd: 1.00
-#   - name: codex-reviewer
-#     cli: codex
-#     model: o4-mini
-#     budget_usd: 1.00
-#   - name: gemini-reviewer
-#     cli: gemini
-#     model: gemini-2.5-pro
-#     budget_usd: 1.00
-# synthesis:
-#   cli: claude
-#   model: opus
-#   budget_usd: 1.00
 """

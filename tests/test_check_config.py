@@ -544,7 +544,7 @@ class TestCheckConfigDeprecatedFields:
 
         def _load_with_deprecation(path):
             logging.getLogger("theforge.config").warning(
-                "plan.model_name is deprecated — use plan.model instead"
+                "plan.old_field is deprecated — use plan.new_field instead"
             )
             return config
 
@@ -560,7 +560,7 @@ class TestCheckConfigDeprecatedFields:
         assert exit_code == 1
         out = capsys.readouterr().out
         assert "WARNINGS" in out
-        assert "plan.model_name is deprecated" in out
+        assert "plan.old_field is deprecated" in out
 
 
 class TestRegisterParser:
@@ -679,7 +679,7 @@ class TestComplexityAwareDisplay:
     """Tests for the DERIVED ROLES section shown in v0.8 simple-mode configs."""
 
     def _make_v08_forge_config(self, tmp_path: Path) -> ForgeConfig:
-        """ForgeConfig as produced by the v0.8 loader path (smart_config_models set)."""
+        """ForgeConfig as produced by the v0.8 loader path (models set)."""
         return ForgeConfig(
             project="test-v08",
             project_root=tmp_path,
@@ -720,7 +720,7 @@ class TestComplexityAwareDisplay:
             retry=RetryPolicy(),
             plan=PlanConfig(enabled=True),
             log=LogConfig(enabled=False),
-            smart_config_models=["claude/sonnet", "claude/opus"],
+            models=["claude/sonnet", "claude/opus"],
             models_budget_usd=50.0,
         )
 
@@ -839,7 +839,7 @@ class TestComplexityAwareDisplay:
             retry=RetryPolicy(),
             plan=PlanConfig(enabled=False),
             log=LogConfig(enabled=False),
-            smart_config_models=["claude/sonnet", "claude/opus"],
+            models=["claude/sonnet", "claude/opus"],
             models_budget_usd=50.0,
             models_overrides={"dev": {"timeout_seconds": 1200}},
         )

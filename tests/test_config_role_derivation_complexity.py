@@ -63,7 +63,7 @@ def _make_forge_config(
     plan_model_is_default: bool = True,
     dev_profile_is_default: bool = True,
     review_pool_is_default: bool = True,
-    smart_config_models: Any = _USE_GOLD,
+    models: Any = _USE_GOLD,
     review_pool: list[ModelProfile] | None = None,
 ) -> ForgeConfig:
     """Build a minimal ForgeConfig for complexity-adaptation tests."""
@@ -116,9 +116,7 @@ def _make_forge_config(
         review_pool=default_review,
         synthesis_profile=synthesis,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        smart_config_models=(
-            _GOLD_POOL if smart_config_models is _USE_GOLD else smart_config_models
-        ),
+        models=(_GOLD_POOL if models is _USE_GOLD else models),
         plan=plan,
         plan_model_is_default=plan_model_is_default,
         dev_profile_is_default=dev_profile_is_default,
@@ -385,7 +383,7 @@ class TestApplyComplexityAdaptationGold:
             tmp_path,
             dev_model="opus",
             dev_cli="claude",
-            smart_config_models=["claude/opus"],
+            models=["claude/opus"],
             review_pool=[only_opus],
         )
         adapted = _apply_complexity_adaptation(config, "large")
@@ -441,9 +439,9 @@ class TestComplexityOverrideBypass:
         assert [p.model for p in adapted_high.review_pool] == original_models
 
     def test_no_smart_config_is_noop(self, tmp_path):
-        """Without smart_config_models, complexity adaptation is always a no-op."""
-        config = _make_forge_config(tmp_path, smart_config_models=None)
-        # smart_config_models=None → returns config unchanged
+        """Without models, complexity adaptation is always a no-op."""
+        config = _make_forge_config(tmp_path, models=None)
+        # models=None → returns config unchanged
         adapted_high = _apply_complexity_adaptation(config, "large")
         adapted_low = _apply_complexity_adaptation(config, "small")
         adapted_medium = _apply_complexity_adaptation(config, "medium")
@@ -463,7 +461,7 @@ class TestComplexityTierFallback:
             tmp_path,
             dev_model="gpt-5.4",
             dev_cli="codex",
-            smart_config_models=["openai/gpt-5.4", "claude/opus"],
+            models=["openai/gpt-5.4", "claude/opus"],
         )
         adapted = _apply_complexity_adaptation(config, "small")
         # dev.model is gpt-5.4 (in pool_model_names) → target=cheap → fallback to mid
@@ -475,7 +473,7 @@ class TestComplexityTierFallback:
         config = _make_forge_config(
             tmp_path,
             plan_model_is_default=True,
-            smart_config_models=["claude/sonnet", "openai/gpt-5.4"],
+            models=["claude/sonnet", "openai/gpt-5.4"],
         )
         adapted = _apply_complexity_adaptation(config, "large")
         # No strong model → fallback to mid (gpt-5.4, cost_rank=2)
@@ -510,7 +508,7 @@ class TestComplexityTierFallback:
         config = _make_forge_config(
             tmp_path,
             review_pool=[cheap_reviewer1, cheap_reviewer2],
-            smart_config_models=["claude/sonnet"],
+            models=["claude/sonnet"],
         )
         # Fallback: keeps cheapest reviewer even though no mid/strong available
         adapted = _apply_complexity_adaptation(config, "small")
