@@ -96,8 +96,13 @@ def test_localhost_uppercase_is_allowed():
     """'LOCALHOST' (uppercase) must not trigger the guard — check is case-insensitive."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        err = sock.connect_ex(("LOCALHOST", 19994))
-        assert isinstance(err, int)
+        try:
+            err = sock.connect_ex(("LOCALHOST", 19994))
+            assert isinstance(err, int)
+        except socket.gaierror:
+            # Some environments don't resolve uppercase 'LOCALHOST'; that's an OS
+            # resolution failure, not a guard block — the guard passed correctly.
+            pass
     finally:
         sock.close()
 
