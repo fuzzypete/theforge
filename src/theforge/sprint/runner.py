@@ -592,6 +592,48 @@ def _classify_and_record(
     return delta_succeeded, delta_failed, delta_skipped
 
 
+def _refresh_external_satisfied(
+    dag: StoryDAG,
+    all_tasks: list[TaskStory],
+    config: ForgeConfig,
+    merged_slugs: set[str] | None = None,
+) -> set[str]:
+    """Re-check unmet external dependencies and mark newly satisfied slugs.
+
+    External issue dependencies can close while a sprint is running. Keeping this
+    refresh in the scheduler loop lets dependents become ready without requiring
+    operators to stop and resume the sprint.
+    """
+    manifest_slugs = {task.slug for task in all_tasks}
+    external_deps = {
+        dep
+        for task in dag.remaining()
+        for dep in dag.unmet_deps(task.slug)
+        if dep not in manifest_slugs
+    }
+    if not external_deps:
+        return set()
+
+    dependent_tasks = [
+        task for task in all_tasks if any(dep in external_deps for dep in task.depends_on)
+    ]
+    satisfied = resolve_satisfied_dependencies(
+        dependent_tasks,
+        project_root=config.project_root,
+        base_branch=config.workspace.base_branch,
+        branch_pattern=config.workspace.branch_pattern,
+    )
+    newly_satisfied = {
+        slug for slug in satisfied if slug in external_deps and slug not in dag._completed
+    }
+    for slug in sorted(newly_satisfied):
+        dag.mark_complete(slug)
+        if merged_slugs is not None:
+            merged_slugs.add(slug)
+        _log(f"dep satisfied: {slug} (GitHub issue closed)")
+    return newly_satisfied
+
+
 def run_sprint(
     config: ForgeConfig,
     sprint: "Path | ResolvedSprint",
@@ -995,6 +1037,7 @@ def run_sprint(
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
         while not dag.is_done():
             _log(f"[debug] loop: active={list(active.keys())} fin={dag._finished}")
+            _refresh_external_satisfied(dag, all_tasks, config, merged_slugs)
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
