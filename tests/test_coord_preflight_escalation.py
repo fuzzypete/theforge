@@ -49,7 +49,7 @@ def _make_smart_config(
     models: list[str] | None = None,
     max_review_cycles: int = 3,
 ) -> ForgeConfig:
-    """Create a ForgeConfig with smart_config_models set (claude/sonnet as dev)."""
+    """Create a ForgeConfig with models set (claude/sonnet as dev)."""
     if models is None:
         models = ["claude/sonnet", "claude/opus"]
     dev_profile = ModelProfile(
@@ -86,7 +86,7 @@ def _make_smart_config(
             max_review_cycles=max_review_cycles,
             auto_model_escalation=True,
         ),
-        smart_config_models=models,
+        models=models,
     )
 
 
@@ -406,10 +406,10 @@ class TestDevModelEscalationIntegration:
     def test_escalation_only_with_smart_config(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """Classic config (no smart_config_models) → no escalation even with persistent P1."""
+        """Classic config (no models) → no escalation even with persistent P1."""
         config = _make_config(tmp_path)
-        # Verify no smart_config_models
-        assert config.smart_config_models is None
+        # Verify no models
+        assert config.models is None
 
         task = _make_task(tmp_path)
         workspace = tmp_path / task.slug
@@ -541,7 +541,7 @@ class TestAutoModelEscalationFlag:
                 max_review_cycles=3,
                 auto_model_escalation=False,  # explicit default
             ),
-            smart_config_models=["claude/sonnet", "claude/opus"],
+            models=["claude/sonnet", "claude/opus"],
         )
 
         task = _make_task(tmp_path)

@@ -570,30 +570,6 @@ def _write_config(data: dict, tmp_dir: Path) -> Path:
 
 
 class TestLoadConfigTimeoutFields:
-    def test_classic_config_parses_dev_medium_large(self, tmp_path):
-        config_path = _write_config(
-            {
-                "profiles": {
-                    "dev": {
-                        "timeout_seconds": 600,
-                        "timeout_medium_seconds": 900,
-                        "timeout_large_seconds": 1800,
-                    }
-                }
-            },
-            tmp_path,
-        )
-        config = load_config(config_path)
-        assert config.dev_profile.timeout_seconds == 600
-        assert config.dev_profile.timeout_medium_seconds == 900
-        assert config.dev_profile.timeout_large_seconds == 1800
-
-    def test_classic_config_defaults_none_when_absent(self, tmp_path):
-        config_path = _write_config({"profiles": {"dev": {"timeout_seconds": 600}}}, tmp_path)
-        config = load_config(config_path)
-        assert config.dev_profile.timeout_medium_seconds is None
-        assert config.dev_profile.timeout_large_seconds is None
-
     def test_plan_config_parses_medium_large(self, tmp_path):
         config_path = _write_config(
             {

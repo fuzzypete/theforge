@@ -37,7 +37,7 @@ _COMPLEXITY_TO_LEVEL: dict[str, str] = {
 
 
 def _build_pool_entries(model_keys: list[str]) -> list[tuple[int, str, ModelInfo]]:
-    """Build sorted (cost_rank, registry_key, ModelInfo) list from smart_config_models."""
+    """Build sorted (cost_rank, registry_key, ModelInfo) list from models."""
     from theforge.config.models import _resolve_model_info  # noqa: PLC0415
 
     entries: list[tuple[int, str, ModelInfo]] = []
@@ -474,7 +474,7 @@ def _escalate_dev_model(
 def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
     """Adjust model assignments based on preflight complexity using tier × complexity routing.
 
-    Only applies when smart_config_models is set. Per-role bypass flags guard each
+    Only applies when models is set. Per-role bypass flags guard each
     mutation so explicit forge.yaml overrides are preserved:
     - plan updates require config.plan_model_is_default
     - dev updates require config.dev_profile_is_default
@@ -487,14 +487,14 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
       review: LOW → single mid/strong reviewer (no synthesis)
               MEDIUM/HIGH → all mid/strong reviewers + synthesis
     """
-    if config.smart_config_models is None:
+    if config.models is None:
         return config
 
     norm = _COMPLEXITY_TO_LEVEL.get(complexity.lower())
     if norm is None:
         return config
 
-    pool_entries = _build_pool_entries(config.smart_config_models)
+    pool_entries = _build_pool_entries(config.models)
     if not pool_entries:
         return config
 
@@ -584,7 +584,7 @@ def _apply_preflight_config(
     _log = log or (lambda _msg: None)
     _log_verbose = log_verbose or (lambda _msg: None)
 
-    if config.smart_config_models is not None:
+    if config.models is not None:
         _config_before = config
         config = _apply_complexity_adaptation(config, complexity)
         _dev_changed = config.dev_profile.model != _config_before.dev_profile.model
@@ -624,7 +624,7 @@ def _apply_preflight_config(
 
     _explicit: dict[str, object] = {}
     _explicit_roles: set[str] = set()
-    if config.smart_config_models is None:
+    if config.models is None:
         if config.dev_profile is not _DEF_DEV:
             _explicit["dev"] = config.dev_profile
             _explicit_roles.add("dev")

@@ -42,18 +42,12 @@ def test_load_config_parses_review_pool_github_handle(tmp_path):
     config_path.write_text(
         """
 project: test
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
+models:
+  - claude/sonnet
+  - claude/opus
+overrides:
   review_pool:
-    - name: reviewer-a
-      cli: claude
-      model: sonnet
-      budget_usd: 1
-      timeout_seconds: 30
+    - name: claude-opus
       github_handle: reviewer-a-gh
 """,
         encoding="utf-8",
@@ -61,4 +55,5 @@ profiles:
 
     config = load_config(config_path)
 
-    assert config.review_pool[0].github_handle == "reviewer-a-gh"
+    handles = [p.github_handle for p in config.review_pool]
+    assert "reviewer-a-gh" in handles

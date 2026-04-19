@@ -22,12 +22,11 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_agents, _parse_assignment
+from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_assignment
 from .profiles import (
-    CLI_PROVIDER_MAP,
+    _agents_from_models,
     _apply_profile_overrides,
     _apply_provider_fallback,
-    _parse_profile,
     _parse_provider_fallbacks,
 )
 from .role_derivation import derive_roles
@@ -148,8 +147,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         pre_validate_command=val_data.get("pre_validate_command"),
     )
 
-    # ── Smart config: models key ──────────────────────────────────────
-    smart_config_models: list[str] | None = None
+    # ── v0.8 models: key ──────────────────────────────────────────────
+    models: list[str] | None = None
     _review_pool_is_default = False
     _dev_profile_is_default = False
     _derived_plan_profile: ModelProfile | None = None
@@ -179,7 +178,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         if budget_usd_val <= 0:
             raise ValueError("budget_usd must be positive")
 
-        # v0.8: overrides: key replaces the classic profiles: key for partial overrides.
+        # v0.8: overrides: key carries partial role overrides.
         # plan_agent_review overrides are passed into derive_roles() so the bridge
         # can lower them to a ModelProfile (fixes silent loss of that config).
         overrides = raw.get("overrides") or {}
@@ -224,7 +223,7 @@ def load_config(config_path: Path) -> ForgeConfig:
                     for p in review_pool
                 ]
 
-        smart_config_models = [str(m) for m in models_list]
+        models = [str(m) for m in models_list]
         # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
         # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
         # roles so explicit overrides bypass routing.
@@ -232,49 +231,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         _review_pool_is_default = "review_pool" not in overrides
 
     else:
-        # ── Classic config: profiles key ──────────────────────────────────
-        profiles = raw.get("profiles", {})
-        dev_profile = (
-            _parse_profile("dev", profiles["dev"], role="dev", secrets=secrets)
-            if "dev" in profiles
-            else DEFAULT_DEV_PROFILE
-        )
-        preflight_profile = (
-            _parse_profile("preflight", profiles["preflight"], role="preflight", secrets=secrets)
-            if "preflight" in profiles
-            else DEFAULT_PREFLIGHT_PROFILE
-        )
-
-        # review_pool precedence: review_pool > review > default
-        if "review_pool" in profiles:
-            pool_data = profiles["review_pool"]
-            if not isinstance(pool_data, list) or len(pool_data) == 0:
-                raise ValueError("profiles.review_pool must be a non-empty list")
-            names = [e.get("name") for e in pool_data]
-            if any(n is None for n in names):
-                raise ValueError("Each profiles.review_pool entry must have a 'name' field")
-            if len(names) != len(set(names)):
-                raise ValueError(f"Duplicate names in profiles.review_pool: {names}")
-            review_pool = [
-                _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
-            ]
-            if "synthesis" in profiles:
-                synthesis_profile = _parse_profile(
-                    "synthesis", profiles["synthesis"], role="review", secrets=secrets
-                )
-            else:
-                synthesis_profile = None
-
-        elif "review" in profiles:
-            review_pool = [
-                _parse_profile("review", profiles["review"], role="review", secrets=secrets)
-            ]
-            synthesis_profile = None
-
-        else:
-            review_pool = [DEFAULT_REVIEW_PROFILE]
-            synthesis_profile = None
-            _review_pool_is_default = True
+        # No v0.8 models: key — fall back to built-in defaults.
+        dev_profile = DEFAULT_DEV_PROFILE
+        preflight_profile = DEFAULT_PREFLIGHT_PROFILE
+        review_pool = [DEFAULT_REVIEW_PROFILE]
+        synthesis_profile = None
+        _review_pool_is_default = True
 
     dev_profile = _apply_provider_fallback(dev_profile, provider_fallbacks)
     preflight_profile = _apply_provider_fallback(preflight_profile, provider_fallbacks)
@@ -283,12 +245,6 @@ def load_config(config_path: Path) -> ForgeConfig:
     ]
     if synthesis_profile is not None:
         synthesis_profile = _apply_provider_fallback(synthesis_profile, provider_fallbacks)
-
-    # smart_config_models — escalation chain; works alongside explicit profiles
-    if smart_config_models is None and "smart_config_models" in raw:
-        models_raw = raw["smart_config_models"]
-        if isinstance(models_raw, list) and models_raw:
-            smart_config_models = [str(m) for m in models_raw]
 
     # Retry
     retry_data = raw.get("retry", {})
@@ -309,11 +265,6 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Plan
     plan_data = raw.get("plan", {})
-
-    # model_name deprecation: map to model and emit a warning
-    if "model_name" in plan_data and "model" not in plan_data:
-        log.warning("plan.model_name is deprecated — use plan.model instead")
-        plan_data = {**plan_data, "model": plan_data["model_name"]}
 
     _plan_model_is_default = (
         "cli" not in plan_data and "model" not in plan_data and "provider" not in plan_data
@@ -388,16 +339,11 @@ def load_config(config_path: Path) -> ForgeConfig:
         timeout_seconds=int(plan_review_data.get("timeout_seconds", 14400)),
     )
 
-    agents_list = _parse_agents(raw.get("agents", []))
-    agents_list = [
-        agent
-        if agent.provider or not agent.cli
-        else dataclasses.replace(
-            agent,
-            api_fallback=provider_fallbacks.get(CLI_PROVIDER_MAP.get(agent.cli, "")),
-        )
-        for agent in agents_list
-    ]
+    # Derive the adaptive agent pool from the v0.8 models: list so adaptive
+    # assignment (assign_models) has candidates to pick from. When no models:
+    # key is configured, the pool is empty and assignment falls back to the
+    # static dev/review profiles above.
+    agents_list = _agents_from_models(models, budget_usd_val) if models else []
     assignment_cfg = _parse_assignment(raw.get("assignment", {}))
 
     _raw_par = raw.get("plan_agent_review", {})
@@ -587,7 +533,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         retry=retry,
         notifications=notifications,
         github=github_cfg,
-        smart_config_models=smart_config_models,
+        models=models,
         plan=plan_cfg,
         plan_review=plan_review_cfg,
         plan_agent_review=plan_agent_review_cfg,

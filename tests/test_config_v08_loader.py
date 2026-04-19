@@ -38,7 +38,7 @@ models:
 
     assert cfg.dev_profile.model == "sonnet"
     assert cfg.dev_profile.cli == "claude"
-    assert cfg.smart_config_models == ["claude/sonnet"]
+    assert cfg.models == ["claude/sonnet"]
 
 
 def test_v08_simple_mode_two_models(tmp_path):
@@ -140,38 +140,6 @@ models:
 # ── Legacy key rejection ──────────────────────────────────────────────────────
 
 
-def test_v08_rejects_profiles_alongside_models(tmp_path):
-    cfg_path = _write(
-        tmp_path,
-        """
-models:
-  - claude/sonnet
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
-""",
-    )
-    with _auth_ok, pytest.raises(ValueError, match="profiles"):
-        load_config(cfg_path)
-
-
-def test_v08_rejects_smart_config_models_alongside_models(tmp_path):
-    cfg_path = _write(
-        tmp_path,
-        """
-models:
-  - claude/sonnet
-smart_config_models:
-  - claude/opus
-""",
-    )
-    with _auth_ok, pytest.raises(ValueError, match="smart_config_models"):
-        load_config(cfg_path)
-
-
 def test_v08_rejects_legacy_par_scalar_model_field(tmp_path):
     """plan_agent_review.model is a legacy scalar — rejected alongside models:."""
     cfg_path = _write(
@@ -203,11 +171,8 @@ plan_agent_review:
         load_config(cfg_path)
 
 
-# ── Mixed-mode rejection ──────────────────────────────────────────────────────
-
-
-def test_v08_mixed_mode_models_and_profiles_rejected(tmp_path):
-    """models: + profiles: in the same file is invalid."""
+def test_v08_rejects_legacy_profiles_alongside_models(tmp_path):
+    """Removed legacy 'profiles:' key alongside 'models:' must fail fast."""
     cfg_path = _write(
         tmp_path,
         """
@@ -215,35 +180,42 @@ models:
   - claude/sonnet
 profiles:
   dev:
-    cli: claude
     model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
 """,
     )
-    with _auth_ok, pytest.raises(ValueError, match="models.*legacy|legacy.*models"):
+    with _auth_ok, pytest.raises(ValueError, match="profiles"):
         load_config(cfg_path)
 
 
-def test_v08_mixed_mode_error_message_names_replacement(tmp_path):
-    """Error message should tell the user what to use instead of the legacy key."""
+def test_v08_rejects_smart_config_models_alongside_models(tmp_path):
+    """Removed legacy 'smart_config_models:' key alongside 'models:' must fail fast."""
     cfg_path = _write(
         tmp_path,
         """
 models:
   - claude/sonnet
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 1
-    timeout_seconds: 30
+smart_config_models:
+  - claude/opus
 """,
     )
-    with _auth_ok:
-        with pytest.raises(ValueError) as exc_info:
-            load_config(cfg_path)
-    assert "overrides" in str(exc_info.value)
+    with _auth_ok, pytest.raises(ValueError, match="smart_config_models"):
+        load_config(cfg_path)
+
+
+def test_v08_rejects_top_level_agents_alongside_models(tmp_path):
+    """Removed legacy top-level 'agents:' key alongside 'models:' must fail fast."""
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - claude/sonnet
+agents:
+  - name: foo
+    model: opus
+""",
+    )
+    with _auth_ok, pytest.raises(ValueError, match="agents"):
+        load_config(cfg_path)
 
 
 # ── Edge cases ───────────────────────────────────────────────────────────────
@@ -288,26 +260,3 @@ plan_agent_review:
     # The derived profile from overrides must be injected — not silently dropped.
     assert len(cfg.plan_agent_review.pool) == 1
     assert cfg.plan_agent_review.pool[0].timeout_seconds == 999
-
-
-# ── Classic config still works ────────────────────────────────────────────────
-
-
-def test_classic_profiles_config_still_works(tmp_path):
-    """A profiles:-only config (no models:) continues to use the classic branch."""
-    cfg_path = _write(
-        tmp_path,
-        """
-project: classic-test
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 5
-    timeout_seconds: 60
-""",
-    )
-    # Classic path validates cli auth which succeeds by default for cli=claude.
-    cfg = load_config(cfg_path)
-    assert cfg.dev_profile.model == "sonnet"
-    assert cfg.dev_profile.cli == "claude"

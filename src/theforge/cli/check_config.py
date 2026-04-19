@@ -180,10 +180,10 @@ def _format_config(
     if config.models_budget_usd is not None:
         lines.append("Mode:    simple")
         lines.append(f"Budget:  ${config.models_budget_usd:.2f}/story")
-        if config.smart_config_models:
+        if config.models:
             seen: set[str] = set()
             provider_labels: list[str] = []
-            for mk in config.smart_config_models:
+            for mk in config.models:
                 lbl = _provider_label(mk)
                 if lbl not in seen:
                     seen.add(lbl)
@@ -194,9 +194,9 @@ def _format_config(
     lines.append("")
 
     # ── DERIVED ROLES (v0.8 simple mode) ─────────────────────────────────
-    if config.smart_config_models and config.models_budget_usd is not None:
+    if config.models and config.models_budget_usd is not None:
         derived_lines = _format_complexity_aware_section(
-            config.smart_config_models,
+            config.models,
             config.models_budget_usd,
             overrides=config.models_overrides,
         )

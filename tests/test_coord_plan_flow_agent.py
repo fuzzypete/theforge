@@ -501,7 +501,7 @@ findings:
                 max_plan_regen_attempts=3,
                 plan_escalation_threshold=2,
             ),
-            smart_config_models=["claude/sonnet", "claude/opus"],
+            models=["claude/sonnet", "claude/opus"],
         )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"

@@ -458,8 +458,8 @@ def run_task(
     # ── Per-run log tee + SIGTERM handler ────────────────────────────
     with _run_log_context(config, logger, task, state, _task_start):
         # ── Smart config display ───────────────────────────────────────
-        if config.smart_config_models is not None:
-            models_str = ", ".join(config.smart_config_models)
+        if config.models is not None:
+            models_str = ", ".join(config.models)
             dev_model = config.dev_profile.model
             review_models = ", ".join(p.model for p in config.review_pool)
             synth_model = config.synthesis_profile.model if config.synthesis_profile else "none"

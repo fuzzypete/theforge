@@ -710,8 +710,8 @@ def _run_plan_agent_review(
             and not state.plan_escalated
         ):
             _curr_key = _find_registry_key_for_profile(plan_profile)
-            if _curr_key is not None and config.smart_config_models is not None:
-                _next_key = _escalate_dev_model(_curr_key, config.smart_config_models)
+            if _curr_key is not None and config.models is not None:
+                _next_key = _escalate_dev_model(_curr_key, config.models)
                 if _next_key is not None:
                     _next_info = MODEL_REGISTRY[_next_key]
                     _old_model = plan_profile.model

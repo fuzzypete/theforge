@@ -344,7 +344,7 @@ class ForgeConfig:
     retry: RetryPolicy
     notifications: NotificationConfig = NotificationConfig()
     github: GithubConfig = field(default_factory=GithubConfig)
-    smart_config_models: list[str] | None = None  # None = classic config; list = smart config
+    models: list[str] | None = None  # raw v0.8 `models:` list; None = not set (uses defaults)
     plan: PlanConfig = field(default_factory=PlanConfig)
     plan_review: PlanReviewConfig = field(default_factory=PlanReviewConfig)
     plan_agent_review: PlanAgentReviewConfig = field(default_factory=PlanAgentReviewConfig)

@@ -880,7 +880,7 @@ def _run_review_phase(
 
     # ── REQUEST_CHANGES (blocking P1s present) ───────────────────
     _is_persistent_p1 = False
-    if config.smart_config_models is not None and len(state.review_results) >= 2:
+    if config.models is not None and len(state.review_results) >= 2:
         _prev_result = state.review_results[-2]
         _is_persistent_p1 = _has_persistent_p1(parsed_review.findings, _prev_result.findings)
 
@@ -899,7 +899,7 @@ def _run_review_phase(
     ):
         _curr_key = _find_registry_key_for_profile(config.dev_profile)
         if _curr_key is not None:
-            _next_key = _escalate_dev_model(_curr_key, config.smart_config_models)
+            _next_key = _escalate_dev_model(_curr_key, config.models)
             if _next_key is not None:
                 _next_info = MODEL_REGISTRY[_next_key]
                 _p1_file = next(
