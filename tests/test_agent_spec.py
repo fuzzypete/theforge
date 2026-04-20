@@ -50,7 +50,7 @@ class TestAgentRegistry:
             assert isinstance(spec.transport, TransportSpec), key
 
     def test_cli_backed_models_resolve_to_cli_transport(self):
-        for key in ("claude/sonnet", "claude/opus", "openai/gpt-5.4", "google/gemini-2.5-pro"):
+        for key in ("claude/sonnet", "claude/opus", "openai/gpt-5.4"):
             assert AGENT_REGISTRY[key].transport.kind == "cli"
 
     def test_api_backed_models_resolve_to_api_transport(self):
@@ -65,16 +65,28 @@ class TestAgentRegistry:
             assert spec.transport.runner == "openai"
             assert spec.provider == "openai"
 
-    def test_google_api_transport_entries_exist(self):
-        """Operators can explicitly select the Google API transport (not Gemini CLI)."""
+    def test_google_entries_default_to_api_transport(self):
+        """Plain google/ entries select the Google API transport."""
         for key in (
-            "google-api/gemini-2.5-pro",
-            "google-api/gemini-3-flash-preview",
-            "google-api/gemini-3.1-pro-preview",
+            "google/gemini-2.5-pro",
+            "google/gemini-3-flash-preview",
+            "google/gemini-3.1-pro-preview",
         ):
             spec = AGENT_REGISTRY[key]
             assert spec.transport.kind == "api"
             assert spec.transport.runner == "google"
+            assert spec.provider == "google"
+
+    def test_gemini_cli_transport_entries_exist(self):
+        """Operators can explicitly opt into Gemini CLI transport."""
+        for key in (
+            "gemini-cli/gemini-2.5-pro",
+            "gemini-cli/gemini-3-flash-preview",
+            "gemini-cli/gemini-3.1-pro-preview",
+        ):
+            spec = AGENT_REGISTRY[key]
+            assert spec.transport.kind == "cli"
+            assert spec.transport.executable == "gemini"
             assert spec.provider == "google"
 
     def test_deepseek_openai_google_and_all_cli_models_expressible(self):
@@ -236,6 +248,7 @@ class TestCheckConfigSeparateColumns:
 
         assert _split_provider_transport(None, "deepseek") == ("deepseek", "api")
         assert _split_provider_transport(None, "openai") == ("openai", "api")
+        assert _split_provider_transport(None, "google") == ("google", "api")
 
 
 class TestNoProviderPrefixGuessingInConfigLoad:

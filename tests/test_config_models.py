@@ -15,6 +15,7 @@ from theforge.config import (
     load_config,
 )
 from theforge.config.profiles import (
+    _agents_from_models,
     _auto_assign_models,
     _resolve_model_info,
 )
@@ -259,6 +260,38 @@ class TestModelsKeyConfig:
         assert deepseek_profiles
         assert all(p.cli is None for p in deepseek_profiles)
         assert all(p.provider == "deepseek" for p in deepseek_profiles)
+
+    def test_simple_models_google_defaults_to_api(self):
+        """Regression: simple models: google/... derives API-backed agent/profile data."""
+        agents = _agents_from_models(["google/gemini-3.1-pro-preview"], 50.0)
+        assert len(agents) == 1
+        assert agents[0].provider == "google"
+        assert agents[0].cli is None
+
+        dev, preflight, pool, synthesis = _auto_assign_models(
+            ["google/gemini-3.1-pro-preview"], 50.0
+        )
+        profiles = [dev, preflight, *pool]
+        if synthesis is not None:
+            profiles.append(synthesis)
+        assert all(p.provider == "google" for p in profiles)
+        assert all(p.cli is None for p in profiles)
+
+    def test_explicit_gemini_cli_override_routes_via_cli(self):
+        """Regression: gemini-cli/... remains an honest explicit CLI opt-in."""
+        from theforge.cli.check_config import _split_provider_transport
+
+        agents = _agents_from_models(["gemini-cli/gemini-3.1-pro-preview"], 50.0)
+        assert len(agents) == 1
+        assert agents[0].provider is None
+        assert agents[0].cli == "gemini"
+
+        dev, _preflight, _pool, _synthesis = _auto_assign_models(
+            ["gemini-cli/gemini-3.1-pro-preview"], 50.0
+        )
+        assert dev.cli == "gemini"
+        assert dev.provider is None
+        assert _split_provider_transport(dev.cli, dev.provider) == ("google", "cli:gemini")
 
     def test_models_with_profile_override(self, tmp_path):
         """Explicit overrides overlay auto-assigned values (v0.8: overrides: key)."""
@@ -729,16 +762,26 @@ class TestCurrentGenModelRegistry:
         [
             (
                 "google/gemini-3-flash-preview",
-                "gemini",
                 None,
+                "google",
                 "gemini-3-flash-preview",
                 "cheap",
                 7,
                 1,
-                False,
+                True,
             ),
             (
                 "google/gemini-3.1-pro-preview",
+                None,
+                "google",
+                "gemini-3.1-pro-preview",
+                "strong",
+                9,
+                2,
+                True,
+            ),
+            (
+                "gemini-cli/gemini-3.1-pro-preview",
                 "gemini",
                 None,
                 "gemini-3.1-pro-preview",

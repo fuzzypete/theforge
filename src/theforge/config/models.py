@@ -191,33 +191,30 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         capability=7,
         cost_rank=1,
     ),
-    # ── Google (CLI via Gemini) ───────────────────────────────────────
+    # ── Google (API) ─────────────────────────────────────────────────
     "google/gemini-3-flash-preview": AgentSpec(
         provider="google",
         model="gemini-3-flash-preview",
-        transport=_TRANSPORT_GEMINI_CLI,
+        transport=_TRANSPORT_GOOGLE_API,
         tier="cheap",
         capability=7,
         cost_rank=1,
-        dev_capable=False,
     ),
     "google/gemini-3.1-pro-preview": AgentSpec(
         provider="google",
         model="gemini-3.1-pro-preview",
-        transport=_TRANSPORT_GEMINI_CLI,
+        transport=_TRANSPORT_GOOGLE_API,
         tier="strong",
         capability=9,
         cost_rank=2,
-        dev_capable=False,
     ),
     "google/gemini-2.5-pro": AgentSpec(
         provider="google",
         model="gemini-2.5-pro",
-        transport=_TRANSPORT_GEMINI_CLI,
+        transport=_TRANSPORT_GOOGLE_API,
         tier="strong",
         capability=8,
         cost_rank=2,
-        dev_capable=False,
     ),
     # ── Local OpenAI-compatible models (route via Codex CLI with base_url) ──
     "openai/codestral": AgentSpec(
@@ -280,31 +277,33 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         # Reasoning-heavy — intentionally excluded from the preflight role.
         phase_eligibility=frozenset({"dev", "plan", "review"}),
     ),
-    # ── Google (API — disambiguated with 'google-api/' prefix so operators can
-    # select the Google API path separately from the Gemini CLI path) ─────
-    "google-api/gemini-2.5-pro": AgentSpec(
+    # ── Gemini CLI (explicit opt-in) ─────────────────────────────────
+    "gemini-cli/gemini-2.5-pro": AgentSpec(
         provider="google",
         model="gemini-2.5-pro",
-        transport=_TRANSPORT_GOOGLE_API,
+        transport=_TRANSPORT_GEMINI_CLI,
         tier="strong",
         capability=8,
         cost_rank=2,
+        dev_capable=False,
     ),
-    "google-api/gemini-3-flash-preview": AgentSpec(
+    "gemini-cli/gemini-3-flash-preview": AgentSpec(
         provider="google",
         model="gemini-3-flash-preview",
-        transport=_TRANSPORT_GOOGLE_API,
+        transport=_TRANSPORT_GEMINI_CLI,
         tier="cheap",
         capability=7,
         cost_rank=1,
+        dev_capable=False,
     ),
-    "google-api/gemini-3.1-pro-preview": AgentSpec(
+    "gemini-cli/gemini-3.1-pro-preview": AgentSpec(
         provider="google",
         model="gemini-3.1-pro-preview",
-        transport=_TRANSPORT_GOOGLE_API,
+        transport=_TRANSPORT_GEMINI_CLI,
         tier="strong",
         capability=9,
         cost_rank=2,
+        dev_capable=False,
     ),
 }
 

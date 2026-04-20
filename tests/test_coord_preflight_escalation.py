@@ -185,8 +185,11 @@ class TestEscalateDevModel:
         assert result == "claude/opus"
 
     def test_escalation_skips_non_dev_capable(self):
-        """google/gemini-2.5-pro has higher capability but dev_capable=False → skipped."""
-        result = _escalate_dev_model("claude/sonnet", ["claude/sonnet", "google/gemini-2.5-pro"])
+        """gemini-cli/gemini-2.5-pro has higher capability but dev_capable=False → skipped."""
+        result = _escalate_dev_model(
+            "claude/sonnet",
+            ["claude/sonnet", "gemini-cli/gemini-2.5-pro"],
+        )
         assert result is None
 
     def test_escalation_no_higher_model(self):
@@ -196,8 +199,8 @@ class TestEscalateDevModel:
 
     def test_escalation_selects_next_step_up(self):
         """Selects the lowest-capability model that still beats current."""
-        # sonnet(7) < gemini(8, not dev) < gpt-5.4(9) < opus(10)
-        # Should select gpt-5.4 as next step up from sonnet (gemini skipped)
+        # sonnet(7) < gpt-5.4(9) < opus(10)
+        # Should select gpt-5.4 as next step up from sonnet.
         result = _escalate_dev_model(
             "claude/sonnet",
             ["claude/sonnet", "openai/gpt-5.4", "claude/opus"],
