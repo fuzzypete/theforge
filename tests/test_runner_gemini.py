@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -130,3 +131,25 @@ class TestGeminiSandboxWrapper:
         mock_sandbox.assert_not_called()
         mock_run.assert_called_once()
         assert result.success is True
+
+    def test_uses_workspace_venv_env(self, tmp_path: Path) -> None:
+        """Gemini subprocess env prefers the worktree virtualenv."""
+        profile = _make_profile(sandbox_mode="none")
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        mock_proc = _make_subprocess_mock()
+
+        with patch(
+            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+        ) as mock_run:
+            _run_gemini(
+                prompt="debug run",
+                profile=profile,
+                working_dir=tmp_path,
+                secrets={"GOOGLE_API_KEY": "secret"},
+            )
+
+        env_passed = mock_run.call_args[1]["env"]
+        assert env_passed["PATH"].split(os.pathsep)[0] == str(venv_bin)
+        assert env_passed["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+        assert env_passed["GOOGLE_API_KEY"] == "secret"

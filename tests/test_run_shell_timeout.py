@@ -3,9 +3,12 @@ and non-blocking drain after process kill."""
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
+from theforge.coordinator import util as coord_util
 from theforge.coordinator.util import _run_shell
 
 
@@ -64,3 +67,22 @@ class TestRunShellTimeout:
 
         assert ok is False
         assert "STDERR_MARKER" in output
+
+
+def test_run_shell_defaults_to_workspace_venv_env(tmp_path: Path) -> None:
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    proc = MagicMock()
+    proc.communicate.return_value = ("ok\n", "")
+    proc.returncode = 0
+    proc.stdout = MagicMock()
+    proc.stderr = MagicMock()
+
+    with patch("theforge.coordinator.util.subprocess.Popen", return_value=proc) as mock_popen:
+        ok, output = coord_util._run_shell("python -V", tmp_path)
+
+    env_passed = mock_popen.call_args[1]["env"]
+    assert ok is True
+    assert output == "ok"
+    assert env_passed["PATH"].split(os.pathsep)[0] == str(venv_bin)
+    assert env_passed["VIRTUAL_ENV"] == str(tmp_path / ".venv")
