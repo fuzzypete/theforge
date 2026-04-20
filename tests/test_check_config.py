@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from theforge.cli.check_config import cmd_check_config, register_parser
+from theforge.cli.check_config import _provider_label, cmd_check_config, register_parser
 from theforge.config import (
     DEFAULT_VALIDATION,
     AssignmentConfig,
@@ -63,6 +63,9 @@ def _make_forge_config(
     plan_agent_review: PlanAgentReviewConfig | None = None,
     agents: list[AgentDef] | None = None,
     assignment: AssignmentConfig | None = None,
+    models: list[str] | None = None,
+    models_budget_usd: float | None = None,
+    models_overrides: dict | None = None,
 ) -> ForgeConfig:
     if review_pool is None:
         review_pool = [_api_profile("claude-reviewer")]
@@ -101,6 +104,9 @@ def _make_forge_config(
         agents=agents or [],
         assignment=assignment or AssignmentConfig(enabled=False),
         sprint=SprintConfig(max_parallel=1),
+        models=models,
+        models_budget_usd=models_budget_usd,
+        models_overrides=models_overrides,
     )
 
 
@@ -215,6 +221,79 @@ class TestCheckConfigHappyPath:
         assert "openai" in reviewer_line
         assert "api" in reviewer_line
         assert "cli:codex" not in reviewer_line
+
+    def test_simple_mode_providers_header_distinguishes_provider_and_transport(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Simple-mode provider summary keeps API and CLI transports distinct."""
+        config = _make_forge_config(
+            tmp_path,
+            models=[
+                "claude/sonnet",
+                "openai/gpt-5.4",
+                "deepseek/deepseek-reasoner",
+                "openai-api/gpt-5.4",
+            ],
+            models_budget_usd=10.0,
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                return_value=(True, ""),
+            ),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        providers_line = next(line for line in out.splitlines() if line.startswith("Providers:"))
+        assert "anthropic cli:claude" in providers_line
+        assert "openai cli:codex" in providers_line
+        assert "deepseek api" in providers_line
+        assert "openai api" in providers_line
+
+    def test_simple_mode_rows_render_api_backed_deepseek_profile(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Derived PHASES/REVIEW POOL rows use TransportSpec for API-backed models."""
+        config = _make_forge_config(
+            tmp_path,
+            models=[
+                "claude/sonnet",
+                "openai/gpt-5.4",
+                "deepseek/deepseek-reasoner",
+                "openai-api/gpt-5.4",
+            ],
+            models_budget_usd=10.0,
+            review_pool=[
+                _api_profile("deepseek-reviewer", provider="deepseek", model="deepseek-reasoner")
+            ],
+        )
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                return_value=(True, ""),
+            ),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert "DERIVED ROLES (complexity-aware)" in out
+        assert "deepseek  api       deepseek-reasoner" in out
+        deepseek_review_line = next(
+            line for line in out.splitlines() if "deepseek-reviewer" in line
+        )
+        assert "deepseek" in deepseek_review_line
+        assert "api" in deepseek_review_line
+        assert "cli:deepseek" not in deepseek_review_line
+
+    def test_provider_label_unknown_model_warns_without_prefix_fallback(self) -> None:
+        warnings: list[str] = []
+
+        assert _provider_label("openai/future-model", warnings) == "provider=? transport=?"
+        assert len(warnings) == 1
+        assert "not in AGENT_REGISTRY" in warnings[0]
 
     def test_explicit_thinking_budget_is_rendered(self, tmp_path: Path, capsys) -> None:
         review_pool = [

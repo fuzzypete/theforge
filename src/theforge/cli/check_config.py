@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
-from theforge.config import AGENT_REGISTRY, ForgeConfig, ModelProfile, TransportSpec, load_config
+from theforge.config import (
+    ForgeConfig,
+    ModelProfile,
+    TransportSpec,
+    load_config,
+    resolve_agent_spec,
+)
 from theforge.config.auth import check_agent_auth
 from theforge.config.profiles import _apply_provider_fallback
 from theforge.config.role_derivation import derive_roles
@@ -105,12 +111,15 @@ def _thinking_budget_label(profile: ModelProfile) -> str:
     return f"  thinking_budget={profile.thinking_budget}"
 
 
-def _provider_label(model_key: str) -> str:
+def _provider_label(model_key: str, warnings_list: list[str] | None = None) -> str:
     """Return a short human-readable label for a model key like 'claude/sonnet'."""
-    spec = AGENT_REGISTRY.get(model_key)
-    if spec is None:
-        provider = model_key.split("/", 1)[0] if "/" in model_key else model_key
-        return f"{provider} ?"
+    try:
+        spec = resolve_agent_spec(model_key)
+    except ValueError as exc:
+        if warnings_list is not None:
+            warnings_list.append(str(exc))
+        return "provider=? transport=?"
+
     provider_label, transport_label = _split_provider_transport(
         spec.transport.executable if spec.transport.kind == "cli" else None,
         spec.provider,
@@ -233,7 +242,7 @@ def _format_config(
             seen: set[str] = set()
             provider_labels: list[str] = []
             for mk in config.models:
-                lbl = _provider_label(mk)
+                lbl = _provider_label(mk, warnings_list)
                 if lbl not in seen:
                     seen.add(lbl)
                     provider_labels.append(lbl)
