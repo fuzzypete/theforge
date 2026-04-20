@@ -213,6 +213,7 @@ def _write_sprint_audit(
                 },
                 "reviews": reviews_summary,
                 "depends_on": task.depends_on if task else [],
+                "dependency_warnings": task.dependency_warnings if task else [],
                 "inferred_dependencies": {
                     "manifest": [
                         dep
@@ -250,6 +251,7 @@ def _write_sprint_audit(
                 "merge": False,
                 "reviews": [],
                 "depends_on": task.depends_on if task else [],
+                "dependency_warnings": task.dependency_warnings if task else [],
                 "inferred_dependencies": {
                     "manifest": [
                         dep

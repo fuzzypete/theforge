@@ -94,7 +94,7 @@ class TestGitHubIssueSource:
         assert task.depends_on == ["issue-12"]
         assert task.inferred_dependencies == ["issue-12"]
 
-    def test_fetch_falls_back_to_blocked_by_body_pattern(self, tmp_path: Path) -> None:
+    def test_fetch_ignores_body_prose_dependency_as_edge(self, tmp_path: Path) -> None:
         issue_data = json.dumps(
             {
                 "title": "Fix the bug",
@@ -109,8 +109,31 @@ class TestGitHubIssueSource:
             ]
             task = GitHubIssueSource().fetch("42", tmp_path)
 
+        assert task.depends_on == []
+        assert task.inferred_dependencies == []
+        assert task.dependency_warnings == [
+            "blocked by #12",
+            "blocked by https://github.com/acme/repo/issues/7",
+        ]
+
+    def test_fetch_populates_depends_on_from_issue_frontmatter(self, tmp_path: Path) -> None:
+        issue_data = json.dumps(
+            {
+                "title": "Fix the bug",
+                "body": "---\ndepends_on:\n  - issue-12\n  - 7\n---\n\n## Details\nFix it.",
+                "state": "OPEN",
+            }
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout=issue_data, stderr=""),
+                MagicMock(returncode=1, stdout="", stderr="preview unavailable"),
+            ]
+            task = GitHubIssueSource().fetch("42", tmp_path)
+
         assert task.depends_on == ["issue-7", "issue-12"]
         assert task.inferred_dependencies == ["issue-7", "issue-12"]
+        assert task.dependency_warnings == []
 
     @pytest.mark.parametrize(
         "body, expected",
@@ -135,10 +158,29 @@ class TestGitHubIssueSource:
             ),
         ],
     )
-    def test_parse_issue_blockers_from_body(self, body: str, expected: list) -> None:
+    def test_prose_dependency_phrases_are_diagnostics_only(
+        self, body: str, expected: list
+    ) -> None:
         source = GitHubIssueSource()
-        result = source._parse_issue_blockers_from_body(body)
+        result = sorted(
+            {ref for _phrase, refs in source._find_prose_dependency_phrases(body) for ref in refs}
+        )
         assert result == expected
+
+    def test_parse_issue_blockers_from_body_metadata_requires_frontmatter(self) -> None:
+        source = GitHubIssueSource()
+
+        assert source._parse_issue_blockers_from_body_metadata("depends_on: issue-265") == []
+        assert source._parse_issue_blockers_from_body_metadata(
+            "---\ndepends_on: issue-265\n---\n\nBody"
+        ) == [265]
+
+    def test_matching_structured_dependency_suppresses_prose_warning(self) -> None:
+        body = "---\ndepends_on: issue-265\n---\n\nDepends on #265 for context."
+
+        warnings = GitHubIssueSource()._dependency_authoring_warnings(body, [265])
+
+        assert warnings == []
 
     def test_fetch_raises_on_failure(self, tmp_path: Path) -> None:
         with patch("subprocess.run") as mock_run:

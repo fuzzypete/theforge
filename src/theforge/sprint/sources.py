@@ -9,6 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import yaml
+
 from ..task import TaskStory
 from .manifest import _build_task_from_story
 
@@ -28,6 +30,10 @@ _DEPENDS_ON_BODY_RE = re.compile(
     r"(?:\[([^\]]*)\]|"  # bracketed list form: depends_on: [issue-1, issue-2]
     r"(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/|issue-)?#?(\d+))",  # single ref
     re.IGNORECASE,
+)
+_ISSUE_REF_RE = re.compile(r"(?:https?://github\.com/[^/\s]+/[^/\s]+/issues/|issue-)?#?(\d+)")
+_ISSUE_FRONTMATTER_RE = re.compile(
+    r"\A---[ \t]*\r?\n(?P<yaml>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)", re.DOTALL
 )
 
 
@@ -148,20 +154,82 @@ class GitHubIssueSource:
                         blockers.add(blocker_number)
         return blockers
 
-    def _parse_issue_blockers_from_body(self, body: str) -> list[int]:
-        """Return blocker issue numbers referenced in body text."""
-        blockers = {int(match.group("number")) for match in _BLOCKED_BY_BODY_RE.finditer(body)}
-        # Also parse "depends on" / "depends_on" forms.
-        _NUMBER_RE = re.compile(r"(?:issue-)?#?(\d+)", re.IGNORECASE)
-        for match in _DEPENDS_ON_BODY_RE.finditer(body):
+    def _parse_issue_blockers_from_body_metadata(self, body: str) -> list[int]:
+        """Return blocker issue numbers from explicit issue-body YAML metadata.
+
+        GitHub issues may declare scheduler dependencies in leading YAML
+        frontmatter:
+
+            ---
+            depends_on:
+              - issue-123
+            ---
+
+        Free-form prose is intentionally excluded from this parser.
+        """
+        metadata_match = _ISSUE_FRONTMATTER_RE.match(body)
+        if metadata_match is None:
+            return []
+        try:
+            metadata = yaml.safe_load(metadata_match.group("yaml")) or {}
+        except yaml.YAMLError:
+            return []
+        if not isinstance(metadata, dict):
+            return []
+
+        raw_deps = metadata.get("depends_on", [])
+        if raw_deps is None:
+            return []
+        if isinstance(raw_deps, (str, int)):
+            dep_values = [raw_deps]
+        elif isinstance(raw_deps, list):
+            dep_values = raw_deps
+        else:
+            return []
+
+        blockers: set[int] = set()
+        for raw_dep in dep_values:
+            match = _ISSUE_REF_RE.fullmatch(str(raw_dep).strip())
+            if match is not None:
+                blockers.add(int(match.group(1)))
+        return sorted(blockers)
+
+    def _body_without_issue_metadata(self, body: str) -> str:
+        """Return issue body with the structured metadata block removed."""
+        return _ISSUE_FRONTMATTER_RE.sub("", body, count=1)
+
+    def _find_prose_dependency_phrases(self, body: str) -> list[tuple[str, list[int]]]:
+        """Return non-authoritative dependency-shaped prose phrases and refs."""
+        scan_body = self._body_without_issue_metadata(body)
+        matches: list[tuple[str, list[int]]] = []
+        for match in _BLOCKED_BY_BODY_RE.finditer(scan_body):
+            matches.append((match.group(0), [int(match.group("number"))]))
+        for match in _DEPENDS_ON_BODY_RE.finditer(scan_body):
             bracket_content, single_number = match.group(1), match.group(2)
             if bracket_content is not None:
-                # Bracketed list: extract all issue numbers from within the brackets.
-                for num_match in _NUMBER_RE.finditer(bracket_content):
-                    blockers.add(int(num_match.group(1)))
+                refs = [
+                    int(num_match.group(1))
+                    for num_match in _ISSUE_REF_RE.finditer(bracket_content)
+                ]
             elif single_number is not None:
-                blockers.add(int(single_number))
-        return sorted(blockers)
+                refs = [int(single_number)]
+            else:
+                refs = []
+            if refs:
+                matches.append((match.group(0), sorted(set(refs))))
+        return matches
+
+    def _dependency_authoring_warnings(
+        self, body: str, structured_blockers: list[int]
+    ) -> list[str]:
+        """Warn when prose looks like a dependency but is not structured metadata."""
+        declared = set(structured_blockers)
+        warnings: list[str] = []
+        for phrase, refs in self._find_prose_dependency_phrases(body):
+            if refs and set(refs).issubset(declared):
+                continue
+            warnings.append(phrase)
+        return warnings
 
     def fetch(self, ref: str, project_root: Path) -> TaskStory:
         """Fetch issue body via `gh issue view` and build a TaskStory.
@@ -197,8 +265,9 @@ class GitHubIssueSource:
         body = data.get("body", "")
         blockers = self._fetch_issue_blockers(number, project_root)
         if not blockers:
-            blockers = self._parse_issue_blockers_from_body(body)
+            blockers = self._parse_issue_blockers_from_body_metadata(body)
         blocker_slugs = [f"issue-{blocker}" for blocker in blockers]
+        dependency_warnings = self._dependency_authoring_warnings(body, blockers)
 
         slug = f"issue-{number}"
         return TaskStory(
@@ -208,6 +277,7 @@ class GitHubIssueSource:
             story_text=body,
             depends_on=blocker_slugs,
             inferred_dependencies=blocker_slugs,
+            dependency_warnings=dependency_warnings,
             github_issue=number,
         )
 
