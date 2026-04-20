@@ -8,6 +8,7 @@ models:
   - claude/opus
   - openai/gpt-5.4
   - deepseek/deepseek-reasoner
+  - google/gemini-3.1-pro-preview
 
 budget_usd: 50.0
 
