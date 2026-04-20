@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from theforge.shape_check._mapping import map_shape
 from theforge.shape_check.classifier import LlmCaller, classify
 from theforge.shape_check.heuristics import (
     DEFAULT_CLUSTER_THRESHOLD,
@@ -16,13 +17,7 @@ from theforge.shape_check.heuristics import (
     check_too_many_behavioral_clusters,
     check_untriaged_finding,
 )
-from theforge.shape_check.types import (
-    Reason,
-    Severity,
-    Shape,
-    ShapeResult,
-    SuggestedAction,
-)
+from theforge.shape_check.types import Reason, ShapeResult
 
 DEFAULT_CLASSIFIER = "heuristic"
 
@@ -32,22 +27,6 @@ __all__ = [
     "SEED_VOCABULARY",
     "check",
 ]
-
-
-def _map_shape(reasons: tuple[Reason, ...]) -> tuple[Shape, SuggestedAction]:
-    codes = {r.code for r in reasons}
-    if "superseded" in codes:
-        return Shape.SUPERSEDED, SuggestedAction.CLOSE
-    if "epic_or_tracking" in codes:
-        return Shape.TRACKING_ONLY, SuggestedAction.REMOVE_FROM_SPRINT
-    if "untriaged_finding" in codes:
-        return Shape.NEEDS_GROOMING, SuggestedAction.CLARIFY
-    if "too_many_behavioral_clusters" in codes:
-        return Shape.NEEDS_GROOMING, SuggestedAction.SPLIT
-    blocking = [r for r in reasons if r.severity is Severity.BLOCKING]
-    if blocking:
-        return Shape.NEEDS_GROOMING, SuggestedAction.CLARIFY
-    return Shape.RUNNABLE, SuggestedAction.PROCEED
 
 
 def check(
@@ -100,7 +79,7 @@ def check(
         deduped.append(r)
 
     reasons_t = tuple(deduped)
-    shape, action = _map_shape(reasons_t)
+    shape, action = map_shape(reasons_t)
     heuristic_result = ShapeResult(shape=shape, reasons=reasons_t, suggested_action=action)
 
     return classify(classifier_mode, body, heuristic_result, llm_caller=llm_caller)

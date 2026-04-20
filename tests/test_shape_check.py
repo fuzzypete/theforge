@@ -264,6 +264,24 @@ class TestClassifierModes:
         assert "too_many_behavioral_clusters" not in codes
         assert "missing_acceptance_criteria" in codes
 
+    def test_mode_off_recomputes_shape_and_action(self):
+        # fuzzy-only input: stripping fuzzy must recompute shape to RUNNABLE
+        fuzzy_only = ShapeResult(
+            shape=Shape.NEEDS_GROOMING,
+            reasons=(
+                Reason(
+                    code="too_many_behavioral_clusters",
+                    severity=Severity.BLOCKING,
+                    detail="",
+                ),
+            ),
+            suggested_action=SuggestedAction.SPLIT,
+        )
+        result = classify("off", "body", fuzzy_only)
+        assert result.reasons == ()
+        assert result.shape is Shape.RUNNABLE
+        assert result.suggested_action is SuggestedAction.PROCEED
+
     def test_mode_heuristic_unchanged(self):
         base = self._heur_with_fuzzy()
         assert classify("heuristic", "body", base) is base
@@ -280,16 +298,108 @@ class TestClassifierModes:
         base = self._heur_with_fuzzy()
         assert classify("llm", "body", base, llm_caller=None) is base
 
-    def test_mode_llm_success(self):
+    def test_mode_llm_fuzzy_cleared_preserves_non_fuzzy(self):
+        # Caller says fuzzy reasons are false positives — non-fuzzy must survive.
         base = self._heur_with_fuzzy()
-        refined = ShapeResult(
+        refined_clear = ShapeResult(
             shape=Shape.RUNNABLE, reasons=(), suggested_action=SuggestedAction.PROCEED
         )
 
         def ok(_body, _fuzzy):
-            return refined
+            return refined_clear
 
-        assert classify("llm", "body", base, llm_caller=ok) is refined
+        result = classify("llm", "body", base, llm_caller=ok)
+        codes = {r.code for r in result.reasons}
+        assert "missing_acceptance_criteria" in codes, (
+            "deterministic non-fuzzy reason must be preserved"
+        )
+        assert "too_many_behavioral_clusters" not in codes
+        # non-fuzzy missing_acceptance_criteria is blocking → needs_grooming/clarify
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.suggested_action is SuggestedAction.CLARIFY
+
+    def test_mode_llm_cannot_drop_non_fuzzy_even_if_tried(self):
+        # Malicious / buggy caller returns RUNNABLE with zero reasons trying to
+        # override a deterministic untriaged_finding. That must be ignored.
+        base = ShapeResult(
+            shape=Shape.NEEDS_GROOMING,
+            reasons=(
+                Reason(
+                    code="untriaged_finding",
+                    severity=Severity.BLOCKING,
+                    detail="",
+                ),
+                Reason(
+                    code="no_observable_done_state",
+                    severity=Severity.ADVISORY,
+                    detail="",
+                ),
+            ),
+            suggested_action=SuggestedAction.CLARIFY,
+        )
+
+        def override(_body, _fuzzy):
+            return ShapeResult(
+                shape=Shape.RUNNABLE,
+                reasons=(),
+                suggested_action=SuggestedAction.PROCEED,
+            )
+
+        result = classify("llm", "body", base, llm_caller=override)
+        codes = {r.code for r in result.reasons}
+        assert "untriaged_finding" in codes
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.suggested_action is SuggestedAction.CLARIFY
+
+    def test_mode_llm_refined_fuzzy_kept_non_fuzzy_preserved(self):
+        # LLM refines with updated fuzzy detail; both fuzzy and non-fuzzy end up in output.
+        base = self._heur_with_fuzzy()
+        refined_detail = Reason(
+            code="too_many_behavioral_clusters",
+            severity=Severity.BLOCKING,
+            detail="LLM confirmed split",
+        )
+
+        def ok(_body, _fuzzy):
+            return ShapeResult(
+                shape=Shape.NEEDS_GROOMING,
+                reasons=(refined_detail,),
+                suggested_action=SuggestedAction.SPLIT,
+            )
+
+        result = classify("llm", "body", base, llm_caller=ok)
+        codes = {r.code for r in result.reasons}
+        assert codes == {"missing_acceptance_criteria", "too_many_behavioral_clusters"}
+        # Both blocking codes present. missing_ac wins priority → clarify, not split.
+        assert result.shape is Shape.NEEDS_GROOMING
+
+    def test_mode_llm_ignores_non_fuzzy_reasons_from_caller(self):
+        # Caller tries to inject an unrelated non-fuzzy reason; it must be filtered out.
+        base = ShapeResult(
+            shape=Shape.NEEDS_GROOMING,
+            reasons=(
+                Reason(
+                    code="too_many_behavioral_clusters",
+                    severity=Severity.BLOCKING,
+                    detail="",
+                ),
+            ),
+            suggested_action=SuggestedAction.SPLIT,
+        )
+
+        def inject(_body, _fuzzy):
+            return ShapeResult(
+                shape=Shape.SUPERSEDED,
+                reasons=(Reason(code="superseded", severity=Severity.BLOCKING, detail=""),),
+                suggested_action=SuggestedAction.CLOSE,
+            )
+
+        result = classify("llm", "body", base, llm_caller=inject)
+        codes = {r.code for r in result.reasons}
+        assert "superseded" not in codes
+        assert "too_many_behavioral_clusters" not in codes  # caller cleared it
+        # No reasons remain → runnable
+        assert result.shape is Shape.RUNNABLE
 
 
 # ----- import isolation -----------------------------------------------------
