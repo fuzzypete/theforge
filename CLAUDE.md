@@ -16,7 +16,7 @@ sections as navigational guidance.
 To understand what's in progress and what's next, run:
 ```bash
 gh milestone list                              # see milestones
-gh issue list --milestone "v0.8.0"             # current priority
+gh issue list --milestone "v0.9.0"             # current priority after v0.8.0
 gh project item-list 1 --owner fuzzypete       # full project board
 ```
 
@@ -226,6 +226,8 @@ scripts/release.sh --dry-run X.Y.Z # preview
 ```
 
 Key points:
+- Verify the CHANGELOG release section against the milestone and commit range
+  before tagging; GitHub release notes are generated from that section.
 - Tag and push **before** bumping back to `X.Y.Z+1.dev0`
 - Hotfixes branch from `release/vX.Y`, not `main`
 

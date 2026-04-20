@@ -10,6 +10,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] — 2026-04-20
 
+### Added
+
+- **Simple `models:` config path:** `forge.yaml` can now declare a model list and
+  `budget_usd`; TheForge derives preflight, plan, dev, review, and synthesis roles
+  automatically instead of requiring hand-written `profiles:` blocks. (#807, #816, #820, #822)
+- **Explicit AgentSpec transport model:** provider/model identity and CLI/API transport are
+  now represented separately, so `check-config` reports API-backed models accurately and
+  Google models route through the intended API transport. (#861, #865, #866)
+- **Structured audit expansion:** per-run audit files now capture story text, plan content,
+  run identity, and redacted contract data for post-run diagnosis. (#798, #802, #804)
+- **Forge-owned handoff artifact:** the coordinator owns the handoff contract instead of
+  trusting a dev-written file for validation decisions. (#827)
+- **Story shape checks:** issue drafting and sprint entry now enforce story shape, with a
+  `forge sprint --force` escape hatch that prints skipped reason codes. (#867, #871, #879)
+- **Dependency metadata parsing:** issue dependencies are read from structured metadata, with
+  prose treated as an authoring warning instead of the source of scheduling truth. (#819, #881)
+
+### Changed
+
+- **Dogfooding config moved to v0.8 schema:** this repository's `forge.yaml` now uses the
+  simple model-list configuration path. (#833, #855)
+- **Legacy config removed from the v0.8 path:** `profiles:`, `smart_config_models:`, and
+  legacy `agents:` are rejected when mixed with `models:`; use `models:` plus `overrides:`
+  for derived-role configs. (#854)
+- **Preflight/model assignment guardrails:** role derivation now prevents bad
+  tier/complexity combinations and keeps model assignment visible through `check-config`.
+  (#815, #822)
+
+### Fixed
+
+- **Gate and timeout diagnosis:** multi-stage gate commands no longer produce false
+  CONTRADICTION results, and timed-out gates run `gate_debug_command` before escalation.
+  (#826, #838)
+- **Sprint scheduling and resumption:** stale no-pull behavior, synthetic dependency cycles,
+  dropped completed stories, mid-sprint re-exec aborts, closed dependency issues, and closed
+  manifest dependencies were fixed. (#805, #814, #832, #841, #853, #878)
+- **Run status accuracy:** stopped processes and orphaned runs no longer remain permanently
+  RUNNING in `forge status`. (#844, #845, #846)
+- **Squash-merge detection:** sprint triage no longer relies only on audit-trail APPROVE to
+  detect externally merged branches. (#876)
+- **Subprocess environment isolation:** agent subprocesses avoid poisoning global Python when
+  a bare `pip` or `python` appears in commands. (#864)
+- **Self-hosting gate/runtime regressions:** localhost network and sandbox-related gate
+  failures from this release cycle were corrected. (#849, #850)
+
 ### Removed
 
 - **File-based handoff contract removed (breaking):** `handoff_file` and `gate_decision_key` are

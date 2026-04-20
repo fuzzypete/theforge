@@ -59,6 +59,17 @@ Rename `## [Unreleased]` to `## [X.Y.Z] — YYYY-MM-DD`.
 
 Add a new `## [Unreleased]` section at the top for future work.
 
+Before continuing, verify the release section against both the milestone and the
+tag range:
+
+```bash
+gh issue list --milestone vX.Y.Z --state closed --limit 200
+git log --oneline <previous-release-tag>..HEAD
+```
+
+The GitHub release body is generated from this CHANGELOG section, so missing
+items here become missing release notes.
+
 ### 4. Bump version
 
 In `pyproject.toml`, change `version = "X.Y.Z.dev0"` to `version = "X.Y.Z"`.
@@ -110,6 +121,18 @@ gh release create vX.Y.Z \
 
 Or create manually via GitHub UI using the CHANGELOG section as release notes.
 
+After creation, verify the published body before starting the next sprint:
+
+```bash
+gh release view vX.Y.Z
+```
+
+If the body is incomplete, fix `CHANGELOG.md` first, then update the release:
+
+```bash
+gh release edit vX.Y.Z --notes-file <(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+```
+
 ---
 
 ## Post-release doc review
@@ -127,8 +150,9 @@ starts. The release tag is what users see — docs should match what shipped.
 - [ ] **CLI help text** — `forge --help` and subcommand help reflect current flags and options
 - [ ] **GitHub release notes** — body covers what users need to know
 
-If anything is materially wrong, file a story for the next milestone. One-liner
-fixes can go directly on main.
+If anything is materially wrong, file a story for the next milestone. For small
+documentation fixes, create a small issue/worktree pair and still keep the audit
+trail intact.
 
 ---
 
