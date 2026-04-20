@@ -143,6 +143,12 @@ Controls everything: which models to use, budgets, timeouts, retry policies.
 ```yaml
 project: my-project
 
+models:
+  - claude/sonnet
+  - claude/opus
+
+budget_usd: 30.0
+
 workspace:
   create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
   path_pattern: ".forge/worktrees/{slug}"
@@ -151,30 +157,36 @@ workspace:
 validation:
   gate_command: "python -m pytest tests/ -q"
 
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 5.00
-    timeout_seconds: 600
-    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
-  review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus
-      budget_usd: 2.00
-      timeout_seconds: 300
-      allowed_tools: [Read, Bash, Glob, Grep]
-
 retry:
   max_dev_iterations: 3
   max_review_cycles: 2
 ```
 
+In v0.8, `models:` is the primary config path. TheForge derives preflight,
+plan, dev, review, and synthesis roles from the model list and the story's
+complexity. Use `forge check-config` to inspect the derived role table.
+
 ### Full config reference
 
 ```yaml
 project: my-project                # project name for logging/audit
+
+# ── Model list and derived roles ──────────────────────────
+models:
+  - claude/sonnet
+  - claude/opus
+  - openai/gpt-5.4
+
+budget_usd: 50.0                   # budget used to derive per-role ceilings
+
+# Optional targeted changes to derived roles. Do not mix top-level profiles:,
+# smart_config_models:, or agents: with models:.
+overrides:
+  dev:
+    timeout_seconds: 1200
+  review_pool:
+    - name: review-strong
+      timeout_seconds: 600
 
 # ── Workspace ──────────────────────────────────────────────
 workspace:
@@ -187,6 +199,7 @@ workspace:
   merge_strategy: "squash"            # "squash" | "merge" | "rebase" (used by merge-pr)
   pr_labels: []                       # labels applied when on_approve is "pr" or "merge-pr"
   pr_draft: false                     # create PR as draft when on_approve is "pr"
+  merge_wait_timeout_seconds: 3600    # max wait for queued merge-pr landing
 
 # ── Validation gate ────────────────────────────────────────
 validation:
@@ -194,6 +207,7 @@ validation:
   gate_timeout: 600                    # seconds; default varies
   gate_debug_command: ~                # optional: runs after gate_timeout for diagnostics
   gate_debug_timeout: ~                # seconds; default: same resolved value as gate_timeout
+  test_command: ~                      # optional command agents may run during dev
   pre_validate_command: ~              # optional: run before dirty check
 
 # ── Retry policy ───────────────────────────────────────────
@@ -203,7 +217,9 @@ retry:
   max_review_parse_retries: 2  # reviewer output parse/schema error retries
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
 
-# ── Agent profiles ─────────────────────────────────────────
+# ── Classic manual profiles (advanced alternative) ─────────
+# Omit models: when using classic profiles. This path remains supported for
+# fully manual role control, but it is not the v0.8 default.
 profiles:
   # Dev agent (implements the story)
   dev:
@@ -291,11 +307,6 @@ notifications:
   ntfy:
     priority: high
     # url resolved from NTFY_URL in .forge/.env
-
-# ── Smart config (optional) ────────────────────────────────
-smart_config_models:
-  - claude/sonnet
-  - openai/gpt-5.4
 
 # ── Secrets (optional) ────────────────────────────────────
 # API keys are read from .forge/.env (run `forge secrets-init` to create)
@@ -385,7 +396,7 @@ findings:
     line: 42
     description: "What is wrong"
     suggestion: "How to fix it"
-spec_compliance:
+story_compliance:
   matches_spec: true | false
   mismatches: []
 test_coverage:
@@ -397,6 +408,8 @@ test_coverage:
 - `APPROVE` with any P1 → overridden to `REQUEST_CHANGES`
 - `REQUEST_CHANGES` with no P1 → schema error
 - Invalid YAML → treated as `REQUEST_CHANGES`
+- `spec_compliance` is accepted as a backward-compatible alias, but new
+  reviewers should emit `story_compliance`.
 
 ---
 

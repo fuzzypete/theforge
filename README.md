@@ -3,7 +3,7 @@
 [![CI](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml/badge.svg)](https://github.com/fuzzypete/theforge/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.7.0-orange)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.8.0-orange)](CHANGELOG.md)
 
 **Deterministic multi-LLM development orchestrator.**
 
@@ -168,32 +168,31 @@ recommended patterns.
 
 ## Minimal config
 
-This is the smallest useful mental model for `forge.yaml`:
+This is the smallest useful mental model for `forge.yaml` in v0.8:
 
 ```yaml
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-  review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus
+models:
+  - claude/sonnet
+  - claude/opus
+
+budget_usd: 30.0
 
 validation:
   gate_command: "pytest tests/"
 ```
 
-Add more reviewers for cross-model coverage, or switch to API-mode profiles
-when you want hosted providers and tool-runtime control. The full schema lives
-in [Inputs Reference](docs/guides/inputs-reference.md).
+TheForge derives preflight, plan, dev, review, and synthesis roles from the model
+list using the story's complexity. Use `overrides:` for targeted changes to
+derived roles, or classic `profiles:` when you need fully manual control. The
+full schema lives in [Inputs Reference](docs/guides/inputs-reference.md).
 
 ## Operating Runs
 
 Runs may detach by default so they can continue in the background. Use
 `forge run --fg` or `forge sprint --fg` when you want foreground execution, and
 use `forge status`, `forge logs <run-id>`, and `forge stop <run-id>` to monitor
-or control active runs.
+or control active runs. Active sprint detail is folded into `forge status`; the
+old standalone `forge sprint-status` parser entry is no longer exposed.
 
 ## What things cost
 
