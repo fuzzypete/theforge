@@ -1,8 +1,9 @@
 # forge.yaml — TheForge developing itself
 project: theforge
 
-# v0.8 simple model list — complexity-aware roles derived automatically at runtime
-# See: docs/guides/getting-started.md for the full schema reference
+# v0.8 simple model list. TheForge derives preflight, plan, dev, review,
+# and synthesis roles automatically from this list and the story complexity.
+# See docs/guides/inputs-reference.md for the full schema reference.
 models:
   - claude/sonnet
   - claude/opus
@@ -25,7 +26,10 @@ workspace:
   merge_wait_timeout_seconds: 3600
 
 validation:
+  # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
+  # gate_decision_key; do not add them back under validation:.
   gate_command: ".venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/ && .venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
+  # Canonical intermediate test command dev agents should use while working.
   test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
   gate_timeout: 45
 

@@ -112,6 +112,7 @@ Run multiple stories from a sprint manifest or directly from a GitHub milestone 
 forge sprint [manifest.yaml] [flags]
 forge sprint --milestone "v0.4.0" --budget 50 [flags]
 forge sprint --label "sprint-1" --budget 20 [flags]
+forge sprint --issues 123,124 --budget 20 [flags]
 ```
 
 **Use this when:** You want batch execution with shared budget and story ordering. The
@@ -137,6 +138,10 @@ manifest argument is optional when using `--milestone` or `--label`.
 | `--detach` | Queue the sprint on a running daemon and return immediately |
 | `--fg` | Run in the foreground instead of detaching |
 | `--no-pull` | Skip `git pull --ff-only` before fresh worktree creation |
+| `--force` | Bypass the sprint-entry shape gate and run every selected issue |
+
+`--detach` is manifest-only. Query mode (`--milestone`, `--label`, or `--issues`)
+must run in the current process, usually with `--fg` when you want foreground logs.
 
 **Sprint manifest format:**
 
@@ -212,6 +217,29 @@ forge check-config [forge.yaml]
 ```
 
 **Use this when:** After editing config, before a release, or when debugging model wiring.
+In v0.8, this is the quickest way to inspect the role table derived from `models:`.
+
+---
+
+## `forge eval-preflight`
+
+Evaluate candidate preflight models against a golden story set.
+
+```bash
+forge eval-preflight [flags]
+```
+
+**Use this when:** Comparing preflight models without running a full sprint.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--golden-set <path>` | Path to `golden_stories.yaml` |
+| `--models <A,B,...>` | Comma-separated model identifiers to evaluate |
+| `--working-dir <path>` | Working directory for agent invocations |
+| `--output-format <text|json>` | Report format |
+| `--config <path>` | Path to `forge.yaml` |
 
 ---
 
@@ -241,6 +269,10 @@ Show active detached runs and pending decisions.
 forge status
 ```
 
+For an active sprint run, `forge status` includes the per-story sprint status
+view. The old standalone `forge sprint-status` command is no longer exposed by
+the top-level parser.
+
 ---
 
 ## `forge logs`
@@ -258,8 +290,10 @@ forge logs <run-id>
 Send `SIGTERM` to a running detached run.
 
 ```bash
-forge stop <run-id>
+forge stop <run-id> [--no-wait] [--timeout N]
 ```
+
+By default, `forge stop` waits up to 60 seconds for process exit.
 
 ---
 
@@ -269,6 +303,18 @@ Record a decision for a pending HITL checkpoint.
 
 ```bash
 forge decide <run-id> <action>
+```
+
+Common actions are `approve`, `reject`, `continue`, `retry`, `skip`, and `abort`.
+
+---
+
+## `forge runs-clean`
+
+Mark orphaned runs with no terminal marker so `forge status` shows accurate state.
+
+```bash
+forge runs-clean
 ```
 
 ---

@@ -3,6 +3,26 @@
 TheForge is a deterministic multi-LLM development orchestrator. This file provides
 conventions for any Codex agent working in this codebase.
 
+Directory-level `CLAUDE.md` files under `src/theforge/` provide subsystem-local
+context. When working inside `coordinator/`, `runners/`, `sprint/`, `task/`,
+`config/`, or `cli/`, read the nearest local guide in addition to this root guide.
+
+---
+
+## Current State — Start Here
+
+To understand what's in progress and what's next, run:
+```bash
+gh milestone list                              # see milestones
+gh issue list --milestone "v0.9.0"             # current priority after v0.8.0
+gh project item-list 1 --owner fuzzypete       # full project board
+```
+
+Project board: https://github.com/users/fuzzypete/projects/1
+
+Stories are GitHub issues — there are no local story files. GH milestones + issues
+are the single source of truth for priorities, status, and story content.
+
 ---
 
 ## Interactive Development Workflow
@@ -49,10 +69,10 @@ State machine: `INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DE
 
 Key modules:
 - `src/theforge/coordinator/engine.py` — state machine, the heart of the system
-- `src/theforge/coordinator/` — all coordinator phases (dev_phase, review_phase, validate_phase, plan_flow, preflight, workspace, etc.)
+- `src/theforge/coordinator/` — all coordinator phases (dev_phase, review_phase, validate_phase, plan_flow, preflight_flow, workspace, etc.)
 - `src/theforge/runners/` — API and CLI agent runners; adapters per provider
 - `src/theforge/config/` — forge.yaml parsing and model profiles
-- `src/theforge/task/` — prompt builders (dev, review, plan)
+- `src/theforge/task/` — prompt builders (dev, review, plan, preflight)
 - `src/theforge/review.py` — review output parsing
 - `src/theforge/schemas.py` — review schema validation
 - `src/theforge/cli/main.py` — `forge` CLI entry point
@@ -118,10 +138,24 @@ test_coverage:
   gaps: []
 ```
 
-### Stories
-Stories are GitHub issues — there are no local story files. The primary term is
-"story" throughout the codebase. `TaskSpec` is a backward-compat alias for
-`TaskStory`; prefer `TaskStory` in new code.
+### Writing stories
+Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.
+
+- **No function names, class names, or file paths** unless the story is about a
+  specific file.
+- **Acceptance criteria describe observable behavior**, not implementation steps.
+- **`## Notes` is for soft hints, not requirements.** Notes may mention files,
+  patterns, or gotchas, but agents must verify them against the codebase.
+- The primary term is "story" throughout the codebase. `TaskSpec` is a
+  backward-compat alias for `TaskStory`; prefer `TaskStory` in new code.
+
+### Writing bug reports
+Bug reports contain exactly two things:
+
+1. **What happened** — observed behavior with evidence.
+2. **What was expected** — the correct behavior.
+
+No acceptance criteria, implementation hints, file paths, or suggested fix path.
 
 ### Dogfooding config
 `forge.yaml` at the project root configures theforge to develop itself. Worktrees
@@ -139,11 +173,17 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 
 ## Cutting a Release
 
-The full release process is documented in [`RELEASING.md`](RELEASING.md). Do not
-cut a release without reading it. Key points:
+The full release process is documented in [`RELEASING.md`](RELEASING.md). Use the
+script — do not run steps manually:
 
-- Update `CHANGELOG.md` (`[Unreleased]` → `[X.Y.Z] — date`)
-- Bump `pyproject.toml` version to match the tag
+```bash
+scripts/release.sh X.Y.Z
+scripts/release.sh --dry-run X.Y.Z
+```
+
+Key points:
+- Verify the CHANGELOG release section against the milestone and commit range
+  before tagging; GitHub release notes are generated from that section.
 - Tag and push **before** bumping back to `X.Y.Z+1.dev0`
 - Hotfixes branch from `release/vX.Y`, not `main`
 
