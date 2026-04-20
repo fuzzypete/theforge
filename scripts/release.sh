@@ -49,6 +49,8 @@ run() {
 
 # --- 1. Verify milestone is complete ---
 echo "==> Checking milestone v$VERSION..."
+UNTRIAGED_FINDINGS=$(gh issue list --repo fuzzypete/theforge --milestone "v$VERSION" --state open --label "forge-finding" --label "needs-triage" --json number --jq 'length')
+echo "    Open needs-triage forge-findings: $UNTRIAGED_FINDINGS"
 OPEN_ISSUES=$(gh issue list --repo fuzzypete/theforge --milestone "v$VERSION" --state open --json number --jq 'length')
 if [[ "$OPEN_ISSUES" != "0" ]]; then
     echo "Error: $OPEN_ISSUES open issue(s) remain in milestone v$VERSION. Close them before releasing." >&2
