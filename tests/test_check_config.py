@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,7 @@ from theforge.config import (
     PlanConfig,
     RetryPolicy,
     SprintConfig,
+    TransportSpec,
     WorkspaceConfig,
 )
 from theforge.config.models import AgentDef
@@ -183,6 +185,36 @@ class TestCheckConfigHappyPath:
         # API transport is rendered as a separate 'api' column, not as 'openai / gpt-4'
         assert "api" in out
         assert "gpt-4" in out
+
+    def test_transport_label_uses_explicit_transport(self, tmp_path: Path, capsys) -> None:
+        """Display follows TransportSpec.kind when legacy fields disagree."""
+        review_pool = [
+            ModelProfile(
+                name="api-reviewer",
+                cli="codex",
+                provider=None,
+                model="gpt-5.4",
+                budget_usd=1.0,
+                timeout_seconds=120,
+                allowed_tools=("Read",),
+                transport=TransportSpec(kind="api", runner="openai"),
+            )
+        ]
+        config = _make_forge_config(tmp_path, review_pool=review_pool)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                return_value=(True, ""),
+            ),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        reviewer_line = next(line for line in out.splitlines() if "api-reviewer" in line)
+        assert "openai" in reviewer_line
+        assert "api" in reviewer_line
+        assert "cli:codex" not in reviewer_line
 
     def test_explicit_thinking_budget_is_rendered(self, tmp_path: Path, capsys) -> None:
         review_pool = [
@@ -771,7 +803,22 @@ class TestComplexityAwareDisplay:
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
         assert "Providers:" in out
-        assert "claude cli" in out
+        assert "anthropic cli:claude" in out
+
+    def test_providers_header_reports_api_transport(self, tmp_path: Path, capsys) -> None:
+        config = self._make_v08_forge_config(tmp_path)
+        config = replace(config, models=["openai-api/gpt-5.4", "deepseek/deepseek-reasoner"])
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        providers_line = next(line for line in out.splitlines() if line.startswith("Providers:"))
+        assert "openai api" in providers_line
+        assert "deepseek api" in providers_line
+        assert "openai-api" not in providers_line
 
     def test_derived_roles_not_shown_for_classic_config(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)
