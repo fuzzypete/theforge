@@ -60,6 +60,8 @@ _TRACKING_PHRASES = (
     "parent issue",
 )
 
+_BUG_LABELS: frozenset[str] = frozenset({"bug"})
+
 _OBSERVABLE_VERBS = (
     "returns",
     "return",
@@ -98,6 +100,13 @@ def _lower_labels(labels: Iterable[str]) -> set[str]:
     return {str(label).strip().lower() for label in labels}
 
 
+def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
+    """Return true for bug reports, which use observed/expected sections instead of AC."""
+    if _lower_labels(labels) & _BUG_LABELS:
+        return True
+    return has_heading(body, r"what happened") and has_heading(body, r"what was expected")
+
+
 def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reason | None:
     lset = _lower_labels(labels)
     title_l = title.strip().lower()
@@ -127,6 +136,8 @@ def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reas
 def check_missing_acceptance_criteria(
     title: str, body: str, labels: Iterable[str]
 ) -> Reason | None:
+    if is_bug_format_issue(body, labels):
+        return None
     if has_heading(body, r"acceptance criteria|done criteria|checklist"):
         section = extract_ac_section(body) or ""
         if extract_bullets(section):
@@ -210,6 +221,8 @@ def check_implementation_design_dump(
 
 
 def check_no_observable_done_state(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    if is_bug_format_issue(body, labels):
+        return None
     ac = extract_ac_section(body)
     if not ac:
         return Reason(
