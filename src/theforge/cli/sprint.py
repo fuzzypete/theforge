@@ -236,6 +236,69 @@ def _is_reexec() -> bool:
     return bool(os.environ.get("FORGE_PREV_RUN_ID"))
 
 
+def _emit_all_skipped_audit(
+    *,
+    config: object,
+    sprint_name: str,
+    budget_usd: float,
+    skipped_issues: list,
+) -> None:
+    """Write sprint-audit.yaml and sprint-summary.yaml when every issue was
+    gated out. Without this, an all-skipped sprint leaves no machine-readable
+    record of which issues were rejected or why.
+    """
+    import datetime
+
+    from theforge.sprint.audit import _write_sprint_audit, _write_sprint_summary
+    from theforge.sprint.manifest import ResolvedSprint, SprintResult
+
+    manifest = ResolvedSprint(
+        name=sprint_name,
+        budget_usd=budget_usd,
+        stories=[],
+        max_parallel=1,
+    )
+    result = SprintResult(
+        name=sprint_name,
+        specs_total=0,
+        specs_succeeded=0,
+        specs_failed=0,
+        specs_skipped=0,
+        total_cost_usd=0.0,
+        budget_usd=budget_usd,
+        results=[],
+    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        _write_sprint_audit(
+            manifest=manifest,
+            result=result,
+            canonical_refs=[],
+            started_at=now,
+            finished_at=now,
+            duration=0.0,
+            project_root=config.project_root,
+            skipped_issues=skipped_issues,
+        )
+        log_dir = config.project_root / ".forge" / "logs" / sprint_name
+        log_dir.mkdir(parents=True, exist_ok=True)
+        _write_sprint_summary(
+            manifest=manifest,
+            result=result,
+            canonical_refs=[],
+            started_at=now,
+            finished_at=now,
+            duration=0.0,
+            sprint_log_dir=log_dir,
+            skipped_issues=skipped_issues,
+        )
+    except Exception as exc:
+        print(
+            f"[forge] Warning: failed to write all-skipped sprint audit: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _run_query_mode(
     *,
     args: object,
@@ -322,9 +385,11 @@ def _run_query_mode(
     # operators can inspect the DAG without making ``gh`` calls per issue.
     skipped_issues: list = []
     if not dry_run:
+        classifier_mode = getattr(getattr(config, "shape_check", None), "classifier", "heuristic")
         gate_result = apply_shape_gate(
             issues,
             config.project_root,
+            classifier_mode=classifier_mode,
             force=force,
         )
         if gate_result.skipped:
@@ -344,6 +409,15 @@ def _run_query_mode(
                 f"[forge] All {len(skipped_issues)} issue(s) skipped by shape gate "
                 "— nothing to run.",
                 file=sys.stderr,
+            )
+            _emit_all_skipped_audit(
+                config=config,
+                sprint_name=getattr(args, "name", None)
+                or milestone
+                or label
+                or f"issues-{issues_arg}",
+                budget_usd=budget_usd,
+                skipped_issues=skipped_issues,
             )
             return 0
 

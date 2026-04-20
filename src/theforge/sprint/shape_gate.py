@@ -156,18 +156,26 @@ def _blocking_codes(result: ShapeResult) -> list[str]:
     return [r.code for r in result.reasons if r.severity is Severity.BLOCKING]
 
 
-def _resolve_classifier(classifier_mode: str) -> str:
-    """Return the classifier to actually use at sprint time.
+_VALID_CLASSIFIER_MODES = frozenset({"heuristic", "off", "llm"})
 
-    The sprint gate never hits the network — the configured LLM classifier
-    may not be reachable here (no credentials plumbed through the sprint
-    subsystem). Fall back to ``heuristic`` whenever the configured mode is
-    not ``heuristic``; the #811 GitHub Action is the primary enforcement
-    point and it runs with full provider access.
+
+def _resolve_classifier(classifier_mode: str, llm_caller=None) -> str:
+    """Return the classifier mode to actually use at sprint time.
+
+    Honors the configured ``shape_check.classifier`` value when supported.
+    Falls back to ``heuristic`` when:
+
+    - The mode is unknown (defensive — misconfiguration shouldn't block sprints).
+    - The mode is ``llm`` but no ``llm_caller`` is available to refine fuzzy
+      reasons. (The ``classifier.classify`` function already silently falls
+      back in this case; resolving explicitly keeps the sprint gate honest
+      about what it actually ran.)
     """
-    if classifier_mode == "heuristic":
+    if classifier_mode not in _VALID_CLASSIFIER_MODES:
         return "heuristic"
-    return "heuristic"
+    if classifier_mode == "llm" and llm_caller is None:
+        return "heuristic"
+    return classifier_mode
 
 
 def apply_shape_gate(
@@ -178,6 +186,7 @@ def apply_shape_gate(
     force: bool = False,
     fetch_detail=_fetch_issue_detail,
     fetch_bot_codes=_fetch_bot_reason_codes,
+    llm_caller=None,
 ) -> ShapeGateResult:
     """Partition issues into runnable vs skipped before preflight runs.
 
@@ -195,7 +204,7 @@ def apply_shape_gate(
     ``force=True`` returns every input issue as runnable but still populates
     ``skipped`` so the CLI can surface a prominent warning listing reasons.
     """
-    effective_mode = _resolve_classifier(classifier_mode)
+    effective_mode = _resolve_classifier(classifier_mode, llm_caller=llm_caller)
     runnable: list[dict] = []
     skipped: list[SkippedIssue] = []
 
@@ -220,6 +229,7 @@ def apply_shape_gate(
                     body,
                     labels,
                     classifier_mode=effective_mode,
+                    llm_caller=llm_caller,
                 )
                 codes = _blocking_codes(local) or ["needs_grooming_label"]
             skipped.append(
@@ -238,6 +248,7 @@ def apply_shape_gate(
             body,
             labels,
             classifier_mode=effective_mode,
+            llm_caller=llm_caller,
         )
         if local.shape is not Shape.RUNNABLE:
             codes = _blocking_codes(local) or [r.code for r in local.reasons]
@@ -271,6 +282,6 @@ def format_skipped_warning(skipped: list[SkippedIssue]) -> str:
         codes = ", ".join(entry.reason_codes) or "<no codes>"
         lines.append(
             f"  - #{entry.issue_number} ({entry.source}): {codes}"
-            + (f"  {entry.title}" if entry.title else "")
+            + (f" — {entry.title}" if entry.title else "")
         )
     return "\n".join(lines)

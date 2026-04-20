@@ -170,6 +170,8 @@ def test_cli_query_mode_filters_skipped_and_passes_to_run_sprint(tmp_path: Path)
 
 
 def test_cli_query_mode_all_skipped_exits_cleanly(tmp_path: Path, capsys) -> None:
+    import yaml
+
     config = _make_config(tmp_path)
     args = _query_args(tmp_path)
 
@@ -197,6 +199,54 @@ def test_cli_query_mode_all_skipped_exits_cleanly(tmp_path: Path, capsys) -> Non
     assert rc == 0
     err = capsys.readouterr().err
     assert "skipped by shape gate" in err
+
+    # All-skipped must still produce machine-readable audit/summary records.
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    assert audit_path.exists()
+    audit = yaml.safe_load(audit_path.read_text())
+    assert audit["skipped"][0]["issue_number"] == 2
+    assert audit["skipped"][0]["reason_codes"] == ["missing_ac"]
+
+    # Summary file is keyed by sprint name (milestone here is "v0.5.0").
+    summary_path = tmp_path / ".forge" / "logs" / "v0.5.0" / "sprint-summary.yaml"
+    assert summary_path.exists()
+    summary = yaml.safe_load(summary_path.read_text())
+    assert summary["skipped"][0]["issue_number"] == 2
+
+
+def test_cli_passes_configured_classifier_to_shape_gate(tmp_path: Path) -> None:
+    """CLI must thread config.shape_check.classifier into the gate call."""
+    from theforge.config.types import ShapeCheckConfig
+
+    config = _make_config(tmp_path)
+    # dataclasses.replace-style override on the frozen ForgeConfig field.
+    object.__setattr__(config, "shape_check", ShapeCheckConfig(classifier="llm"))
+
+    args = _query_args(tmp_path)
+    fetched = [{"number": 1, "title": "good"}]
+    gated = ShapeGateResult(runnable=fetched, skipped=[])
+    captured: dict = {}
+
+    def _spy(*call_args, **kwargs):
+        captured["kwargs"] = kwargs
+        return gated
+
+    with (
+        patch("theforge.cli.sprint.load_config", return_value=config),
+        patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+        patch("theforge.sprint.query.fetch_issues_for_milestone", return_value=fetched),
+        patch("theforge.sprint.query.build_resolved_sprint", return_value=_resolved([1])),
+        patch("theforge.sprint.shape_gate.apply_shape_gate", side_effect=_spy),
+        patch(
+            "theforge.cli.sprint._acquire_launch_locks",
+            return_value=([], None, {}),
+        ),
+        patch("theforge.cli.sprint.release_story_locks"),
+        patch("theforge.cli.sprint.run_sprint", return_value=_ok_result()),
+    ):
+        cmd_sprint(args)
+
+    assert captured["kwargs"]["classifier_mode"] == "llm"
 
 
 def test_cli_query_mode_force_runs_every_issue_but_warns(tmp_path: Path, capsys) -> None:

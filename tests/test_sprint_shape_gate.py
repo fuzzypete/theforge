@@ -293,3 +293,32 @@ def test_shape_gate_result_defaults() -> None:
     r = ShapeGateResult()
     assert r.runnable == []
     assert r.skipped == []
+
+
+# ── Classifier resolution ─────────────────────────────────────────────────
+
+
+def test_resolve_classifier_honors_heuristic_and_off() -> None:
+    from theforge.sprint.shape_gate import _resolve_classifier
+
+    assert _resolve_classifier("heuristic") == "heuristic"
+    assert _resolve_classifier("off") == "off"
+
+
+def test_resolve_classifier_falls_back_when_llm_has_no_caller() -> None:
+    from theforge.sprint.shape_gate import _resolve_classifier
+
+    # "llm" mode with no llm_caller can't actually refine — fall back.
+    assert _resolve_classifier("llm", llm_caller=None) == "heuristic"
+
+
+def test_resolve_classifier_passes_through_llm_when_caller_available() -> None:
+    from theforge.sprint.shape_gate import _resolve_classifier
+
+    assert _resolve_classifier("llm", llm_caller=lambda _b, _r: None) == "llm"
+
+
+def test_resolve_classifier_falls_back_on_unknown_mode() -> None:
+    from theforge.sprint.shape_gate import _resolve_classifier
+
+    assert _resolve_classifier("bogus-mode") == "heuristic"
