@@ -108,6 +108,7 @@ def _write_sprint_audit(
     ci_break_slug: str | None = None,
     sprint_id: str | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
+    skipped_issues: "list | None" = None,
 ) -> None:
     """Write sprint-audit.yaml to the project root."""
     story_times = story_times or {}
@@ -115,6 +116,7 @@ def _write_sprint_audit(
     slug_map = slug_map or {}
     tasks_by_slug = tasks_by_slug or {}
     dropped_slugs = dropped_slugs or {}
+    skipped_issues = skipped_issues or []
 
     # Build per-spec entries
     spec_entries = []
@@ -310,6 +312,7 @@ def _write_sprint_audit(
             "ci_break_slug": ci_break_slug,
         },
         "specs": spec_entries,
+        "skipped": [s.as_dict() if hasattr(s, "as_dict") else dict(s) for s in skipped_issues],
         "iteration_usage_distribution": usage_distribution,
     }
 
@@ -344,6 +347,7 @@ def _write_sprint_summary(
     sprint_id: str | None = None,
     project_root: Path | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
+    skipped_issues: "list | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -358,6 +362,7 @@ def _write_sprint_summary(
     slug_map = slug_map or {}
     tasks_by_slug = tasks_by_slug or {}
     dropped_slugs = dropped_slugs or {}
+    skipped_issues = skipped_issues or []
 
     # Load prior accumulated story entries from the sprint-level state file.
     # Keyed by canonical_ref so we can substitute them for stories not in
@@ -555,6 +560,7 @@ def _write_sprint_summary(
             "ci_break_slug": ci_break_slug,
         },
         "stories": spec_entries,
+        "skipped": [s.as_dict() if hasattr(s, "as_dict") else dict(s) for s in skipped_issues],
         "iteration_usage_distribution": usage_distribution,
     }
 

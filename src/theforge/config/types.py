@@ -331,6 +331,20 @@ class SprintConfig:
 
 
 @dataclass(frozen=True)
+class ShapeCheckConfig:
+    """Shared shape_check settings used by the #811 Action and sprint entry.
+
+    ``classifier`` selects the shape-check classifier mode: ``heuristic`` for
+    deterministic stdlib-only checks, or a provider name (e.g. ``claude``)
+    when an LLM-assisted classifier should be used. Sprint entry falls back
+    to ``heuristic`` when the configured provider is unavailable at sprint
+    time (e.g. no credentials, no SDK installed, no network).
+    """
+
+    classifier: str = "heuristic"
+
+
+@dataclass(frozen=True)
 class HardConventionsConfig:
     """Mechanically enforced code structure rules."""
 
@@ -363,6 +377,7 @@ class ForgeConfig:
     log: LogConfig = field(default_factory=LogConfig)
     hooks: HooksConfig | None = None
     sprint: SprintConfig = field(default_factory=SprintConfig)
+    shape_check: ShapeCheckConfig = field(default_factory=ShapeCheckConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)

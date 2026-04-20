@@ -45,6 +45,7 @@ from .types import (
     PlanConfig,
     PlanReviewConfig,
     RetryPolicy,
+    ShapeCheckConfig,
     SprintConfig,
     ValidationConfig,
 )
@@ -449,6 +450,17 @@ def load_config(config_path: Path) -> ForgeConfig:
         worker_timeout_seconds=sprint_worker_timeout_raw,
     )
 
+    shape_check_data = raw.get("shape_check", {}) or {}
+    if not isinstance(shape_check_data, dict):
+        raise ValueError(f"forge.yaml 'shape_check' must be a mapping, got {shape_check_data!r}")
+    shape_check_classifier = shape_check_data.get("classifier", "heuristic")
+    if not isinstance(shape_check_classifier, str) or not shape_check_classifier.strip():
+        raise ValueError(
+            "forge.yaml 'shape_check.classifier' must be a non-empty string, "
+            f"got {shape_check_classifier!r}"
+        )
+    shape_check_cfg = ShapeCheckConfig(classifier=shape_check_classifier.strip())
+
     context_data = raw.get("context", {})
     context_cfg = ContextConfig(
         preflight_budget=int(context_data.get("preflight_budget", ContextConfig.preflight_budget)),
@@ -540,6 +552,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         log=log_cfg,
         hooks=hooks_cfg,
         sprint=sprint_cfg,
+        shape_check=shape_check_cfg,
         context=context_cfg,
         secrets=secrets,
         agents=agents_list,

@@ -646,6 +646,7 @@ def run_sprint(
     no_pull: bool = False,
     run_id: str | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
+    skipped_issues: "list | None" = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -1533,6 +1534,7 @@ def run_sprint(
         ci_break_slug=ci_halt_slug,
         sprint_id=_sprint_id,
         dropped_slugs=_dropped_slugs,
+        skipped_issues=skipped_issues,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
@@ -1554,6 +1556,7 @@ def run_sprint(
             sprint_id=_sprint_id,
             project_root=config.project_root,
             dropped_slugs=_dropped_slugs,
+            skipped_issues=skipped_issues,
         )
 
     # Remove live state file now that sprint-summary.yaml is the permanent record.
