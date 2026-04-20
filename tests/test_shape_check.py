@@ -64,6 +64,21 @@ class TestMissingAcceptanceCriteria:
         r = check_missing_acceptance_criteria("T", "## What\nDo stuff.", [])
         assert r is not None and r.code == "missing_acceptance_criteria"
 
+    def test_bug_label_exempt(self):
+        assert check_missing_acceptance_criteria("T", "## What\nDo stuff.", ["bug"]) is None
+
+    def test_bug_report_headings_exempt(self):
+        body = textwrap.dedent(
+            """\
+            ## What happened
+            The command returned a success status despite invalid input.
+
+            ## What was expected
+            The command should fail and report the invalid input.
+            """
+        )
+        assert check_missing_acceptance_criteria("T", body, []) is None
+
     def test_heading_but_no_bullets(self):
         r = check_missing_acceptance_criteria(
             "T", "## Acceptance Criteria\n\nSome prose only.", []
@@ -131,6 +146,21 @@ class TestNoObservableDoneState:
     def test_no_ac(self):
         r = check_no_observable_done_state("T", "## What\nprose", [])
         assert r is not None
+
+    def test_bug_label_exempt(self):
+        assert check_no_observable_done_state("T", "## What\nprose", ["bug"]) is None
+
+    def test_bug_report_headings_exempt(self):
+        body = textwrap.dedent(
+            """\
+            ## What happened
+            The sprint gate blocked the issue.
+
+            ## What was expected
+            The sprint gate should allow bug reports to proceed.
+            """
+        )
+        assert check_no_observable_done_state("T", body, []) is None
 
     def test_no_verb(self):
         body = "## Acceptance Criteria\n- Something vague.\n- Another thing.\n"
@@ -233,6 +263,27 @@ class TestCheckAggregation:
         result = check("Something", "## What\nprose only", [])
         assert result.shape is Shape.NEEDS_GROOMING
         assert result.suggested_action is SuggestedAction.CLARIFY
+
+    def test_bug_label_without_ac_is_runnable(self):
+        result = check("Bug: command exits incorrectly", "## What\nprose only", ["bug"])
+        assert result.shape is Shape.RUNNABLE
+        assert result.suggested_action is SuggestedAction.PROCEED
+        assert result.reasons == ()
+
+    def test_bug_report_headings_without_ac_are_runnable(self):
+        body = textwrap.dedent(
+            """\
+            ## What happened
+            The sprint gate blocked a bug report for missing acceptance criteria.
+
+            ## What was expected
+            Bug reports should proceed with observed and expected behavior.
+            """
+        )
+        result = check("Shape gate blocks bugs", body, [])
+        assert result.shape is Shape.RUNNABLE
+        assert result.suggested_action is SuggestedAction.PROCEED
+        assert result.reasons == ()
 
 
 # ----- classifier mode tests ------------------------------------------------
