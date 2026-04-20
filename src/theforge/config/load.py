@@ -96,6 +96,8 @@ def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
     """
     if "models" not in raw:
         return
+    if not isinstance(raw.get("models"), list):
+        return
 
     par_raw = raw.get("plan_agent_review")
     if not isinstance(par_raw, dict):
@@ -115,7 +117,7 @@ def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
     model_key = next(
         (
             key
-            for key in raw.get("models", [])
+            for key in (raw.get("models") or [])
             if key in AGENT_REGISTRY
             and (spec := resolve_agent_spec(str(key))).transport.kind == "cli"
             and spec.provider == CLI_PROVIDER_MAP.get(cli)

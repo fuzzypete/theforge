@@ -453,8 +453,10 @@ def _apply_provider_fallback(
         base_url=profile.base_url,
         max_tool_output_bytes=profile.max_tool_output_bytes,
         max_iterations=profile.max_iterations,
+        fallback_models=profile.fallback_models,
         api_fallback=fallback,
         github_handle=profile.github_handle,
         phase=profile.phase,
         sandbox_mode=profile.sandbox_mode,
+        transport=profile.transport,
     )

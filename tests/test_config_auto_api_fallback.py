@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from theforge.config import load_config
 from theforge.config.types import PlanConfig
 from theforge.sprint.runner import _agent_cost_tracking_warnings
@@ -170,3 +172,22 @@ plan:
         for warning in warnings
     )
     assert any("planner" in warning for warning in warnings)
+
+
+def test_models_null_still_raises_clean_schema_error_with_legacy_plan_agent_review(tmp_path):
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+plan_agent_review:
+  enabled: true
+  cli: codex
+  model: gpt-5.4
+""",
+    )
+    with (
+        _auth_ok,
+        _import_ok,
+        pytest.raises(ValueError, match="'models' must be a non-empty list"),
+    ):
+        load_config(cfg_path)
