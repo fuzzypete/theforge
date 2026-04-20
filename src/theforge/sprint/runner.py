@@ -679,13 +679,17 @@ def run_sprint(
         # so that individual steps remain patchable by tests.
         _manifest = load_sprint_manifest(sprint)
         _validate_story_paths(_manifest, config.project_root)
-        _task_entries = build_tasks_from_manifest(_manifest, config.project_root)
+        _closed: set[str] = set()
+        _task_entries = build_tasks_from_manifest(
+            _manifest, config.project_root, closed_slugs=_closed
+        )
         resolved = ResolvedSprint(
             name=_manifest.name,
             budget_usd=_manifest.budget_usd,
             stories=_task_entries,
             max_parallel=_manifest.max_parallel,
             worker_timeout_seconds=_manifest.worker_timeout_seconds,
+            closed_dependency_slugs=_closed,
         )
 
     # Defensive scrub for the root checkout used by sprint commands.
@@ -787,9 +791,10 @@ def run_sprint(
             action_label = triage.action.upper().replace("_", " ")
             _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
 
-    # Build satisfied set: resume-mode skip states plus any cross-sprint
-    # depends_on slugs whose branch is already merged to the base branch.
-    pre_satisfied: set[str] = set()
+    # Build satisfied set: closed dep slugs detected at manifest build time,
+    # resume-mode skip states, plus any cross-sprint depends_on slugs whose
+    # branch is already merged to the base branch.
+    pre_satisfied: set[str] = set(resolved.closed_dependency_slugs)
     if resume:
         for triage in triages.values():
             if triage.action in ("skip_merged", "skip"):
