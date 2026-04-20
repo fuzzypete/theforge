@@ -7,7 +7,13 @@ import sys
 from pathlib import Path
 
 from theforge.cli.shared import _find_config
-from theforge.config import ForgeConfig, ModelProfile, load_config
+from theforge.config import (
+    ForgeConfig,
+    ModelProfile,
+    TransportSpec,
+    load_config,
+    resolve_agent_spec,
+)
 from theforge.config.auth import check_agent_auth
 from theforge.config.profiles import _apply_provider_fallback
 from theforge.config.role_derivation import derive_roles
@@ -55,14 +61,26 @@ _CLI_PROVIDER_MAP: dict[str, str] = {
 }
 
 
-def _split_provider_transport(cli: str | None, provider: str | None) -> tuple[str, str]:
-    """Return (provider_label, transport_label) derived from cli/provider fields.
+def _split_provider_transport(
+    cli: str | None,
+    provider: str | None,
+    transport: TransportSpec | None = None,
+) -> tuple[str, str]:
+    """Return (provider_label, transport_label) for config display.
 
     CLI profiles carry an implicit provider (claude → anthropic, codex → openai,
     gemini → google); API profiles carry the provider explicitly. Transport is
     rendered as 'cli:<binary>' for CLI profiles and 'api' for API profiles, so
     the operator never conflates CLI-backed and API-backed models.
+
+    When an explicit TransportSpec is present, it is the same source of truth the
+    runner uses for dispatch and wins over legacy cli/provider inference.
     """
+    if transport is not None:
+        if transport.kind == "api":
+            return provider or transport.runner, "api"
+        runner = transport.executable or transport.runner
+        return provider or _CLI_PROVIDER_MAP.get(runner, runner), f"cli:{runner}"
     if cli is not None:
         return _CLI_PROVIDER_MAP.get(cli, cli), f"cli:{cli}"
     if provider is not None:
@@ -72,7 +90,11 @@ def _split_provider_transport(cli: str | None, provider: str | None) -> tuple[st
 
 def _transport_label(profile: ModelProfile) -> str:
     """Return 'provider  transport  / model' with provider and transport separate."""
-    provider_label, transport_label = _split_provider_transport(profile.cli, profile.provider)
+    provider_label, transport_label = _split_provider_transport(
+        profile.cli,
+        profile.provider,
+        profile.transport,
+    )
     return f"{provider_label:<10}{transport_label:<10}{profile.model}"
 
 
@@ -89,16 +111,30 @@ def _thinking_budget_label(profile: ModelProfile) -> str:
     return f"  thinking_budget={profile.thinking_budget}"
 
 
-def _provider_label(model_key: str) -> str:
+def _provider_label(model_key: str, warnings_list: list[str] | None = None) -> str:
     """Return a short human-readable label for a model key like 'claude/sonnet'."""
-    provider = model_key.split("/", 1)[0] if "/" in model_key else model_key
-    _CLI_PROVIDERS = {"claude"}
-    suffix = "cli" if provider in _CLI_PROVIDERS else "api"
-    return f"{provider} {suffix}"
+    try:
+        spec = resolve_agent_spec(model_key)
+    except ValueError as exc:
+        if warnings_list is not None:
+            warnings_list.append(str(exc))
+        return "provider=? transport=?"
+
+    provider_label, transport_label = _split_provider_transport(
+        spec.transport.executable if spec.transport.kind == "cli" else None,
+        spec.provider,
+        spec.transport,
+    )
+    return f"{provider_label} {transport_label}"
 
 
-def _ref_transport_label(cli: str | None, provider: str | None, model: str) -> str:
-    provider_label, transport_label = _split_provider_transport(cli, provider)
+def _ref_transport_label(
+    cli: str | None,
+    provider: str | None,
+    model: str,
+    transport: TransportSpec | None = None,
+) -> str:
+    provider_label, transport_label = _split_provider_transport(cli, provider, transport)
     return f"{provider_label:<10}{transport_label:<10}{model}"
 
 
@@ -124,13 +160,13 @@ def _format_complexity_aware_section(
 
     # Preflight: always static (runs before complexity is known)
     pre = ra_low.preflight.ref
-    pre_label = _ref_transport_label(pre.cli, pre.provider, pre.model)
+    pre_label = _ref_transport_label(pre.cli, pre.provider, pre.model, pre.transport)
     lines.append(f"  {'preflight:':<14}{pre_label:<28} (static — runs before complexity known)")
 
     # Plan: show per-complexity, collapsing equal adjacent levels
     def _plan_label(ra) -> str:  # type: ignore[no-untyped-def]
         r = ra.plan.ref
-        return _ref_transport_label(r.cli, r.provider, r.model)
+        return _ref_transport_label(r.cli, r.provider, r.model, r.transport)
 
     pl, pm, ph = _plan_label(ra_low), _plan_label(ra_mid), _plan_label(ra_high)
     plan_parts = _collapse_complexity_labels({"LOW": pl, "MEDIUM": pm, "HIGH": ph})
@@ -139,7 +175,7 @@ def _format_complexity_aware_section(
     # Dev: show per-complexity
     def _dev_label(ra) -> str:  # type: ignore[no-untyped-def]
         r = ra.dev.ref
-        return _ref_transport_label(r.cli, r.provider, r.model)
+        return _ref_transport_label(r.cli, r.provider, r.model, r.transport)
 
     dl, dm, dh = _dev_label(ra_low), _dev_label(ra_mid), _dev_label(ra_high)
     dev_parts = _collapse_complexity_labels({"LOW": dl, "MEDIUM": dm, "HIGH": dh})
@@ -206,7 +242,7 @@ def _format_config(
             seen: set[str] = set()
             provider_labels: list[str] = []
             for mk in config.models:
-                lbl = _provider_label(mk)
+                lbl = _provider_label(mk, warnings_list)
                 if lbl not in seen:
                     seen.add(lbl)
                     provider_labels.append(lbl)
