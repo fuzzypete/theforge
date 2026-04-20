@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,8 @@ from coord_test_helpers import (
 from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_VALIDATION,
+    AgentDef,
+    AssignmentConfig,
     ForgeConfig,
     ModelProfile,
     RetryPolicy,
@@ -27,7 +30,7 @@ from theforge.coordinator.preflight import (
     _escalate_dev_model,
     _has_persistent_p1,
 )
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.review import ReviewFinding
 
 # ── Dev model escalation tests ────────────────────────────────────────
@@ -87,6 +90,18 @@ def _make_smart_config(
             auto_model_escalation=True,
         ),
         models=models,
+    )
+
+
+def _cached_proceed_state_with_complexity(complexity: str = "medium") -> CoordinatorState:
+    """Create cached preflight state for coordinator-loop integration tests."""
+    return replace(
+        CoordinatorState(),
+        preflight_verdict="PROCEED",
+        preflight_reason="Needs implementation.",
+        preflight_complexity=complexity,
+        preflight_sufficiency="implementation_ready",
+        preflight_work_type="bug",
     )
 
 
@@ -243,6 +258,70 @@ test_coverage:
 
 class TestDevModelEscalationIntegration:
     """Integration tests for dev model escalation on persistent P1s."""
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_done_path_writes_assignment_history_without_import_error(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """DONE with agents + escalation memory writes assignment history successfully."""
+        config = replace(
+            _make_config(tmp_path),
+            agents=[
+                AgentDef(
+                    name="claude-sonnet",
+                    provider=None,
+                    model="sonnet",
+                    budget_usd=10.0,
+                    timeout_seconds=300,
+                    tier="cheap",
+                    cli="claude",
+                )
+            ],
+            assignment=AssignmentConfig(
+                enabled=True,
+                escalation_memory=True,
+                budget_per_story_usd=30.0,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+        cached_state = _cached_proceed_state_with_complexity()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result(success=True, output="implemented")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, cached_preflight_state=cached_state)
+
+        assert result.success is True
+        history_path = tmp_path / ".forge" / "assignment_history.yaml"
+        assert history_path.exists()
+        assert "outcome: DONE" in history_path.read_text(encoding="utf-8")
+
+    def test_coordinator_never_imports_assignment_from_coordinator_package(self):
+        """Assignment helpers live at theforge.assignment, not the coordinator package."""
+        coord_dir = Path(__file__).parents[1] / "src" / "theforge" / "coordinator"
+        # Split the forbidden strings so this guard does not match its own source.
+        bad_relative = "from " + ".assignment import"
+        bad_absolute = "theforge.coordinator" + ".assignment"
+
+        offenders = [
+            path.name
+            for path in coord_dir.glob("*.py")
+            if bad_relative in path.read_text(encoding="utf-8")
+            or bad_absolute in path.read_text(encoding="utf-8")
+        ]
+
+        assert offenders == []
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")

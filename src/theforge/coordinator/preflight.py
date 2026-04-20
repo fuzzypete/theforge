@@ -609,15 +609,19 @@ def _apply_preflight_config(
     if not (config.assignment.enabled and config.agents):
         return config
 
-    from .assignment import PHASE_TIER as _PHASE_TIER  # noqa: PLC0415
-    from .assignment import _check_promotion as _chk_prom  # noqa: PLC0415
-    from .assignment import _normalize_complexity as _norm_complexity  # noqa: PLC0415
-    from .assignment import _pick_agent as _pick_agt  # noqa: PLC0415
-    from .assignment import _promote_tier as _prom_tier  # noqa: PLC0415
-    from .assignment import assign_models as _assign_models  # noqa: PLC0415
-    from .assignment import load_escalation_history as _load_esc_history  # noqa: PLC0415
-    from .config import DEFAULT_DEV_PROFILE as _DEF_DEV  # noqa: PLC0415
-    from .config import DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE  # noqa: PLC0415
+    from theforge.assignment import (  # noqa: I001, PLC0415
+        PHASE_TIER as _PHASE_TIER,
+        _check_promotion as _chk_prom,
+        _normalize_complexity as _norm_complexity,
+        _pick_agent as _pick_agt,
+        _promote_tier as _prom_tier,
+        assign_models as _assign_models,
+        load_escalation_history as _load_esc_history,
+    )
+    from theforge.config import (  # noqa: I001, PLC0415
+        DEFAULT_DEV_PROFILE as _DEF_DEV,
+        DEFAULT_PREFLIGHT_PROFILE as _DEF_PRE,
+    )
 
     _history_path = config.project_root / ".forge" / "assignment_history.yaml"
     _esc_history = _load_esc_history(_history_path)

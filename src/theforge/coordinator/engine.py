@@ -762,10 +762,8 @@ def run_task(
 
         # ── Adaptive escalation memory ─────────────────────────────────
         if config.assignment.escalation_memory and config.agents and state.preflight_complexity:
-            from .assignment import (
+            from theforge.assignment import (  # noqa: I001, PLC0415
                 EscalationRecord as _EscRec,
-            )
-            from .assignment import (
                 append_escalation_record as _append_esc,
             )
 
