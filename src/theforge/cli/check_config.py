@@ -48,16 +48,38 @@ def _run_auth(
         results[key] = (False, str(exc))
 
 
+_CLI_PROVIDER_MAP: dict[str, str] = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "gemini": "google",
+}
+
+
+def _split_provider_transport(cli: str | None, provider: str | None) -> tuple[str, str]:
+    """Return (provider_label, transport_label) derived from cli/provider fields.
+
+    CLI profiles carry an implicit provider (claude → anthropic, codex → openai,
+    gemini → google); API profiles carry the provider explicitly. Transport is
+    rendered as 'cli:<binary>' for CLI profiles and 'api' for API profiles, so
+    the operator never conflates CLI-backed and API-backed models.
+    """
+    if cli is not None:
+        return _CLI_PROVIDER_MAP.get(cli, cli), f"cli:{cli}"
+    if provider is not None:
+        return provider, "api"
+    return "?", "?"
+
+
 def _transport_label(profile: ModelProfile) -> str:
-    """Return 'cli / model' or 'provider / model'."""
-    transport = profile.cli if profile.cli is not None else (profile.provider or "?")
-    return f"{transport} / {profile.model}"
+    """Return 'provider  transport  / model' with provider and transport separate."""
+    provider_label, transport_label = _split_provider_transport(profile.cli, profile.provider)
+    return f"{provider_label:<10}{transport_label:<10}{profile.model}"
 
 
 def _plan_transport_label(plan: PlanConfig) -> str:
-    """Return transport label for a PlanConfig."""
-    transport = plan.cli if plan.cli is not None else (plan.provider or "?")
-    return f"{transport} / {plan.model}"
+    """Return provider/transport/model label for a PlanConfig."""
+    provider_label, transport_label = _split_provider_transport(plan.cli, plan.provider)
+    return f"{provider_label:<10}{transport_label:<10}{plan.model}"
 
 
 def _thinking_budget_label(profile: ModelProfile) -> str:
@@ -76,8 +98,8 @@ def _provider_label(model_key: str) -> str:
 
 
 def _ref_transport_label(cli: str | None, provider: str | None, model: str) -> str:
-    transport = cli if cli is not None else (provider or "?")
-    return f"{transport} / {model}"
+    provider_label, transport_label = _split_provider_transport(cli, provider)
+    return f"{provider_label:<10}{transport_label:<10}{model}"
 
 
 def _format_complexity_aware_section(
@@ -277,8 +299,8 @@ def _format_config(
     if config.assignment.enabled and config.agents:
         lines.append("AGENTS (adaptive pool)")
         for agent in config.agents:
-            transport = agent.cli if agent.cli is not None else (agent.provider or "?")
-            transport_str = f"{transport} / {agent.model}"
+            provider_label, transport_label = _split_provider_transport(agent.cli, agent.provider)
+            transport_str = f"{provider_label:<10}{transport_label:<10}{agent.model}"
             ready, reason = auth_results.get(_auth_key("agent", agent.name), (True, ""))
             auth_str = "✓ ready" if ready else f"✗ {reason}"
             lines.append(f"  {agent.name:<22}{transport_str:<30}  tier={agent.tier:<8}{auth_str}")

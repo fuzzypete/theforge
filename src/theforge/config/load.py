@@ -22,7 +22,7 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import _PROVIDER_CLI_MAP, MODEL_REGISTRY, _parse_assignment
+from .models import AGENT_REGISTRY, _parse_assignment
 from .profiles import (
     _agents_from_models,
     _apply_profile_overrides,
@@ -166,12 +166,12 @@ def load_config(config_path: Path) -> ForgeConfig:
                 raise ValueError(
                     f"Model entry {m!r} must be in 'provider/model' format (contains '/')"
                 )
-            provider = str(m).split("/", 1)[0]
-            if str(m) not in MODEL_REGISTRY and provider not in _PROVIDER_CLI_MAP:
+            if str(m) not in AGENT_REGISTRY:
+                known_providers = sorted({k.split("/", 1)[0] for k in AGENT_REGISTRY})
                 raise ValueError(
-                    f"Unknown provider {provider!r} in model {m!r}. "
-                    f"Supported providers: {sorted(_PROVIDER_CLI_MAP)}. "
-                    "Or add the model to MODEL_REGISTRY."
+                    f"Unknown model {m!r}: not in AGENT_REGISTRY. "
+                    f"Known providers: {known_providers}. "
+                    "Add an explicit registry entry to support a new model."
                 )
         budget_usd_raw = raw.get("budget_usd", 50.0)
         budget_usd_val = float(budget_usd_raw)

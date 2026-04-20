@@ -148,6 +148,7 @@ class TestCheckConfigHappyPath:
         assert "on_approve:" in out
 
     def test_transport_label_cli(self, tmp_path: Path, capsys) -> None:
+        """CLI profiles render provider and transport in separate columns."""
         config = _make_forge_config(tmp_path)
         with (
             patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
@@ -159,9 +160,13 @@ class TestCheckConfigHappyPath:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
-        assert "claude / sonnet" in out
+        # claude CLI → provider=anthropic, transport=cli:claude, model=sonnet
+        assert "anthropic" in out
+        assert "cli:claude" in out
+        assert "sonnet" in out
 
     def test_transport_label_provider(self, tmp_path: Path, capsys) -> None:
+        """API profiles render provider and transport='api' in separate columns."""
         review_pool = [_api_profile("reviewer", provider="openai", model="gpt-4")]
         config = _make_forge_config(tmp_path, review_pool=review_pool)
         with (
@@ -174,7 +179,10 @@ class TestCheckConfigHappyPath:
         ):
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
-        assert "openai / gpt-4" in out
+        assert "openai" in out
+        # API transport is rendered as a separate 'api' column, not as 'openai / gpt-4'
+        assert "api" in out
+        assert "gpt-4" in out
 
     def test_explicit_thinking_budget_is_rendered(self, tmp_path: Path, capsys) -> None:
         review_pool = [
@@ -413,7 +421,9 @@ class TestCheckConfigPlanPhase:
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
         assert "plan" in out
-        assert "claude / opus" in out
+        assert "anthropic" in out
+        assert "cli:claude" in out
+        assert "opus" in out
         assert "budget=$3.00" in out
 
     def test_plan_phase_not_shown_when_disabled(self, tmp_path: Path, capsys) -> None:

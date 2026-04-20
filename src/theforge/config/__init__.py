@@ -21,9 +21,13 @@ from .defaults import (
 )
 from .load import _validate_plan_provider, load_config
 from .models import (
+    AGENT_REGISTRY,
     MODEL_REGISTRY,
     AgentDef,
+    AgentSpec,
     ModelInfo,
+    TransportSpec,
+    resolve_agent_spec,
 )
 from .types import (
     SUPPORTED_PROVIDERS,
@@ -75,7 +79,11 @@ __all__ = [
     "ValidationConfig",
     "WorkspaceConfig",
     # models / registry
+    "AGENT_REGISTRY",
+    "AgentSpec",
     "MODEL_REGISTRY",
+    "TransportSpec",
+    "resolve_agent_spec",
     # defaults
     "API_PROVIDER_DEFAULT_TOOLS",
     "DEFAULT_DEV_PROFILE",
