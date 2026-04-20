@@ -9,7 +9,7 @@ from dataclasses import replace as _dc_replace
 from enum import Enum, auto
 from pathlib import Path
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig
+from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.review import (
     ReviewFinding,
@@ -911,9 +911,7 @@ def _run_review_phase(
                     f" (persistent P1 in {_p1_file})"
                 )
                 _old_model = config.dev_profile.model
-                _new_dev = _dc_replace(
-                    config.dev_profile, cli=_next_info.cli, model=_next_info.model
-                )
+                _new_dev = apply_model_info(config.dev_profile, _next_info)
                 config = _dc_replace(config, dev_profile=_new_dev)
                 state.dev_escalated = True
                 _prev_result = state.review_results[-2]
