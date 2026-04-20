@@ -383,6 +383,7 @@ class ForgeConfig:
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
     provider_fallbacks: dict[str, ApiFallbackConfig] = field(default_factory=dict)
+    auto_api_fallback: bool = True
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
     dev_profile_is_default: bool = (

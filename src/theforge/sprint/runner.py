@@ -89,32 +89,34 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
     """Return sprint-start warnings for configured CLI agents with unknown cost."""
 
-    agents: list[tuple[str, str | None, str | None, str]] = [
+    agents: list[tuple[str, str | None, str | None, str, object | None]] = [
         (
             config.preflight_profile.name,
             config.preflight_profile.cli,
             config.preflight_profile.provider,
             config.preflight_profile.model,
+            config.preflight_profile.api_fallback,
         ),
         (
             config.dev_profile.name,
             config.dev_profile.cli,
             config.dev_profile.provider,
             config.dev_profile.model,
+            config.dev_profile.api_fallback,
         ),
     ]
 
     if config.plan.enabled:
-        agents.append(("planner", config.plan.cli, config.plan.provider, config.plan.model))
+        agents.append(("planner", config.plan.cli, config.plan.provider, config.plan.model, None))
 
     if config.plan_agent_review.enabled:
         agents.extend(
-            (profile.name, profile.cli, profile.provider, profile.model)
+            (profile.name, profile.cli, profile.provider, profile.model, profile.api_fallback)
             for profile in config.plan_agent_review.profiles
         )
 
     agents.extend(
-        (profile.name, profile.cli, profile.provider, profile.model)
+        (profile.name, profile.cli, profile.provider, profile.model, profile.api_fallback)
         for profile in config.review_pool
     )
 
@@ -125,18 +127,27 @@ def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
                 config.synthesis_profile.cli,
                 config.synthesis_profile.provider,
                 config.synthesis_profile.model,
+                config.synthesis_profile.api_fallback,
             )
         )
 
     warnings: list[str] = []
-    seen: set[tuple[str, str, str]] = set()
-    for name, cli, provider, model in agents:
+    seen: set[tuple[str, str, str, str | None, str | None]] = set()
+    for name, cli, provider, model, api_fallback in agents:
         if provider is not None or cli not in _UNTRACKED_COST_CLIS:
             continue
-        key = (name, cli, model)
+        fallback_provider = getattr(api_fallback, "provider", None)
+        fallback_model = getattr(api_fallback, "model", None)
+        key = (name, cli, model, fallback_provider, fallback_model)
         if key in seen:
             continue
         seen.add(key)
+        if api_fallback is not None:
+            warnings.append(
+                f"⚠ CLI cost not tracked for {name} ({cli} CLI, {model}); API fallback to "
+                f"{fallback_provider}/{fallback_model} will be tracked if it triggers."
+            )
+            continue
         warnings.append(
             f"⚠ Cost not tracked for {name} ({cli} CLI, {model}). "
             "Audit totals will exclude this agent's usage."

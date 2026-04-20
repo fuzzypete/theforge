@@ -22,7 +22,7 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import AGENT_REGISTRY, _parse_assignment
+from .models import AGENT_REGISTRY, _parse_assignment, resolve_agent_spec
 from .profiles import (
     _agents_from_models,
     _apply_profile_overrides,
@@ -33,6 +33,7 @@ from .role_derivation import derive_roles
 from .secrets import _parse_notifications
 from .types import (
     SUPPORTED_PROVIDERS,
+    ApiFallbackConfig,
     ContextConfig,
     FindingClassifierConfig,
     ForgeConfig,
@@ -51,6 +52,27 @@ from .types import (
 )
 
 log = logging.getLogger("theforge.config")
+
+
+def _derive_auto_provider_fallbacks(models: list[str]) -> dict[str, ApiFallbackConfig]:
+    """Auto-wire same-provider API fallbacks for CLI transport models."""
+    fallbacks: dict[str, ApiFallbackConfig] = {}
+    for model_key in models:
+        spec = resolve_agent_spec(model_key)
+        if spec.transport.kind != "cli":
+            continue
+        provider = spec.provider
+        if provider in fallbacks:
+            continue
+        for candidate in AGENT_REGISTRY.values():
+            if (
+                candidate.transport.kind == "api"
+                and candidate.provider == provider
+                and candidate.model == spec.model
+            ):
+                fallbacks[provider] = ApiFallbackConfig(provider=provider, model=spec.model)
+                break
+    return fallbacks
 
 
 def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> None:
@@ -123,6 +145,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         raw.get("provider_fallbacks", {}),
         secrets=secrets,
     )
+    auto_api_fallback = bool(raw.get("auto_api_fallback", True))
 
     workspace = _parse_workspace(raw.get("workspace", {}))
 
@@ -225,6 +248,9 @@ def load_config(config_path: Path) -> ForgeConfig:
                 ]
 
         models = [str(m) for m in models_list]
+        if auto_api_fallback:
+            auto_provider_fallbacks = _derive_auto_provider_fallbacks(models)
+            provider_fallbacks = {**auto_provider_fallbacks, **provider_fallbacks}
         # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
         # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
         # roles so explicit overrides bypass routing.
@@ -558,6 +584,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         agents=agents_list,
         assignment=assignment_cfg,
         provider_fallbacks=provider_fallbacks,
+        auto_api_fallback=auto_api_fallback,
         review_pool_is_default=_review_pool_is_default,
         plan_model_is_default=_plan_model_is_default,
         dev_profile_is_default=_dev_profile_is_default,

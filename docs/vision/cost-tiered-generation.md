@@ -171,6 +171,23 @@ where reasoning quality determines outcomes. DEV pass 1, when constrained
 by a strong plan, is closer to transcription than reasoning — and that's
 where cheap/local models can deliver.
 
+## CLI-first with API fallback
+
+When an operator lists a CLI transport model in `models:` and the registry also
+contains the same provider/model on an API transport, TheForge now auto-wires
+that API variant as `api_fallback` for the CLI profile. This makes the ergonomic
+default "burn CLI quota first, then fall back to tracked API usage if quota or
+availability forces the crossing."
+
+Operators can disable this behavior with top-level `auto_api_fallback: false`,
+or override the auto choice for a provider with an explicit
+`provider_fallbacks:` entry.
+
+Sprint-start warnings for CLI transports now distinguish between fully
+untracked CLI-only usage and CLI profiles that have a tracked API fallback. In
+that paired case the warning explains that CLI cost is still untracked, but the
+API fallback cost will be tracked if it triggers.
+
 ## Relationship to Existing Architecture
 
 - **Smart config** already assigns by cost_rank — local models slot in
