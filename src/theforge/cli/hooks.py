@@ -34,6 +34,13 @@ branch=$(echo "$payload" | jq -r '.branch')
 summary=$(echo "$payload" | jq -r '.summary')
 findings_count=$(echo "$payload" | jq '.findings | length')
 
+# Ensure the intake label exists before filing findings. --force keeps the
+# description aligned without failing when the label already exists.
+gh label create "needs-triage" \\
+  --description "Forge finding awaiting explicit triage decision" \\
+  --color "D4C5F9" \\
+  --force >/dev/null 2>&1 || true
+
 # Only act on ESCALATE or APPROVE outcomes (REQUEST_CHANGES = still in review)
 if [ "$verdict" != "ESCALATE" ] && [ "$verdict" != "APPROVE" ]; then
   exit 0
@@ -75,6 +82,7 @@ if [ "$findings_count" -gt 0 ]; then
       --title "$title" \\
       --body "$body" \\
       --label "forge-finding" \\
+      --label "needs-triage" \\
       --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
   done
 fi

@@ -602,6 +602,26 @@ class TestCmdInitHooks:
         content = sh_path.read_text(encoding="utf-8")
         assert "forge-finding" in content
 
+    def test_script_applies_needs_triage_label_at_creation(self, tmp_path, monkeypatch):
+        """Reference script adds needs-triage to newly filed finding issues."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        content = sh_path.read_text(encoding="utf-8")
+        assert '--label "forge-finding"' in content
+        assert '--label "needs-triage"' in content
+
+    def test_script_ensures_needs_triage_label_description(self, tmp_path, monkeypatch):
+        """Reference script creates or refreshes the needs-triage label."""
+        monkeypatch.chdir(tmp_path)
+        args = self._make_args()
+        cmd_init_hooks(args)
+        sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
+        content = sh_path.read_text(encoding="utf-8")
+        assert 'gh label create "needs-triage"' in content
+        assert "Forge finding awaiting explicit triage decision" in content
+
 
 # ── TestApplyDevModelOverride ─────────────────────────────────────────
 
