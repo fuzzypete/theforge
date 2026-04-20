@@ -102,6 +102,7 @@ def cmd_sprint(args: object) -> int:
     no_pull = getattr(args, "no_pull", False)
     dry_run = getattr(args, "dry_run", False)
     max_parallel: int | None = getattr(args, "parallel", None)
+    force = getattr(args, "force", False)
 
     # ── Query mode: fetch issues and build ResolvedSprint ───────────────
     if query_mode:
@@ -119,6 +120,7 @@ def cmd_sprint(args: object) -> int:
             interactive=interactive,
             resume=resume,
             no_pull=no_pull,
+            force=force,
             _daemon=_daemon,
             _detach=_detach,
             _generate_run_id=_generate_run_id,
@@ -249,6 +251,7 @@ def _run_query_mode(
     interactive: bool,
     resume: bool,
     no_pull: bool,
+    force: bool = False,
     _daemon: object,
     _detach: object,
     _generate_run_id: object,
@@ -262,6 +265,7 @@ def _run_query_mode(
         fetch_issues_for_label,
         fetch_issues_for_milestone,
     )
+    from theforge.sprint.shape_gate import apply_shape_gate, format_skipped_warning
 
     try:
         budget_usd = float(budget_str)
@@ -311,6 +315,37 @@ def _run_query_mode(
             file=sys.stderr,
         )
         return 0
+
+    # ── Shape gate: label check + local shape_check re-run ──────────────
+    # Runs BEFORE preflight so we never spend money on malformed issues.
+    # Dry-run is a pure dependency preview — bypass the gate there so
+    # operators can inspect the DAG without making ``gh`` calls per issue.
+    skipped_issues: list = []
+    if not dry_run:
+        gate_result = apply_shape_gate(
+            issues,
+            config.project_root,
+            force=force,
+        )
+        if gate_result.skipped:
+            warning = format_skipped_warning(gate_result.skipped)
+            if force:
+                print(
+                    f"[forge] --force in effect; running all issues anyway.\n{warning}",
+                    file=sys.stderr,
+                )
+            else:
+                print(warning, file=sys.stderr)
+        issues = gate_result.runnable
+        skipped_issues = gate_result.skipped
+
+        if not issues:
+            print(
+                f"[forge] All {len(skipped_issues)} issue(s) skipped by shape gate "
+                "— nothing to run.",
+                file=sys.stderr,
+            )
+            return 0
 
     sprint_name: str = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
 
@@ -407,6 +442,7 @@ def _run_query_mode(
             no_pull=no_pull,
             run_id=run_id,
             dropped_slugs=dropped_slugs,
+            skipped_issues=skipped_issues,
         )
     except Exception as exc:
         import traceback
@@ -534,4 +570,14 @@ def register_parser(subparsers: object) -> None:
         action="store_true",
         default=False,
         help="Skip git pull --ff-only before creating fresh worktrees (offline/CI use)",
+    )
+    sprint_parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help=(
+            "Bypass the sprint-entry shape gate and run every issue regardless "
+            "of needs-grooming labels or local shape check results. Emits a "
+            "prominent warning listing every skipped issue's reason codes."
+        ),
     )
