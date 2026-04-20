@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 
 from theforge.runners.tool_runtime import (
@@ -149,6 +150,25 @@ class TestBash:
         result = _handle_bash(command="sleep 999", working_dir=tmp_path)
         assert "timed out" in result
         assert isinstance(result, str)
+
+    def test_bash_uses_workspace_venv_env(self, tmp_path, monkeypatch):
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        captured_env = {}
+
+        def fake_run(*args, **kwargs):
+            captured_env.update(kwargs["env"])
+            return subprocess.CompletedProcess(
+                args=args[0], returncode=0, stdout="ok\n", stderr=""
+            )
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = _handle_bash(command="python -V", working_dir=tmp_path)
+
+        assert "Exit code: 0" in result
+        assert captured_env["PATH"].split(os.pathsep)[0] == str(venv_bin)
+        assert captured_env["VIRTUAL_ENV"] == str(tmp_path / ".venv")
 
     def test_truncates_large_output(self, tmp_path):
         result = _handle_bash(

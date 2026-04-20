@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from theforge.workspace_env import build_workspace_env
+
 from .sandbox import sandbox_command
 
 MAX_TOOL_OUTPUT_BYTES = 51200  # 50KB default
@@ -162,6 +164,7 @@ def _handle_bash(
             capture_output=True,
             text=True,
             timeout=_BASH_TIMEOUT,
+            env=build_workspace_env(Path(working_dir)),
         )
         combined = result.stdout + result.stderr
         output = f"Exit code: {result.returncode}\n{combined}"

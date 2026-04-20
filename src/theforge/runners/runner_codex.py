@@ -18,6 +18,7 @@ from typing import Any
 from theforge.agent_types import AgentResult
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
+from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
@@ -147,7 +148,7 @@ def _run_codex(
 
     start_wall = time.time()
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
-    _codex_env = {**os.environ, **(secrets or {})}
+    _codex_env = build_workspace_env(working_dir, extra=secrets)
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(
             cmd,

@@ -17,6 +17,7 @@ from pathlib import Path
 from theforge.coordinator.log_tee import get_worker_slug
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
+from theforge.workspace_env import build_workspace_env
 
 # Stable reference captured at import time so test patches that replace the
 # subprocess module attribute (e.g. patch("validate_phase.subprocess.run"))
@@ -134,7 +135,7 @@ def _run_shell_detailed(
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(cwd),
-            env=env if env is not None else os.environ.copy(),
+            env=env if env is not None else build_workspace_env(cwd),
             start_new_session=True,
         )
     except Exception as e:

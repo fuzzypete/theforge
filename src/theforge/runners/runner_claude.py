@@ -7,7 +7,6 @@ streams JSONL events, and returns an AgentResult.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import threading
 import time
@@ -17,6 +16,7 @@ from typing import Any
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
+from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
 
@@ -199,7 +199,7 @@ def _run_claude(
         cmd.extend(["--permission-mode", "default"])
 
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
-    env = {**os.environ, **(secrets or {})}
+    env = build_workspace_env(working_dir, extra=secrets)
     env.pop("CLAUDECODE", None)
 
     label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"

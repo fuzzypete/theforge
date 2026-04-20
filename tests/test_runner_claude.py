@@ -208,6 +208,27 @@ class TestRunAgentClaude:
         env_passed = mock_popen.call_args[1]["env"]
         assert "CLAUDECODE" not in env_passed
 
+    def test_uses_workspace_venv_env(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
+        """Claude subprocess env prefers the worktree virtualenv."""
+        venv_bin = tmp_path / ".venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+
+        with patch(
+            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
+            run_agent(
+                prompt="test",
+                profile=dev_profile,
+                working_dir=tmp_path,
+                secrets={"API_KEY": "secret"},
+            )
+
+        env_passed = mock_popen.call_args[1]["env"]
+        assert env_passed["PATH"].split(os.pathsep)[0] == str(venv_bin)
+        assert env_passed["VIRTUAL_ENV"] == str(tmp_path / ".venv")
+        assert env_passed["API_KEY"] == "secret"
+
     def test_with_session_resume(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock(
             [_result_line(result="continued.", session_id="sess-abc123")]
