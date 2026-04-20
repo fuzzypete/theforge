@@ -50,31 +50,18 @@ fi
 if [ "$findings_count" -gt 0 ]; then
   echo "$payload" | jq -c '.findings[]' | while read -r finding; do
     sev=$(echo "$finding" | jq -r '.severity')
-    file=$(echo "$finding" | jq -r '.file')
-    line=$(echo "$finding" | jq -r '.line // empty')
     desc=$(echo "$finding" | jq -r '.description')
-    suggestion=$(echo "$finding" | jq -r '.suggestion // empty')
 
     # Title: [P1] slug: description (truncated to 72 chars)
     raw_title="[${sev}] ${slug}: ${desc}"
     title="${raw_title:0:72}"
 
-    location="\\`${file}\\`"
-    [ -n "$line" ] && location="${location} line ${line}"
+    body="**What happened:** ${desc}
 
-    body="**Story:** \\`${slug}\\` (\\`${branch}\\`)
-**Verdict:** ${verdict} — ${summary}
-**Location:** ${location}
+**What was expected:** Behavior conforming to the story spec for \\`${slug}\\`.
 
-**Description:** ${desc}"
-
-    if [ -n "$suggestion" ]; then
-      body="${body}
-
-**Suggestion:** ${suggestion}"
-    fi
-
-    body="${body}
+---
+*Evidence: story \\`${slug}\\` · branch \\`${branch}\\` · verdict ${verdict}*
 
 *Filed by theforge post_run hook.*"
 

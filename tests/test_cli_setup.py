@@ -506,6 +506,17 @@ class TestCmdInitHooks:
         content = sh_path.read_text(encoding="utf-8")
         assert "#!/usr/bin/env bash" in content
 
+    def test_post_run_sh_bug_format_compliant(self, tmp_path, monkeypatch):
+        """post_run.sh uses What happened/What was expected format, no Suggestion."""
+        monkeypatch.chdir(tmp_path)
+        cmd_init_hooks(self._make_args())
+        content = (tmp_path / ".forge" / "hooks" / "post_run.sh").read_text(encoding="utf-8")
+        assert "What happened" in content
+        assert "What was expected" in content
+        assert "Suggestion" not in content
+        assert "**Description:**" not in content
+        assert "**Location:**" not in content
+
     def test_creates_readme(self, tmp_path, monkeypatch):
         """forge init-hooks creates .forge/hooks/README.md."""
         monkeypatch.chdir(tmp_path)
@@ -584,14 +595,14 @@ class TestCmdInitHooks:
         assert "findings_count" in content
         assert "exit 0" in content
 
-    def test_script_includes_suggestion_in_body(self, tmp_path, monkeypatch):
-        """Reference script includes suggestion field in the issue body."""
+    def test_script_omits_suggestion_from_issue_body(self, tmp_path, monkeypatch):
+        """Reference script does not include suggestion in the GitHub issue body."""
         monkeypatch.chdir(tmp_path)
         args = self._make_args()
         cmd_init_hooks(args)
         sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
         content = sh_path.read_text(encoding="utf-8")
-        assert "suggestion" in content
+        assert "Suggestion" not in content
 
     def test_script_uses_forge_finding_label(self, tmp_path, monkeypatch):
         """Reference script adds forge-finding label to issues."""
