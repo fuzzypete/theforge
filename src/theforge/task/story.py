@@ -18,6 +18,7 @@ class TaskStory:
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
     inferred_dependencies: list[str] = field(default_factory=list)  # inferred from GH blockers
+    dependency_warnings: list[str] = field(default_factory=list)  # non-authoritative prose matches
     github_issue: int | None = None  # GH issue number; PR will include "Closes #N"
 
 

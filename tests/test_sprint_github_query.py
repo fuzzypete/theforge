@@ -608,7 +608,7 @@ class TestClosedDependencySlugs:
         from theforge.sprint.dag import resolve_satisfied_dependencies
         from theforge.sprint.query import normalize_dependency_plan
 
-        # Issue 265 is closed and dropped; issue 750 depends on it.
+        # Issue 265 is closed and dropped; issue 750 only has a legacy prose signal.
         issues = [{"number": 265, "title": "Done"}, {"number": 750, "title": "Blocked?"}]
         dep_body = "depends_on: issue-265\n\nSome story text."
         side_effects = [
@@ -639,6 +639,8 @@ class TestClosedDependencySlugs:
         assert "issue-265" in resolved.closed_dependency_slugs
 
         tasks = [task for task, _src, _ref in resolved.stories]
+        assert tasks[0].depends_on == []
+        assert tasks[0].dependency_warnings == ["depends_on: issue-265"]
         # resolve_satisfied_dependencies must not need a live gh call because
         # issue-265 is already in pre_satisfied from closed_dependency_slugs.
         satisfied = resolve_satisfied_dependencies(
@@ -655,8 +657,7 @@ class TestClosedDependencySlugs:
         normalized = normalize_dependency_plan(tasks, satisfied=satisfied)
         assert normalized.blocked == {}
 
-        # issue-265 stays in depends_on (satisfied external dep tracked for ordering),
-        # but the DAG treats it as completed so issue-750 is immediately ready.
+        # Prose-only references no longer create a DAG edge, so issue-750 is immediately ready.
         dag = build_dag(normalized.tasks, satisfied=satisfied)
         ready_slugs = [t.slug for t in dag.ready()]
         assert "issue-750" in ready_slugs

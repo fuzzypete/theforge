@@ -722,6 +722,13 @@ def run_sprint(
     )
     for warning in _agent_cost_tracking_warnings(config):
         _log(warning)
+    for task, _src, _ref in task_entries:
+        for phrase in task.dependency_warnings:
+            _log(
+                "WARN: dependency-shaped prose ignored for "
+                f"{task.slug} ({task.name}): {phrase!r}; "
+                "declare dependencies in YAML frontmatter"
+            )
 
     # Sprint-level structured logger
     _cli_run_id = run_id
