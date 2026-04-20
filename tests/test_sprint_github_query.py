@@ -539,3 +539,124 @@ class TestIssueClosedErrorDistinction:
                 GitHubIssueSource().fetch("42", tmp_path)
             # Must NOT be IssueClosedError
             assert type(exc_info.value) is not IssueClosedError
+
+
+# ── closed_dependency_slugs — blocked deps are satisfied, not dropped ─────────
+
+
+class TestClosedDependencySlugs:
+    """Closed issues dropped from the manifest must be tracked as satisfied deps."""
+
+    def _open_issue_json(self, number: int, title: str) -> str:
+        return json.dumps({"title": title, "body": "", "state": "OPEN"})
+
+    def test_closed_issue_in_sprint_populates_closed_dependency_slugs(
+        self, tmp_path: Path
+    ) -> None:
+        """When a sprint issue is already closed, its slug lands in closed_dependency_slugs."""
+        issues = [{"number": 265, "title": "Closed"}, {"number": 750, "title": "Open"}]
+        side_effects = [
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({"title": "Closed", "body": "", "state": "CLOSED"}),
+                stderr="",
+            ),
+            MagicMock(
+                returncode=0,
+                stdout=self._open_issue_json(750, "Open"),
+                stderr="",
+            ),
+            MagicMock(returncode=0, stdout="[]", stderr=""),
+        ]
+        with patch("subprocess.run", side_effect=side_effects):
+            resolved = build_resolved_sprint(
+                issues=issues,
+                name="Sprint",
+                budget_usd=5.0,
+                max_parallel=None,
+                project_root=tmp_path,
+            )
+
+        assert "issue-265" in resolved.closed_dependency_slugs
+        assert len(resolved.stories) == 1
+
+    def test_no_closed_issues_leaves_closed_dependency_slugs_empty(self, tmp_path: Path) -> None:
+        issues = [{"number": 1, "title": "Open"}]
+        side_effects = [
+            MagicMock(returncode=0, stdout=self._open_issue_json(1, "Open"), stderr=""),
+            MagicMock(returncode=0, stdout="[]", stderr=""),
+        ]
+        with patch("subprocess.run", side_effect=side_effects):
+            resolved = build_resolved_sprint(
+                issues=issues,
+                name="Sprint",
+                budget_usd=5.0,
+                max_parallel=None,
+                project_root=tmp_path,
+            )
+
+        assert resolved.closed_dependency_slugs == set()
+
+    def test_downstream_dep_not_blocked_when_dep_issue_closed(self, tmp_path: Path) -> None:
+        """Downstream story depending on a closed sprint issue must not be blocked.
+
+        Regression: before the fix, build_resolved_sprint dropped the closed
+        issue without recording it as satisfied, so normalize_dependency_plan
+        left it as an unresolved issue-backed dep and the downstream story
+        was permanently skipped.
+        """
+        from theforge.sprint.dag import resolve_satisfied_dependencies
+        from theforge.sprint.query import normalize_dependency_plan
+
+        # Issue 265 is closed and dropped; issue 750 depends on it.
+        issues = [{"number": 265, "title": "Done"}, {"number": 750, "title": "Blocked?"}]
+        dep_body = "depends_on: issue-265\n\nSome story text."
+        side_effects = [
+            # fetch #265 → closed
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({"title": "Done", "body": "", "state": "CLOSED"}),
+                stderr="",
+            ),
+            # fetch #750 → open
+            MagicMock(
+                returncode=0,
+                stdout=json.dumps({"title": "Blocked?", "body": dep_body, "state": "OPEN"}),
+                stderr="",
+            ),
+            # blockers query for #750
+            MagicMock(returncode=0, stdout="[]", stderr=""),
+        ]
+        with patch("subprocess.run", side_effect=side_effects):
+            resolved = build_resolved_sprint(
+                issues=issues,
+                name="Sprint",
+                budget_usd=5.0,
+                max_parallel=None,
+                project_root=tmp_path,
+            )
+
+        assert "issue-265" in resolved.closed_dependency_slugs
+
+        tasks = [task for task, _src, _ref in resolved.stories]
+        # resolve_satisfied_dependencies must not need a live gh call because
+        # issue-265 is already in pre_satisfied from closed_dependency_slugs.
+        satisfied = resolve_satisfied_dependencies(
+            tasks,
+            project_root=tmp_path,
+            base_branch="main",
+            branch_pattern="feat/{slug}",
+            pre_satisfied=resolved.closed_dependency_slugs,
+        )
+        assert "issue-265" in satisfied
+
+        from theforge.sprint.dag import build_dag
+
+        normalized = normalize_dependency_plan(tasks, satisfied=satisfied)
+        assert normalized.blocked == {}
+
+        # issue-265 stays in depends_on (satisfied external dep tracked for ordering),
+        # but the DAG treats it as completed so issue-750 is immediately ready.
+        dag = build_dag(normalized.tasks, satisfied=satisfied)
+        ready_slugs = [t.slug for t in dag.ready()]
+        assert "issue-750" in ready_slugs

@@ -341,6 +341,7 @@ def _run_query_mode(
             project_root=config.project_root,
             base_branch=config.workspace.base_branch,
             branch_pattern=config.workspace.branch_pattern,
+            pre_satisfied=resolved.closed_dependency_slugs,
         )
         batch_plan = assign_dependency_batches_with_satisfied(
             tasks,

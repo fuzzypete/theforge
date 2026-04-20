@@ -318,12 +318,14 @@ def build_resolved_sprint(
 
     source = GitHubIssueSource()
     stories: list[tuple[TaskStory, StorySource, str]] = []
+    closed_dependency_slugs: set[str] = set()
     for issue in issues:
         number = issue["number"]
         try:
             task = source.fetch(str(number), project_root)
         except IssueClosedError as exc:
             _log(f"WARNING: skipping issue #{number} — {exc}")
+            closed_dependency_slugs.add(f"issue-{number}")
             continue
         canonical_ref = f"issue:{number}"
         stories.append((task, source, canonical_ref))
@@ -333,4 +335,5 @@ def build_resolved_sprint(
         budget_usd=budget_usd,
         stories=stories,
         max_parallel=max_parallel,
+        closed_dependency_slugs=closed_dependency_slugs,
     )

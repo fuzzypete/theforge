@@ -29,6 +29,7 @@ class ResolvedSprint:
     stories: list[tuple[TaskStory, StorySource, str]]  # (task, source, canonical_ref)
     max_parallel: int | None = None
     worker_timeout_seconds: int | None = None
+    closed_dependency_slugs: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -216,29 +217,36 @@ def resolve_from_manifest(manifest_path: Path, project_root: Path) -> ResolvedSp
     """
     manifest = load_sprint_manifest(manifest_path)
     _validate_story_paths(manifest, project_root)
-    task_entries = build_tasks_from_manifest(manifest, project_root)
+    _closed: set[str] = set()
+    task_entries = build_tasks_from_manifest(manifest, project_root, closed_slugs=_closed)
     return ResolvedSprint(
         name=manifest.name,
         budget_usd=manifest.budget_usd,
         stories=task_entries,
         max_parallel=manifest.max_parallel,
         worker_timeout_seconds=manifest.worker_timeout_seconds,
+        closed_dependency_slugs=_closed,
     )
 
 
 def build_tasks_from_manifest(
     manifest: SprintManifest,
     project_root: Path,
+    *,
+    closed_slugs: set[str] | None = None,
 ) -> list[tuple]:
     """Build (task, source, canonical_ref) tuples from a manifest.
 
     For file entries, resolves the path and builds the task from frontmatter.
     For issue entries, fetches the issue via gh CLI and applies overrides
     (depends_on, slug) from the manifest dict.
+
+    If ``closed_slugs`` is provided, issue slugs for any closed issues that are
+    dropped will be added to it so callers can mark them as satisfied.
     """
     import sys  # noqa: PLC0415
 
-    from .sources import IssueClosedError, resolve  # noqa: PLC0415
+    from .sources import GitHubIssueSource, IssueClosedError, resolve  # noqa: PLC0415
 
     results: list[tuple[TaskStory, StorySource, str]] = []
     for entry in manifest.stories:
@@ -247,6 +255,12 @@ def build_tasks_from_manifest(
             task = source.fetch(ref, project_root)
         except IssueClosedError as exc:
             print(f"[sprint] WARNING: skipping {canonical_ref} — {exc}", file=sys.stderr)
+            if (
+                closed_slugs is not None
+                and isinstance(source, GitHubIssueSource)
+                and ref.isdigit()
+            ):
+                closed_slugs.add(f"issue-{ref}")
             continue
 
         # Apply overrides from dict entries
