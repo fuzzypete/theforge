@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.8.0] — 2026-04-20
+
 ### Removed
 
 - **File-based handoff contract removed (breaking):** `handoff_file` and `gate_decision_key` are
