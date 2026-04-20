@@ -342,6 +342,51 @@ def test_is_branch_merged_not_ancestor_without_audit(tmp_path: Path) -> None:
     assert result is False
 
 
+def test_is_branch_merged_external_squash_merge_by_issue_commit(tmp_path: Path) -> None:
+    """A GitHub squash commit referencing the issue counts even without audit."""
+
+    def _mock_external_squash(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1
+            m.stdout = b""
+        elif cmd[:2] == ["git", "log"] and "--grep=(#265)" in cmd:
+            m.returncode = 0
+            m.stdout = b"abc123\n"
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_external_squash):
+        result = _is_branch_merged("feat/issue-265", "main", tmp_path)
+    assert result is True
+
+
+def test_is_branch_merged_issue_branch_without_base_commit_or_audit(tmp_path: Path) -> None:
+    """Issue branch stays unmerged when base has no matching squash commit."""
+
+    def _mock_no_external_squash(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1
+            m.stdout = b""
+        elif cmd[:2] == ["git", "log"] and "--grep=(#265)" in cmd:
+            m.returncode = 0
+            m.stdout = b""
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_no_external_squash),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
+        result = _is_branch_merged("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert result is False
+
+
 def test_run_sprint_summary_records_run_log(tmp_path: Path) -> None:
     from types import SimpleNamespace
 

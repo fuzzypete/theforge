@@ -27,6 +27,13 @@ def _issue_number_from_slug(slug: str) -> int | None:
     return int(match.group(1))
 
 
+def _issue_number_from_ref(ref: str) -> int | None:
+    match = re.search(r"(?:^|[/-])issue-(\d+)(?:$|[^0-9])", ref)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
 @dataclass
 class StoryTriage:
     """Result of triaging a story for sprint resume."""
@@ -61,6 +68,40 @@ def _has_prior_review_approve(
     )
 
 
+def _has_base_commit_referencing_issue(
+    project_root: Path,
+    base_branch: str,
+    issue_number: int,
+) -> bool:
+    """Return True when base has a commit message that references the issue.
+
+    GitHub squash commits commonly preserve PR or issue references in the final
+    base-branch commit even though the branch tip is not topologically merged.
+    This git-level check catches externally merged branches that never produced
+    a forge APPROVE audit record.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                "--format=%H",
+                "--max-count=1",
+                "--fixed-strings",
+                f"--grep=(#{issue_number})",
+                base_branch,
+            ],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        return result.returncode == 0 and bool(
+            result.stdout.decode("utf-8", errors="replace").strip()
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _is_branch_merged(
     branch: str,
     base_branch: str,
@@ -83,12 +124,10 @@ def _is_branch_merged(
     3. Squash merge (configured default):
        The feature branch tip remains an ancestor of base because it was based
        on base, but the squash commit on base is a new commit with no parent
-       relationship to the branch. Git topology alone therefore looks identical
-       to an empty/stale branch: branch..base_branch count == 0 and
-       base_branch..branch count == 0. When slug is provided, the audit trail
-       (has_review_approve) acts as the tiebreaker: a story that ran through
-       the pipeline has an APPROVE record; a freshly created branch with no work
-       does not.
+       relationship to the branch. Git topology alone therefore cannot prove
+       the merge. Issue-backed branches first look for a base commit that
+       references the issue, then fall back to the forge APPROVE audit trail
+       when slug is provided.
 
     A branch that was merely created at base HEAD (count == 0, no audit entry)
     correctly returns False.
@@ -128,6 +167,16 @@ def _is_branch_merged(
                     return True
     except (subprocess.TimeoutExpired, OSError, ValueError):
         pass
+
+    issue_number = _issue_number_from_slug(slug) if slug is not None else None
+    if issue_number is None:
+        issue_number = _issue_number_from_ref(branch)
+    if issue_number is not None and _has_base_commit_referencing_issue(
+        project_root,
+        base_branch,
+        issue_number,
+    ):
+        return True
 
     # Fast-forward merges at the same tip and squash merges both need the audit
     # trail fallback. In real squash merges, --is-ancestor returns non-zero, so
