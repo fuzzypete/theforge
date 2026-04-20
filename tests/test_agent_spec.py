@@ -57,6 +57,26 @@ class TestAgentRegistry:
         for key in ("deepseek/deepseek-reasoner", "deepseek/deepseek-chat"):
             assert AGENT_REGISTRY[key].transport.kind == "api"
 
+    def test_openai_api_transport_entries_exist(self):
+        """Operators can explicitly select the OpenAI API transport (not Codex CLI)."""
+        for key in ("openai-api/gpt-5.4", "openai-api/gpt-5.4-mini", "openai-api/gpt-5.4-pro"):
+            spec = AGENT_REGISTRY[key]
+            assert spec.transport.kind == "api"
+            assert spec.transport.runner == "openai"
+            assert spec.provider == "openai"
+
+    def test_google_api_transport_entries_exist(self):
+        """Operators can explicitly select the Google API transport (not Gemini CLI)."""
+        for key in (
+            "google-api/gemini-2.5-pro",
+            "google-api/gemini-3-flash-preview",
+            "google-api/gemini-3.1-pro-preview",
+        ):
+            spec = AGENT_REGISTRY[key]
+            assert spec.transport.kind == "api"
+            assert spec.transport.runner == "google"
+            assert spec.provider == "google"
+
     def test_deepseek_openai_google_and_all_cli_models_expressible(self):
         """AC: DeepSeek, OpenAI, Google, and CLI-backed models are all expressible."""
         providers = {s.provider for s in AGENT_REGISTRY.values()}
@@ -125,6 +145,37 @@ class TestRoleDerivationDoesNotBranchOnCliIdentity:
         assert assignment.dev.ref.provider == "deepseek"
 
 
+class TestPhaseEligibilityFiltersCandidates:
+    """AC: phase_eligibility on an AgentSpec excludes a model from selection
+    for phases it's not eligible for."""
+
+    def test_pro_model_excluded_from_preflight(self):
+        # gpt-5.4-pro is not eligible for preflight; with sonnet present preflight
+        # must pick a non-pro candidate.
+        ra = derive_roles(["claude/sonnet", "openai-api/gpt-5.4-pro"], budget_usd=10.0)
+        assert ra.preflight.ref.model != "gpt-5.4-pro"
+
+    def test_single_ineligible_model_falls_back(self):
+        # When the pool is exhausted by eligibility, fall back to the full pool
+        # rather than leaving the phase unassigned.
+        ra = derive_roles(["openai-api/gpt-5.4-pro"], budget_usd=10.0)
+        assert ra.preflight.ref.model == "gpt-5.4-pro"
+
+
+class TestTransportPropagatesToProfile:
+    """AC: ModelRef.transport flows through bridge → ModelProfile.transport, so
+    runner dispatch can read the explicit TransportSpec.kind."""
+
+    def test_api_transport_reaches_profile(self):
+        from theforge.config.bridge import role_assignment_to_profiles
+
+        ra = derive_roles(["deepseek/deepseek-reasoner", "claude/opus"], budget_usd=10.0)
+        profiles = role_assignment_to_profiles(ra)
+        dev_profile = profiles["dev_profile"]
+        assert dev_profile.transport is not None
+        assert dev_profile.transport.kind == "api"
+
+
 class TestRunnerDispatchUsesTransportKind:
     """AC: Runners dispatch on TransportSpec.kind, not on provider string."""
 
@@ -150,6 +201,23 @@ class TestRunnerDispatchUsesTransportKind:
     def test_api_profile_for_openai_dispatches_as_api(self):
         """'openai/' no longer implies CLI — provider set means API transport."""
         p = self._profile(provider="openai", model="gpt-4o")
+        assert _profile_transport_kind(p) == "api"
+
+    def test_explicit_transport_spec_wins_over_legacy_inference(self):
+        """When a ModelProfile carries a TransportSpec, dispatch reads its kind
+        directly instead of inferring from cli/provider fields."""
+        # Profile with cli set but transport explicitly api: transport wins.
+        api_transport = TransportSpec(kind="api", runner="openai")
+        p = ModelProfile(
+            name="t",
+            cli="codex",  # legacy inference would say "cli"
+            provider=None,
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+            transport=api_transport,
+        )
         assert _profile_transport_kind(p) == "api"
 
 

@@ -79,20 +79,33 @@ def _pick_by_tier(
 
 def _make_model_ref(
     *,
-    model: str,
-    cli: str | None,
-    provider: str | None = None,
+    info: ModelInfo,
     budget_usd: float,
     timeout_seconds: int,
 ) -> ModelRef:
-    """Construct a ModelRef from resolved model info."""
+    """Construct a ModelRef from resolved model info, carrying transport through."""
     return ModelRef(
-        model=model,
-        cli=cli,
-        provider=provider,
+        model=info.model,
+        cli=info.cli,
+        provider=info.provider,
         budget_usd=budget_usd,
         timeout_seconds=timeout_seconds,
+        transport=info.transport,
     )
+
+
+def _phase_candidates(
+    sorted_models: list[tuple[str, ModelInfo]],
+    phase: str,
+) -> list[tuple[str, ModelInfo]]:
+    """Filter candidates by AgentSpec.phase_eligibility for the given phase.
+
+    Role derivation reads phase_eligibility (carried through from AgentSpec) so
+    a model explicitly excluded from, e.g., preflight cannot be selected for it.
+    Falls back to the full list if filtering leaves nothing selectable.
+    """
+    eligible = [(k, i) for k, i in sorted_models if phase in i.phase_eligibility]
+    return eligible if eligible else sorted_models
 
 
 def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
@@ -196,10 +209,17 @@ def derive_roles(
     infos = [(m, _resolve_model_info(m)) for m in models]
     sorted_models = sorted(infos, key=lambda x: (x[1].cost_rank, -x[1].capability))
 
+    # Phase-eligibility-aware candidate pools — a model's AgentSpec may exclude it
+    # from specific phases (e.g. a pro model excluded from preflight to avoid overspend).
+    dev_pool = _phase_candidates(sorted_models, "dev")
+    preflight_pool = _phase_candidates(sorted_models, "preflight")
+    plan_pool = _phase_candidates(sorted_models, "plan")
+    review_pool_sorted = _phase_candidates(sorted_models, "review")
+
     # dev: cheapest dev-capable model; fall back to first if none are dev-capable
-    dev_candidates = [(k, i) for k, i in sorted_models if i.dev_capable]
+    dev_candidates = [(k, i) for k, i in dev_pool if i.dev_capable]
     if not dev_candidates:
-        dev_candidates = sorted_models
+        dev_candidates = dev_pool
 
     # Tier × complexity routing applies at all defined complexity levels.
     # When norm_complexity is None (not supplied), static cheapest-first rules apply.
@@ -212,19 +232,19 @@ def derive_roles(
         dev_key, dev_info = dev_candidates[0]
 
     # preflight: cheapest "fast" tier, else same as dev (static — not complexity-adjusted)
-    fast_models = [(k, i) for k, i in sorted_models if i.tier == "fast"]
+    fast_models = [(k, i) for k, i in preflight_pool if i.tier == "fast"]
     preflight_key, preflight_info = fast_models[0] if fast_models else (dev_key, dev_info)
 
     # plan: tier-based selection when complexity is supplied; else same as dev
     if _apply_tier_routing:
         target_plan_tier = _COMPLEXITY_TIER["plan"][norm_complexity]
-        plan_candidates = [(k, i) for k, i in sorted_models if i.dev_capable] or sorted_models
+        plan_candidates = [(k, i) for k, i in plan_pool if i.dev_capable] or plan_pool
         _plan_key, plan_info = _pick_by_tier(plan_candidates, target_plan_tier)
     else:
         plan_info = dev_info
 
     # review_pool: all models except dev; if only one model total, pool = [dev]
-    review_pairs = [(k, i) for k, i in sorted_models if k != dev_key]
+    review_pairs = [(k, i) for k, i in review_pool_sorted if k != dev_key]
     if not review_pairs:
         review_pairs = [(dev_key, dev_info)]
 
@@ -258,9 +278,7 @@ def derive_roles(
 
     # --- Build dev role ---
     dev_ref = _make_model_ref(
-        model=dev_info.model,
-        cli=dev_info.cli,
-        provider=dev_info.provider,
+        info=dev_info,
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
     )
@@ -275,9 +293,7 @@ def derive_roles(
 
     # --- Build preflight role ---
     preflight_ref = _make_model_ref(
-        model=preflight_info.model,
-        cli=preflight_info.cli,
-        provider=preflight_info.provider,
+        info=preflight_info,
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
     )
@@ -293,9 +309,7 @@ def derive_roles(
 
     # --- Build plan role (defaults to same model as dev; complexity-aware: tier-based) ---
     plan_ref = _make_model_ref(
-        model=plan_info.model,
-        cli=plan_info.cli,
-        provider=plan_info.provider,
+        info=plan_info,
         budget_usd=_DEFAULT_PLAN_BUDGET_USD,
         timeout_seconds=_DEFAULT_PLAN_TIMEOUT_SECONDS,
     )
@@ -315,9 +329,7 @@ def derive_roles(
     review_pool: list[ReviewRoleConfig] = []
     for idx, (k, info) in enumerate(review_pairs):
         review_ref = _make_model_ref(
-            model=info.model,
-            cli=info.cli,
-            provider=info.provider,
+            info=info,
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
         )
@@ -338,9 +350,7 @@ def derive_roles(
     if has_synthesis:
         synth_key, synth_info = max(review_pairs, key=lambda x: x[1].capability)
         synth_ref = _make_model_ref(
-            model=synth_info.model,
-            cli=synth_info.cli,
-            provider=synth_info.provider,
+            info=synth_info,
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
         )
@@ -358,9 +368,7 @@ def derive_roles(
     if par_overrides:
         # Default base: dev model at plan-phase budget; overrides can change any field
         par_ref = _make_model_ref(
-            model=dev_info.model,
-            cli=dev_info.cli,
-            provider=dev_info.provider,
+            info=dev_info,
             budget_usd=_DEFAULT_PLAN_BUDGET_USD,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
         )

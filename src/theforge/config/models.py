@@ -71,6 +71,9 @@ _TRANSPORT_GOOGLE_API = TransportSpec(kind="api", runner="google")
 _TRANSPORT_DEEPSEEK_API = TransportSpec(kind="api", runner="deepseek")
 
 
+_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+
+
 @dataclass(frozen=True)
 class ModelInfo:
     """Legacy flat view derived from an AgentSpec.
@@ -78,6 +81,10 @@ class ModelInfo:
     Retained for backward compatibility: existing callers read `.cli`, `.provider`,
     `.model`, `.tier`, `.capability`, `.cost_rank`, `.dev_capable`. New code should
     prefer `AgentSpec` + `TransportSpec` directly.
+
+    `phase_eligibility` and `transport` are carried through the projection so role
+    derivation can filter candidates per-role and so runtime dispatch can read the
+    explicit TransportSpec rather than inferring transport from cli/provider.
     """
 
     cli: str | None  # "claude", "codex", "gemini"; None for API-backed providers
@@ -87,6 +94,8 @@ class ModelInfo:
     cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
     dev_capable: bool = True  # False for models whose CLI doesn't support dev tools
     provider: str | None = None  # API transport, mutually exclusive with cli
+    phase_eligibility: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+    transport: TransportSpec | None = None  # the canonical TransportSpec this view was built from
 
 
 @dataclass(frozen=True)
@@ -243,11 +252,70 @@ AGENT_REGISTRY: dict[str, AgentSpec] = {
         capability=7,
         cost_rank=1,
     ),
+    # ── OpenAI (API — disambiguated with 'openai-api/' prefix so operators can
+    # select the OpenAI API path separately from the Codex CLI path) ──────
+    "openai-api/gpt-5.4": AgentSpec(
+        provider="openai",
+        model="gpt-5.4",
+        transport=_TRANSPORT_OPENAI_API,
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+    ),
+    "openai-api/gpt-5.4-mini": AgentSpec(
+        provider="openai",
+        model="gpt-5.4-mini",
+        transport=_TRANSPORT_OPENAI_API,
+        tier="cheap",
+        capability=7,
+        cost_rank=1,
+    ),
+    "openai-api/gpt-5.4-pro": AgentSpec(
+        provider="openai",
+        model="gpt-5.4-pro",
+        transport=_TRANSPORT_OPENAI_API,
+        tier="strong",
+        capability=10,
+        cost_rank=3,
+        # Reasoning-heavy — intentionally excluded from the preflight role.
+        phase_eligibility=frozenset({"dev", "plan", "review"}),
+    ),
+    # ── Google (API — disambiguated with 'google-api/' prefix so operators can
+    # select the Google API path separately from the Gemini CLI path) ─────
+    "google-api/gemini-2.5-pro": AgentSpec(
+        provider="google",
+        model="gemini-2.5-pro",
+        transport=_TRANSPORT_GOOGLE_API,
+        tier="strong",
+        capability=8,
+        cost_rank=2,
+    ),
+    "google-api/gemini-3-flash-preview": AgentSpec(
+        provider="google",
+        model="gemini-3-flash-preview",
+        transport=_TRANSPORT_GOOGLE_API,
+        tier="cheap",
+        capability=7,
+        cost_rank=1,
+    ),
+    "google-api/gemini-3.1-pro-preview": AgentSpec(
+        provider="google",
+        model="gemini-3.1-pro-preview",
+        transport=_TRANSPORT_GOOGLE_API,
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+    ),
 }
 
 
 def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
-    """Project an AgentSpec down to the legacy ModelInfo view."""
+    """Project an AgentSpec down to the legacy ModelInfo view.
+
+    Carries `phase_eligibility` and the underlying `TransportSpec` through the
+    projection so role derivation can filter by phase and runtime dispatch can
+    read the explicit transport rather than re-inferring it from cli/provider.
+    """
     if spec.transport.kind == "cli":
         return ModelInfo(
             cli=spec.transport.runner,
@@ -257,6 +325,8 @@ def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
             cost_rank=spec.cost_rank,
             dev_capable=spec.dev_capable,
             provider=None,
+            phase_eligibility=spec.phase_eligibility,
+            transport=spec.transport,
         )
     return ModelInfo(
         cli=None,
@@ -266,6 +336,8 @@ def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
         cost_rank=spec.cost_rank,
         dev_capable=spec.dev_capable,
         provider=spec.provider,
+        phase_eligibility=spec.phase_eligibility,
+        transport=spec.transport,
     )
 
 

@@ -60,6 +60,7 @@ def _role_config_to_profile(
         review_role=review_role,
         phase=phase,
         sandbox_mode=sandbox_mode,
+        transport=ref.transport,
     )
 
 

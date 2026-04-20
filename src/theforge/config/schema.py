@@ -12,8 +12,12 @@ Use bridge.py (role_assignment_to_profiles) to convert to ModelProfile instances
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .types import ApiFallbackConfig
+
+if TYPE_CHECKING:
+    from .models import TransportSpec
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,9 @@ class ModelRef:
     max_iterations: int | None = None  # override default agent loop iterations
     max_tool_output_bytes: int = 51200  # cap for tool output (50 KB default)
     api_fallback: ApiFallbackConfig | None = None  # CLI-only same-provider API fallback
+    # Explicit TransportSpec — carried through derive_roles → bridge → ModelProfile
+    # so runtime dispatch reads TransportSpec.kind rather than inferring from cli/provider.
+    transport: TransportSpec | None = None
 
     def __post_init__(self) -> None:
         if self.cli and self.provider:
