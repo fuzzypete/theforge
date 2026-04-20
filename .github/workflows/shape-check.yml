@@ -1,0 +1,50 @@
+name: Story shape check
+
+# Runs the TheForge shape_check module (#806) against every issue when it is
+# opened or edited. On failures it labels the issue (needs-grooming / epic) and
+# posts a single bot-owned comment with the findings. The comment is updated in
+# place on subsequent edits — we never spam new comments.
+#
+# This Action NEVER rejects the create event. A malformed issue is always
+# created; the Action only labels and comments.
+
+on:
+  issues:
+    types: [opened, edited]
+
+# Least-privilege: the token can label and comment, nothing else.
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  shape-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out TheForge
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install shape_check package
+        # Install in place — shape_check is stdlib-only, so this does not pull
+        # in coordinator/provider runtime deps.
+        run: pip install -e .
+
+      - name: Run shape check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          SHAPE_CHECK_BOT_LOGIN: "github-actions[bot]"
+          # Per-repo configurable labels:
+          SHAPE_CHECK_NEEDS_GROOMING_LABEL: "needs-grooming"
+          SHAPE_CHECK_TRACKING_LABEL: "epic"
+          # Default: comment-only on superseded; do not auto-close (avoids
+          # racing with a human who may still be editing).
+          SHAPE_CHECK_AUTO_CLOSE_SUPERSEDED: "0"
+        run: python -m theforge.shape_check
