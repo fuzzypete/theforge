@@ -261,11 +261,10 @@ class TestDeriveRolesHappyPath:
         with pytest.raises(ValueError, match="non-empty"):
             derive_roles([])
 
-    def test_unknown_model_handled_gracefully(self):
-        """Unknown models get sensible defaults from _resolve_model_info."""
-        ra = derive_roles(["custom/my-local-model"])
-        assert ra.dev.ref.model == "my-local-model"
-        assert ra.synthesis is None  # only one model
+    def test_unknown_model_raises(self):
+        """Unknown models raise ValueError — no silent fallback to a guessed CLI."""
+        with pytest.raises(ValueError, match="not in AGENT_REGISTRY"):
+            derive_roles(["custom/my-local-model"])
 
 
 # ---------------------------------------------------------------------------

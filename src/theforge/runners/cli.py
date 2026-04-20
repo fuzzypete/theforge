@@ -348,6 +348,20 @@ def _maybe_run_api_fallback(
 # ── Runner dispatch ───────────────────────────────────────────────────
 
 
+def _profile_transport_kind(profile: ModelProfile) -> str:
+    """Return the TransportSpec.kind for a ModelProfile: 'cli' or 'api'.
+
+    This is the sole source of truth for runner dispatch. When the profile
+    carries an explicit TransportSpec (set by the config bridge from the
+    AgentSpec registry), its kind wins — profiles derived from AgentSpec can
+    declare API transport even for providers whose default is CLI.
+    Provider-string switching lives inside adapters, not here.
+    """
+    if profile.transport is not None:
+        return profile.transport.kind
+    return "api" if profile.provider else "cli"
+
+
 def run_agent(
     *,
     prompt: str,
@@ -362,7 +376,8 @@ def run_agent(
 ) -> AgentResult:
     """Run an agent using the transport specified in its profile.
 
-    Dispatches to API or CLI runner based on profile.mode.
+    Dispatches on TransportSpec.kind ('cli' vs 'api'), not on provider string.
+    Provider-specific behavior lives inside adapters.
     Prompt is passed via stdin to CLI runners to avoid shell escaping issues.
     When quiet=True the per-agent 'Starting...' log is suppressed
     (used by run_agent_pool which emits a pool-level banner instead).
@@ -371,7 +386,7 @@ def run_agent(
     a global index file). Claude is unaffected — it extracts the ID from
     its own stdout stream. Codex and Gemini are affected.
     """
-    if profile.mode == "api":
+    if _profile_transport_kind(profile) == "api":
         from theforge.runners import api as runner_api  # noqa: PLC0415
 
         return runner_api.run_api_agent(

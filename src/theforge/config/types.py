@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .models import AgentDef
+    from .models import AgentDef, TransportSpec
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
 
@@ -113,6 +113,11 @@ class ModelProfile:
     github_handle: str | None = None  # optional GitHub username for reviewer assignment
     fallback_models: tuple[str, ...] = ()  # additional models to try on quota/not-found failure
     sandbox_mode: str = "workspace-write"  # CLI sandbox: "workspace-write" | "read-only" | "none"
+    # Explicit TransportSpec — when set, it is the runtime dispatch source of
+    # truth. None preserves the legacy inference from cli/provider for the
+    # small number of paths (e.g. raw dataclass constructions in tests) that
+    # have not been migrated yet.
+    transport: TransportSpec | None = None
 
     @property
     def models(self) -> tuple[str, ...]:
@@ -121,6 +126,13 @@ class ModelProfile:
 
     @property
     def mode(self) -> str:
+        """Transport kind for runtime dispatch: 'cli' or 'api'.
+
+        Reads TransportSpec.kind when the profile carries an explicit transport;
+        otherwise falls back to inferring from cli/provider for legacy callers.
+        """
+        if self.transport is not None:
+            return self.transport.kind
         return "api" if self.provider else "cli"
 
 

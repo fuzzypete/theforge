@@ -1,4 +1,11 @@
-"""Model registry, ModelInfo, and model-related helpers."""
+"""Model registry: AgentSpec / TransportSpec / ModelInfo and model-related helpers.
+
+The registry is the single source of truth for what agents the system knows about.
+Each registry entry is expressed as an `AgentSpec` (provider + model + capability
+metadata) paired with an explicit `TransportSpec` (how to invoke it — cli or api).
+`ModelInfo` is retained as a legacy flat view derived from these specs so existing
+callers continue to work while the codebase migrates.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +16,76 @@ from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile
 
 
 @dataclass(frozen=True)
+class TransportSpec:
+    """How to execute an agent.
+
+    kind: "cli" — invoke via a locally installed binary (Claude/Codex/Gemini CLI)
+          "api" — invoke via a provider SDK (Anthropic/OpenAI/Google/DeepSeek)
+    runner: the logical runner module key (e.g. "claude", "codex", "gemini",
+            "anthropic", "openai", "google", "deepseek"). For CLI transports this
+            identifies both the runner and the binary; for API transports this
+            identifies the adapter to dispatch to.
+    executable: only meaningful for kind="cli" — the binary name on PATH.
+    """
+
+    kind: str  # "cli" | "api"
+    runner: str
+    executable: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("cli", "api"):
+            raise ValueError(f"TransportSpec.kind must be 'cli' or 'api', got {self.kind!r}")
+        if self.kind == "cli" and not self.executable:
+            raise ValueError("TransportSpec(kind='cli') requires an executable name")
+        if self.kind == "api" and self.executable is not None:
+            raise ValueError("TransportSpec(kind='api') must not set an executable")
+
+
+@dataclass(frozen=True)
+class AgentSpec:
+    """First-class description of an agent: provider + model + capability + transport.
+
+    AgentSpec separates *what* the agent is (provider, model, tier, capability,
+    cost, phase eligibility) from *how* to invoke it (TransportSpec). Role
+    derivation reads AgentSpec fields; runner dispatch reads TransportSpec.kind.
+    """
+
+    provider: str  # "anthropic" | "openai" | "google" | "deepseek"
+    model: str  # model identifier (e.g. "sonnet", "gpt-5.4", "deepseek-reasoner")
+    transport: TransportSpec
+    tier: str  # "fast" | "strong" (semantic speed/latency band)
+    capability: int  # 1-10 relative capability score
+    cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
+    dev_capable: bool = True  # whether this agent is allowed to own the dev role
+    phase_eligibility: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+    tool_mode: str = "auto"  # "auto" = follow transport default; reserved for future use
+
+
+# Canonical transport objects — referenced by AGENT_REGISTRY entries.
+_TRANSPORT_CLAUDE_CLI = TransportSpec(kind="cli", runner="claude", executable="claude")
+_TRANSPORT_CODEX_CLI = TransportSpec(kind="cli", runner="codex", executable="codex")
+_TRANSPORT_GEMINI_CLI = TransportSpec(kind="cli", runner="gemini", executable="gemini")
+_TRANSPORT_ANTHROPIC_API = TransportSpec(kind="api", runner="anthropic")
+_TRANSPORT_OPENAI_API = TransportSpec(kind="api", runner="openai")
+_TRANSPORT_GOOGLE_API = TransportSpec(kind="api", runner="google")
+_TRANSPORT_DEEPSEEK_API = TransportSpec(kind="api", runner="deepseek")
+
+
+_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+
+
+@dataclass(frozen=True)
 class ModelInfo:
-    """Built-in metadata for a known model."""
+    """Legacy flat view derived from an AgentSpec.
+
+    Retained for backward compatibility: existing callers read `.cli`, `.provider`,
+    `.model`, `.tier`, `.capability`, `.cost_rank`, `.dev_capable`. New code should
+    prefer `AgentSpec` + `TransportSpec` directly.
+
+    `phase_eligibility` and `transport` are carried through the projection so role
+    derivation can filter candidates per-role and so runtime dispatch can read the
+    explicit TransportSpec rather than inferring transport from cli/provider.
+    """
 
     cli: str | None  # "claude", "codex", "gemini"; None for API-backed providers
     model: str  # model identifier for the CLI
@@ -19,6 +94,8 @@ class ModelInfo:
     cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
     dev_capable: bool = True  # False for models whose CLI doesn't support dev tools
     provider: str | None = None  # API transport, mutually exclusive with cli
+    phase_eligibility: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+    transport: TransportSpec | None = None  # the canonical TransportSpec this view was built from
 
 
 @dataclass(frozen=True)
@@ -49,93 +126,250 @@ class AgentDef:
         )
 
 
-MODEL_REGISTRY: dict[str, ModelInfo] = {
-    "claude/sonnet": ModelInfo(
-        cli="claude", model="sonnet", tier="fast", capability=7, cost_rank=1
-    ),
-    "claude/opus": ModelInfo(
-        cli="claude", model="opus", tier="strong", capability=10, cost_rank=3
-    ),
-    "openai/gpt-5.4": ModelInfo(
-        cli="codex", model="gpt-5.4", tier="strong", capability=9, cost_rank=2
-    ),
-    "openai/gpt-5.4-mini": ModelInfo(
-        cli="codex", model="gpt-5.4-mini", tier="cheap", capability=7, cost_rank=1
-    ),
-    "openai/gpt-5.4-pro": ModelInfo(
-        cli="codex", model="gpt-5.4-pro", tier="strong", capability=10, cost_rank=3
-    ),
-    "deepseek/deepseek-reasoner": ModelInfo(
-        cli=None,
-        provider="deepseek",
-        model="deepseek-reasoner",
-        tier="strong",
-        capability=9,
-        cost_rank=2,
-    ),
-    "deepseek/deepseek-chat": ModelInfo(
-        cli=None,
-        provider="deepseek",
-        model="deepseek-chat",
+# ── Agent registry ────────────────────────────────────────────────────
+#
+# Each entry resolves a `<provider>/<model>` key to an explicit AgentSpec with
+# an explicit TransportSpec. Adding a new API-backed model is a single entry
+# here — no role-derivation, profile, or runner-dispatch edits required.
+AGENT_REGISTRY: dict[str, AgentSpec] = {
+    # ── Anthropic (CLI) ───────────────────────────────────────────────
+    "claude/sonnet": AgentSpec(
+        provider="anthropic",
+        model="sonnet",
+        transport=_TRANSPORT_CLAUDE_CLI,
         tier="fast",
         capability=7,
         cost_rank=1,
     ),
-    "google/gemini-3-flash-preview": ModelInfo(
-        cli="gemini",
+    "claude/opus": AgentSpec(
+        provider="anthropic",
+        model="opus",
+        transport=_TRANSPORT_CLAUDE_CLI,
+        tier="strong",
+        capability=10,
+        cost_rank=3,
+    ),
+    # ── OpenAI (CLI via Codex) ────────────────────────────────────────
+    "openai/gpt-5.4": AgentSpec(
+        provider="openai",
+        model="gpt-5.4",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+    ),
+    "openai/gpt-5.4-mini": AgentSpec(
+        provider="openai",
+        model="gpt-5.4-mini",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="cheap",
+        capability=7,
+        cost_rank=1,
+    ),
+    "openai/gpt-5.4-pro": AgentSpec(
+        provider="openai",
+        model="gpt-5.4-pro",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="strong",
+        capability=10,
+        cost_rank=3,
+    ),
+    # ── DeepSeek (API) ────────────────────────────────────────────────
+    "deepseek/deepseek-reasoner": AgentSpec(
+        provider="deepseek",
+        model="deepseek-reasoner",
+        transport=_TRANSPORT_DEEPSEEK_API,
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+    ),
+    "deepseek/deepseek-chat": AgentSpec(
+        provider="deepseek",
+        model="deepseek-chat",
+        transport=_TRANSPORT_DEEPSEEK_API,
+        tier="fast",
+        capability=7,
+        cost_rank=1,
+    ),
+    # ── Google (CLI via Gemini) ───────────────────────────────────────
+    "google/gemini-3-flash-preview": AgentSpec(
+        provider="google",
         model="gemini-3-flash-preview",
+        transport=_TRANSPORT_GEMINI_CLI,
         tier="cheap",
         capability=7,
         cost_rank=1,
         dev_capable=False,
     ),
-    "google/gemini-3.1-pro-preview": ModelInfo(
-        cli="gemini",
+    "google/gemini-3.1-pro-preview": AgentSpec(
+        provider="google",
         model="gemini-3.1-pro-preview",
+        transport=_TRANSPORT_GEMINI_CLI,
         tier="strong",
         capability=9,
         cost_rank=2,
         dev_capable=False,
     ),
-    "google/gemini-2.5-pro": ModelInfo(
-        cli="gemini",
+    "google/gemini-2.5-pro": AgentSpec(
+        provider="google",
         model="gemini-2.5-pro",
+        transport=_TRANSPORT_GEMINI_CLI,
         tier="strong",
         capability=8,
         cost_rank=2,
         dev_capable=False,
     ),
-    # Local models via ollama/vllm — route through the OpenAI adapter using base_url
-    "openai/codestral": ModelInfo(
-        cli="codex", model="codestral", tier="fast", capability=7, cost_rank=1
+    # ── Local OpenAI-compatible models (route via Codex CLI with base_url) ──
+    "openai/codestral": AgentSpec(
+        provider="openai",
+        model="codestral",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="fast",
+        capability=7,
+        cost_rank=1,
     ),
-    "openai/deepseek-coder": ModelInfo(
-        cli="codex", model="deepseek-coder", tier="fast", capability=7, cost_rank=1
+    "openai/deepseek-coder": AgentSpec(
+        provider="openai",
+        model="deepseek-coder",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="fast",
+        capability=7,
+        cost_rank=1,
     ),
-    "openai/llama3.1": ModelInfo(
-        cli="codex", model="llama3.1", tier="fast", capability=6, cost_rank=1
+    "openai/llama3.1": AgentSpec(
+        provider="openai",
+        model="llama3.1",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="fast",
+        capability=6,
+        cost_rank=1,
     ),
-    "openai/qwen2.5-coder": ModelInfo(
-        cli="codex", model="qwen2.5-coder", tier="fast", capability=7, cost_rank=1
+    "openai/qwen2.5-coder": AgentSpec(
+        provider="openai",
+        model="qwen2.5-coder",
+        transport=_TRANSPORT_CODEX_CLI,
+        tier="fast",
+        capability=7,
+        cost_rank=1,
+    ),
+    # ── OpenAI (API — disambiguated with 'openai-api/' prefix so operators can
+    # select the OpenAI API path separately from the Codex CLI path) ──────
+    "openai-api/gpt-5.4": AgentSpec(
+        provider="openai",
+        model="gpt-5.4",
+        transport=_TRANSPORT_OPENAI_API,
+        tier="strong",
+        capability=9,
+        cost_rank=2,
+    ),
+    "openai-api/gpt-5.4-mini": AgentSpec(
+        provider="openai",
+        model="gpt-5.4-mini",
+        transport=_TRANSPORT_OPENAI_API,
+        tier="cheap",
+        capability=7,
+        cost_rank=1,
+    ),
+    "openai-api/gpt-5.4-pro": AgentSpec(
+        provider="openai",
+        model="gpt-5.4-pro",
+        transport=_TRANSPORT_OPENAI_API,
+        tier="strong",
+        capability=10,
+        cost_rank=3,
+        # Reasoning-heavy — intentionally excluded from the preflight role.
+        phase_eligibility=frozenset({"dev", "plan", "review"}),
+    ),
+    # ── Google (API — disambiguated with 'google-api/' prefix so operators can
+    # select the Google API path separately from the Gemini CLI path) ─────
+    "google-api/gemini-2.5-pro": AgentSpec(
+        provider="google",
+        model="gemini-2.5-pro",
+        transport=_TRANSPORT_GOOGLE_API,
+        tier="strong",
+        capability=8,
+        cost_rank=2,
+    ),
+    "google-api/gemini-3-flash-preview": AgentSpec(
+        provider="google",
+        model="gemini-3-flash-preview",
+        transport=_TRANSPORT_GOOGLE_API,
+        tier="cheap",
+        capability=7,
+        cost_rank=1,
+    ),
+    "google-api/gemini-3.1-pro-preview": AgentSpec(
+        provider="google",
+        model="gemini-3.1-pro-preview",
+        transport=_TRANSPORT_GOOGLE_API,
+        tier="strong",
+        capability=9,
+        cost_rank=2,
     ),
 }
 
-# Maps provider prefix → CLI name
-_PROVIDER_CLI_MAP: dict[str, str] = {
-    "claude": "claude",
-    "openai": "codex",
-    "google": "gemini",
+
+def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
+    """Project an AgentSpec down to the legacy ModelInfo view.
+
+    Carries `phase_eligibility` and the underlying `TransportSpec` through the
+    projection so role derivation can filter by phase and runtime dispatch can
+    read the explicit transport rather than re-inferring it from cli/provider.
+    """
+    if spec.transport.kind == "cli":
+        return ModelInfo(
+            cli=spec.transport.runner,
+            model=spec.model,
+            tier=spec.tier,
+            capability=spec.capability,
+            cost_rank=spec.cost_rank,
+            dev_capable=spec.dev_capable,
+            provider=None,
+            phase_eligibility=spec.phase_eligibility,
+            transport=spec.transport,
+        )
+    return ModelInfo(
+        cli=None,
+        model=spec.model,
+        tier=spec.tier,
+        capability=spec.capability,
+        cost_rank=spec.cost_rank,
+        dev_capable=spec.dev_capable,
+        provider=spec.provider,
+        phase_eligibility=spec.phase_eligibility,
+        transport=spec.transport,
+    )
+
+
+# Derived legacy view — exactly mirrors AGENT_REGISTRY.
+MODEL_REGISTRY: dict[str, ModelInfo] = {
+    k: _spec_to_model_info(v) for k, v in AGENT_REGISTRY.items()
 }
+
+
+def resolve_agent_spec(model_key: str) -> AgentSpec:
+    """Resolve a `provider/model` key to its AgentSpec.
+
+    Raises ValueError for any key not present in AGENT_REGISTRY — there is no
+    provider-prefix-to-CLI guessing. To support a new model, add an explicit
+    registry entry.
+    """
+    if model_key not in AGENT_REGISTRY:
+        known = sorted(AGENT_REGISTRY)
+        raise ValueError(
+            f"Unknown model {model_key!r}: not in AGENT_REGISTRY. "
+            f"Add an explicit registry entry. Known models: {known}"
+        )
+    return AGENT_REGISTRY[model_key]
 
 
 def _resolve_model_info(model_key: str) -> ModelInfo:
-    """Resolve a model key to ModelInfo; unknown models get sensible defaults."""
-    if model_key in MODEL_REGISTRY:
-        return MODEL_REGISTRY[model_key]
-    parts = model_key.split("/", 1)
-    cli = _PROVIDER_CLI_MAP.get(parts[0], parts[0]) if len(parts) == 2 else model_key
-    model = parts[1] if len(parts) == 2 else model_key
-    return ModelInfo(cli=cli, model=model, tier="strong", capability=5, cost_rank=2)
+    """Resolve a model key to its legacy ModelInfo view.
+
+    Delegates to resolve_agent_spec(): unknown keys raise ValueError rather than
+    falling back to a prefix-derived CLI.
+    """
+    return _spec_to_model_info(resolve_agent_spec(model_key))
 
 
 def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:

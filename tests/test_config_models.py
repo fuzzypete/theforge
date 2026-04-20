@@ -286,8 +286,8 @@ class TestModelsKeyConfig:
         assert config.dev_profile == DEFAULT_DEV_PROFILE
         assert config.review_pool == [DEFAULT_REVIEW_PROFILE]
 
-    def test_unknown_model_gets_defaults(self, tmp_path):
-        """Model not in registry is accepted with default metadata."""
+    def test_unknown_model_raises(self, tmp_path):
+        """Model not in AGENT_REGISTRY raises ValueError — no prefix-to-CLI guessing."""
         config_path = _write_config(
             {
                 "models": ["claude/future-model"],
@@ -295,9 +295,8 @@ class TestModelsKeyConfig:
             },
             tmp_path,
         )
-        config = load_config(config_path)
-        assert config.dev_profile.cli == "claude"
-        assert config.dev_profile.model == "future-model"
+        with pytest.raises(ValueError, match="not in AGENT_REGISTRY"):
+            load_config(config_path)
 
     def test_models_empty_raises(self, tmp_path):
         """Empty models list → ValueError."""
@@ -314,7 +313,7 @@ class TestModelsKeyConfig:
     def test_models_unknown_provider_raises(self, tmp_path):
         """Unknown provider with no registry entry → ValueError."""
         config_path = _write_config({"models": ["llama/llama3"]}, tmp_path)
-        with pytest.raises(ValueError, match="Unknown provider"):
+        with pytest.raises(ValueError, match="not in AGENT_REGISTRY"):
             load_config(config_path)
 
     def test_budget_negative_raises(self, tmp_path):
@@ -509,13 +508,10 @@ class TestResolveModelInfo:
         assert info.tier == "fast"
         assert info.cost_rank == 1
 
-    def test_unknown_model_defaults(self):
-        info = _resolve_model_info("claude/future-model")
-        assert info.cli == "claude"
-        assert info.model == "future-model"
-        assert info.tier == "strong"
-        assert info.capability == 5
-        assert info.cost_rank == 2
+    def test_unknown_model_raises(self):
+        """Unknown keys raise — no silent prefix-to-CLI fallback."""
+        with pytest.raises(ValueError, match="not in AGENT_REGISTRY"):
+            _resolve_model_info("claude/future-model")
 
 
 class TestAutoPushConfig:
