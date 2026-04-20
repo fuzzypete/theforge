@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelInfo, ModelProfile
+from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelInfo, ModelProfile, apply_model_info
 from theforge.review import ReviewFinding
 
 if TYPE_CHECKING:
@@ -366,7 +366,11 @@ def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
             if info.cli == profile.cli and info.model == profile.model:
                 return key
             continue
-        if profile.provider is not None and key == f"{profile.provider}/{profile.model}":
+        if (
+            profile.provider is not None
+            and info.provider == profile.provider
+            and info.model == profile.model
+        ):
             return key
     return None
 
@@ -505,11 +509,7 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
         target_plan_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["plan"][norm]]
         target_plan_info = _pick_pool_entry_by_rank(pool_entries, target_plan_rank)
         if target_plan_info.model != config.plan.model:
-            new_plan = _dc_replace(
-                config.plan, model=target_plan_info.model, cli=target_plan_info.cli
-            )
-            if target_plan_info.cli is not None:
-                new_plan = _dc_replace(new_plan, provider=None)
+            new_plan = apply_model_info(config.plan, target_plan_info)
             new_config = _dc_replace(new_config, plan=new_plan)
 
     # ── dev ────────────────────────────────────────────────────────
@@ -518,11 +518,7 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
         target_dev_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["dev"][norm]]
         target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
         if target_dev_info.model != config.dev_profile.model:
-            new_dev = _dc_replace(
-                config.dev_profile,
-                cli=target_dev_info.cli,
-                model=target_dev_info.model,
-            )
+            new_dev = apply_model_info(config.dev_profile, target_dev_info)
             new_config = _dc_replace(new_config, dev_profile=new_dev)
 
     # ── review_pool ────────────────────────────────────────────────

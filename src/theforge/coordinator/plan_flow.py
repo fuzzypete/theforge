@@ -22,7 +22,7 @@ from textwrap import dedent
 from typing import TYPE_CHECKING
 
 from theforge.artifacts import PLAN_PATH, ensure_parent_dir, plan_paths, resolve_plan_path
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile
+from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile, apply_model_info
 from theforge.config.profiles import _apply_provider_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.plan_finding_classifier import (
@@ -149,11 +149,11 @@ def _run_plan_phase(
     if _should_validate_spec:
         from theforge.story_validator import validate_story  # noqa: PLC0415
 
-        _fast_profile = (
-            dataclasses.replace(config.dev_profile, model="sonnet")
-            if "opus" in config.dev_profile.model.lower()
-            else config.dev_profile
-        )
+        _fast_profile = config.dev_profile
+        if "opus" in config.dev_profile.model.lower():
+            _sonnet_info = MODEL_REGISTRY.get("claude/sonnet")
+            if _sonnet_info is not None:
+                _fast_profile = apply_model_info(config.dev_profile, _sonnet_info)
         _sv_result = validate_story(
             story_content=story_content,
             profile=_fast_profile,
@@ -716,11 +716,7 @@ def _run_plan_agent_review(
                     _next_info = MODEL_REGISTRY[_next_key]
                     _old_model = plan_profile.model
                     _new_model = _next_info.model
-                    plan_profile = dataclasses.replace(
-                        plan_profile,
-                        cli=_next_info.cli,
-                        model=_next_info.model,
-                    )
+                    plan_profile = apply_model_info(plan_profile, _next_info)
                     state.plan_escalated = True
                     state.plan_escalation_note = (
                         f"MODEL ESCALATION: The plan was rejected"

@@ -9,10 +9,12 @@ callers continue to work while the codebase migrates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, fields, replace
+from typing import Any, TypeVar, overload
 
-from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile
+from .types import ApiFallbackConfig, AssignmentConfig, ModelProfile, PlanConfig
+
+_ProfileT = TypeVar("_ProfileT", ModelProfile, PlanConfig)
 
 
 @dataclass(frozen=True)
@@ -344,6 +346,32 @@ def _spec_to_model_info(spec: AgentSpec) -> ModelInfo:
 MODEL_REGISTRY: dict[str, ModelInfo] = {
     k: _spec_to_model_info(v) for k, v in AGENT_REGISTRY.items()
 }
+
+
+@overload
+def apply_model_info(profile: ModelProfile, info: ModelInfo) -> ModelProfile: ...
+
+
+@overload
+def apply_model_info(profile: PlanConfig, info: ModelInfo) -> PlanConfig: ...
+
+
+def apply_model_info(profile: _ProfileT, info: ModelInfo) -> _ProfileT:
+    """Return profile with model identity and dispatch transport from ``info``.
+
+    Mid-run model swaps must update all fields that define dispatch together.
+    ``PlanConfig`` predates explicit ``TransportSpec`` storage, so this helper
+    writes ``transport`` only for profiles that carry that field.
+    """
+    profile_fields = {field.name for field in fields(profile)}
+    updates: dict[str, object] = {
+        "cli": info.cli,
+        "model": info.model,
+        "provider": info.provider,
+    }
+    if "transport" in profile_fields:
+        updates["transport"] = info.transport
+    return replace(profile, **updates)
 
 
 def resolve_agent_spec(model_key: str) -> AgentSpec:

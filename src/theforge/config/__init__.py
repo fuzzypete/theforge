@@ -27,6 +27,7 @@ from .models import (
     AgentSpec,
     ModelInfo,
     TransportSpec,
+    apply_model_info,
     resolve_agent_spec,
 )
 from .types import (
@@ -83,6 +84,7 @@ __all__ = [
     "AgentSpec",
     "MODEL_REGISTRY",
     "TransportSpec",
+    "apply_model_info",
     "resolve_agent_spec",
     # defaults
     "API_PROVIDER_DEFAULT_TOOLS",
