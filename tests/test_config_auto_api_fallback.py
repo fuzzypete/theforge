@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from theforge.config import load_config
+from theforge.config.types import PlanConfig
 from theforge.sprint.runner import _agent_cost_tracking_warnings
 
 
@@ -83,12 +84,81 @@ provider_fallbacks:
     assert cfg.dev_profile.api_fallback.model == "o4-mini"
 
 
+def test_multiple_cli_models_same_provider_do_not_cross_wire_auto_fallbacks(tmp_path):
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - openai/gpt-5.4
+  - openai/gpt-5.4-mini
+""",
+    )
+    with _auth_ok, _import_ok:
+        cfg = load_config(cfg_path)
+
+    assert cfg.dev_profile.cli == "codex"
+    assert cfg.dev_profile.model in {"gpt-5.4", "gpt-5.4-mini"}
+    assert cfg.dev_profile.api_fallback is None
+    assert all(profile.api_fallback is None for profile in cfg.review_pool)
+
+
+def test_plan_cli_model_receives_auto_api_fallback(tmp_path):
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - openai/gpt-5.4
+plan:
+  enabled: true
+  cli: codex
+  model: gpt-5.4
+""",
+    )
+    with _auth_ok, _import_ok:
+        cfg = load_config(cfg_path)
+
+    assert isinstance(cfg.plan, PlanConfig)
+    assert cfg.plan.api_fallback is not None
+    assert cfg.plan.api_fallback.provider == "openai"
+    assert cfg.plan.api_fallback.model == "gpt-5.4"
+
+
+def test_legacy_plan_agent_review_cli_receives_auto_api_fallback(tmp_path):
+    cfg_path = _write(
+        tmp_path,
+        """
+models:
+  - openai/gpt-5.4
+plan:
+  enabled: true
+  cli: claude
+  model: sonnet
+plan_agent_review:
+  enabled: true
+  cli: codex
+  model: gpt-5.4
+""",
+    )
+    with _auth_ok, _import_ok:
+        cfg = load_config(cfg_path)
+
+    profiles = cfg.plan_agent_review.profiles
+    assert len(profiles) == 1
+    assert profiles[0].api_fallback is not None
+    assert profiles[0].api_fallback.provider == "openai"
+    assert profiles[0].api_fallback.model == "gpt-5.4"
+
+
 def test_sprint_warning_mentions_tracked_api_fallback(tmp_path):
     cfg_path = _write(
         tmp_path,
         """
 models:
   - openai/gpt-5.4
+plan:
+  enabled: true
+  cli: codex
+  model: gpt-5.4
 """,
     )
     with _auth_ok, _import_ok:
@@ -99,3 +169,4 @@ models:
         "API fallback to openai/gpt-5.4 will be tracked if it triggers" in warning
         for warning in warnings
     )
+    assert any("planner" in warning for warning in warnings)

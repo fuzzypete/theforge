@@ -24,6 +24,7 @@ from .defaults import (
 )
 from .models import AGENT_REGISTRY, _parse_assignment, resolve_agent_spec
 from .profiles import (
+    CLI_PROVIDER_MAP,
     _agents_from_models,
     _apply_profile_overrides,
     _apply_provider_fallback,
@@ -55,24 +56,75 @@ log = logging.getLogger("theforge.config")
 
 
 def _derive_auto_provider_fallbacks(models: list[str]) -> dict[str, ApiFallbackConfig]:
-    """Auto-wire same-provider API fallbacks for CLI transport models."""
-    fallbacks: dict[str, ApiFallbackConfig] = {}
+    """Auto-wire same-provider API fallbacks for CLI transport models.
+
+    Returns only unambiguous per-provider fallbacks. If multiple CLI models from the
+    same provider appear in models:, auto-wiring is skipped for that provider so we
+    never attach the wrong API model to sibling CLI profiles.
+    """
+    cli_models_by_provider: dict[str, set[str]] = {}
+    api_models_by_provider: dict[str, set[str]] = {}
+
+    for spec in AGENT_REGISTRY.values():
+        if spec.transport.kind == "api":
+            api_models_by_provider.setdefault(spec.provider, set()).add(spec.model)
+
     for model_key in models:
         spec = resolve_agent_spec(model_key)
         if spec.transport.kind != "cli":
             continue
-        provider = spec.provider
-        if provider in fallbacks:
+        cli_models_by_provider.setdefault(spec.provider, set()).add(spec.model)
+
+    fallbacks: dict[str, ApiFallbackConfig] = {}
+    for provider, cli_models in cli_models_by_provider.items():
+        if len(cli_models) != 1:
             continue
-        for candidate in AGENT_REGISTRY.values():
-            if (
-                candidate.transport.kind == "api"
-                and candidate.provider == provider
-                and candidate.model == spec.model
-            ):
-                fallbacks[provider] = ApiFallbackConfig(provider=provider, model=spec.model)
-                break
+        model = next(iter(cli_models))
+        if model not in api_models_by_provider.get(provider, set()):
+            continue
+        fallbacks[provider] = ApiFallbackConfig(provider=provider, model=model)
     return fallbacks
+
+
+def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
+    """Reject legacy plan_agent_review scalar config only when auto-pairing needs it.
+
+    v0.8 generally rejects legacy scalar plan_agent_review fields alongside models:.
+    For this story we still need to support the legacy scalar shape when it is a CLI
+    profile that can receive the same-provider auto API fallback. Keep the integrity
+    boundary strict for all other mixed-mode cases.
+    """
+    if "models" not in raw:
+        return
+
+    par_raw = raw.get("plan_agent_review")
+    if not isinstance(par_raw, dict):
+        return
+
+    legacy_fields = {"model", "cli", "provider", "budget_usd"} & par_raw.keys()
+    if not legacy_fields:
+        return
+
+    cli = par_raw.get("cli")
+    provider = par_raw.get("provider")
+    model = par_raw.get("model")
+    if provider is not None or not isinstance(cli, str) or not isinstance(model, str):
+        _validate_v0_8_schema(raw)
+        return
+
+    model_key = next(
+        (
+            key
+            for key in raw.get("models", [])
+            if key in AGENT_REGISTRY
+            and (spec := resolve_agent_spec(str(key))).transport.kind == "cli"
+            and spec.provider == CLI_PROVIDER_MAP.get(cli)
+            and spec.model == model
+        ),
+        None,
+    )
+    if model_key is None:
+        _validate_v0_8_schema(raw)
 
 
 def _validate_plan_provider(plan_cfg: "PlanConfig", secrets: dict[str, str]) -> None:
@@ -139,7 +191,12 @@ def load_config(config_path: Path) -> ForgeConfig:
     with open(config_path, encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
 
-    _validate_v0_8_schema(raw)
+    try:
+        _validate_v0_8_schema(raw)
+    except ValueError as exc:
+        if "plan_agent_review has legacy scalar field(s)" not in str(exc):
+            raise
+    _validate_auto_api_fallback_schema(raw)
 
     provider_fallbacks = _parse_provider_fallbacks(
         raw.get("provider_fallbacks", {}),
@@ -347,7 +404,25 @@ def load_config(config_path: Path) -> ForgeConfig:
         if plan_timeout_large_raw is not None
         else _plan_default_timeout_large,
         validate_spec=bool(plan_data.get("validate_spec", _plan_default_validate_spec)),
+        api_fallback=_derived_plan_profile.api_fallback
+        if _derived_plan_profile is not None
+        else None,
     )
+    if plan_cfg.cli is not None:
+        plan_profile = ModelProfile(
+            name="plan",
+            cli=plan_cfg.cli,
+            provider=plan_cfg.provider,
+            model=plan_cfg.model,
+            budget_usd=plan_cfg.budget_usd,
+            timeout_seconds=plan_cfg.timeout,
+            timeout_medium_seconds=plan_cfg.timeout_medium,
+            timeout_large_seconds=plan_cfg.timeout_large,
+            allowed_tools=(),
+            api_fallback=plan_cfg.api_fallback,
+        )
+        plan_profile = _apply_provider_fallback(plan_profile, provider_fallbacks)
+        plan_cfg = dataclasses.replace(plan_cfg, api_fallback=plan_profile.api_fallback)
 
     # ── Load-time validation for plan section ────────────────────────────
     if plan_cfg.enabled:
@@ -401,6 +476,23 @@ def load_config(config_path: Path) -> ForgeConfig:
                 _apply_provider_fallback(profile, provider_fallbacks)
                 for profile in plan_agent_review_cfg.pool
             ],
+        )
+    elif plan_agent_review_cfg.cli is not None:
+        legacy_plan_review_profile = ModelProfile(
+            name="plan-review",
+            cli=plan_agent_review_cfg.cli,
+            provider=plan_agent_review_cfg.provider,
+            model=plan_agent_review_cfg.model or "sonnet",
+            budget_usd=plan_agent_review_cfg.budget_usd,
+            timeout_seconds=plan_agent_review_cfg.timeout,
+            allowed_tools=(),
+        )
+        legacy_plan_review_profile = _apply_provider_fallback(
+            legacy_plan_review_profile, provider_fallbacks
+        )
+        plan_agent_review_cfg = dataclasses.replace(
+            plan_agent_review_cfg,
+            api_fallback=legacy_plan_review_profile.api_fallback,
         )
 
     # Logging

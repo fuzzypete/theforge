@@ -107,7 +107,15 @@ def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
     ]
 
     if config.plan.enabled:
-        agents.append(("planner", config.plan.cli, config.plan.provider, config.plan.model, None))
+        agents.append(
+            (
+                "planner",
+                config.plan.cli,
+                config.plan.provider,
+                config.plan.model,
+                config.plan.api_fallback,
+            )
+        )
 
     if config.plan_agent_review.enabled:
         agents.extend(
