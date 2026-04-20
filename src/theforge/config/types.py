@@ -226,6 +226,7 @@ class PlanConfig:
     timeout_medium: int | None = None  # override for medium complexity
     timeout_large: int | None = None  # override for large complexity
     validate_spec: bool = True  # whether to run story_validator before planning
+    api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
 
 
 @dataclass(frozen=True)
@@ -258,6 +259,7 @@ class PlanAgentReviewConfig:
     timeout: int = 300
     # Pool format — populated by load_forge_yaml when pool: key is present.
     pool: list[ModelProfile] = field(default_factory=list)
+    api_fallback: ApiFallbackConfig | None = None  # legacy scalar profile fallback
     min_reviewers: int = 1
 
     @property
@@ -282,6 +284,7 @@ class PlanAgentReviewConfig:
                 budget_usd=self.budget_usd,
                 timeout_seconds=self.timeout,
                 allowed_tools=allowed_tools,
+                api_fallback=self.api_fallback,
             )
         ]
 
@@ -383,6 +386,7 @@ class ForgeConfig:
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
     provider_fallbacks: dict[str, ApiFallbackConfig] = field(default_factory=dict)
+    auto_api_fallback: bool = True
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
     dev_profile_is_default: bool = (

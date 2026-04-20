@@ -101,6 +101,9 @@ context:
   review_budget: 80
 
 # Optional: same-provider API fallback when a CLI is rate-limited/unavailable.
+# For any CLI model in models: whose same-provider API variant is registered,
+# TheForge wires that API fallback automatically. Set auto_api_fallback: false
+# to disable auto-pairing, or specify provider_fallbacks to override it.
 # provider_fallbacks:
 #   openai:
 #     model: o4-mini
