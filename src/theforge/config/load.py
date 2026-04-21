@@ -290,6 +290,17 @@ def load_config(config_path: Path) -> ForgeConfig:
             dev_profile = _apply_profile_overrides(dev_profile, overrides["dev"])
         if "preflight" in overrides:
             preflight_profile = _apply_profile_overrides(preflight_profile, overrides["preflight"])
+        preflight_fallback_profile = None
+        if "preflight_fallback" in overrides:
+            preflight_fallback_profile = _apply_profile_overrides(
+                preflight_profile,
+                overrides["preflight_fallback"],
+            )
+            preflight_fallback_profile = dataclasses.replace(
+                preflight_fallback_profile,
+                name="preflight_fallback",
+                phase="preflight",
+            )
         if synthesis_profile is not None and "synthesis" in overrides:
             synthesis_profile = _apply_profile_overrides(synthesis_profile, overrides["synthesis"])
         # Apply per-reviewer overrides matched by name
@@ -320,12 +331,17 @@ def load_config(config_path: Path) -> ForgeConfig:
         # No v0.8 models: key — fall back to built-in defaults.
         dev_profile = DEFAULT_DEV_PROFILE
         preflight_profile = DEFAULT_PREFLIGHT_PROFILE
+        preflight_fallback_profile = None
         review_pool = [DEFAULT_REVIEW_PROFILE]
         synthesis_profile = None
         _review_pool_is_default = True
 
     dev_profile = _apply_provider_fallback(dev_profile, provider_fallbacks)
     preflight_profile = _apply_provider_fallback(preflight_profile, provider_fallbacks)
+    if preflight_fallback_profile is not None:
+        preflight_fallback_profile = _apply_provider_fallback(
+            preflight_fallback_profile, provider_fallbacks
+        )
     review_pool = [
         _apply_provider_fallback(profile, provider_fallbacks) for profile in review_pool
     ]
@@ -654,6 +670,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         validation=validation,
         dev_profile=dev_profile,
         preflight_profile=preflight_profile,
+        preflight_fallback_profile=preflight_fallback_profile,
         review_pool=review_pool,
         synthesis_profile=synthesis_profile,
         retry=retry,

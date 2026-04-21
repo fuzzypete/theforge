@@ -405,7 +405,12 @@ class CoordinatorState:
 
     @property
     def total_preflight_cost(self) -> float:
-        return self.preflight_result.cost_usd or 0.0 if self.preflight_result else 0.0
+        if self.preflight_result is None:
+            return 0.0
+        attempts = self.preflight_result.raw.get("attempts")
+        if isinstance(attempts, list):
+            return sum(float(a.get("cost_usd") or 0.0) for a in attempts if isinstance(a, dict))
+        return self.preflight_result.cost_usd or 0.0
 
     @property
     def total_plan_cost(self) -> float:
