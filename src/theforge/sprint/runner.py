@@ -532,7 +532,21 @@ def _make_worker_phase_fn(
             if phase:
                 worker_phases[slug] = phase
                 if state_writer is not None:
-                    state_writer.update(slug, phase=phase)
+                    _detail_updates: dict[str, object] = {}
+                    if phase == "DEV":
+                        _iteration = updates.get("iteration")
+                        if isinstance(_iteration, int):
+                            _detail_updates = {
+                                "review_cycle": max(_iteration, 0),
+                                "dev_iteration": _iteration,
+                            }
+                    elif phase == "VALIDATE":
+                        _detail_updates = {"gate_status": "running"}
+                    state_writer.update(
+                        slug,
+                        phase=phase,
+                        **({"detail": _detail_updates} if _detail_updates else {}),
+                    )
             if phase == "PLAN_DONE" and plan_done is not None:
                 ws = updates.get("workspace_path", "")
                 if ws:
@@ -931,22 +945,28 @@ def run_sprint(
             if _drop_reason == "preserved-escalated":
                 _status = "preserved"
                 _blocked_by = [f"preserved: {_drop_reason}"]
+                _detail = {"final_outcome": "ESCALATE"}
             elif _drop_reason:
                 _status = "failed"
                 _blocked_by = [f"dropped: {_drop_reason}"]
+                _detail = {"final_outcome": "ESCALATE"}
             elif _blocked_by:
                 _status = "blocked"
+                _detail = {}
             else:
                 _status = "waiting"
+                _detail = {}
             _initial_stories.append(
                 {
                     "slug": _slug,
                     "path": _display_key,
                     "status": _status,
-                    "phase": None,
+                    "phase": "PREFLIGHT" if _status == "waiting" else None,
                     "cost_usd": 0.0,
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
                     "blocked_by": _blocked_by,
+                    "complexity": None,
+                    "detail": _detail,
                 }
             )
         _state_writer = SprintStateWriter(run_id, config.project_root, resolved.name)

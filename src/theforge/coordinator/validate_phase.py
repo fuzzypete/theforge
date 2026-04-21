@@ -244,6 +244,16 @@ def _run_validate_phase(
 
     assert gate_decision is not None
     state.gate_decisions.append(gate_decision)
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "VALIDATE",
+                "iteration": state.dev_iteration,
+                "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
+                "detail": {"gate_status": gate_decision},
+            }
+        )
     _log_verbose(f"Gate decision: {gate_decision}")
 
     if gate_decision == "PASS":

@@ -79,15 +79,18 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
                 "cost_usd": 0.12,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "complexity": "medium",
+                "detail": {"review_cycle": 0, "dev_iteration": 2},
             },
             {
                 "slug": "issue-2",
                 "path": "Issue #2",
                 "status": "waiting",
-                "phase": None,
+                "phase": "PREFLIGHT",
                 "cost_usd": 0.0,
                 "bundle_candidate": True,
                 "blocked_by": [],
+                "detail": {},
             },
         ],
     )
@@ -102,11 +105,14 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
     assert e1.phase == "DEV"
     assert e1.cost_usd == pytest.approx(0.12)
     assert e1.bundle_candidate is False
+    assert e1.complexity == "medium"
+    assert e1.detail == "c1 i2"
 
     e2 = entries[1]
     assert e2.slug == "issue-2"
     assert e2.status == "waiting"
     assert e2.bundle_candidate is True
+    assert e2.detail == "waiting"
 
 
 def test_read_live_status_blocked_story(tmp_path: Path) -> None:
@@ -361,15 +367,21 @@ def test_cmd_sprint_status_live_sprint(tmp_path: Path) -> None:
                 "cost_usd": 0.05,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "complexity": "medium",
+                "detail": {"review_cycle": 0, "dev_iteration": 2},
             },
             {
                 "slug": "issue-21",
                 "path": "Issue #21",
                 "status": "waiting",
-                "phase": None,
+                "phase": "PREFLIGHT",
                 "cost_usd": 0.0,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "detail": {
+                    "preflight_verdict": "PROCEED",
+                    "preflight_sufficiency": "needs_planning",
+                },
             },
         ],
     )
@@ -380,8 +392,10 @@ def test_cmd_sprint_status_live_sprint(tmp_path: Path) -> None:
     assert "[live]" in output
     assert "Issue #20" in output
     assert "DEV" in output
+    assert "medium" in output
+    assert "c1 i2" in output
     assert "Issue #21" in output
-    assert "waiting" in output
+    assert "PROCEED / needs_planning" in output
 
 
 def test_cmd_sprint_status_blocked_story_shows_dependency(tmp_path: Path) -> None:
@@ -572,6 +586,7 @@ def test_display_sprint_status_column_header_present(tmp_path: Path) -> None:
     assert code == 0
     assert "STATUS" in output
     assert "PHASE" in output
+    assert "COMPLEXITY" in output
     assert "COST" in output
     assert "ELAPSED" in output
     assert "DETAIL" in output
@@ -590,10 +605,12 @@ def test_state_writer_init_and_update(tmp_path: Path) -> None:
                 "slug": "issue-1",
                 "path": "Issue #1",
                 "status": "waiting",
-                "phase": None,
+                "phase": "PREFLIGHT",
                 "cost_usd": 0.0,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "complexity": None,
+                "detail": {},
             }
         ]
     )
@@ -605,12 +622,21 @@ def test_state_writer_init_and_update(tmp_path: Path) -> None:
         data = yaml.safe_load(f)
     assert data["sprint_name"] == "my-sprint"
     assert data["stories"][0]["status"] == "waiting"
+    assert data["stories"][0]["phase"] == "PREFLIGHT"
 
-    writer.update("issue-1", status="running", phase="DEV")
+    writer.update(
+        "issue-1",
+        status="running",
+        phase="DEV",
+        complexity="medium",
+        detail={"review_cycle": 0, "dev_iteration": 2},
+    )
     with open(state_path) as f:
         data = yaml.safe_load(f)
     assert data["stories"][0]["status"] == "running"
     assert data["stories"][0]["phase"] == "DEV"
+    assert data["stories"][0]["complexity"] == "medium"
+    assert data["stories"][0]["detail"] == {"review_cycle": 0, "dev_iteration": 2}
 
 
 def test_state_writer_remove(tmp_path: Path) -> None:

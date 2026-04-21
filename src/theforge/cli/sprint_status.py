@@ -128,8 +128,12 @@ def display_sprint_status(run_id: str, project_root: Path) -> int:
     }
 
     # Column header
-    print(f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'COST':>7}  {'ELAPSED':>7}  DETAIL")
-    print("  " + "-" * 80)
+    header = (
+        f"  {'STORY':<28}  {'STATUS':<8}  {'PHASE':<12}  {'COMPLEXITY':<10}  "
+        f"{'COST':>7}  {'ELAPSED':>7}  DETAIL"
+    )
+    print(header)
+    print("  " + "-" * 96)
 
     # Separate bundle candidates from regular stories
     bundle_entries = [e for e in entries if e.bundle_candidate]
@@ -203,13 +207,15 @@ def _print_story_line(entry: object, status_icons: dict, indent: int) -> None:
     cost_usd = getattr(entry, "cost_usd", 0.0)
     elapsed_s = getattr(entry, "elapsed_seconds", None)
     detail = getattr(entry, "detail", "")
+    complexity = getattr(entry, "complexity", None)
 
     phase_str = phase if phase else "—"
+    complexity_str = complexity if complexity else "—"
     cost_str = f"${cost_usd:.2f}" if cost_usd else "   —"
     elapsed_str = f"{int(elapsed_s // 60)}m" if elapsed_s is not None else "—"
 
     line = (
-        f"{icon} {path:<28}  {status:<8}  {phase_str:<12}  "
+        f"{icon} {path:<28}  {status:<8}  {phase_str:<12}  {complexity_str:<10}  "
         f"{cost_str:>7}  {elapsed_str:>7}  {detail}"
     )
     prefix = " " * indent

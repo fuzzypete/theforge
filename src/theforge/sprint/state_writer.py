@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -11,9 +12,9 @@ import yaml
 class SprintStateWriter:
     """Thread-safe writer for the sprint state file at .forge/runs/<run-id>.state.
 
-    The state file tracks per-story status for live sprint monitoring.  It is
-    created when a sprint starts (after preflight) and removed when the sprint
-    completes normally (sprint-summary.yaml takes over for completed sprints).
+    The state file tracks per-story status for live sprint monitoring. It is
+    created when a sprint starts and removed when the sprint completes normally
+    (sprint-summary.yaml takes over for completed sprints).
 
     If the sprint process dies unexpectedly, the state file persists and
     ``forge sprint-status`` will show a "sprint ended unexpectedly" banner
@@ -30,6 +31,7 @@ class SprintStateWriter:
             cost_usd: 0.0
             bundle_candidate: false
             blocked_by: []      # slugs this story is waiting on
+            detail: {}          # phase-specific structured detail for status rendering
     """
 
     def __init__(self, run_id: str, project_root: Path, sprint_name: str) -> None:
@@ -42,13 +44,12 @@ class SprintStateWriter:
     def init(self, stories: list[dict]) -> None:
         """Initialize with all stories and write the initial state file.
 
-        Call once after preflight completes and the DAG is built.
-        Each story dict must have: slug, path, status, phase, cost_usd,
-        bundle_candidate, blocked_by.
+        Call once as soon as the sprint starts so status can detect the sprint
+        before preflight completes.
         """
         with self._lock:
             for story in stories:
-                self._stories[story["slug"]] = dict(story)
+                self._stories[story["slug"]] = deepcopy(story)
             self._write_locked()
 
     def update(self, slug: str, **kwargs: object) -> None:
@@ -59,14 +60,14 @@ class SprintStateWriter:
                 self._write_locked()
 
     def remove(self) -> None:
-        """Remove the state file.  Called when the sprint completes normally."""
+        """Remove the state file. Called when the sprint completes normally."""
         try:
             self._state_path.unlink()
         except FileNotFoundError:
             pass
 
     def _write_locked(self) -> None:
-        """Write the state file atomically.  Caller must hold self._lock."""
+        """Write the state file atomically. Caller must hold self._lock."""
         data: dict = {
             "sprint_name": self._sprint_name,
             "stories": list(self._stories.values()),
