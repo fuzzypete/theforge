@@ -8,8 +8,11 @@ def test_gate_runs_index_before_pytest() -> None:
     gate_block = makefile[gate_start:gate_end]
 
     index_cmd = "forge index"
+    scrubbed_invocation = "$(SCRUBBED_GATE_CMD)"
     pytest_cmd = "PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal"
 
     assert index_cmd in gate_block
-    assert pytest_cmd in gate_block
-    assert gate_block.index(index_cmd) < gate_block.index(pytest_cmd)
+    assert scrubbed_invocation in gate_block
+    assert gate_block.index(index_cmd) < gate_block.index(scrubbed_invocation)
+    # The scrubbed gate command itself carries the pytest invocation.
+    assert pytest_cmd in makefile

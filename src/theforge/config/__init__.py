@@ -19,6 +19,7 @@ from .defaults import (
     SUPPORTED_CLIS,
     generate_default_config,
 )
+from .gate_scrub import SCRUBBED_ENV_VARS, SCRUBBED_HOME_PATHS
 from .load import _validate_plan_provider, load_config
 from .models import (
     AGENT_REGISTRY,
@@ -97,6 +98,8 @@ __all__ = [
     "PROVIDER_SDK_MAP",
     "SUPPORTED_CLIS",
     "generate_default_config",
+    "SCRUBBED_ENV_VARS",
+    "SCRUBBED_HOME_PATHS",
     # load
     "_validate_plan_provider",
     "load_config",

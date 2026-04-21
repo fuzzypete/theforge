@@ -205,7 +205,9 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 - All tests must pass before committing
 - New coordinator behaviour → add a `tests/test_coord_*.py` file matching the phase
 - New runner behaviour → `tests/test_runner_*.py`
-- Mock subprocess; never invoke real agent CLIs in tests
+- `make gate` runs in a scrubbed environment: agent credentials, CLI auth state, and dotenv autoload inputs are stripped before tests execute.
+- Mock subprocess; never invoke real agent CLIs in tests. Any forgotten runner/provider mock in the default gate suite should fail fast under the gate scrub sentinel.
+- Tests that legitimately require real credentials must be marked `@pytest.mark.network_integration` and run via `make test-integration`; they are not part of `make gate`.
 - **Never use `fcntl.flock` in tests that also use `threading`.** pytest runs with
   `-n auto --dist worksteal` (xdist), which forks worker processes. A forked worker
   inherits open file descriptors with held locks, causing sibling threads to block

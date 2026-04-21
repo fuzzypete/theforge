@@ -146,6 +146,12 @@ forge check-providers
 `forge check-config` is the fastest way to catch config drift, missing auth,
 and deprecated settings before spending tokens on a real run.
 
+For this repo's own development workflow, `make gate` now scrubs agent credentials,
+CLI auth state, and dotenv-related inputs before running tests. That makes a green
+local gate match CI more closely: if a test forgot to mock a runner or only passes
+because your shell is authenticated, it should fail locally too. Real-credential
+checks belong in the opt-in `make test-integration` suite instead.
+
 ## 6. Write your first story
 
 Copy `stories/TEMPLATE.md` to `stories/my-feature.md` and fill it in:
