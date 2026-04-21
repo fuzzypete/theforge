@@ -386,6 +386,7 @@ class ForgeConfig:
     review_pool: list[ModelProfile]  # all reviewers; at least 1
     synthesis_profile: ModelProfile | None  # None when pool size <= 1
     retry: RetryPolicy
+    preflight_fallback_profile: ModelProfile | None = None  # optional one-shot retry profile
     notifications: NotificationConfig = NotificationConfig()
     github: GithubConfig = field(default_factory=GithubConfig)
     models: list[str] | None = None  # raw v0.8 `models:` list; None = not set (uses defaults)

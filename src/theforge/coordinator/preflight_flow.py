@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from theforge.config import ForgeConfig
+from theforge.config import ForgeConfig, ModelProfile
 from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
 
@@ -196,23 +196,68 @@ def _run_preflight_phase(
         assembled_context=preflight_context,
     )
 
-    baseline_working_dir, cleanup_preflight_dir = _prepare_preflight_working_dir(
-        config.project_root, config.workspace.base_branch
-    )
-    try:
-        _preflight_start = time.monotonic()
-        preflight_result = run_agent(
-            prompt=preflight_prompt,
-            profile=preflight_profile,
-            working_dir=baseline_working_dir,
-            secrets=config.secrets,
+    def _invoke_preflight(profile: ModelProfile, label: str) -> tuple[object, float]:
+        baseline_working_dir, cleanup_preflight_dir = _prepare_preflight_working_dir(
+            config.project_root, config.workspace.base_branch
         )
-        _preflight_elapsed = time.monotonic() - _preflight_start
-    finally:
-        cleanup_preflight_dir()
+        try:
+            _preflight_start = time.monotonic()
+            result = run_agent(
+                prompt=preflight_prompt,
+                profile=profile,
+                working_dir=baseline_working_dir,
+                secrets=config.secrets,
+            )
+            elapsed = time.monotonic() - _preflight_start
+        finally:
+            cleanup_preflight_dir()
+        log_agent_result(result, f"PREFLIGHT[{label}]")
+        return result, elapsed
+
+    def _attempt_failed(result: object) -> bool:
+        if not result.success:
+            return True
+        _verdict, _reason, parse_degraded = _parse_preflight_verdict(result.output)
+        return parse_degraded
+
+    attempts: list[dict[str, object]] = []
+    preflight_result, _preflight_elapsed = _invoke_preflight(preflight_profile, "primary")
+    attempts.append(
+        {
+            "profile_name": preflight_profile.name,
+            "model": preflight_profile.model,
+            "cost_usd": preflight_result.cost_usd,
+            "duration_s": round(_preflight_elapsed, 2),
+            "success": preflight_result.success,
+            "exit_code": preflight_result.exit_code,
+        }
+    )
+
+    fallback_profile = config.preflight_fallback_profile
+    if fallback_profile is not None and _attempt_failed(preflight_result):
+        _log(
+            f"  ⚠ PREFLIGHT primary failed — retrying with fallback model {fallback_profile.model}"
+        )
+        fallback_result, fallback_elapsed = _invoke_preflight(fallback_profile, "fallback")
+        attempts.append(
+            {
+                "profile_name": fallback_profile.name,
+                "model": fallback_profile.model,
+                "cost_usd": fallback_result.cost_usd,
+                "duration_s": round(fallback_elapsed, 2),
+                "success": fallback_result.success,
+                "exit_code": fallback_result.exit_code,
+            }
+        )
+        preflight_result = fallback_result
+        _preflight_elapsed += fallback_elapsed
+
+    preflight_raw = dict(preflight_result.raw)
+    preflight_raw["attempts"] = attempts
     state.preflight_duration_s = _preflight_elapsed
-    state.preflight_result = preflight_result
-    log_agent_result(preflight_result, "PREFLIGHT")
+    state.preflight_result = preflight_result.__class__(
+        **{**preflight_result.__dict__, "raw": preflight_raw}
+    )
 
     if preflight_result.success:
         verdict, reason, _parse_degraded = _parse_preflight_verdict(preflight_result.output)
