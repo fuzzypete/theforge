@@ -490,6 +490,54 @@ class TestAllowedToolsConfig:
         assert overridden.provider == "openai"
         assert overridden.allowed_tools == API_PROVIDER_DEFAULT_TOOLS
 
+    def test_apply_profile_overrides_provider_switch_clears_cli_and_retargets_transport(self):
+        """Overriding a CLI base with 'provider' must flip dispatch to API transport."""
+        base = ModelProfile(
+            name="reviewer",
+            cli="claude",
+            provider=None,
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+        # Sanity: base is CLI-dispatched
+        assert base.transport is not None
+        assert base.transport.kind == "cli"
+
+        overridden = _apply_profile_overrides(
+            base,
+            {"provider": "anthropic", "model": "sonnet"},
+        )
+
+        assert overridden.cli is None
+        assert overridden.provider == "anthropic"
+        assert overridden.transport is not None
+        assert overridden.transport.kind == "api"
+        assert overridden.transport.runner == "anthropic"
+
+    def test_apply_profile_overrides_cli_switch_clears_provider_and_retargets_transport(self):
+        """Overriding an API base with 'cli' must flip dispatch to CLI transport."""
+        base = ModelProfile(
+            name="reviewer",
+            cli=None,
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=API_PROVIDER_DEFAULT_TOOLS,
+        )
+        assert base.transport is not None
+        assert base.transport.kind == "api"
+
+        overridden = _apply_profile_overrides(base, {"cli": "claude", "model": "sonnet"})
+
+        assert overridden.cli == "claude"
+        assert overridden.provider is None
+        assert overridden.transport is not None
+        assert overridden.transport.kind == "cli"
+        assert overridden.transport.executable == "claude"
+
     def test_apply_profile_overrides_cli_profile_keeps_existing_defaults(self):
         base = ModelProfile(
             name="reviewer",

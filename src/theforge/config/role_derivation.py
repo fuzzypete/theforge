@@ -111,11 +111,12 @@ def _phase_candidates(
 def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
     """Return a new ModelRef with fields replaced by values in overrides.
 
-    Transport mutual exclusion: switching transports via overrides is supported.
-    If 'provider' is in overrides but 'cli' is not, cli is cleared to None so the
-    new ModelRef satisfies the mutual-exclusion constraint. The inverse applies when
-    'cli' is in overrides but 'provider' is not. If both are supplied, ModelRef's
-    __post_init__ will raise as expected (both supplied → invalid).
+    Transport switching: when the override supplies ``provider`` without ``cli``,
+    the derived ``cli`` is cleared so the resulting ref unambiguously dispatches
+    via the API adapter; the inverse applies when ``cli`` is supplied without
+    ``provider``. TransportSpec is not copied from ``ref`` — the newly constructed
+    ModelRef's ``__post_init__`` re-infers it from the effective cli/provider
+    pair so transport always matches dispatch identity.
     """
     if "provider" in overrides and "cli" not in overrides:
         # Switching to API transport — clear the derived cli value
@@ -126,7 +127,8 @@ def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
         new_cli = overrides["cli"]
         new_provider = None
     else:
-        # Both present (error caught by ModelRef) or neither (keep derived values)
+        # Both or neither supplied — preserve caller-provided values. When both
+        # are set, transport inference prefers cli (see models.infer_transport).
         new_cli = overrides.get("cli", ref.cli)
         new_provider = overrides.get("provider", ref.provider)
 
