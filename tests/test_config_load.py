@@ -199,11 +199,11 @@ class TestLoadConfig:
             {"plan": {"enabled": True, "cli": "claude", "provider": "openai"}},
             tmp_path,
         )
-        # load_config must not raise: the XOR invariant is removed as an
-        # operator-enforced constraint. When both are supplied, load_config
-        # still resolves PlanConfig with one transport (cli), matching the
-        # existing plan loader convention.
-        config = load_config(config_path)
+        # load_config must not raise for XOR: the invariant is removed as an
+        # operator-enforced constraint. Provider credentials are still validated
+        # eagerly by load_config, so supply a stub key for the test.
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test"}):
+            config = load_config(config_path)
         assert config.plan.enabled is True
 
     def test_plan_agent_review_defaults_disabled(self, tmp_path):
