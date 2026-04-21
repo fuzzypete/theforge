@@ -2,7 +2,7 @@
 
 SCRUBBED_ENV_VARS := OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GEMINI_API_KEY DEEPSEEK_API_KEY XAI_API_KEY GROQ_API_KEY ANTHROPIC_AUTH_TOKEN OPENAI_BASE_URL DOTENV_PATH DOTENV_FILE PYTHON_DOTENV_DISABLED
 GATE_PYTEST_CMD = PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal
-SCRUBBED_GATE_CMD = env -i PATH=".venv/bin:$$PATH" HOME="$$HOME" /bin/sh -c 'unset $(SCRUBBED_ENV_VARS); ruff check src/ tests/ && ruff format --check src/ tests/ && $(GATE_PYTEST_CMD)'
+SCRUBBED_GATE_CMD = env -i PATH=".venv/bin:$$PATH" HOME="$$HOME" PYTHON_DOTENV_DISABLED=1 /bin/sh -c 'unset $(SCRUBBED_ENV_VARS); export PYTHON_DOTENV_DISABLED=1; ruff check src/ tests/ && ruff format --check src/ tests/ && $(GATE_PYTEST_CMD)'
 
 # Format
 fmt:
@@ -37,7 +37,7 @@ gate-strict:
 
 # Serial gate: same checks without xdist, useful for debugging hangs.
 gate-serial:
-	@env -i PATH=".venv/bin:$$PATH" HOME="$$HOME" /bin/sh -c 'unset $(SCRUBBED_ENV_VARS); ruff check src/ tests/ && ruff format --check src/ tests/ && PYTHONPATH=src python -m pytest tests/ -q'
+	@env -i PATH=".venv/bin:$$PATH" HOME="$$HOME" PYTHON_DOTENV_DISABLED=1 /bin/sh -c 'unset $(SCRUBBED_ENV_VARS); export PYTHON_DOTENV_DISABLED=1; ruff check src/ tests/ && ruff format --check src/ tests/ && PYTHONPATH=src python -m pytest tests/ -q'
 
 test-integration:
 	@THEFORGE_RUN_INTEGRATION=1 THEFORGE_ALLOW_AGENT_CREDS=1 PYTHONPATH=src .venv/bin/python -m pytest tests/ -v -n auto --dist worksteal -m network_integration

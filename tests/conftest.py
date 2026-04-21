@@ -252,7 +252,14 @@ def _block_real_coordinator_runners():
 
     Tests that genuinely need one of these boundaries should patch that symbol
     explicitly in the test body or decorator stack.
+
+    Lifted when ``THEFORGE_ALLOW_AGENT_CREDS=1`` so that
+    ``make test-integration`` and other opt-in suites can exercise real
+    coordinator/runner paths end-to-end.
     """
+    if not _gate_scrub_enabled():
+        yield
+        return
 
     def _unexpected_call(symbol: str) -> AssertionError:
         return AssertionError(
