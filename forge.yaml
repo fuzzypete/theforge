@@ -28,7 +28,7 @@ workspace:
 validation:
   # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
   # gate_decision_key; do not add them back under validation:.
-  gate_command: ".venv/bin/ruff check src/ tests/ && .venv/bin/ruff format --check src/ tests/ && .venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
+  gate_command: "make gate"
   # Canonical intermediate test command dev agents should use while working.
   test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
   gate_timeout: 45
