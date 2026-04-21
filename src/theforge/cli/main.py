@@ -19,6 +19,7 @@ from theforge.cli import (
     sprint,
     status,
     telemetry,
+    todo,
 )
 from theforge.cli.init_commands import cmd_init, cmd_secrets_init, cmd_version
 
@@ -55,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry.register_parser(subparsers)
     daemon.register_parser(subparsers)
     eval_cmd.register_parser(subparsers)
+    todo.register_parser(subparsers)
     status.register_parsers(subparsers)
 
     return parser
@@ -87,6 +89,7 @@ def main() -> None:
         "telemetry": telemetry.cmd_telemetry,
         "daemon": daemon.cmd_daemon,
         "eval-preflight": eval_cmd.cmd_eval_preflight,
+        "todo": todo.cmd_todo,
         "status": status.cmd_status,
         "logs": status.cmd_logs,
         "stop": status.cmd_stop,
