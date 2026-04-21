@@ -1,6 +1,0 @@
-models:
-- claude/sonnet
-overrides:
-  dev:
-    provider: anthropic
-project: test
