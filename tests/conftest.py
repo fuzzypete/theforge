@@ -5,11 +5,13 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket as _socket_module
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from theforge.config import ModelProfile
+from theforge.config import SCRUBBED_ENV_VARS, SCRUBBED_HOME_PATHS, ModelProfile
 
 # ---------------------------------------------------------------------------
 # Global network guard — installed at conftest load time
@@ -71,6 +73,57 @@ class _BlockedSocket(_REAL_SOCKET):
 
 # Install the guard before any test module is imported.
 _socket_module.socket = _BlockedSocket
+
+
+def _gate_scrub_enabled() -> bool:
+    return os.environ.get("THEFORGE_ALLOW_AGENT_CREDS") != "1"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _scrub_agent_credentials_for_gate():
+    """Strip agent credentials/auth state unless explicitly opted out.
+
+    This mirrors the Makefile gate scrub so direct pytest runs in a dirty shell
+    still enforce the same minimum isolation contract.
+    """
+    if not _gate_scrub_enabled():
+        yield
+        return
+
+    stripped = sorted(name for name in SCRUBBED_ENV_VARS if name in os.environ)
+    original_env = {name: os.environ.get(name) for name in SCRUBBED_ENV_VARS}
+    original_home = os.environ.get("HOME")
+
+    for name in SCRUBBED_ENV_VARS:
+        os.environ.pop(name, None)
+    os.environ["PYTHON_DOTENV_DISABLED"] = "1"
+
+    with tempfile.TemporaryDirectory(prefix="theforge-gate-home-") as tmp_home:
+        scrubbed_home = Path(tmp_home)
+        for rel_path in SCRUBBED_HOME_PATHS:
+            target = scrubbed_home / rel_path
+            if rel_path.suffix:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+        os.environ["HOME"] = str(scrubbed_home)
+        print(
+            "[theforge-test-guard] scrubbed agent credentials: "
+            + (", ".join(stripped) if stripped else "none")
+        )
+        try:
+            yield
+        finally:
+            if original_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = original_home
+            for name, value in original_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
 
 @pytest.fixture(autouse=True)
@@ -202,7 +255,9 @@ def _block_real_coordinator_runners():
     """
 
     def _unexpected_call(symbol: str) -> AssertionError:
-        return AssertionError(f"Test hit real {symbol}; patch {symbol} explicitly.")
+        return AssertionError(
+            f"real agent call blocked by gate scrub: {symbol}; patch {symbol} explicitly."
+        )
 
     with (
         patch(
@@ -228,6 +283,34 @@ def _block_real_coordinator_runners():
         patch(
             "theforge.coordinator.dev_phase.run_agent",
             side_effect=_unexpected_call("theforge.coordinator.dev_phase.run_agent"),
+        ),
+        patch(
+            "theforge.coordinator.workspace.run_agent",
+            side_effect=_unexpected_call("theforge.coordinator.workspace.run_agent"),
+        ),
+        patch(
+            "theforge.ideate.run_agent",
+            side_effect=_unexpected_call("theforge.ideate.run_agent"),
+        ),
+        patch(
+            "theforge.ideate.run_agent_pool",
+            side_effect=_unexpected_call("theforge.ideate.run_agent_pool"),
+        ),
+        patch(
+            "theforge.cli.providers.run_api_agent",
+            side_effect=_unexpected_call("theforge.cli.providers.run_api_agent"),
+        ),
+        patch(
+            "theforge.runners.run_agent",
+            side_effect=_unexpected_call("theforge.runners.run_agent"),
+        ),
+        patch(
+            "theforge.runners.run_agent_pool",
+            side_effect=_unexpected_call("theforge.runners.run_agent_pool"),
+        ),
+        patch(
+            "theforge.runners.run_api_agent",
+            side_effect=_unexpected_call("theforge.runners.run_api_agent"),
         ),
     ):
         yield
