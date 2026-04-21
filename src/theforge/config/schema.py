@@ -24,9 +24,11 @@ if TYPE_CHECKING:
 class ModelRef:
     """Transport/model atom — reusable core of every phase config.
 
-    Exactly one of cli/provider should be set, matching the same mutual-exclusion
-    convention as ModelProfile. All transport, timeout, and runtime-limit fields
-    live here so phase wrappers never need to duplicate them.
+    Dispatch reads the embedded TransportSpec. ``cli`` and ``provider`` remain
+    as identity fields (provider keys auth and pricing; cli identifies the
+    binary for CLI dispatch). The XOR constraint between them is no longer
+    enforced — TransportSpec.kind is the single source of truth for how a
+    ref is executed, and is auto-populated from cli/provider when omitted.
 
     Adding a new model-backed phase requires only a new wrapper dataclass that
     embeds a ModelRef — no transport fields are copy-pasted.
@@ -55,11 +57,12 @@ class ModelRef:
     transport: TransportSpec | None = None
 
     def __post_init__(self) -> None:
-        if self.cli and self.provider:
-            raise ValueError(
-                f"ModelRef for model {self.model!r} cannot have both 'cli' and 'provider' set. "
-                "Use one transport only."
-            )
+        if self.transport is None and (self.cli or self.provider):
+            from .models import infer_transport
+
+            inferred = infer_transport(self.cli, self.provider)
+            if inferred is not None:
+                object.__setattr__(self, "transport", inferred)
 
 
 @dataclass(frozen=True)

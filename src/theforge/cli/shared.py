@@ -280,6 +280,10 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
         model=model,
         base_url=base_url,
         budget_usd=config.dev_profile.budget_usd,
+        # Clear transport so ModelProfile.__post_init__ re-infers it from the
+        # new cli/provider pair. Without this, the prior transport (e.g.
+        # claude CLI) would persist and dispatch would still go CLI.
+        transport=None,
     )
     return replace(config, dev_profile=new_dev)
 

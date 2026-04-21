@@ -94,7 +94,11 @@ class ModelProfile:
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
-    # Transport — exactly one of cli/provider is set
+    # Transport identity — ``transport`` below is the single source of truth for
+    # runtime dispatch. ``cli`` names a CLI binary ("claude"/"codex"/"gemini")
+    # and ``provider`` keys auth and pricing ("anthropic"/"openai"/...). Both
+    # may coexist; when set without an explicit transport, __post_init__ infers
+    # a canonical TransportSpec (cli wins).
     cli: str | None = None  # "claude", "codex", "gemini"
     provider: str | None = None  # "anthropic", "openai", "google"
     # Optional
@@ -119,6 +123,14 @@ class ModelProfile:
     # have not been migrated yet.
     transport: TransportSpec | None = None
 
+    def __post_init__(self) -> None:
+        if self.transport is None and (self.cli or self.provider):
+            from .models import infer_transport
+
+            inferred = infer_transport(self.cli, self.provider)
+            if inferred is not None:
+                object.__setattr__(self, "transport", inferred)
+
     @property
     def models(self) -> tuple[str, ...]:
         """Full preference list: primary model followed by fallbacks."""
@@ -128,8 +140,9 @@ class ModelProfile:
     def mode(self) -> str:
         """Transport kind for runtime dispatch: 'cli' or 'api'.
 
-        Reads TransportSpec.kind when the profile carries an explicit transport;
-        otherwise falls back to inferring from cli/provider for legacy callers.
+        Reads TransportSpec.kind — the single source of truth for dispatch.
+        Falls back to cli/provider inference only when transport is absent
+        (e.g. ad-hoc dataclasses with neither cli nor provider set).
         """
         if self.transport is not None:
             return self.transport.kind
@@ -211,8 +224,10 @@ class PlanConfig:
     Disabled by default; forge.yaml sets enabled: true to opt in.
     This keeps existing test configurations unaffected.
 
-    Transport — exactly one of cli/provider should be set (cli is the default).
-    Field semantics match ModelProfile: cli=binary name, model=identifier, provider=API transport.
+    Field semantics match ModelProfile: cli names a CLI binary, provider keys
+    auth/pricing, model is the identifier. Either or both may be set; when both
+    are supplied the coordinator resolves plan dispatch via the same transport
+    inference as ModelProfile.
     """
 
     enabled: bool = False

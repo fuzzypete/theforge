@@ -193,13 +193,22 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.plan.enabled is False
 
-    def test_plan_cli_and_provider_mutual_exclusion(self, tmp_path):
+    def test_plan_cli_and_provider_both_set_ok(self, tmp_path):
+        """Both cli and provider may coexist in plan config; transport is dispatch truth."""
         config_path = _write_config(
             {"plan": {"enabled": True, "cli": "claude", "provider": "openai"}},
             tmp_path,
         )
-        with pytest.raises(ValueError, match="cannot have both"):
-            load_config(config_path)
+        # load_config must not raise for XOR: the invariant is removed as an
+        # operator-enforced constraint. Provider credentials and SDK availability
+        # are still validated eagerly by load_config, so supply a stub key and
+        # short-circuit the SDK import check (CI installs .[dev] without SDKs).
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
+            config = load_config(config_path)
+        assert config.plan.enabled is True
 
     def test_plan_agent_review_defaults_disabled(self, tmp_path):
         config_path = _write_config({"project": "test"}, tmp_path)
@@ -484,6 +493,54 @@ class TestAllowedToolsConfig:
 
         assert overridden.provider == "openai"
         assert overridden.allowed_tools == API_PROVIDER_DEFAULT_TOOLS
+
+    def test_apply_profile_overrides_provider_switch_clears_cli_and_retargets_transport(self):
+        """Overriding a CLI base with 'provider' must flip dispatch to API transport."""
+        base = ModelProfile(
+            name="reviewer",
+            cli="claude",
+            provider=None,
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+        )
+        # Sanity: base is CLI-dispatched
+        assert base.transport is not None
+        assert base.transport.kind == "cli"
+
+        overridden = _apply_profile_overrides(
+            base,
+            {"provider": "anthropic", "model": "sonnet"},
+        )
+
+        assert overridden.cli is None
+        assert overridden.provider == "anthropic"
+        assert overridden.transport is not None
+        assert overridden.transport.kind == "api"
+        assert overridden.transport.runner == "anthropic"
+
+    def test_apply_profile_overrides_cli_switch_clears_provider_and_retargets_transport(self):
+        """Overriding an API base with 'cli' must flip dispatch to CLI transport."""
+        base = ModelProfile(
+            name="reviewer",
+            cli=None,
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=API_PROVIDER_DEFAULT_TOOLS,
+        )
+        assert base.transport is not None
+        assert base.transport.kind == "api"
+
+        overridden = _apply_profile_overrides(base, {"cli": "claude", "model": "sonnet"})
+
+        assert overridden.cli == "claude"
+        assert overridden.provider is None
+        assert overridden.transport is not None
+        assert overridden.transport.kind == "cli"
+        assert overridden.transport.executable == "claude"
 
     def test_apply_profile_overrides_cli_profile_keeps_existing_defaults(self):
         base = ModelProfile(

@@ -115,10 +115,6 @@ def _parse_plan_agent_review(
     par_provider = par_data.get("provider")
 
     if par_enabled:
-        if par_cli and par_provider:
-            raise ValueError(
-                "plan_agent_review cannot have both 'cli' and 'provider' set. Use one."
-            )
         if not par_cli and not par_provider:
             par_cli = "claude"
 

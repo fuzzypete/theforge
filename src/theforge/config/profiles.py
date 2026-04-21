@@ -115,9 +115,26 @@ _VALID_SANDBOX_MODES = {"workspace-write", "read-only", "none"}
 
 
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
-    """Apply partial forge.yaml profile overrides on top of an auto-assigned profile."""
+    """Apply partial forge.yaml profile overrides on top of an auto-assigned profile.
+
+    Transport switching: when the override supplies ``provider`` without ``cli``,
+    the base ``cli`` is cleared so dispatch routes to the API adapter. The
+    inverse applies when ``cli`` is supplied without ``provider``. The resulting
+    ModelProfile is constructed with ``transport=None`` so ``__post_init__``
+    re-infers the TransportSpec from the effective cli/provider pair.
+    """
     tools = data.get("allowed_tools")
-    effective_provider = data.get("provider") or base.provider
+    # Transport switching — mirror _apply_ref_overrides semantics
+    if "provider" in data and "cli" not in data:
+        new_cli: str | None = None
+        new_provider: str | None = data["provider"]
+    elif "cli" in data and "provider" not in data:
+        new_cli = data["cli"]
+        new_provider = None
+    else:
+        new_cli = data.get("cli", base.cli)
+        new_provider = data.get("provider", base.provider)
+    effective_provider = new_provider
     reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
@@ -138,8 +155,12 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
     )
     return ModelProfile(
         name=base.name,
-        cli=data.get("cli", base.cli),
-        provider=data.get("provider", base.provider),
+        cli=new_cli,
+        provider=new_provider,
+        # Transport=None forces __post_init__ to re-infer from the effective
+        # cli/provider pair so a transport switch override doesn't leave the
+        # base profile's old TransportSpec in place.
+        transport=None,
         model=model_str,
         fallback_models=fallback_models,
         budget_usd=float(data.get("budget_usd", base.budget_usd)),
@@ -277,8 +298,6 @@ def _parse_profile(
     cli = data.get("cli")
     provider = data.get("provider")
 
-    if cli and provider:
-        raise ValueError(f"Profile {name!r} cannot have both 'cli' and 'provider' set. Use one.")
     if not cli and not provider:
         # Fallback to default if neither is specified
         cli = default.cli

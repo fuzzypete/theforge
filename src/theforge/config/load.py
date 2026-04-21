@@ -356,12 +356,6 @@ def load_config(config_path: Path) -> ForgeConfig:
         "cli" not in plan_data and "model" not in plan_data and "provider" not in plan_data
     )
 
-    # Mutual exclusivity check before construction
-    if "cli" in plan_data and "provider" in plan_data and bool(plan_data.get("enabled", False)):
-        raise ValueError(
-            "forge.yaml plan section cannot have both 'cli' and 'provider' set. Use one."
-        )
-
     plan_timeout_medium_raw = plan_data.get("timeout_medium")
     plan_timeout_large_raw = plan_data.get("timeout_large")
 

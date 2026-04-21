@@ -50,15 +50,20 @@ class TestModelRef:
         assert ref.cli is None
         assert ref.provider is None
 
-    def test_both_cli_and_provider_raises(self):
-        with pytest.raises(ValueError, match="cannot have both"):
-            ModelRef(
-                model="sonnet",
-                cli="claude",
-                provider="anthropic",
-                budget_usd=1.0,
-                timeout_seconds=300,
-            )
+    def test_both_cli_and_provider_allowed(self):
+        """XOR invariant removed: both fields may coexist; transport is the dispatch truth."""
+        ref = ModelRef(
+            model="sonnet",
+            cli="claude",
+            provider="anthropic",
+            budget_usd=1.0,
+            timeout_seconds=300,
+        )
+        assert ref.cli == "claude"
+        assert ref.provider == "anthropic"
+        assert ref.transport is not None
+        # cli wins inference: a ref naming a CLI binary dispatches via CLI
+        assert ref.transport.kind == "cli"
 
     def test_optional_fields_default(self):
         ref = ModelRef(model="sonnet", cli="claude", budget_usd=1.0, timeout_seconds=300)
@@ -310,11 +315,12 @@ class TestDeriveRolesOverrides:
         assert ra.plan.validate_spec is False
 
     def test_switch_to_provider_transport_clears_cli(self):
-        """Overriding to 'provider' without explicit 'cli: None' must not raise ValueError.
+        """Overriding to 'provider' switches transport to API and clears cli.
 
-        derive_roles() produces refs with cli set (from ModelInfo). If _apply_ref_overrides
-        naively merged {'provider': 'anthropic'} without clearing cli, ModelRef.__post_init__
-        would raise 'cannot have both cli and provider set'.
+        derive_roles() produces refs with cli set (from ModelInfo). When a caller
+        overrides to ``provider``, _apply_ref_overrides treats it as a transport
+        switch and clears cli so the resulting ref unambiguously dispatches via
+        the API adapter.
         """
         ra = derive_roles(
             ["claude/sonnet"],
