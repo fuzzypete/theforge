@@ -193,13 +193,18 @@ class TestLoadConfig:
         config = load_config(config_path)
         assert config.plan.enabled is False
 
-    def test_plan_cli_and_provider_mutual_exclusion(self, tmp_path):
+    def test_plan_cli_and_provider_both_set_ok(self, tmp_path):
+        """Both cli and provider may coexist in plan config; transport is dispatch truth."""
         config_path = _write_config(
             {"plan": {"enabled": True, "cli": "claude", "provider": "openai"}},
             tmp_path,
         )
-        with pytest.raises(ValueError, match="cannot have both"):
-            load_config(config_path)
+        # load_config must not raise: the XOR invariant is removed as an
+        # operator-enforced constraint. When both are supplied, load_config
+        # still resolves PlanConfig with one transport (cli), matching the
+        # existing plan loader convention.
+        config = load_config(config_path)
+        assert config.plan.enabled is True
 
     def test_plan_agent_review_defaults_disabled(self, tmp_path):
         config_path = _write_config({"project": "test"}, tmp_path)

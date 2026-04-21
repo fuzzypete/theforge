@@ -73,6 +73,41 @@ _TRANSPORT_GOOGLE_API = TransportSpec(kind="api", runner="google")
 _TRANSPORT_DEEPSEEK_API = TransportSpec(kind="api", runner="deepseek")
 
 
+_CLI_TRANSPORT_MAP: dict[str, TransportSpec] = {
+    "claude": _TRANSPORT_CLAUDE_CLI,
+    "codex": _TRANSPORT_CODEX_CLI,
+    "gemini": _TRANSPORT_GEMINI_CLI,
+}
+_PROVIDER_API_TRANSPORT_MAP: dict[str, TransportSpec] = {
+    "anthropic": _TRANSPORT_ANTHROPIC_API,
+    "openai": _TRANSPORT_OPENAI_API,
+    "google": _TRANSPORT_GOOGLE_API,
+    "deepseek": _TRANSPORT_DEEPSEEK_API,
+}
+
+
+def infer_transport(
+    cli: str | None,
+    provider: str | None,
+) -> TransportSpec | None:
+    """Infer the canonical TransportSpec from legacy cli/provider fields.
+
+    Dispatch should ultimately read TransportSpec.kind directly. This helper
+    bridges the gap: when a caller constructs a profile without supplying an
+    explicit TransportSpec, this function produces one so dispatch has a
+    single source of truth.
+
+    ``cli`` wins when both are supplied — a profile that names a CLI binary
+    is dispatched via that binary. The caller can still set ``transport``
+    explicitly to override this inference.
+    """
+    if cli and cli in _CLI_TRANSPORT_MAP:
+        return _CLI_TRANSPORT_MAP[cli]
+    if provider and provider in _PROVIDER_API_TRANSPORT_MAP:
+        return _PROVIDER_API_TRANSPORT_MAP[provider]
+    return None
+
+
 _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
 
 

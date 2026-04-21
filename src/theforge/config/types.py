@@ -119,6 +119,14 @@ class ModelProfile:
     # have not been migrated yet.
     transport: TransportSpec | None = None
 
+    def __post_init__(self) -> None:
+        if self.transport is None and (self.cli or self.provider):
+            from .models import infer_transport
+
+            inferred = infer_transport(self.cli, self.provider)
+            if inferred is not None:
+                object.__setattr__(self, "transport", inferred)
+
     @property
     def models(self) -> tuple[str, ...]:
         """Full preference list: primary model followed by fallbacks."""
@@ -128,8 +136,9 @@ class ModelProfile:
     def mode(self) -> str:
         """Transport kind for runtime dispatch: 'cli' or 'api'.
 
-        Reads TransportSpec.kind when the profile carries an explicit transport;
-        otherwise falls back to inferring from cli/provider for legacy callers.
+        Reads TransportSpec.kind — the single source of truth for dispatch.
+        Falls back to cli/provider inference only when transport is absent
+        (e.g. ad-hoc dataclasses with neither cli nor provider set).
         """
         if self.transport is not None:
             return self.transport.kind

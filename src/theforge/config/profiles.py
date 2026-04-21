@@ -277,8 +277,6 @@ def _parse_profile(
     cli = data.get("cli")
     provider = data.get("provider")
 
-    if cli and provider:
-        raise ValueError(f"Profile {name!r} cannot have both 'cli' and 'provider' set. Use one.")
     if not cli and not provider:
         # Fallback to default if neither is specified
         cli = default.cli

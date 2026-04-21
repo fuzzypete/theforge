@@ -360,16 +360,29 @@ def _find_registry_info_for_profile(profile: ModelProfile) -> tuple[int, int]:
 
 
 def _find_registry_key_for_profile(profile: ModelProfile) -> str | None:
-    """Return the MODEL_REGISTRY key for a profile, or None if unknown."""
+    """Return the MODEL_REGISTRY key for a profile, or None if unknown.
+
+    Matches by TransportSpec (single source of dispatch truth) plus model name.
+    Falls back to cli/provider matching for profiles without an explicit
+    transport.
+    """
+    profile_transport = profile.transport
     for key, info in MODEL_REGISTRY.items():
-        if profile.cli is not None:
-            if info.cli == profile.cli and info.model == profile.model:
+        if info.model != profile.model:
+            continue
+        if profile_transport is not None and info.transport is not None:
+            if (
+                info.transport.kind == profile_transport.kind
+                and info.transport.runner == profile_transport.runner
+            ):
                 return key
             continue
+        if profile.cli is not None and info.cli == profile.cli:
+            return key
         if (
-            profile.provider is not None
+            profile.cli is None
+            and profile.provider is not None
             and info.provider == profile.provider
-            and info.model == profile.model
         ):
             return key
     return None

@@ -351,15 +351,20 @@ def _maybe_run_api_fallback(
 def _profile_transport_kind(profile: ModelProfile) -> str:
     """Return the TransportSpec.kind for a ModelProfile: 'cli' or 'api'.
 
-    This is the sole source of truth for runner dispatch. When the profile
-    carries an explicit TransportSpec (set by the config bridge from the
-    AgentSpec registry), its kind wins — profiles derived from AgentSpec can
-    declare API transport even for providers whose default is CLI.
-    Provider-string switching lives inside adapters, not here.
+    TransportSpec is the sole source of truth for runner dispatch. Profile
+    construction auto-populates transport from cli/provider when not set
+    explicitly, so this read is always authoritative.
     """
     if profile.transport is not None:
         return profile.transport.kind
     return "api" if profile.provider else "cli"
+
+
+def _profile_cli_runner(profile: ModelProfile) -> str | None:
+    """Return the CLI runner key for dispatch (e.g. 'claude', 'codex', 'gemini')."""
+    if profile.transport is not None and profile.transport.kind == "cli":
+        return profile.transport.runner
+    return profile.cli
 
 
 def run_agent(
@@ -398,7 +403,7 @@ def run_agent(
             plain_text=plain_text,
         )
 
-    cli = profile.cli
+    cli = _profile_cli_runner(profile)
     api_fallback_profile = _build_api_fallback_profile(profile)
 
     if cli == "claude":
