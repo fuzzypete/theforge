@@ -200,9 +200,13 @@ class TestLoadConfig:
             tmp_path,
         )
         # load_config must not raise for XOR: the invariant is removed as an
-        # operator-enforced constraint. Provider credentials are still validated
-        # eagerly by load_config, so supply a stub key for the test.
-        with patch.dict("os.environ", {"OPENAI_API_KEY": "test"}):
+        # operator-enforced constraint. Provider credentials and SDK availability
+        # are still validated eagerly by load_config, so supply a stub key and
+        # short-circuit the SDK import check (CI installs .[dev] without SDKs).
+        with (
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test"}),
+            patch("importlib.import_module"),
+        ):
             config = load_config(config_path)
         assert config.plan.enabled is True
 
