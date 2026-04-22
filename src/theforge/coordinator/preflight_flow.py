@@ -40,6 +40,7 @@ from .preflight import (
     _apply_preflight_config,
     _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
+    _parse_preflight_complexity_score,
     _parse_preflight_contract_change,
     _parse_preflight_criteria_checked,
     _parse_preflight_likely_files,
@@ -299,6 +300,10 @@ def _run_preflight_phase(
         state.preflight_likely_files = _likely_files
         complexity = _parse_preflight_complexity(preflight_result.output)
         state.preflight_complexity = complexity
+        complexity_score = _parse_preflight_complexity_score(
+            preflight_result.output, fallback_band=complexity
+        )
+        state.preflight_complexity_score = complexity_score
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
         state.preflight_sufficiency = sufficiency
         work_type = _parse_preflight_work_type(preflight_result.output)
@@ -327,6 +332,13 @@ def _run_preflight_phase(
         if contract_change and complexity == "small":
             complexity = "medium"
             state.preflight_complexity = complexity
+            # Also bump the score so downstream consumers that read the raw
+            # number see the upgrade, not just the enum.
+            if (
+                state.preflight_complexity_score is not None
+                and state.preflight_complexity_score < 4
+            ):
+                state.preflight_complexity_score = 5
             _log(
                 "  ↑ contract_change=true: upgrading complexity small→medium "
                 "(cross-cutting blast radius)"
@@ -387,11 +399,17 @@ def _run_preflight_phase(
                 # upgrade complexity to at least medium.
                 if state.preflight_complexity == "small":
                     state.preflight_complexity = "medium"
+                    if (
+                        state.preflight_complexity_score is not None
+                        and state.preflight_complexity_score < 4
+                    ):
+                        state.preflight_complexity_score = 5
                 state.preflight_sufficiency = "needs_planning"
     else:
         # Agent failed — skip all parsers; hard-set conservative values so
         # downstream phases plan carefully despite missing classification.
         state.preflight_complexity = "large"
+        state.preflight_complexity_score = 9
         state.preflight_sufficiency = "needs_planning"
         state.preflight_work_type = "feature"
         state.preflight_bundle_candidate = False
@@ -434,6 +452,7 @@ def _run_preflight_phase(
         "verdict": verdict,
         "reason": reason,
         "complexity": state.preflight_complexity,
+        "complexity_score": state.preflight_complexity_score,
         "sufficiency": state.preflight_sufficiency,
         "contract_change": state.preflight_contract_change,
         "cost_usd": preflight_result.cost_usd,
