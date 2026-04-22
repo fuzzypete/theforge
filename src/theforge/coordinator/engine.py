@@ -791,6 +791,21 @@ def run_task(
                 f"complexity={_esc_record.complexity} outcome={_esc_outcome}"
             )
 
+            # ── Model capability profiles ──────────────────────────────
+            try:
+                from .model_profiles_bridge import update_profiles_from_run  # noqa: PLC0415
+
+                _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
+                update_profiles_from_run(
+                    profiles_path=_profiles_path,
+                    history_path=_esc_path,
+                    config=config,
+                    state=state,
+                    success=result.success,
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log_verbose(f"[model_profiles] update failed: {exc}")
+
         return result
 
 

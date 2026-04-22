@@ -1,0 +1,117 @@
+"""Seam test: CoordinatorState → model_profiles.yaml via the bridge."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from theforge.coordinator.model_profiles_bridge import (
+    build_run_outcome,
+    update_profiles_from_run,
+)
+from theforge.coordinator.state import (
+    CoordinatorState,
+    ReviewCycleMetadata,
+    ReviewIterationTelemetry,
+)
+
+
+@dataclass
+class _Profile:
+    name: str
+
+
+@dataclass
+class _Cfg:
+    project_root: str = "."
+    dev_profile: _Profile = None  # type: ignore[assignment]
+    preflight_profile: _Profile = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.dev_profile is None:
+            self.dev_profile = _Profile(name="sonnet")
+        if self.preflight_profile is None:
+            self.preflight_profile = _Profile(name="deepseek-r1")
+
+
+def _make_state(*, review_cycles: int = 1) -> CoordinatorState:
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.dev_trace_count = 2
+    # Populate cost via synthetic AgentResult-like objects? total_dev_cost sums
+    # over dev_results; easier to set dev_results to []; we set cost via synthetic
+    # entries.
+
+    # We don't have AgentResult import here — set a minimal stand-in that matches
+    # the .cost_usd attribute summed by total_dev_cost. A simple dataclass works.
+    @dataclass
+    class _AR:
+        cost_usd: float | None = 0.0
+
+    state.dev_results = [_AR(cost_usd=0.30), _AR(cost_usd=0.20)]
+    # preflight_result left as None (total_preflight_cost has a complex raw shape
+    # that isn't relevant to what we're asserting here).
+    # Set review cycle metadata + telemetry
+    for i in range(review_cycles):
+        state.review_cycle_metadata.append(
+            ReviewCycleMetadata(
+                pool_models=["gemini", "opus"],
+                successful=["gemini", "opus"],
+                failed=[],
+                synthesized=False,
+            )
+        )
+        state.review_iteration_telemetry.append(
+            ReviewIterationTelemetry(
+                iteration=i + 1,
+                max_iterations=3,
+                cost_usd=0.40,
+                duration_s=5.0,
+                verdict="APPROVE",
+                findings_by_severity={"P1": 0, "P2": 2},
+                new_findings_by_severity={},
+                repeated_findings_by_severity={},
+                novel_findings=0,
+                restated_findings=0,
+            )
+        )
+    return state
+
+
+def test_build_run_outcome_captures_dev_preflight_and_reviewers():
+    state = _make_state(review_cycles=2)
+    cfg = _Cfg()
+
+    outcome = build_run_outcome(cfg, state, success=True)
+    assert outcome.complexity == "medium"
+    assert outcome.dev_model == "sonnet"
+    assert outcome.dev_success is True
+    assert outcome.dev_iterations == 2
+    assert outcome.dev_cost_usd == 0.5
+    assert outcome.preflight_model == "deepseek-r1"
+    assert outcome.preflight_cost_usd == 0.0
+    # Two reviewers, two cycles each.
+    assert set(outcome.reviewers.keys()) == {"gemini", "opus"}
+    cycles, findings, cost = outcome.reviewers["gemini"]
+    assert cycles == 2
+    assert findings == 4  # 2 P2 per cycle * 2 cycles
+    assert round(cost, 2) == 0.40  # $0.40/cycle split 2 ways * 2 cycles = 0.40
+
+
+def test_update_profiles_from_run_writes_file(tmp_path):
+    state = _make_state(review_cycles=1)
+    cfg = _Cfg(project_root=str(tmp_path))
+    profiles_path = tmp_path / "model_profiles.yaml"
+
+    data = update_profiles_from_run(
+        profiles_path=profiles_path,
+        history_path=None,
+        config=cfg,
+        state=state,
+        success=True,
+    )
+
+    assert profiles_path.exists()
+    assert data["models"]["sonnet"]["dev"]["runs"] == 1
+    assert data["models"]["deepseek-r1"]["preflight"]["runs"] == 1
+    assert data["models"]["gemini"]["review"]["runs"] == 1
+    assert data["models"]["opus"]["review"]["runs"] == 1
