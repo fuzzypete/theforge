@@ -19,6 +19,7 @@ def _make_args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "issue": None,
         "run_id": None,
         "number": None,
+        "todo_args": [],
     }
     data.update(overrides)
     return argparse.Namespace(**data)
@@ -39,8 +40,36 @@ def test_parser_registers_todo_command():
     assert args.todo_action == "list"
 
 
+def test_parser_accepts_bare_todo_capture_text():
+    parser = build_parser()
+    args = parser.parse_args(["todo", "agent abstraction conflates provider/model/transport"])
+    assert args.command == "todo"
+    assert args.todo_action == "agent abstraction conflates provider/model/transport"
+
+
+def test_parser_accepts_bare_todo_capture_with_provenance_flags():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "todo",
+            "--from-sprint",
+            "issues-855",
+            "--issue",
+            "855",
+            "--run-id",
+            "run-123",
+            "check-config misreports API providers",
+        ]
+    )
+    assert args.command == "todo"
+    assert args.from_sprint == "issues-855"
+    assert args.issue == 855
+    assert args.run_id == "run-123"
+    assert args.todo_action == "check-config misreports API providers"
+
+
 @patch("theforge.cli.todo.subprocess.run")
-def test_cmd_todo_create_adds_draft_label_and_empty_body(mock_run, tmp_path, capsys):
+def test_cmd_todo_create_adds_draft_label(mock_run, tmp_path, capsys):
     mock_run.return_value = _proc(stdout="https://github.com/acme/repo/issues/123\n")
     args = _make_args(tmp_path)
 
@@ -60,8 +89,6 @@ def test_cmd_todo_create_adds_draft_label_and_empty_body(mock_run, tmp_path, cap
         "agent abstraction conflates provider/model/transport",
         "--label",
         "todo:draft",
-        "--body",
-        "",
     ]
     assert "issues/123" in capsys.readouterr().out
 
@@ -86,6 +113,17 @@ def test_cmd_todo_create_appends_provenance_block(mock_run, tmp_path):
     assert "- from_sprint: issues-855" in body
     assert "- issue: 855" in body
     assert "- run_id: run-123" in body
+
+
+@patch("theforge.cli.todo.subprocess.run")
+def test_cmd_todo_create_rejects_missing_text(mock_run, tmp_path, capsys):
+    args = _make_args(tmp_path, text=None)
+
+    rc = cmd_todo(args)
+
+    assert rc == 1
+    assert not mock_run.called
+    assert "todo text is required" in capsys.readouterr().err
 
 
 @patch("theforge.cli.todo.subprocess.run")
@@ -140,12 +178,14 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
         _proc(),
         _proc(),
         _proc(stdout='{"body": "existing body"}'),
+        _proc(returncode=0),
         _proc(),
         _proc(),
     ]
     args = _make_args(tmp_path, todo_action="triage", number=12, text=None)
     responses = iter(["bug,backend", "Sprint 12", "y", "y"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+    monkeypatch.setenv("EDITOR", "nano")
 
     rc = cmd_todo(args)
 
@@ -154,6 +194,10 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
     assert calls[0] == ["gh", "issue", "edit", "12", "--add-label", "bug,backend"]
     assert calls[1] == ["gh", "issue", "edit", "12", "--milestone", "Sprint 12"]
     assert calls[2] == ["gh", "issue", "view", "12", "--json", "body"]
-    assert calls[3][:5] == ["gh", "issue", "edit", "12", "--body-file"]
-    assert calls[4] == ["gh", "issue", "close", "12"]
+    assert calls[3][0] == "nano"
+    assert calls[3][1].endswith(".md")
+    assert calls[4][0:4] == ["gh", "issue", "edit", "12"]
+    assert calls[4][4] == "--body-file"
+    assert calls[4][5].endswith(".md")
+    assert calls[5] == ["gh", "issue", "close", "12"]
     assert "Closed todo #12" in capsys.readouterr().out

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -14,7 +16,7 @@ from theforge.cli.shared import _find_config
 TODO_DRAFT_LABEL = "todo:draft"
 
 
-def _project_root_from_args(args: argparse.Namespace) -> Path:
+def _project_root_from_args(args: argparse.Namespace) -> Path | None:
     config_path = Path(args.config).resolve() if getattr(args, "config", None) else _find_config()
     if config_path is None or not config_path.exists():
         print(
@@ -22,7 +24,7 @@ def _project_root_from_args(args: argparse.Namespace) -> Path:
             "or pass --config path/to/forge.yaml",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        return None
     return config_path.parent
 
 
@@ -52,20 +54,35 @@ def _format_provenance_block(args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def _editor_command() -> list[str]:
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if editor:
+        return shlex.split(editor)
+    return ["vi"]
+
+
 def _create_todo(args: argparse.Namespace) -> int:
     project_root = _project_root_from_args(args)
+    if project_root is None:
+        return 1
+
+    text = getattr(args, "text", None)
+    if text is None or not text.strip():
+        print("todo text is required", file=sys.stderr)
+        return 1
+
     body = _format_provenance_block(args)
     command = [
         "gh",
         "issue",
         "create",
         "--title",
-        args.text,
+        text,
         "--label",
         TODO_DRAFT_LABEL,
-        "--body",
-        body,
     ]
+    if body:
+        command.extend(["--body", body])
 
     proc = _run_gh(command, project_root)
     if proc.returncode != 0:
@@ -81,6 +98,8 @@ def _create_todo(args: argparse.Namespace) -> int:
 
 def _list_todos(args: argparse.Namespace) -> int:
     project_root = _project_root_from_args(args)
+    if project_root is None:
+        return 1
     proc = _run_gh(
         [
             "gh",
@@ -117,6 +136,8 @@ def _list_todos(args: argparse.Namespace) -> int:
 
 def _promote_todo(args: argparse.Namespace) -> int:
     project_root = _project_root_from_args(args)
+    if project_root is None:
+        return 1
     proc = _run_gh(
         ["gh", "issue", "edit", str(args.number), "--remove-label", TODO_DRAFT_LABEL],
         project_root,
@@ -131,6 +152,8 @@ def _promote_todo(args: argparse.Namespace) -> int:
 
 def _triage_todo(args: argparse.Namespace) -> int:
     project_root = _project_root_from_args(args)
+    if project_root is None:
+        return 1
     issue_number = str(args.number)
 
     print(f"Triage todo #{issue_number}")
@@ -169,15 +192,21 @@ def _triage_todo(args: argparse.Namespace) -> int:
 
         with tempfile.NamedTemporaryFile(
             "w+", encoding="utf-8", suffix=".md", delete=False
-        ) as handle:
-            temp_path = Path(handle.name)
-            handle.write(current_body)
-            handle.flush()
+        ) as tmp:
+            tmp.write(current_body)
+            tmp.flush()
+            temp_path = Path(tmp.name)
 
         try:
+            editor_proc = subprocess.run(
+                [*_editor_command(), str(temp_path)], cwd=str(project_root), timeout=30
+            )
+            if editor_proc.returncode != 0:
+                print("editor exited with a non-zero status", file=sys.stderr)
+                return 1
+
             edit_proc = _run_gh(
-                ["gh", "issue", "edit", issue_number, "--body-file", str(temp_path)],
-                project_root,
+                ["gh", "issue", "edit", issue_number, "--body-file", str(temp_path)], project_root
             )
             if edit_proc.returncode != 0:
                 err = (
@@ -203,12 +232,23 @@ def _triage_todo(args: argparse.Namespace) -> int:
 
 def cmd_todo(args: argparse.Namespace) -> int:
     action = getattr(args, "todo_action", None)
-    if action == "list":
+    extra_args = list(getattr(args, "todo_args", []))
+    number = getattr(args, "number", None)
+
+    if action == "list" and not extra_args:
         return _list_todos(args)
-    if action == "triage":
+    if action == "triage" and (number is not None or len(extra_args) == 1):
+        if number is None:
+            args.number = int(extra_args[0])
         return _triage_todo(args)
-    if action == "promote":
+    if action == "promote" and (number is not None or len(extra_args) == 1):
+        if number is None:
+            args.number = int(extra_args[0])
         return _promote_todo(args)
+
+    if action is not None:
+        text_parts = [action, *extra_args]
+        args.text = " ".join(text_parts)
     return _create_todo(args)
 
 
@@ -218,18 +258,6 @@ def register_parser(subparsers: object) -> None:
     parser.add_argument("--from-sprint", dest="from_sprint", help="Record originating sprint id")
     parser.add_argument("--issue", type=int, help="Record originating issue number")
     parser.add_argument("--run-id", dest="run_id", help="Record originating run id")
-
-    sub = parser.add_subparsers(dest="todo_action")
-
-    list_parser = sub.add_parser("list", help="List open todo draft issues")
-    list_parser.add_argument("--config", help=argparse.SUPPRESS)
-
-    triage_parser = sub.add_parser("triage", help="Interactively triage a todo draft")
-    triage_parser.add_argument("number", type=int, help="Issue number to triage")
-    triage_parser.add_argument("--config", help=argparse.SUPPRESS)
-
-    promote_parser = sub.add_parser("promote", help="Promote a todo draft to a normal issue")
-    promote_parser.add_argument("number", type=int, help="Issue number to promote")
-    promote_parser.add_argument("--config", help=argparse.SUPPRESS)
-
-    parser.add_argument("text", nargs="?", help="Todo title text")
+    parser.add_argument("todo_action", nargs="?", help="Subcommand name or todo title text")
+    parser.add_argument("todo_args", nargs="*", help=argparse.SUPPRESS)
+    parser.set_defaults(func=cmd_todo)
