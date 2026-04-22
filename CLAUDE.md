@@ -104,15 +104,46 @@ TheForge is a generic orchestrator — it must work for Python, Node, Go, Java, 
 or any other stack. Coordinator logic, prompt templates, task schemas, and CLI
 scaffolding must not assume a specific language, test framework, or build tool.
 
-- **No language-specific fields in shared data models.** `TaskStory`, `ForgeConfig`,
-  and coordinator state should not encode pytest, npm, go test, etc. as first-class
-  concepts. Use generic names (`test_target`, `gate_command`, `gate_debug_command`).
-- **No hardcoded tool commands in prompts.** Prompt templates should reference the
-  project's configured commands, not `make fmt`, `pytest`, or `npm test`.
-- **Stack-specific behavior belongs in `forge.yaml`.** Each project configures its
-  own gate command, debug command, setup command, etc. The coordinator just runs them.
-- **Self-hosting config is fine.** This repo's `forge.yaml`, `AGENTS.md`, and test
-  files are allowed to be Python-specific because this IS a Python project.
+#### Concrete convention rules
+- **Core orchestrator modules must be stack-neutral.** Code in shared coordinator,
+  task, sprint, and related config layers must not bake in assumptions about one
+  language, package manager, test runner, or repository layout.
+- **Shared schemas may not encode stack-specific concepts.** `TaskStory`,
+  `ForgeConfig`, coordinator state, and other shared models must not introduce
+  fields like `pytest_target`, `npm_script`, or similar stack-shaped concepts.
+  Use generic names such as `test_target`, `gate_command`, and
+  `gate_debug_command`.
+- **Prompt templates must reference configured commands, not literal tool
+  invocations.** Reusable prompts should talk about the configured gate/test
+  commands rather than embedding `make fmt`, `pytest`, `npm test`, `cargo test`,
+  or `go test`.
+- **Generated scaffolding must use generic names or omit the concept.** Reusable
+  examples and templates should prefer neutral placeholders like `test_target`
+  instead of assuming `tests/`, `src/`, `docs/`, or a language-specific layout.
+- **Stack-specific assumptions belong in `forge.yaml` or repo-local conventions,
+  not TheForge core.** Repo-local dogfooding config, self-hosting examples, and
+  clearly marked stack-specific docs may be specific; shared orchestrator code may
+  not.
+
+#### Reviewer smell list
+Treat the following as concrete smells in stack-neutral layers:
+- Shared models with `pytest_`, `npm_`, `cargo_`, `maven_`, or `gradle_` prefixes
+- Core prompt templates containing literal `make fmt`, `pytest`, `npm test`,
+  `cargo test`, or `go test`
+- Reusable prompt logic that hardcodes `src/`, `tests/`, or `docs/`
+- Language-specific story parsing in shared orchestrator code
+
+#### Mechanical enforcement scope
+The hard conventions check scans only stack-neutral layers:
+- `src/theforge/task/`
+- `src/theforge/coordinator/`
+- `src/theforge/sprint/`
+- shared schema modules
+- relevant shared config modules under `src/theforge/config/`
+
+It intentionally exempts repo-local dogfooding config such as `forge.yaml`,
+provider/adapter code, migration tests that mention old names, and docs/examples
+that are clearly marked as Python-specific examples.
 
 ## Pipeline Phases
 

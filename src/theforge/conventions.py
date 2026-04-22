@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ def check_hard_conventions(
         violations.extend(_check_test_mirrors(project_root))
     if config.no_scratch_files:
         violations.extend(_check_no_scratch_files(project_root, config.allowed_root_files))
+    violations.extend(_check_stack_neutrality(project_root))
     return violations
 
 
@@ -391,3 +393,154 @@ def _check_test_mirrors(project_root: Path) -> list[ConventionViolation]:
                 )
 
     return violations
+
+
+@dataclass(frozen=True)
+class _StackNeutralityRule:
+    pattern: re.Pattern[str]
+    violation_rule: str
+    convention_rule: str
+    description: str
+
+
+_STACK_NEUTRALITY_SCOPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "core orchestrator modules must be stack-neutral",
+        (
+            "src/theforge/task",
+            "src/theforge/coordinator",
+            "src/theforge/sprint",
+        ),
+    ),
+    (
+        "shared schemas may not encode stack-specific concepts",
+        (
+            "src/theforge/schemas.py",
+            "src/theforge/config/types.py",
+            "src/theforge/config/schema.py",
+            "src/theforge/config/models.py",
+        ),
+    ),
+    (
+        "stack-specific assumptions belong in forge.yaml or repo-local conventions, "
+        "not TheForge core",
+        (
+            "src/theforge/config/load.py",
+            "src/theforge/config/defaults.py",
+            "src/theforge/config/bridge.py",
+            "src/theforge/config/role_derivation.py",
+        ),
+    ),
+)
+
+_STACK_NEUTRALITY_RULES: tuple[_StackNeutralityRule, ...] = (
+    _StackNeutralityRule(
+        pattern=re.compile(r"\b(?:pytest_|npm_|cargo_|maven_|gradle_)[A-Za-z0-9_]*\b"),
+        violation_rule="stack_neutrality_shared_model_prefix",
+        convention_rule="shared schemas may not encode stack-specific concepts",
+        description=(
+            "shared models must not use stack-specific prefixes like pytest_/npm_/cargo_/"
+            "maven_/gradle_"
+        ),
+    ),
+    _StackNeutralityRule(
+        pattern=re.compile(r"\b(?:make fmt|pytest|npm test|cargo test|go test)\b"),
+        violation_rule="stack_neutrality_literal_tool_command",
+        convention_rule=(
+            "prompt templates must reference configured commands, not literal tool invocations"
+        ),
+        description=(
+            "core prompt logic must reference configured commands instead of literal "
+            "tool invocations"
+        ),
+    ),
+    _StackNeutralityRule(
+        pattern=re.compile(r"(?<![A-Za-z0-9_])(?:src/|tests/|docs/)(?![A-Za-z0-9_])"),
+        violation_rule="stack_neutrality_hardcoded_layout",
+        convention_rule=(
+            "generated scaffolding must use generic names (e.g. test_target) or omit the concept"
+        ),
+        description=(
+            "reusable prompt logic must not hardcode src/, tests/, or docs/ layout assumptions"
+        ),
+    ),
+    _StackNeutralityRule(
+        pattern=re.compile(r"language-specific story parsing", re.IGNORECASE),
+        violation_rule="stack_neutrality_language_specific_story_parsing",
+        convention_rule="core orchestrator modules must be stack-neutral",
+        description="story parsing must remain stack-neutral rather than language-specific",
+    ),
+)
+
+_STACK_NEUTRALITY_EXEMPT_MARKERS: tuple[str, ...] = (
+    "python-specific example",
+    "python specific example",
+)
+
+
+def _check_stack_neutrality(project_root: Path) -> list[ConventionViolation]:
+    violations: list[ConventionViolation] = []
+    for convention_rule, scoped_paths in _STACK_NEUTRALITY_SCOPES:
+        for scoped_path in scoped_paths:
+            path = project_root / scoped_path
+            if not path.exists():
+                continue
+            if path.is_file():
+                violations.extend(
+                    _scan_stack_neutrality_file(
+                        path,
+                        project_root=project_root,
+                        scoped_rule=convention_rule,
+                    )
+                )
+                continue
+            for py_file in sorted(path.rglob("*.py")):
+                violations.extend(
+                    _scan_stack_neutrality_file(
+                        py_file,
+                        project_root=project_root,
+                        scoped_rule=convention_rule,
+                    )
+                )
+    return violations
+
+
+def _scan_stack_neutrality_file(
+    path: Path,
+    *,
+    project_root: Path,
+    scoped_rule: str,
+) -> list[ConventionViolation]:
+    rel = str(path.relative_to(project_root))
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if _is_stack_neutrality_exempt(rel, text):
+        return []
+
+    violations: list[ConventionViolation] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        for rule in _STACK_NEUTRALITY_RULES:
+            match = rule.pattern.search(line)
+            if match is None:
+                continue
+            violations.append(
+                ConventionViolation(
+                    rule=rule.violation_rule,
+                    file=rel,
+                    detail=(
+                        f"line {line_number}: matched {match.group(0)!r}; "
+                        f"smell: {rule.description}; violates convention rule: "
+                        f"{rule.convention_rule}"
+                    ),
+                )
+            )
+    return violations
+
+
+def _is_stack_neutrality_exempt(rel_path: str, text: str) -> bool:
+    if rel_path == "forge.yaml":
+        return True
+    if "example" in rel_path.lower() and any(
+        marker in text.lower() for marker in _STACK_NEUTRALITY_EXEMPT_MARKERS
+    ):
+        return True
+    return False

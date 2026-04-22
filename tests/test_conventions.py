@@ -13,6 +13,7 @@ from theforge.conventions import (
     _check_hard_conventions_at_git_ref,
     _check_line_counts,
     _check_no_scratch_files,
+    _check_stack_neutrality,
     _check_test_mirrors,
     check_hard_conventions,
     new_hard_convention_violations_since_ref,
@@ -238,6 +239,66 @@ def test_allowed_root_files_whitelist_is_stack_neutral() -> None:
     assert "yarn.lock" not in _ALLOWED_ROOT_FILES
     assert "pnpm-lock.yaml" not in _ALLOWED_ROOT_FILES
     assert "bun.lockb" not in _ALLOWED_ROOT_FILES
+
+
+class TestStackNeutralityCheck:
+    def test_shared_model_prefix_smell_reports_file_line_and_rule(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "config" / "types.py",
+            "pytest_target = None\n",
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert len(violations) == 1
+        violation = violations[0]
+        assert violation.rule == "stack_neutrality_shared_model_prefix"
+        assert violation.file == "src/theforge/config/types.py"
+        assert "line 1" in violation.detail
+        assert "pytest_target" in violation.detail
+        assert "shared schemas may not encode stack-specific concepts" in violation.detail
+
+    def test_literal_tool_command_smell_reports_prompt_rule(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "task" / "dev_prompts.py",
+            'prompt = "run pytest before finishing"\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert len(violations) == 1
+        violation = violations[0]
+        assert violation.rule == "stack_neutrality_literal_tool_command"
+        assert violation.file == "src/theforge/task/dev_prompts.py"
+        assert "configured commands" in violation.detail
+
+    def test_hardcoded_layout_smell_reports_generic_scaffolding_rule(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "task" / "plan_prompts.py",
+            'template = "put tests in tests/"\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert len(violations) == 1
+        violation = violations[0]
+        assert violation.rule == "stack_neutrality_hardcoded_layout"
+        assert "generated scaffolding must use generic names" in violation.detail
+
+    def test_provider_adapter_code_is_out_of_scope(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "runners" / "adapters" / "openai.py",
+            'cmd = "pytest"\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert violations == []
+
+    def test_forge_yaml_is_exempt(self, tmp_path):
+        _write(tmp_path / "forge.yaml", 'validation:\n  gate_command: "pytest tests/ -v"\n')
+        violations = _check_stack_neutrality(tmp_path)
+        assert violations == []
+
+    def test_python_specific_example_marker_is_exempt(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "config" / "python_example.py",
+            '# Python-specific example\ncmd = "pytest tests/ -v"\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert violations == []
 
 
 class TestCheckHardConventions:

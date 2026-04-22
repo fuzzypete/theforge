@@ -486,13 +486,13 @@ def build_plan_prompt(
             - id: 1
               description: "<what this step does>"
               files:
-                - src/theforge/example.py
+                - path/to/example.file
               action: modify  # modify | create | delete
               details: "<concrete implementation details for this step>"
             - id: 2
               description: "<what this step does>"
               files:
-                - src/theforge/other.py
+                - path/to/other.file
               action: create
               details: "<concrete implementation details for this step>"
               depends_on: [1]
