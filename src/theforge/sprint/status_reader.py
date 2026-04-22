@@ -120,15 +120,12 @@ def _detail_from_live_story(story: dict) -> tuple[str, str | None]:
         parts = [part for part in (verdict, sufficiency) if isinstance(part, str) and part]
         if parts:
             return " / ".join(parts), complexity
+        if status_val == "waiting":
+            return "waiting", complexity
+        return "—", complexity
 
     if status_val == "waiting":
         return "waiting", complexity
-
-    if phase_val == "PREFLIGHT":
-        verdict = detail_data.get("preflight_verdict")
-        sufficiency = detail_data.get("preflight_sufficiency")
-        parts = [part for part in (verdict, sufficiency) if isinstance(part, str) and part]
-        return (" / ".join(parts) if parts else "—"), complexity
 
     if status_val in {"done", "failed", "skipped", "preserved"}:
         final_outcome = detail_data.get("final_outcome")
@@ -137,12 +134,6 @@ def _detail_from_live_story(story: dict) -> tuple[str, str | None]:
         if status_val == "failed" and phase_val:
             return phase_val, complexity
         return "—", complexity
-
-    if phase_val == "PREFLIGHT":
-        verdict = detail_data.get("preflight_verdict")
-        sufficiency = detail_data.get("preflight_sufficiency")
-        parts = [part for part in (verdict, sufficiency) if isinstance(part, str) and part]
-        return (" / ".join(parts) if parts else "—"), complexity
 
     if phase_val == "PLAN":
         current = detail_data.get("plan_attempt")

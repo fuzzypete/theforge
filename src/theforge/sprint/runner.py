@@ -532,21 +532,20 @@ def _make_worker_phase_fn(
             if phase:
                 worker_phases[slug] = phase
                 if state_writer is not None:
-                    _detail_updates: dict[str, object] = {}
-                    if phase == "DEV":
-                        _iteration = updates.get("iteration")
-                        if isinstance(_iteration, int):
-                            _detail_updates = {
-                                "review_cycle": max(_iteration, 0),
-                                "dev_iteration": _iteration,
-                            }
-                    elif phase == "VALIDATE":
-                        _detail_updates = {"gate_status": "running"}
-                    state_writer.update(
-                        slug,
-                        phase=phase,
-                        **({"detail": _detail_updates} if _detail_updates else {}),
+                    incoming_detail = updates.get("detail")
+                    _detail_updates: dict[str, object] = (
+                        dict(incoming_detail) if isinstance(incoming_detail, dict) else {}
                     )
+                    if phase == "VALIDATE" and not _detail_updates:
+                        _detail_updates = {"gate_status": "running"}
+                    update_kwargs: dict[str, object] = {"phase": phase}
+                    if "complexity" in updates:
+                        update_kwargs["complexity"] = updates["complexity"]
+                    if "cost_usd" in updates:
+                        update_kwargs["cost_usd"] = updates["cost_usd"]
+                    if _detail_updates:
+                        update_kwargs["detail"] = _detail_updates
+                    state_writer.update(slug, **update_kwargs)
             if phase == "PLAN_DONE" and plan_done is not None:
                 ws = updates.get("workspace_path", "")
                 if ws:

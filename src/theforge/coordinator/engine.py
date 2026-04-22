@@ -259,6 +259,11 @@ def _coordinator_loop(
                         "phase": "DEV",
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost,
+                        "complexity": state.preflight_complexity,
+                        "detail": {
+                            "review_cycle": state.review_cycle,
+                            "dev_iteration": state.dev_iteration,
+                        },
                     }
                 )
             state.budget.consume(review_cycle=state.review_cycle)

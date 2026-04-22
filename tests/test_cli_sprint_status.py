@@ -681,3 +681,121 @@ def test_state_writer_update_unknown_slug_is_noop(tmp_path: Path) -> None:
 
     # Should not raise, just ignore
     writer.update("nonexistent", status="done")
+
+
+def test_worker_phase_fn_forwards_coordinator_detail(tmp_path: Path) -> None:
+    """_make_worker_phase_fn must forward complexity/detail from coordinator updates.
+
+    Regression: a prior wrapper hardcoded DEV/VALIDATE detail and discarded
+    fields supplied by preflight/plan/review/validate phases, so the live
+    .state file never saw the real classification or gate decision.
+    """
+    import threading
+
+    from theforge.sprint.runner import _make_worker_phase_fn
+    from theforge.sprint.state_writer import SprintStateWriter
+
+    writer = SprintStateWriter("wf-run", tmp_path, "sprint")
+    writer.init(
+        [
+            {
+                "slug": "s1",
+                "path": "s1",
+                "status": "running",
+                "phase": None,
+                "cost_usd": 0.0,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "complexity": None,
+                "detail": {},
+            }
+        ]
+    )
+
+    fn = _make_worker_phase_fn(
+        slug="s1",
+        worker_phases={},
+        phase_lock=threading.Lock(),
+        outer_fn=None,
+        plan_done=None,
+        state_writer=writer,
+    )
+
+    state_path = tmp_path / ".forge" / "runs" / "wf-run.state"
+
+    # PREFLIGHT: complexity + verdict/sufficiency detail propagated
+    fn(
+        {
+            "phase": "PREFLIGHT",
+            "iteration": 0,
+            "cost_usd": 0.01,
+            "complexity": "medium",
+            "detail": {
+                "preflight_verdict": "PROCEED",
+                "preflight_sufficiency": "implementation_ready",
+            },
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    story = data["stories"][0]
+    assert story["phase"] == "PREFLIGHT"
+    assert story["complexity"] == "medium"
+    assert story["detail"]["preflight_verdict"] == "PROCEED"
+    assert story["detail"]["preflight_sufficiency"] == "implementation_ready"
+
+    # PLAN: plan_attempt/plan_max_attempts forwarded
+    fn(
+        {
+            "phase": "PLAN",
+            "iteration": 0,
+            "cost_usd": 0.1,
+            "complexity": "medium",
+            "detail": {"plan_attempt": 1, "plan_max_attempts": 3},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"plan_attempt": 1, "plan_max_attempts": 3}
+
+    # DEV: review_cycle comes from coordinator detail, NOT iteration
+    fn(
+        {
+            "phase": "DEV",
+            "iteration": 2,
+            "cost_usd": 0.5,
+            "complexity": "medium",
+            "detail": {"review_cycle": 0, "dev_iteration": 2},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"review_cycle": 0, "dev_iteration": 2}
+
+    # REVIEW: P1/P2 counts forwarded
+    fn(
+        {
+            "phase": "REVIEW",
+            "iteration": 1,
+            "cost_usd": 0.7,
+            "complexity": "medium",
+            "detail": {"review_p1": 1, "review_p2": 2},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"review_p1": 1, "review_p2": 2}
+
+    # VALIDATE with gate_status: real decision preserved, not overwritten
+    fn(
+        {
+            "phase": "VALIDATE",
+            "iteration": 2,
+            "cost_usd": 0.9,
+            "complexity": "medium",
+            "detail": {"gate_status": "PASS"},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"gate_status": "PASS"}
+
+    # VALIDATE without detail: falls back to 'running'
+    fn({"phase": "VALIDATE", "iteration": 3, "cost_usd": 1.0})
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"gate_status": "running"}
