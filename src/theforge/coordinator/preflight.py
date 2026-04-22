@@ -670,6 +670,19 @@ def _apply_preflight_config(
             _replace_kwargs["review_pool"] = _decision.code_reviewers
         else:
             _log("  [adaptive] review_pool: explicit override preserved")
+    if _decision.plan_reviewers:
+        if "plan_agent_review" not in _explicit_roles:
+            _replace_kwargs["plan_agent_review"] = _dc_replace(
+                config.plan_agent_review,
+                enabled=True,
+                pool=_decision.plan_reviewers,
+            )
+            _log_verbose(
+                f"[adaptive] plan_agent_review: enabled=True, "
+                f"pool={[p.model for p in _decision.plan_reviewers]}"
+            )
+        else:
+            _log("  [adaptive] plan_agent_review: explicit override preserved")
     config = _dc_replace(config, **_replace_kwargs)
 
     state._adaptive_decision = _decision
