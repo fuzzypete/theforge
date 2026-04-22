@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+from theforge.artifacts import AUDIT_PATH, ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
 from theforge.task import TaskStory
@@ -371,6 +373,71 @@ def _find_worktree_for_branch(branch: str, project_root: Path) -> Path | None:
             if line[len("branch ") :] == f"refs/heads/{branch}":
                 return current_path
     return None
+
+
+def sweep_orphan_worktrees(project_root: Path, config: ForgeConfig) -> None:
+    """Remove orphaned or safely-removable worktrees under .forge/worktrees/."""
+    worktrees_root = project_root / ".forge" / "worktrees"
+    if not worktrees_root.exists():
+        return
+
+    ok, output = _cu._run_shell("git worktree list --porcelain", project_root)
+    registered: dict[Path, str | None] = {}
+    if ok:
+        current_path: Path | None = None
+        for line in output.splitlines():
+            if line.startswith("worktree "):
+                current_path = Path(line[len("worktree ") :]).resolve()
+                registered[current_path] = None
+            elif line.startswith("branch ") and current_path is not None:
+                ref = line[len("branch ") :]
+                if ref.startswith("refs/heads/"):
+                    registered[current_path] = ref.removeprefix("refs/heads/")
+
+    lock_dir = project_root / ".forge" / "locks"
+    base_branch = config.workspace.base_branch
+    remote_base = f"origin/{base_branch}"
+
+    for candidate in worktrees_root.iterdir():
+        if not candidate.is_dir():
+            continue
+        slug = candidate.name
+        if (lock_dir / f"{slug}.lock").exists():
+            continue
+        if (candidate / ESCALATED_MARKER_PATH).exists():
+            continue
+
+        resolved_candidate = candidate.resolve()
+        branch_name = registered.get(resolved_candidate)
+        if branch_name is None and resolved_candidate not in registered:
+            files = [
+                p.relative_to(candidate).as_posix() for p in candidate.rglob("*") if p.is_file()
+            ]
+            if not files or set(files) <= {AUDIT_PATH.as_posix()}:
+                shutil.rmtree(candidate, ignore_errors=True)
+            continue
+
+        if branch_name is None:
+            continue
+        ok_status, status_out = _cu._run_shell("git status --porcelain", candidate)
+        if not ok_status or status_out.strip():
+            continue
+        ok_gone, gone_out = _cu._run_shell(
+            f"git rev-parse --verify --quiet refs/remotes/origin/{branch_name}", project_root
+        )
+        branch_gone = not ok_gone or not gone_out.strip()
+        ok_merged, merged_out = _cu._run_shell(f"git branch --merged {remote_base}", project_root)
+        merged = False
+        if ok_merged:
+            merged_branches = {
+                line.strip().lstrip("* ").strip()
+                for line in merged_out.splitlines()
+                if line.strip()
+            }
+            merged = branch_name in merged_branches
+        if not (merged or branch_gone):
+            continue
+        _remove_worktree(candidate, branch_name, project_root, "sweep: merged or branch gone")
 
 
 def _check_behind_origin(config: ForgeConfig) -> None:
