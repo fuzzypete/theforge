@@ -92,18 +92,7 @@ class TestRunAgentPool:
             allowed_tools=(),
         )
         mock_proc = _make_stream_mock([_result_line(result="solo review", total_cost_usd=0.20)])
-        with (
-            patch(
-                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
-                side_effect=lambda cmd, wd, extra_write_roots=(): [
-                    "sandbox-exec",
-                    "-p",
-                    "profile",
-                    *cmd,
-                ],
-            ),
-            patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc),
-        ):
+        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
             results = run_agent_pool(
                 prompt="review this",
                 profiles=[profile],
