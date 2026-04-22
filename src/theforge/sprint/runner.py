@@ -21,6 +21,7 @@ from ..coordinator.notify import _notify
 from ..coordinator.ntfy_client import _ntfy_publish
 from ..coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from ..coordinator.util import _fmt_duration, _generate_run_id
+from ..coordinator.workspace import sweep_orphan_worktrees
 from ..log_util import _log_line
 from ..task import TaskStory
 from .audit import (
@@ -727,6 +728,7 @@ def run_sprint(
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
+    sweep_orphan_worktrees(config.project_root, config)
 
     max_parallel = (
         resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel

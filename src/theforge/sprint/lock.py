@@ -9,31 +9,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-import yaml
-
+from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.pid import _is_pid_alive
 
 
 def _is_escalated_worktree(worktree_path: Path) -> bool:
-    """Return True when the worktree's audit marks it as an escalated, preserved run.
-
-    Escalated worktrees are intentionally kept for human triage after the
-    coordinator terminates in the ESCALATE phase.  They are not collisions.
-    """
-    audit_path = worktree_path / ".forge" / "audit.yaml"
-    if not audit_path.exists():
-        return False
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError):
-        return False
-    if not isinstance(data, dict):
-        return False
-    outcome = data.get("outcome")
-    if not isinstance(outcome, dict):
-        return False
-    return outcome.get("final_phase") == "ESCALATE"
+    """Return True when the worktree is marked as an escalated, preserved run."""
+    return (worktree_path / ESCALATED_MARKER_PATH).exists()
 
 
 class SprintConflictError(Exception):

@@ -8,6 +8,7 @@ PLAN_PATH = Path(".forge/plan.md")
 LEGACY_PLAN_PATH = Path("forge_plan.md")
 AUDIT_PATH = Path(".forge/audit.yaml")
 LEGACY_AUDIT_PATH = Path("forge_audit.yaml")
+ESCALATED_MARKER_PATH = Path(".forge/escalated")
 
 
 def ensure_parent_dir(path: Path) -> None:

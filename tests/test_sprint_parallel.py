@@ -1009,6 +1009,7 @@ class TestParallelMergeOrderingParallelMode:
         )
 
         state = CoordinatorState()
+        state.log_dir = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a"
         state.preflight_verdict = "PROCEED"
         mock_preflight = MagicMock()
         mock_preflight.cost_usd = 1.0
@@ -1061,7 +1062,11 @@ class TestParallelMergeOrderingParallelMode:
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
-        audit = yaml.safe_load((tmp_path / "story-a" / ".forge" / "audit.yaml").read_text())
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
+            ).read_text()
+        )
         assert audit["merge"]["merged"] is True
         assert audit["landing_status"] == "landed"
         assert audit["error"] is None
@@ -1138,7 +1143,7 @@ class TestParallelMergeOrderingParallelMode:
         ):
             sprint = run_sprint(config, manifest_path)
 
-        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
@@ -1171,6 +1176,7 @@ class TestParallelMergeOrderingParallelMode:
         )
 
         state = CoordinatorState()
+        state.log_dir = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a"
         state.preflight_verdict = "PROCEED"
         mock_preflight = MagicMock()
         mock_preflight.cost_usd = 1.0
@@ -1221,7 +1227,7 @@ class TestParallelMergeOrderingParallelMode:
         ):
             sprint = run_sprint(config, manifest_path)
 
-        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
         assert sprint.specs_succeeded == 1
         assert sprint.specs_failed == 0
@@ -1243,6 +1249,7 @@ class TestParallelMergeOrderingParallelMode:
         config = _make_config(tmp_path)
 
         state = CoordinatorState()
+        state.log_dir = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a"
         state.preflight_verdict = "PROCEED"
         mock_preflight = MagicMock()
         mock_preflight.cost_usd = 1.0
@@ -1270,7 +1277,7 @@ class TestParallelMergeOrderingParallelMode:
         ):
             sprint = run_sprint(config, manifest_path, auto_merge=True)
 
-        audit_path = tmp_path / "story-a" / ".forge" / "audit.yaml"
+        audit_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1

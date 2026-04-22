@@ -804,6 +804,7 @@ class TestCampaignAuditWrites:
         from theforge.review import ReviewResult
 
         state = CoordinatorState()
+        state.log_dir = tmp_path / ".forge" / "logs" / "Test Campaign" / "my-spec"
         meta = ReviewCycleMetadata(
             pool_models=["opus", "codex"],
             successful=["opus"],
@@ -833,8 +834,8 @@ class TestCampaignAuditWrites:
         )
 
     @patch("theforge.sprint.runner.run_task")
-    def test_campaign_writes_worktree_audit(self, mock_run_task, tmp_path):
-        """After run_sprint(), the spec worktree contains .forge/audit.yaml."""
+    def test_campaign_writes_durable_story_audit(self, mock_run_task, tmp_path):
+        """After run_sprint(), the durable per-story log contains audit.yaml."""
         from theforge.sprint import run_sprint
 
         config = _make_config(tmp_path)
@@ -853,8 +854,8 @@ class TestCampaignAuditWrites:
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
         run_sprint(config, manifest_path)
 
-        audit_path = workspace / ".forge" / "audit.yaml"
-        assert audit_path.exists(), ".forge/audit.yaml not written to worktree"
+        audit_path = tmp_path / ".forge" / "logs" / "Test Campaign" / "my-spec" / "audit.yaml"
+        assert audit_path.exists(), "durable per-story audit.yaml not written to log dir"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
         assert "reviews" in audit
         assert len(audit["reviews"]) == 1

@@ -9,6 +9,7 @@ import yaml
 
 from theforge.artifacts import (
     AUDIT_PATH,
+    ESCALATED_MARKER_PATH,
     ensure_parent_dir,
 )
 from theforge.config import (
@@ -101,7 +102,7 @@ def _append_history(audits_dir: Path, record: dict) -> None:
 
 
 def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory) -> Path:
-    """Write the audit log to .forge/audits/forge_audit.yaml and .forge/audit.yaml."""
+    """Write the canonical audit log and preserve minimal worktree state on ESCALATE."""
     audit = generate_audit_log(config, task, result)
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
@@ -110,14 +111,23 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Append to history log (JSONL, never overwritten).
     _append_history(audits_dir, audit)
-    # Also write to worktree for per-story persistence (not overwritten by next run).
-    # Skip for ALREADY_DONE — no real work was done, worktree is just a checkout.
-    already_done = result.state.preflight_verdict == "ALREADY_DONE"
-    if not already_done and result.state.workspace_path and result.state.workspace_path.exists():
+    final_phase = result.phase.name
+    if (
+        final_phase == "ESCALATE"
+        and result.state.workspace_path
+        and result.state.workspace_path.exists()
+    ):
         worktree_audit_path = result.state.workspace_path / AUDIT_PATH
         ensure_parent_dir(worktree_audit_path)
         with open(worktree_audit_path, "w", encoding="utf-8") as f:
             yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+        marker_path = result.state.workspace_path / ESCALATED_MARKER_PATH
+        ensure_parent_dir(marker_path)
+        timestamp = audit.get("ended_at") or audit.get("started_at") or ""
+        marker_path.write_text(
+            f"slug: {task.slug}\nfinal_phase: {final_phase}\ntimestamp: {timestamp}\n",
+            encoding="utf-8",
+        )
     # Copy to durable per-story log dir (survives worktree cleanup)
     if result.state.log_dir is not None:
         try:

@@ -582,11 +582,11 @@ def _write_story_audit(
     result: "CoordinatorResult",
     sprint_id: str | None = None,
 ) -> None:
-    """Write per-story audit.yaml to the worktree and the durable log directory.
+    """Write per-story audit.yaml to the durable log directory and preserve ESCALATE worktrees.
 
     Best-effort: silently ignores missing workspace or log dir.
     """
-    from ..artifacts import AUDIT_PATH, ensure_parent_dir  # noqa: PLC0415
+    from ..artifacts import AUDIT_PATH, ESCALATED_MARKER_PATH, ensure_parent_dir  # noqa: PLC0415
     from ..coordinator import audit as coordinator_audit  # noqa: PLC0415
 
     try:
@@ -597,15 +597,27 @@ def _write_story_audit(
 
     if sprint_id is not None:
         audit_data["sprint_id"] = sprint_id
+        sprint_name = result.state.log_dir.parent.name if result.state.log_dir else None
+        if not sprint_name:
+            sprint_name = audit_data.get("sprint_name")
+        if not sprint_name:
+            sprint_name = "Parallel Sprint"
+        audit_data["sprint_name"] = sprint_name
 
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
-    if workspace_path.exists() and not (
-        result.state.workspace_path is None and result.state.preflight_verdict == "ALREADY_DONE"
-    ):
+    final_phase = result.phase.name
+    if workspace_path.exists() and final_phase == "ESCALATE":
         audit_path = workspace_path / AUDIT_PATH
         ensure_parent_dir(audit_path)
         with open(audit_path, "w", encoding="utf-8") as f:
             yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
+        marker_path = workspace_path / ESCALATED_MARKER_PATH
+        ensure_parent_dir(marker_path)
+        timestamp = audit_data.get("ended_at") or audit_data.get("started_at") or ""
+        marker_path.write_text(
+            f"slug: {task.slug}\nfinal_phase: {final_phase}\ntimestamp: {timestamp}\n",
+            encoding="utf-8",
+        )
         _log(f"Per-story audit written: {audit_path}")
 
     audits_dir = config.project_root / ".forge" / "audits"
@@ -616,9 +628,16 @@ def _write_story_audit(
     except OSError:
         pass
 
-    if result.state.log_dir is not None:
+    log_dir = result.state.log_dir
+    if log_dir is None:
+        sprint_name = audit_data.get("sprint_name")
+        if not isinstance(sprint_name, str) or not sprint_name:
+            sprint_name = None
+        if isinstance(sprint_name, str) and sprint_name:
+            log_dir = config.project_root / ".forge" / "logs" / sprint_name / task.slug
+    if log_dir is not None:
         try:
-            _story_audit_path = result.state.log_dir / "audit.yaml"
+            _story_audit_path = log_dir / "audit.yaml"
             _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
             with open(_story_audit_path, "w", encoding="utf-8") as f:
                 yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)
