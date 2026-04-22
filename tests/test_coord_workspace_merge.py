@@ -264,9 +264,10 @@ class TestCoordinatorAutoMerge:
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 dirty_seen["n"] += 1
-                # First call is from validate (worktree clean check); second is safety check
-                if dirty_seen["n"] == 1:
-                    return (True, "")  # worktree clean -> proceed to review
+                # First call is stale-worktree reuse check; second is validate clean check;
+                # third is auto-merge safety check against the project root.
+                if dirty_seen["n"] <= 2:
+                    return (True, "")
                 return (True, " M some_file.py")  # project root dirty -> skip merge
             if "git branch --list" in cmd:
                 return (True, "main")

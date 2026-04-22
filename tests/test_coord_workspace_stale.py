@@ -128,7 +128,7 @@ class TestStaleWorktree:
 
     @patch("theforge.coordinator.util._run_shell")
     def test_stale_worktree_days_zero_always_removes(self, mock_shell, tmp_path):
-        """stale_worktree_days=0 -> always stale regardless of commit state (CI/automated mode)."""
+        """stale_worktree_days=0 -> always stale for clean, non-escalated worktrees."""
         workspace = tmp_path / "my-spec"
         workspace.mkdir()
         config = _make_stale_config(tmp_path, stale_worktree_days=0)
@@ -136,6 +136,8 @@ class TestStaleWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "feat/my-spec")
+            if "git status --porcelain" in cmd:
+                return (True, "")
             return (True, "")
 
         mock_shell.side_effect = shell_side_effect
@@ -143,6 +145,80 @@ class TestStaleWorktree:
         is_stale, info = _is_stale_worktree(workspace, "main", config)
         assert is_stale is True
         assert "stale_worktree_days=0" in info
+
+    @patch("theforge.coordinator.util._run_shell")
+    def test_escalated_worktree_not_stale(self, mock_shell, tmp_path):
+        """Escalated worktrees are preserved even with 0 commits ahead."""
+        workspace = tmp_path / "my-spec"
+        marker = workspace / ".forge" / "escalated"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("", encoding="utf-8")
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        mock_shell.return_value = (True, "feat/my-spec")
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is False
+        assert "escalate marker present" in info
+        calls = [c[0][0] for c in mock_shell.call_args_list]
+        assert not any("git status --porcelain" in c for c in calls)
+        assert not any("git log" in c for c in calls)
+
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dirty_worktree_not_stale(self, mock_shell, tmp_path):
+        """Dirty worktrees are preserved even with 0 commits ahead."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "git status --porcelain" in cmd:
+                return (True, " M src/app.py")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is False
+        assert "uncommitted changes present" in info
+
+    @patch("theforge.coordinator.util._run_shell")
+    def test_git_status_failure_not_stale(self, mock_shell, tmp_path):
+        """git status failure -> not stale (cannot determine state, do not delete)."""
+        workspace = tmp_path / "my-spec"
+        workspace.mkdir()
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/my-spec")
+            if "git status --porcelain" in cmd:
+                return (False, "fatal: not a git repository")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_shell.side_effect = shell_side_effect
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is False
+        assert "Cannot determine worktree status" in info
+        assert "git status failed" in info
+
+    @patch("theforge.coordinator.util._run_shell")
+    def test_stale_worktree_days_zero_preserves_escalated_worktree(self, mock_shell, tmp_path):
+        """Escalated worktrees are preserved even when stale_worktree_days=0."""
+        workspace = tmp_path / "my-spec"
+        marker = workspace / ".forge" / "escalated"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("", encoding="utf-8")
+        config = _make_stale_config(tmp_path, stale_worktree_days=0)
+
+        mock_shell.return_value = (True, "feat/my-spec")
+
+        is_stale, info = _is_stale_worktree(workspace, "main", config)
+        assert is_stale is False
+        assert "escalate marker present" in info
 
     @patch("theforge.coordinator.util._run_shell")
     def test_stale_branch_not_found(self, mock_shell, tmp_path):
@@ -291,6 +367,8 @@ class TestStaleWorktree:
         def shell_side_effect(cmd, cwd, **kwargs):
             if "rev-parse --abbrev-ref HEAD" in cmd:
                 return (True, "feat/test-task")
+            if "git status --porcelain" in cmd:
+                return (True, "")
             if "--oneline" in cmd:
                 return (True, "abc123 a commit")
             if "--format=%ct" in cmd:
@@ -310,6 +388,58 @@ class TestStaleWorktree:
         calls = [c[0][0] for c in mock_shell.call_args_list]
         assert not any("worktree remove" in c for c in calls)
         assert not any("branch -D" in c for c in calls)
+
+    @patch("theforge.coordinator.util._run_shell")
+    def test_escalated_worktree_reused_on_create(self, mock_shell, tmp_path):
+        """Existing escalated worktree is reused instead of being swept as stale."""
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        marker = workspace / ".forge" / "escalated"
+        marker.parent.mkdir(parents=True)
+        marker.write_text("", encoding="utf-8")
+
+        mock_shell.return_value = (True, "feat/test-task")
+
+        path, branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace
+        calls = [c[0][0] for c in mock_shell.call_args_list]
+        assert not any("worktree remove" in c for c in calls)
+        assert not any("branch -D" in c for c in calls)
+        assert not any("git status --porcelain" in c for c in calls)
+        assert not any("git log" in c for c in calls)
+
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dirty_worktree_reused_on_create(self, mock_shell, tmp_path):
+        """Existing dirty worktree is reused instead of being swept as stale."""
+        config = _make_stale_config(tmp_path, stale_worktree_days=1)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "feat/test-task")
+            if "git status --porcelain" in cmd:
+                return (True, "?? scratch.txt")
+            if "git rev-list --count main..origin/main" in cmd:
+                return (True, "0")
+            if "git rm -f --cached --ignore-unmatch" in cmd:
+                return (True, "")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_shell.side_effect = shell_side_effect
+
+        path, branch, err = _create_workspace(config, task)
+
+        assert err is None
+        assert path == workspace
+        calls = [c[0][0] for c in mock_shell.call_args_list]
+        assert not any("worktree remove" in c for c in calls)
+        assert not any("branch -D" in c for c in calls)
+        assert not any("git log" in c for c in calls)
 
     def test_stale_worktree_days_parsed_from_forge_yaml(self, tmp_path):
         """stale_worktree_days in forge.yaml is parsed into WorkspaceConfig."""

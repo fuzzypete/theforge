@@ -325,6 +325,15 @@ def _is_stale_worktree(path: Path, base_branch: str, config: ForgeConfig) -> tup
 
     branch_name = branch_out.strip()
 
+    if (path / ESCALATED_MARKER_PATH).exists():
+        return False, "escalate marker present — preserving worktree"
+
+    ok, status_out = _cu._run_shell("git status --porcelain", path)
+    if not ok:
+        return False, f"Cannot determine worktree status — git status failed: {status_out.strip()}"
+    if status_out.strip():
+        return False, "uncommitted changes present — preserving worktree"
+
     if stale_days == 0:
         return True, "stale_worktree_days=0 — always removing (CI/automated mode)"
 
