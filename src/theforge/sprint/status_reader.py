@@ -56,11 +56,11 @@ def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
     After a run_id rollover the summary is written under the terminal run_id.
     Follows the redirect chain so earlier run_ids resolve to the same summary.
 
-    Also matches summaries whose sprint-level accumulated state records the
-    queried run_id in any story's ``preflight_source_run_id``. This covers
-    mid-run sprint re-execs where the final summary is written under the last
-    worker run_id but earlier worker run_ids still need to resolve to the same
-    logical sprint summary.
+    Also matches summaries whose story metadata records the queried run_id in
+    any story's ``story_run_id`` or legacy ``preflight_source_run_id`` field.
+    This covers mid-run sprint re-execs where the final summary is written
+    under the last worker run_id but earlier worker run_ids still need to
+    resolve to the same logical sprint summary.
 
     Returns the Path to the matching sprint-summary.yaml, or None if not found.
     """
@@ -91,6 +91,8 @@ def find_sprint_summary(run_id: str, project_root: Path) -> Path | None:
                 for story in stories:
                     if not isinstance(story, dict):
                         continue
+                    if story.get("story_run_id") in candidate_ids:
+                        return summary_path
                     if story.get("preflight_source_run_id") in candidate_ids:
                         return summary_path
         except Exception:
