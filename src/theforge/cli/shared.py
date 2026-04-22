@@ -42,7 +42,7 @@ def _parse_story_frontmatter(story_path: Path) -> dict:
         ---
         name: Phase 6H: per-user export
         slug: export-service
-        pytest_target: tests/test_export.py
+        test_target: tests/test_export.py
         ---
 
         # Story content starts here...
@@ -85,7 +85,7 @@ def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
         name=fm.get("name", story_path.stem.replace("_", " ").replace("-", " ").title()),
         story_path=story_path.resolve(),
         slug=resolved_slug,
-        pytest_target=fm.get("pytest_target"),
+        test_target=fm.get("test_target"),
         gate_override=fm.get("gate"),
         github_issue=github_issue,
     )

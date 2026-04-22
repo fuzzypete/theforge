@@ -16,7 +16,6 @@ is simply the default directory created by `forge init`.
 ---
 name: "Short human-readable title"
 slug: my-feature-slug
-pytest_target: tests/
 ---
 
 # Story Title
@@ -44,7 +43,7 @@ background, not as requirements.
 |-------|----------|---------|-------------|
 | `name` | Yes | — | Human-readable title. Shows in logs and audit. |
 | `slug` | Yes | — | Branch name (`forge/{slug}`), worktree path. Lowercase-with-dashes. |
-| `pytest_target` | No | `tests/` | Path passed to pytest in the gate command. |
+| `test_target` | No | `tests/` | Stack-neutral test target substituted for `{test_target}` in the gate command. |
 | `file_scope` | No | `[]` (unrestricted) | Restrict dev agent to these files/directories. Empty = no restriction. |
 | `gate` | No | project default | Override gate: `"none"` (skip), `"lint"`, or custom command. |
 | `depends_on` | No | `[]` | Slugs that must be merged before this story runs (sprint mode). |
@@ -102,7 +101,7 @@ stories:
 | `{issue: 123}` | Pull story body from GitHub issue #123 |
 | `{issue: 123, slug: my-slug}` | Override the slug derived from the issue title |
 | `{issue: 123, depends_on: [other-slug]}` | Declare a dependency on another story in the sprint |
-| `{issue: 123, pytest_target: tests/test_foo.py}` | Override the pytest target for this story |
+| `{issue: 123, test_target: tests/test_foo.py}` | Override the test target substituted into the gate command for this story |
 
 ### Declaring dependencies in GitHub issue bodies
 

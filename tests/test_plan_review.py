@@ -275,7 +275,7 @@ def test_prompt_contains_p1_impl_definition(tmp_path):
         name="Test Task",
         story_path=spec,
         slug="test-task",
-        pytest_target="tests/",
+        test_target="tests/",
     )
     prompt = build_plan_review_prompt(
         task,
@@ -297,7 +297,7 @@ def test_prompt_yaml_severity_enum_includes_p1_impl(tmp_path):
         name="Test Task",
         story_path=spec,
         slug="test-task",
-        pytest_target="tests/",
+        test_target="tests/",
     )
     prompt = build_plan_review_prompt(
         task,
@@ -357,7 +357,7 @@ def test_plan_review_prompt_api_mode_uses_submit_tool(tmp_path):
         name="Test Task",
         story_path=spec,
         slug="test-task",
-        pytest_target="tests/",
+        test_target="tests/",
     )
     prompt = build_plan_review_prompt(
         task,
@@ -381,7 +381,7 @@ def test_plan_review_prompt_cli_mode_uses_yaml_block(tmp_path):
         name="Test Task",
         story_path=spec,
         slug="test-task",
-        pytest_target="tests/",
+        test_target="tests/",
     )
     prompt = build_plan_review_prompt(
         task,

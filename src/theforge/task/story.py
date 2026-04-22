@@ -14,7 +14,7 @@ class TaskStory:
     slug: str  # workspace slug, e.g. "export-service"
     story_path: Path | None = None  # path to the story file (None for issue-sourced stories)
     story_text: str | None = None  # inline story content (used when story_path is None)
-    pytest_target: str | None = None  # specific test target, or None for all
+    test_target: str | None = None  # stack-neutral test target substituted into gate_command
     gate_override: str | None = None  # from frontmatter "gate" key; "none" skips gate
     depends_on: list[str] = field(default_factory=list)  # slugs that must have merged first
     inferred_dependencies: list[str] = field(default_factory=list)  # inferred from GH blockers

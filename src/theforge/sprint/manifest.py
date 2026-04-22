@@ -201,7 +201,7 @@ def _build_task_from_story(story_path: Path) -> TaskStory:
         name=name,
         story_path=story_path,
         slug=slug,
-        pytest_target=fm.get("pytest_target"),
+        test_target=fm.get("test_target"),
         gate_override=fm.get("gate"),
         depends_on=depends_on,
         github_issue=github_issue,
@@ -279,8 +279,8 @@ def build_tasks_from_manifest(
                         f"'depends_on' must be a string or list, got "
                         f"{type(raw_deps).__name__}: {entry!r}"
                     )
-            if "pytest_target" in entry:
-                overrides["pytest_target"] = entry["pytest_target"]
+            if "test_target" in entry:
+                overrides["test_target"] = entry["test_target"]
             if overrides:
                 from dataclasses import replace
 

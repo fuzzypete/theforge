@@ -118,7 +118,7 @@ _VALID_SPEC = """\
 ---
 name: "Test Feature"
 slug: test-feature
-pytest_target: tests/
+test_target: tests/
 ---
 
 # Test Feature
@@ -236,7 +236,7 @@ def test_round_trip_ideate_to_dev_prompt(tmp_path: Path) -> None:
         name=fm.get("name", "test"),
         story_path=output_path,
         slug=fm.get("slug", "test"),
-        pytest_target=fm.get("pytest_target", "tests/"),
+        test_target=fm.get("test_target", "tests/"),
     )
     spec_content = output_path.read_text(encoding="utf-8")
     dev_prompt = build_dev_prompt(
@@ -260,7 +260,7 @@ def _make_long_spec(line_count: int = 160) -> str:
 ---
 name: "Test Feature"
 slug: test-feature
-pytest_target: tests/
+test_target: tests/
 ---
 
 # Test Feature

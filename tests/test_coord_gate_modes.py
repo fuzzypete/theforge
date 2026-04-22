@@ -1,6 +1,6 @@
-"""Tests for exit-code gate mode, pytest_target substitution, and gate overrides.
+"""Tests for exit-code gate mode, test_target substitution, and gate overrides.
 
-Covers: TestExitCodeGateMode, TestPytestTargetSubstitution, TestGateOverride.
+Covers: TestExitCodeGateMode, TestTestTargetSubstitution, TestGateOverride.
 """
 
 from pathlib import Path
@@ -42,7 +42,7 @@ def _make_exit_code_config(tmp_path: Path) -> ForgeConfig:
             branch_pattern="forge/{slug}",
         ),
         validation=ValidationConfig(
-            gate_command="pytest {pytest_target} -q",
+            gate_command="pytest {test_target} -q",
             gate_timeout=120,
         ),
         dev_profile=DEFAULT_DEV_PROFILE,
@@ -366,20 +366,20 @@ class TestExitCodeGateMode:
         assert result.state.dev_iteration == 2  # was retried
 
 
-# ── Pytest target substitution tests ─────────────────────────────────
+# ── Test target substitution tests ───────────────────────────────────
 
 
-class TestPytestTargetSubstitution:
-    """Test that {pytest_target} in gate_command is replaced from TaskStory."""
+class TestTestTargetSubstitution:
+    """Test that {test_target} in gate_command is replaced from TaskStory."""
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_pytest_target_substituted(
+    def test_test_target_substituted(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """Gate command should contain the task's pytest_target, not the placeholder."""
+        """Gate command should contain the task's test_target, not the placeholder."""
         config = _make_exit_code_config(tmp_path)
         spec = tmp_path / "spec.md"
         spec.write_text("# Test", encoding="utf-8")
@@ -387,7 +387,7 @@ class TestPytestTargetSubstitution:
             name="Test",
             story_path=spec,
             slug="test-task",
-            pytest_target="tests/test_specific.py",
+            test_target="tests/test_specific.py",
         )
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -418,18 +418,18 @@ class TestPytestTargetSubstitution:
         gate_cmds = [c for c in captured_cmds if "pytest" in c and "worktree" not in c]
         assert gate_cmds, "No gate command captured"
         assert "tests/test_specific.py" in gate_cmds[0]
-        assert "{pytest_target}" not in gate_cmds[0]
+        assert "{test_target}" not in gate_cmds[0]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_pytest_target_defaults_to_tests(
+    def test_test_target_defaults_to_tests(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """When pytest_target is None, defaults to 'tests/'."""
+        """When test_target is None, defaults to 'tests/'."""
         config = _make_exit_code_config(tmp_path)
-        task = _make_task(tmp_path)  # pytest_target=None by default
+        task = _make_task(tmp_path)  # test_target=None by default
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
@@ -458,6 +458,66 @@ class TestPytestTargetSubstitution:
         gate_cmds = [c for c in captured_cmds if "pytest" in c and "worktree" not in c]
         assert gate_cmds
         assert "tests/" in gate_cmds[0]
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_test_target_non_python_gate_command(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """A non-Python gate command (e.g. `go test {test_target}`) substitutes correctly.
+
+        Seam-level coverage that the `{test_target}` placeholder is language-neutral and
+        propagates the story's test_target into whatever gate command the project configures.
+        """
+        config = _make_exit_code_config(tmp_path)
+        # Replace the default Python gate command with a Go-style command.
+        from dataclasses import replace
+
+        config = replace(
+            config,
+            validation=replace(config.validation, gate_command="go test {test_target}"),
+        )
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Test", encoding="utf-8")
+        task = TaskStory(
+            name="Test",
+            story_path=spec,
+            slug="test-task",
+            test_target="./internal/foo/...",
+        )
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured_cmds: list[str] = []
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            captured_cmds.append(cmd)
+            stale_resp = _handle_stale_check_cmd(cmd)
+            if stale_resp is not None:
+                return stale_resp
+            if "go test" in cmd and "worktree" not in cmd:
+                return (True, "ok")
+            if "git status --porcelain" in cmd:
+                return (True, "")
+            return (True, "OK")
+
+        mock_shell.side_effect = shell_side_effect
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.return_value = _make_agent_result()
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        run_task(config, task)
+
+        gate_cmds = [c for c in captured_cmds if "go test" in c and "worktree" not in c]
+        assert gate_cmds, f"No gate command captured: {captured_cmds}"
+        assert "./internal/foo/..." in gate_cmds[0]
+        assert "{test_target}" not in gate_cmds[0]
+        # pytest-specific terminology must not appear in the substituted command.
+        assert "pytest" not in gate_cmds[0]
 
 
 # ── Gate override tests ──────────────────────────────────────────────

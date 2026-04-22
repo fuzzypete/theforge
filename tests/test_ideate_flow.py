@@ -79,7 +79,7 @@ _VALID_SPEC = """\
 ---
 name: "Test Feature"
 slug: test-feature
-pytest_target: tests/
+test_target: tests/
 ---
 
 # Test Feature
@@ -201,7 +201,7 @@ def _make_long_spec(line_count: int = 160) -> str:
 ---
 name: "Test Feature"
 slug: test-feature
-pytest_target: tests/
+test_target: tests/
 ---
 
 # Test Feature
@@ -793,7 +793,7 @@ SPEC:
 ---
 name: "Test"
 slug: test
-pytest_target: tests/
+test_target: tests/
 ---
 # Test
 """

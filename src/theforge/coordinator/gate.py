@@ -85,8 +85,8 @@ def _run_gate_full(
     else:
         gate_cmd = config.validation.gate_command
         if task is not None:
-            pytest_target = task.pytest_target or "tests/"
-            gate_cmd = gate_cmd.replace("{pytest_target}", pytest_target)
+            test_target = task.test_target or "tests/"
+            gate_cmd = gate_cmd.replace("{test_target}", test_target)
             gate_cmd = gate_cmd.replace("{slug}", task.slug)
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")

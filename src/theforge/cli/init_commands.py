@@ -18,7 +18,6 @@ _STORY_TEMPLATE = """\
 # Story frontmatter — required fields
 name: "Short human-readable title"
 slug: my-feature-slug        # used for branch and worktree names
-pytest_target: tests/        # path passed to pytest for gate
 ---
 
 # Story title
