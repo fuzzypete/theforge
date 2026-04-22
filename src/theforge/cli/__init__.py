@@ -31,6 +31,7 @@ from theforge.cli.shared import (
 from theforge.cli.sprint import cmd_sprint
 from theforge.cli.status import cmd_decide, cmd_logs, cmd_status, cmd_stop
 from theforge.cli.telemetry import cmd_telemetry
+from theforge.cli.todo import cmd_todo
 
 __all__ = [
     "main",
@@ -51,6 +52,7 @@ __all__ = [
     "cmd_status",
     "cmd_stop",
     "cmd_telemetry",
+    "cmd_todo",
     "cmd_version",
     "_apply_dev_model_override",
     "_apply_plan_model_override",
