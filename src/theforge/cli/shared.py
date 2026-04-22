@@ -111,7 +111,7 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
         yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
     # Append to history log (JSONL, never overwritten).
     _append_history(audits_dir, audit)
-    final_phase = result.state.phase.name if result.state.phase is not None else result.phase.name
+    final_phase = result.phase.name
     if (
         final_phase == "ESCALATE"
         and result.state.workspace_path

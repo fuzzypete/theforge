@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 
 
@@ -31,12 +32,10 @@ def _mock_config(tmp_path: Path) -> MagicMock:
 def _make_worktree_with_audit(tmp_path: Path, slug: str, final_phase: str | None = None) -> Path:
     worktree = tmp_path / ".forge" / "worktrees" / slug
     worktree.mkdir(parents=True)
-    if final_phase is not None:
-        (worktree / ".forge").mkdir(parents=True, exist_ok=True)
-        (worktree / ".forge" / "audit.yaml").write_text(
-            yaml.dump({"outcome": {"final_phase": final_phase}}),
-            encoding="utf-8",
-        )
+    if final_phase == "ESCALATE":
+        marker = worktree / ESCALATED_MARKER_PATH
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("final_phase: ESCALATE\n", encoding="utf-8")
     return worktree
 
 

@@ -597,13 +597,15 @@ def _write_story_audit(
 
     if sprint_id is not None:
         audit_data["sprint_id"] = sprint_id
-        if "sprint_name" not in audit_data:
-            audit_data["sprint_name"] = (
-                result.state.log_dir.parent.name if result.state.log_dir else None
-            )
+        sprint_name = result.state.log_dir.parent.name if result.state.log_dir else None
+        if not sprint_name:
+            sprint_name = audit_data.get("sprint_name")
+        if not sprint_name:
+            sprint_name = "Parallel Sprint"
+        audit_data["sprint_name"] = sprint_name
 
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
-    final_phase = result.state.phase.name if result.state.phase is not None else result.phase.name
+    final_phase = result.phase.name
     if workspace_path.exists() and final_phase == "ESCALATE":
         audit_path = workspace_path / AUDIT_PATH
         ensure_parent_dir(audit_path)
@@ -629,6 +631,8 @@ def _write_story_audit(
     log_dir = result.state.log_dir
     if log_dir is None:
         sprint_name = audit_data.get("sprint_name")
+        if not isinstance(sprint_name, str) or not sprint_name:
+            sprint_name = None
         if isinstance(sprint_name, str) and sprint_name:
             log_dir = config.project_root / ".forge" / "logs" / sprint_name / task.slug
     if log_dir is not None:

@@ -221,14 +221,11 @@ class TestCheckActiveWorktrees:
 
     def test_escalated_worktree_is_not_active(self, tmp_path: Path) -> None:
         """Worktrees with final_phase == ESCALATE are preserved, not collisions."""
-        import yaml as _yaml
+        from theforge.artifacts import ESCALATED_MARKER_PATH
 
         worktree = tmp_path / ".forge" / "worktrees" / "story-a"
-        (worktree / ".forge").mkdir(parents=True)
-        (worktree / ".forge" / "audit.yaml").write_text(
-            _yaml.dump({"outcome": {"final_phase": "ESCALATE"}}),
-            encoding="utf-8",
-        )
+        (worktree / ESCALATED_MARKER_PATH).parent.mkdir(parents=True)
+        (worktree / ESCALATED_MARKER_PATH).write_text("final_phase: ESCALATE\n", encoding="utf-8")
         # Worktree has commits ahead — git check would report "active" if reached.
         completed = MagicMock(returncode=0, stdout="5\n")
         with patch("theforge.sprint.lock.subprocess.run", return_value=completed) as mock_run:
