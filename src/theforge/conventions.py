@@ -537,21 +537,22 @@ def _scan_stack_neutrality_file(
 def _stack_neutrality_scan_lines(text: str) -> list[tuple[int, str]]:
     """Return code-only lines for stack-neutrality scanning.
 
-    Comments, docstrings, and shell/git plumbing lines are excluded so the check
-    focuses on reusable orchestrator logic rather than explanatory prose or repo
-    maintenance commands.
+    Docstrings and shell/git plumbing lines are excluded entirely. Comments are
+    stripped from otherwise-scannable lines so inline code still participates in
+    the check.
     """
     lines = text.splitlines()
-    ignored_lines = (
-        _docstring_line_numbers(text)
-        | _comment_line_numbers(text)
-        | _shell_command_line_numbers(text)
-    )
-    return [
-        (line_number, line)
-        for line_number, line in enumerate(lines, start=1)
-        if line_number not in ignored_lines
-    ]
+    ignored_lines = _docstring_line_numbers(text) | _shell_command_line_numbers(text)
+    comment_spans = _comment_spans_by_line(text)
+    scanned_lines: list[tuple[int, str]] = []
+    for line_number, line in enumerate(lines, start=1):
+        if line_number in ignored_lines:
+            continue
+        stripped_line = _strip_comment_spans(line, comment_spans.get(line_number, ()))
+        if not stripped_line.strip():
+            continue
+        scanned_lines.append((line_number, stripped_line))
+    return scanned_lines
 
 
 def _docstring_line_numbers(text: str) -> set[int]:
@@ -581,15 +582,29 @@ def _docstring_line_numbers(text: str) -> set[int]:
     return ignored
 
 
-def _comment_line_numbers(text: str) -> set[int]:
-    ignored: set[int] = set()
+def _comment_spans_by_line(text: str) -> dict[int, list[tuple[int, int]]]:
+    spans: dict[int, list[tuple[int, int]]] = {}
     try:
         for token in tokenize.generate_tokens(io.StringIO(text).readline):
-            if token.type == tokenize.COMMENT:
-                ignored.add(token.start[0])
+            if token.type != tokenize.COMMENT:
+                continue
+            line_number = token.start[0]
+            spans.setdefault(line_number, []).append((token.start[1], token.end[1]))
     except tokenize.TokenError:
-        return ignored
-    return ignored
+        return spans
+    return spans
+
+
+def _strip_comment_spans(line: str, spans: list[tuple[int, int]] | tuple[tuple[int, int], ...]) -> str:
+    if not spans:
+        return line
+    kept: list[str] = []
+    cursor = 0
+    for start, end in sorted(spans):
+        kept.append(line[cursor:start])
+        cursor = end
+    kept.append(line[cursor:])
+    return "".join(kept)
 
 
 def _shell_command_line_numbers(text: str) -> set[int]:
@@ -603,12 +618,22 @@ def _shell_command_line_numbers(text: str) -> set[int]:
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if not isinstance(func, ast.Attribute) or func.attr != "_run_shell":
-            continue
-        if not node.args:
+        if isinstance(func, ast.Attribute):
+            is_run_shell = func.attr == "_run_shell"
+        elif isinstance(func, ast.Name):
+            is_run_shell = func.id == "_run_shell"
+        else:
+            is_run_shell = False
+        if not is_run_shell or not node.args:
             continue
         first_arg = node.args[0]
-        if not isinstance(first_arg, ast.Constant) or not isinstance(first_arg.value, str):
+        if isinstance(first_arg, ast.Constant):
+            is_shell_text = isinstance(first_arg.value, str)
+        elif isinstance(first_arg, ast.JoinedStr):
+            is_shell_text = True
+        else:
+            is_shell_text = False
+        if not is_shell_text:
             continue
         start = getattr(node, "lineno", None)
         end = getattr(node, "end_lineno", start)

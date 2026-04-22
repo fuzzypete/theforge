@@ -291,6 +291,16 @@ class TestStackNeutralityCheck:
         violations = _check_stack_neutrality(tmp_path)
         assert violations == []
 
+    def test_inline_comments_do_not_hide_stack_specific_code(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
+            'pytest_target = "tests/"  # keep this generic later\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        rules = {violation.rule for violation in violations}
+        assert "stack_neutrality_shared_model_prefix" in rules
+        assert "stack_neutrality_hardcoded_layout" in rules
+
     def test_language_specific_story_parsing_smell_is_detected(self, tmp_path):
         _write(
             tmp_path / "src" / "theforge" / "coordinator" / "story_parse.py",
@@ -306,6 +316,24 @@ class TestStackNeutralityCheck:
         _write(
             tmp_path / "src" / "theforge" / "runners" / "adapters" / "openai.py",
             'cmd = "pytest"\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert violations == []
+
+    def test_direct_run_shell_calls_are_ignored(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
+            'def helper():\n'
+            '    return _run_shell("pytest tests/ -v", cwd)\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert violations == []
+
+    def test_fstring_run_shell_calls_are_ignored(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
+            'def helper(target):\n'
+            '    return _run_shell(f"pytest {target}", cwd)\n',
         )
         violations = _check_stack_neutrality(tmp_path)
         assert violations == []
