@@ -40,6 +40,7 @@ from .preflight import (
     _apply_preflight_config,
     _parse_preflight_bundle_candidate,
     _parse_preflight_complexity,
+    _parse_preflight_complexity_score,
     _parse_preflight_contract_change,
     _parse_preflight_criteria_checked,
     _parse_preflight_likely_files,
@@ -47,6 +48,7 @@ from .preflight import (
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _parse_preflight_work_type,
+    score_to_band,
 )
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
@@ -297,7 +299,20 @@ def _run_preflight_phase(
         state.preflight_warnings = _warnings
         _likely_files = _parse_preflight_likely_files(preflight_result.output)
         state.preflight_likely_files = _likely_files
-        complexity = _parse_preflight_complexity(preflight_result.output)
+        complexity_enum_raw = _parse_preflight_complexity(preflight_result.output)
+        complexity_score = _parse_preflight_complexity_score(
+            preflight_result.output, fallback_band=complexity_enum_raw
+        )
+        state.preflight_complexity_score = complexity_score
+        # Legacy consumers read state.preflight_complexity via the compat shim.
+        # When the agent emitted a numeric score, derive the enum from it so the
+        # score is the single source of truth — this is the shim required by AC
+        # "no consumer is silently broken". Fall back to the agent's raw enum
+        # only when no score is available (parser returned None with no band).
+        if complexity_score is not None:
+            complexity = score_to_band(complexity_score)
+        else:
+            complexity = complexity_enum_raw
         state.preflight_complexity = complexity
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
         state.preflight_sufficiency = sufficiency
@@ -327,6 +342,13 @@ def _run_preflight_phase(
         if contract_change and complexity == "small":
             complexity = "medium"
             state.preflight_complexity = complexity
+            # Also bump the score so downstream consumers that read the raw
+            # number see the upgrade, not just the enum.
+            if (
+                state.preflight_complexity_score is not None
+                and state.preflight_complexity_score < 4
+            ):
+                state.preflight_complexity_score = 5
             _log(
                 "  ↑ contract_change=true: upgrading complexity small→medium "
                 "(cross-cutting blast radius)"
@@ -387,11 +409,17 @@ def _run_preflight_phase(
                 # upgrade complexity to at least medium.
                 if state.preflight_complexity == "small":
                     state.preflight_complexity = "medium"
+                    if (
+                        state.preflight_complexity_score is not None
+                        and state.preflight_complexity_score < 4
+                    ):
+                        state.preflight_complexity_score = 5
                 state.preflight_sufficiency = "needs_planning"
     else:
         # Agent failed — skip all parsers; hard-set conservative values so
         # downstream phases plan carefully despite missing classification.
         state.preflight_complexity = "large"
+        state.preflight_complexity_score = 9
         state.preflight_sufficiency = "needs_planning"
         state.preflight_work_type = "feature"
         state.preflight_bundle_candidate = False
@@ -434,6 +462,7 @@ def _run_preflight_phase(
         "verdict": verdict,
         "reason": reason,
         "complexity": state.preflight_complexity,
+        "complexity_score": state.preflight_complexity_score,
         "sufficiency": state.preflight_sufficiency,
         "contract_change": state.preflight_contract_change,
         "cost_usd": preflight_result.cost_usd,

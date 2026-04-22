@@ -286,6 +286,7 @@ class CoordinatorState:
     preflight_verdict: str | None = None  # "PROCEED" | "ALREADY_DONE" | "BLOCKED"
     preflight_reason: str | None = None
     preflight_complexity: str | None = None  # "small" | "medium" | "large"
+    preflight_complexity_score: int | None = None  # 1-10 bounded integer score
     preflight_sufficiency: str | None = None  # "implementation_ready" | "needs_planning"
     preflight_work_type: str | None = None  # "feature" | "refactor" | "mechanical" | "bug"
     preflight_contract_change: bool = False  # story intentionally alters a tested contract

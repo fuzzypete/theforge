@@ -118,16 +118,38 @@ def build_preflight_prompt(
 
         ## Complexity Assessment
 
-        When verdict is PROCEED, also assess the implementation complexity:
+        When verdict is PROCEED, output BOTH a numeric `complexity_score` (integer
+        1–10) AND the three-level `complexity` enum. The score is the primary
+        signal; the enum is kept for compatibility.
 
-        - **small**: Config change, typo fix, single-file edit, <50 lines changed.
-          Do NOT classify as small if the change touches a shared interface field,
-          prompt template string, or schema field — those have wide blast radius
-          across callers, tests, and exact-string assertions even when conceptually trivial.
-        - **medium**: New feature, multi-file change, requires tests, 50–500 lines
-        - **large**: Cross-cutting refactor, architectural change, >500 lines, many modules
+        Anchor the score against these concrete examples so scores stay
+        comparable across stories and across model invocations:
 
-        When verdict is ALREADY_DONE or BLOCKED, set complexity to "small" as a placeholder.
+        - **1–2 (trivial)**: typo fix, single-word rename in one file, comment
+          tweak, adjusting a literal constant in a config file. No test changes.
+        - **3 (small)**: localized single-function bug fix within one module,
+          adding a new optional argument with a default, a config flag read.
+          Maybe one test updated.
+        - **4–5 (medium-small)**: new feature contained to 2–3 files, a new
+          helper plus its tests, a bug fix that spans caller and callee.
+        - **6–7 (medium-large)**: multi-module feature, changes that touch a
+          shared interface field consumed by a handful of callers, a contract
+          change with a small but non-trivial blast radius. Score 7 if the
+          change requires careful planning but is still localizable.
+        - **8 (large)**: cross-module refactor, a rename of a widely-referenced
+          field or function, schema migration with multiple consumers.
+        - **9–10 (very large)**: architectural change, new subsystem, a rewrite
+          of a phase of the state machine, changes that touch >10 files or
+          require coordinated migration across the codebase.
+
+        Keep the enum consistent with the score using the default mapping
+        (1–3 → small, 4–7 → medium, 8–10 → large) unless you have a specific
+        reason to diverge. If a change touches a shared interface field,
+        prompt template string, or schema field, do not score below 4 —
+        blast radius dominates conceptual simplicity.
+
+        When verdict is ALREADY_DONE or BLOCKED, set `complexity: small` and
+        `complexity_score: 2` as placeholders.
 
         ## Work-Type Classification
 
@@ -182,6 +204,7 @@ def build_preflight_prompt(
 
         ```yaml
         verdict: PROCEED | ALREADY_DONE | BLOCKED
+        complexity_score: <integer 1-10>
         complexity: small | medium | large
         work_type: feature | refactor | mechanical | bug
         contract_change: true | false

@@ -35,6 +35,54 @@ _COMPLEXITY_TO_LEVEL: dict[str, str] = {
     "large": "HIGH",
 }
 
+# Integer complexity scale bounds. Preflight emits a score in this range;
+# out-of-range or missing scores fall back to the legacy three-level enum.
+COMPLEXITY_SCORE_MIN = 1
+COMPLEXITY_SCORE_MAX = 10
+
+
+def score_to_band(score: int) -> str:
+    """Map a 1-10 complexity score to the legacy small/medium/large enum.
+
+    Bands: 1-3 → small, 4-7 → medium, 8-10 → large. This is the *compat shim*
+    used by consumers that still read the string enum. Final bucketing policy
+    belongs to each consumer — this function is just the default.
+    """
+    if score <= 3:
+        return "small"
+    if score <= 7:
+        return "medium"
+    return "large"
+
+
+def band_to_score(band: str) -> int:
+    """Map small/medium/large → a representative score (midpoint of each band).
+
+    Used only as a fallback when a preflight output lacks ``complexity_score``
+    so downstream code can treat the score as always-present.
+    """
+    norm = band.lower()
+    if norm == "small":
+        return 2
+    if norm == "large":
+        return 9
+    return 5  # medium or unknown
+
+
+def score_to_dev_tier(score: int) -> str:
+    """Map a 1-10 complexity score to a dev-phase model tier.
+
+    Bands: 1-3 → cheap, 4-6 → mid, 7-10 → strong. Finer-grained than the enum
+    mapping (which lumps score 7 in with 'medium' → mid) so a localized bug at
+    score=3 and a cross-module refactor at score=7 route to different tiers
+    even though they'd both be 'medium' under the three-level enum.
+    """
+    if score <= 3:
+        return "cheap"
+    if score <= 6:
+        return "mid"
+    return "strong"
+
 
 def _build_pool_entries(model_keys: list[str]) -> list[tuple[int, str, ModelInfo]]:
     """Build sorted (cost_rank, registry_key, ModelInfo) list from models."""
@@ -272,6 +320,46 @@ def _parse_preflight_complexity(output: str) -> str:
     return "medium"
 
 
+def _parse_preflight_complexity_score(output: str, fallback_band: str | None = None) -> int | None:
+    """Extract complexity_score from preflight agent output.
+
+    Returns an int in [COMPLEXITY_SCORE_MIN, COMPLEXITY_SCORE_MAX]. Clamps
+    out-of-range values to the bounds. When the field is absent or unparseable,
+    derives a score from ``fallback_band`` (the legacy string enum) if given,
+    else returns None so callers can detect the missing signal.
+    """
+    yaml_text = output
+    if "```yaml" in output:
+        start = output.index("```yaml") + len("```yaml")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+    elif "```" in output:
+        start = output.index("```") + len("```")
+        end = output.index("```", start)
+        yaml_text = output[start:end]
+
+    try:
+        parsed = yaml.safe_load(yaml_text)
+        if isinstance(parsed, dict) and "complexity_score" in parsed:
+            raw = parsed.get("complexity_score")
+            try:
+                score = int(raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                score = None
+            if score is not None:
+                if score < COMPLEXITY_SCORE_MIN:
+                    return COMPLEXITY_SCORE_MIN
+                if score > COMPLEXITY_SCORE_MAX:
+                    return COMPLEXITY_SCORE_MAX
+                return score
+    except yaml.YAMLError:
+        pass
+
+    if fallback_band is not None:
+        return band_to_score(fallback_band)
+    return None
+
+
 def _parse_preflight_sufficiency(output: str) -> str:
     """Extract sufficiency from preflight agent output.
 
@@ -488,7 +576,11 @@ def _escalate_dev_model(
     return candidates[0][0]
 
 
-def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeConfig:
+def _apply_complexity_adaptation(
+    config: ForgeConfig,
+    complexity: str,
+    complexity_score: int | None = None,
+) -> ForgeConfig:
     """Adjust model assignments based on preflight complexity using tier × complexity routing.
 
     Only applies when models is set. Per-role bypass flags guard each
@@ -528,7 +620,13 @@ def _apply_complexity_adaptation(config: ForgeConfig, complexity: str) -> ForgeC
     # ── dev ────────────────────────────────────────────────────────
     if config.dev_profile_is_default:
         dev_pool = [(r, k, i) for r, k, i in pool_entries if i.dev_capable] or pool_entries
-        target_dev_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["dev"][norm]]
+        # Prefer the finer-grained numeric score for dev tier selection so
+        # high-medium stories (score 7) route to strong instead of mid. Fall
+        # back to the enum-based tier when no score is present.
+        if complexity_score is not None:
+            target_dev_rank = _TIER_TO_RANK[score_to_dev_tier(complexity_score)]
+        else:
+            target_dev_rank = _TIER_TO_RANK[_PHASE_COMPLEXITY_TIER["dev"][norm]]
         target_dev_info = _pick_pool_entry_by_rank(dev_pool, target_dev_rank)
         if target_dev_info.model != config.dev_profile.model:
             new_dev = apply_model_info(config.dev_profile, target_dev_info)
@@ -590,12 +688,13 @@ def _apply_preflight_config(
 ) -> ForgeConfig:
     """Apply complexity-driven config updates using values already stored on state."""
     complexity = state.preflight_complexity or "medium"
+    complexity_score = state.preflight_complexity_score
     _log = log or (lambda _msg: None)
     _log_verbose = log_verbose or (lambda _msg: None)
 
     if config.models is not None:
         _config_before = config
-        config = _apply_complexity_adaptation(config, complexity)
+        config = _apply_complexity_adaptation(config, complexity, complexity_score)
         _dev_changed = config.dev_profile.model != _config_before.dev_profile.model
         _plan_changed = config.plan.model != _config_before.plan.model
         _review_changed = [p.model for p in config.review_pool] != [
@@ -604,6 +703,7 @@ def _apply_preflight_config(
         if _dev_changed or _plan_changed or _review_changed:
             state.complexity_routing_audit = {
                 "complexity": complexity,
+                "complexity_score": complexity_score,
                 "derived_plan_model": config.plan.model,
                 "derived_dev_model": config.dev_profile.model,
                 "derived_review_pool": [p.model for p in config.review_pool],
