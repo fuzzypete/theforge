@@ -595,7 +595,10 @@ def _comment_spans_by_line(text: str) -> dict[int, list[tuple[int, int]]]:
     return spans
 
 
-def _strip_comment_spans(line: str, spans: list[tuple[int, int]] | tuple[tuple[int, int], ...]) -> str:
+def _strip_comment_spans(
+    line: str,
+    spans: list[tuple[int, int]] | tuple[tuple[int, int], ...],
+) -> str:
     if not spans:
         return line
     kept: list[str] = []

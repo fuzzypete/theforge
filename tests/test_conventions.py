@@ -323,8 +323,7 @@ class TestStackNeutralityCheck:
     def test_direct_run_shell_calls_are_ignored(self, tmp_path):
         _write(
             tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
-            'def helper():\n'
-            '    return _run_shell("pytest tests/ -v", cwd)\n',
+            'def helper():\n    return _run_shell("pytest tests/ -v", cwd)\n',
         )
         violations = _check_stack_neutrality(tmp_path)
         assert violations == []
@@ -332,8 +331,7 @@ class TestStackNeutralityCheck:
     def test_fstring_run_shell_calls_are_ignored(self, tmp_path):
         _write(
             tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
-            'def helper(target):\n'
-            '    return _run_shell(f"pytest {target}", cwd)\n',
+            'def helper(target):\n    return _run_shell(f"pytest {target}", cwd)\n',
         )
         violations = _check_stack_neutrality(tmp_path)
         assert violations == []
