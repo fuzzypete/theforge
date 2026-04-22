@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import ast
+import io
 import re
 import subprocess
 import tempfile
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -455,7 +457,7 @@ _STACK_NEUTRALITY_RULES: tuple[_StackNeutralityRule, ...] = (
         ),
     ),
     _StackNeutralityRule(
-        pattern=re.compile(r"(?<![A-Za-z0-9_])(?:src/|tests/|docs/)(?![A-Za-z0-9_])"),
+        pattern=re.compile(r"(?<![A-Za-z0-9_])(?:src/|tests/|docs/)[^\s'\"]*"),
         violation_rule="stack_neutrality_hardcoded_layout",
         convention_rule=(
             "generated scaffolding must use generic names (e.g. test_target) or omit the concept"
@@ -465,7 +467,16 @@ _STACK_NEUTRALITY_RULES: tuple[_StackNeutralityRule, ...] = (
         ),
     ),
     _StackNeutralityRule(
-        pattern=re.compile(r"language-specific story parsing", re.IGNORECASE),
+        pattern=re.compile(
+            r"(?:"
+            r"(?:split|strip|replace|sub|match|search|findall|startswith|endswith)\b[^\n#]*"
+            r"(?:pytest|xdist|npm|cargo|maven|gradle|go\s+test)"
+            r"|"
+            r"(?:pytest|npm|cargo|maven|gradle|go\s+test)[^\n#]*"
+            r"(?:split|strip|replace|sub|match|search|findall|startswith|endswith)"
+            r")",
+            re.IGNORECASE,
+        ),
         violation_rule="stack_neutrality_language_specific_story_parsing",
         convention_rule="core orchestrator modules must be stack-neutral",
         description="story parsing must remain stack-neutral rather than language-specific",
@@ -480,28 +491,16 @@ _STACK_NEUTRALITY_EXEMPT_MARKERS: tuple[str, ...] = (
 
 def _check_stack_neutrality(project_root: Path) -> list[ConventionViolation]:
     violations: list[ConventionViolation] = []
-    for convention_rule, scoped_paths in _STACK_NEUTRALITY_SCOPES:
+    for _convention_rule, scoped_paths in _STACK_NEUTRALITY_SCOPES:
         for scoped_path in scoped_paths:
             path = project_root / scoped_path
             if not path.exists():
                 continue
             if path.is_file():
-                violations.extend(
-                    _scan_stack_neutrality_file(
-                        path,
-                        project_root=project_root,
-                        scoped_rule=convention_rule,
-                    )
-                )
+                violations.extend(_scan_stack_neutrality_file(path, project_root=project_root))
                 continue
             for py_file in sorted(path.rglob("*.py")):
-                violations.extend(
-                    _scan_stack_neutrality_file(
-                        py_file,
-                        project_root=project_root,
-                        scoped_rule=convention_rule,
-                    )
-                )
+                violations.extend(_scan_stack_neutrality_file(py_file, project_root=project_root))
     return violations
 
 
@@ -509,7 +508,6 @@ def _scan_stack_neutrality_file(
     path: Path,
     *,
     project_root: Path,
-    scoped_rule: str,
 ) -> list[ConventionViolation]:
     rel = str(path.relative_to(project_root))
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -517,7 +515,7 @@ def _scan_stack_neutrality_file(
         return []
 
     violations: list[ConventionViolation] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    for line_number, line in _stack_neutrality_scan_lines(text):
         for rule in _STACK_NEUTRALITY_RULES:
             match = rule.pattern.search(line)
             if match is None:
@@ -534,6 +532,90 @@ def _scan_stack_neutrality_file(
                 )
             )
     return violations
+
+
+def _stack_neutrality_scan_lines(text: str) -> list[tuple[int, str]]:
+    """Return code-only lines for stack-neutrality scanning.
+
+    Comments, docstrings, and shell/git plumbing lines are excluded so the check
+    focuses on reusable orchestrator logic rather than explanatory prose or repo
+    maintenance commands.
+    """
+    lines = text.splitlines()
+    ignored_lines = (
+        _docstring_line_numbers(text)
+        | _comment_line_numbers(text)
+        | _shell_command_line_numbers(text)
+    )
+    return [
+        (line_number, line)
+        for line_number, line in enumerate(lines, start=1)
+        if line_number not in ignored_lines
+    ]
+
+
+def _docstring_line_numbers(text: str) -> set[int]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+
+    ignored: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        body = getattr(node, "body", None)
+        if not body:
+            continue
+        first_stmt = body[0]
+        if not isinstance(first_stmt, ast.Expr):
+            continue
+        value = first_stmt.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        start = getattr(first_stmt, "lineno", None)
+        end = getattr(first_stmt, "end_lineno", start)
+        if start is None:
+            continue
+        ignored.update(range(start, (end or start) + 1))
+    return ignored
+
+
+def _comment_line_numbers(text: str) -> set[int]:
+    ignored: set[int] = set()
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(text).readline):
+            if token.type == tokenize.COMMENT:
+                ignored.add(token.start[0])
+    except tokenize.TokenError:
+        return ignored
+    return ignored
+
+
+def _shell_command_line_numbers(text: str) -> set[int]:
+    ignored: set[int] = set()
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return ignored
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "_run_shell":
+            continue
+        if not node.args:
+            continue
+        first_arg = node.args[0]
+        if not isinstance(first_arg, ast.Constant) or not isinstance(first_arg.value, str):
+            continue
+        start = getattr(node, "lineno", None)
+        end = getattr(node, "end_lineno", start)
+        if start is None:
+            continue
+        ignored.update(range(start, (end or start) + 1))
+    return ignored
 
 
 def _is_stack_neutrality_exempt(rel_path: str, text: str) -> bool:

@@ -271,13 +271,36 @@ class TestStackNeutralityCheck:
     def test_hardcoded_layout_smell_reports_generic_scaffolding_rule(self, tmp_path):
         _write(
             tmp_path / "src" / "theforge" / "task" / "plan_prompts.py",
-            'template = "put tests in tests/"\n',
+            'template = "put tests in tests/unit"\n',
         )
         violations = _check_stack_neutrality(tmp_path)
         assert len(violations) == 1
         violation = violations[0]
         assert violation.rule == "stack_neutrality_hardcoded_layout"
         assert "generated scaffolding must use generic names" in violation.detail
+
+    def test_comments_and_docstrings_are_ignored(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
+            '"""Mention pytest and tests/unit in docs only."""\n\n'
+            'def helper():\n'
+            '    """Another docstring with src/theforge and npm test."""\n'
+            '    # pytest-xdist worker output may mention tests/unit\n'
+            '    return "ok"\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert violations == []
+
+    def test_language_specific_story_parsing_smell_is_detected(self, tmp_path):
+        _write(
+            tmp_path / "src" / "theforge" / "coordinator" / "story_parse.py",
+            'failed = line.replace("pytest ", "").split("::")\n',
+        )
+        violations = _check_stack_neutrality(tmp_path)
+        assert len(violations) == 2
+        rules = {violation.rule for violation in violations}
+        assert "stack_neutrality_literal_tool_command" in rules
+        assert "stack_neutrality_language_specific_story_parsing" in rules
 
     def test_provider_adapter_code_is_out_of_scope(self, tmp_path):
         _write(
