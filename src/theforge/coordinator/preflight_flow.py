@@ -48,6 +48,7 @@ from .preflight import (
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _parse_preflight_work_type,
+    score_to_band,
 )
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
@@ -298,12 +299,21 @@ def _run_preflight_phase(
         state.preflight_warnings = _warnings
         _likely_files = _parse_preflight_likely_files(preflight_result.output)
         state.preflight_likely_files = _likely_files
-        complexity = _parse_preflight_complexity(preflight_result.output)
-        state.preflight_complexity = complexity
+        complexity_enum_raw = _parse_preflight_complexity(preflight_result.output)
         complexity_score = _parse_preflight_complexity_score(
-            preflight_result.output, fallback_band=complexity
+            preflight_result.output, fallback_band=complexity_enum_raw
         )
         state.preflight_complexity_score = complexity_score
+        # Legacy consumers read state.preflight_complexity via the compat shim.
+        # When the agent emitted a numeric score, derive the enum from it so the
+        # score is the single source of truth — this is the shim required by AC
+        # "no consumer is silently broken". Fall back to the agent's raw enum
+        # only when no score is available (parser returned None with no band).
+        if complexity_score is not None:
+            complexity = score_to_band(complexity_score)
+        else:
+            complexity = complexity_enum_raw
+        state.preflight_complexity = complexity
         sufficiency = _parse_preflight_sufficiency(preflight_result.output)
         state.preflight_sufficiency = sufficiency
         work_type = _parse_preflight_work_type(preflight_result.output)

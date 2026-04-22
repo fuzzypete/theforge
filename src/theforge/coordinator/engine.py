@@ -605,6 +605,7 @@ def run_task(
             state.preflight_verdict = cached_preflight_state.preflight_verdict
             state.preflight_reason = cached_preflight_state.preflight_reason
             state.preflight_complexity = cached_preflight_state.preflight_complexity
+            state.preflight_complexity_score = cached_preflight_state.preflight_complexity_score
             state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
             state.preflight_work_type = cached_preflight_state.preflight_work_type
             state.preflight_contract_change = cached_preflight_state.preflight_contract_change
@@ -840,6 +841,7 @@ def _run_resume_coordinator(
         state.preflight_verdict = cached_preflight_state.preflight_verdict
         state.preflight_reason = cached_preflight_state.preflight_reason
         state.preflight_complexity = cached_preflight_state.preflight_complexity
+        state.preflight_complexity_score = cached_preflight_state.preflight_complexity_score
         state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
         state.preflight_work_type = cached_preflight_state.preflight_work_type
         state.preflight_contract_change = cached_preflight_state.preflight_contract_change

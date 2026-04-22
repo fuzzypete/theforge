@@ -86,3 +86,38 @@ class TestCachedPreflightVerdictDispatch:
         assert mock_plan.call_count == 0
         mock_pool.assert_not_called()
         assert len(result.state.dev_results) == 0
+
+    def test_cached_preflight_restores_complexity_score(self, tmp_path):
+        """Cache restoration propagates preflight_complexity_score into new state.
+
+        Seam-level coverage for Convention 8: without this, cached runs silently
+        fall back to enum-only routing because the numeric score is lost at the
+        cache boundary.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="ALREADY_DONE",
+            preflight_reason="All acceptance criteria already satisfied.",
+            preflight_complexity="medium",
+            preflight_complexity_score=7,
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+            patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
+            patch("theforge.coordinator.preflight_flow.run_agent"),
+            patch("theforge.coordinator.dev_phase.run_agent"),
+            patch("theforge.coordinator.plan_flow.run_agent"),
+            patch("theforge.coordinator.review_pool.run_agent_pool"),
+        ):
+            result = run_task(config, task, cached_preflight_state=cached_state)
+
+        assert result.state.preflight_complexity_score == 7
+        assert result.state.preflight_complexity == "medium"
