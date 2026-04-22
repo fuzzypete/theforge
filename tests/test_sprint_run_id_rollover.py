@@ -442,3 +442,40 @@ class TestRedirectChainResolution:
 
         found = find_sprint_summary("run-xyz", tmp_path)
         assert found == summary_path
+
+    def test_find_sprint_summary_matches_prior_worker_run_id_from_story_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        """Earlier worker run_ids still resolve to the terminal sprint summary."""
+        import yaml
+
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "My Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        summary_path.write_text(
+            yaml.dump(
+                {
+                    "sprint": {"name": "My Sprint", "run_id": "run-terminal"},
+                    "stories": [
+                        {
+                            "slug": "issue-940",
+                            "path": "Issue #940",
+                            "outcome": "DONE",
+                            "cost_usd": 10.15,
+                            "preflight_source_run_id": "run-c6448a1795c0",
+                        },
+                        {
+                            "slug": "issue-930",
+                            "path": "Issue #930",
+                            "outcome": "DONE",
+                            "cost_usd": 7.11,
+                            "preflight_source_run_id": "run-656d888893ec",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        found = find_sprint_summary("run-c6448a1795c0", tmp_path)
+        assert found == summary_path
