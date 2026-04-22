@@ -424,10 +424,10 @@ class TestTestTargetSubstitution:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_test_target_defaults_to_tests(
+    def test_test_target_defaults_to_project_root(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """When test_target is None, defaults to 'tests/'."""
+        """When test_target is None, defaults to the project root placeholder '.' ."""
         config = _make_exit_code_config(tmp_path)
         task = _make_task(tmp_path)  # test_target=None by default
         workspace = tmp_path / "test-task"
@@ -457,7 +457,7 @@ class TestTestTargetSubstitution:
 
         gate_cmds = [c for c in captured_cmds if "pytest" in c and "worktree" not in c]
         assert gate_cmds
-        assert "tests/" in gate_cmds[0]
+        assert "pytest . -q" == gate_cmds[0]
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

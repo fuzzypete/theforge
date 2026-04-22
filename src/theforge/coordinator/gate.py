@@ -85,7 +85,7 @@ def _run_gate_full(
     else:
         gate_cmd = config.validation.gate_command
         if task is not None:
-            test_target = task.test_target or "tests/"
+            test_target = task.test_target or "."
             gate_cmd = gate_cmd.replace("{test_target}", test_target)
             gate_cmd = gate_cmd.replace("{slug}", task.slug)
 
