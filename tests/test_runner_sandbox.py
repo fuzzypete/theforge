@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from theforge.runners.sandbox import sandbox_command
+from theforge.runners.sandbox import read_only_sandbox_command, sandbox_command
 from theforge.runners.tool_runtime import _handle_bash
 
 
@@ -87,6 +87,19 @@ def test_macos_profile_does_not_allow_global_reads(tmp_path: Path) -> None:
     assert f'(subpath "{tmp_path.resolve()}")' in profile
 
 
+def test_macos_profile_allows_extra_write_roots(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _macos_profile
+
+    extra_write_root = tmp_path / "home" / ".claude"
+    extra_write_root.mkdir(parents=True)
+
+    profile = _macos_profile(tmp_path, extra_write_roots=(extra_write_root,))
+
+    assert f'(subpath "{extra_write_root.resolve()}")' in profile
+    write_block = profile.split("(allow file-write*", 1)[1].split("(allow file-read*", 1)[0]
+    assert f'(subpath "{extra_write_root.resolve()}")' in write_block
+
+
 def test_sandbox_command_linux_probe_uses_hashable_cache_key(tmp_path: Path) -> None:
     cmd = ["bash", "-c", "pwd"]
 
@@ -101,6 +114,54 @@ def test_sandbox_command_linux_probe_uses_hashable_cache_key(tmp_path: Path) -> 
         wrapped = sandbox_command(cmd, tmp_path)
 
     assert wrapped[0] == "bwrap"
+
+
+def test_linux_command_uses_bind_for_extra_write_roots(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _linux_command
+
+    extra_write_root = tmp_path / "home" / ".claude"
+    extra_write_root.mkdir(parents=True)
+
+    wrapped = _linux_command(
+        ["bash", "-c", "pwd"], tmp_path, extra_write_roots=(extra_write_root,)
+    )
+
+    bind_triplets = [wrapped[i : i + 3] for i in range(len(wrapped) - 2)]
+    assert ["--bind", str(extra_write_root), str(extra_write_root)] in bind_triplets
+    assert ["--ro-bind-try", str(extra_write_root), str(extra_write_root)] not in bind_triplets
+
+
+def test_linux_command_read_only_binds_workspace_read_only(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _linux_command
+
+    wrapped = _linux_command(["bash", "-c", "pwd"], tmp_path, sandbox_mode="read-only")
+
+    triplets = [wrapped[i : i + 3] for i in range(len(wrapped) - 2)]
+    assert ["--ro-bind", str(tmp_path.resolve()), str(tmp_path.resolve())] in triplets
+    assert ["--bind", str(tmp_path.resolve()), str(tmp_path.resolve())] not in triplets
+
+
+def test_read_only_sandbox_command_sets_read_only_mode(tmp_path: Path) -> None:
+    with patch(
+        "theforge.runners.sandbox.workspace_effect_sandbox_command",
+        return_value=["sandbox-exec", "-p", "profile", "bash"],
+    ) as mock_workspace:
+        wrapped = read_only_sandbox_command(
+            ["bash"], tmp_path, extra_write_roots=(tmp_path / ".claude",)
+        )
+
+    assert wrapped == ["sandbox-exec", "-p", "profile", "bash"]
+    assert mock_workspace.call_args.kwargs["sandbox_mode"] == "read-only"
+    assert mock_workspace.call_args.kwargs["extra_write_roots"] == (tmp_path / ".claude",)
+
+
+def test_macos_profile_read_only_omits_workspace_write_access(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _macos_profile
+
+    profile = _macos_profile(tmp_path, sandbox_mode="read-only")
+
+    write_block = profile.split("(allow file-write*", 1)[1].split("(allow file-read*", 1)[0]
+    assert f'(subpath "{tmp_path.resolve()}")' not in write_block
 
 
 def test_workspace_sandbox_allows_project_root_but_blocks_sibling_worktrees(

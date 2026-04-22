@@ -634,7 +634,18 @@ class TestSecretsInjection:
             return mock
 
         secrets = {"MY_SECRET_KEY": "secret-value"}
-        with patch("subprocess.Popen", side_effect=fake_popen):
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=lambda cmd, wd, extra_write_roots=(): [
+                    "sandbox-exec",
+                    "-p",
+                    "profile",
+                    *cmd,
+                ],
+            ),
+            patch("subprocess.Popen", side_effect=fake_popen),
+        ):
             run_agent(
                 prompt="test",
                 profile=dev_profile,
@@ -657,7 +668,18 @@ class TestSecretsInjection:
                 [_result_line(result="done", session_id="s1", total_cost_usd=0.0)]
             )
 
-        with patch("subprocess.Popen", side_effect=fake_popen):
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=lambda cmd, wd, extra_write_roots=(): [
+                    "sandbox-exec",
+                    "-p",
+                    "profile",
+                    *cmd,
+                ],
+            ),
+            patch("subprocess.Popen", side_effect=fake_popen),
+        ):
             run_agent(
                 prompt="test",
                 profile=dev_profile,
@@ -678,7 +700,18 @@ class TestSecretsInjection:
                 [_result_line(result="done", session_id="s1", total_cost_usd=0.0)]
             )
 
-        with patch("subprocess.Popen", side_effect=fake_popen):
+        with (
+            patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=lambda cmd, wd, extra_write_roots=(): [
+                    "sandbox-exec",
+                    "-p",
+                    "profile",
+                    *cmd,
+                ],
+            ),
+            patch("subprocess.Popen", side_effect=fake_popen),
+        ):
             result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success

@@ -51,6 +51,7 @@ class TestGeminiSandboxWrapper:
                     working_dir=tmp_path,
                 )
         mock_sandbox.assert_called_once()
+        assert mock_sandbox.call_args.kwargs["sandbox_mode"] == "workspace-write"
         # The cmd passed to subprocess.run should be the sandboxed version
         actual_cmd = mock_run.call_args[0][0]
         assert actual_cmd == wrapped_cmd
@@ -71,6 +72,7 @@ class TestGeminiSandboxWrapper:
                     working_dir=tmp_path,
                 )
         mock_sandbox.assert_called_once()
+        assert mock_sandbox.call_args.kwargs["sandbox_mode"] == "read-only"
 
     def test_none_skips_sandbox_wrapper(self, tmp_path: Path) -> None:
         """sandbox_mode=none → workspace_effect_sandbox_command is NOT called."""
@@ -98,7 +100,7 @@ class TestGeminiSandboxWrapper:
         # Return the original cmd unchanged → sandbox unavailable
         with patch(
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command",
-            side_effect=lambda cmd, wd: list(cmd),
+            side_effect=lambda cmd, wd, sandbox_mode: cmd,
         ):
             with patch("theforge.runners.runner_gemini.subprocess.run") as mock_run:
                 result = _run_gemini(

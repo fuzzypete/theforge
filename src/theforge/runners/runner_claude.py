@@ -19,6 +19,7 @@ from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
+from .sandbox import read_only_sandbox_command, workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -183,20 +184,62 @@ def _run_claude(
     if session_id:
         cmd.extend(["--resume", session_id])
 
-    # Engage Claude's native permission mode when sandboxing is requested.
-    # "default" prompts before writes outside cwd; in automated runs where there is
-    # no human to approve, out-of-worktree writes are effectively blocked.
-    # NOTE: Claude CLI has no mechanically-enforced read-only mode. When
-    # sandbox_mode == "read-only" we apply the same --permission-mode default and
-    # log a warning so operators know the read-only constraint is not syscall-enforced.
-    if profile.sandbox_mode == "read-only":
-        _log(
-            "  WARNING: sandbox_mode=read-only is not mechanically enforced by Claude CLI; "
-            "applying --permission-mode default (writes require permission approval). "
-            "Use a provider/API profile for true read-only enforcement."
-        )
+    # Keep Claude's native permission mode enabled when sandboxing is requested.
+    # The OS sandbox is the enforcement mechanism; Claude's own permission mode
+    # remains as a cooperative layer.
     if profile.sandbox_mode != "none":
         cmd.extend(["--permission-mode", "default"])
+        claude_state_dir = Path.home() / ".claude"
+        if not claude_state_dir.exists():
+            try:
+                claude_state_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return AgentResult(
+                    success=False,
+                    output=(
+                        "SANDBOX_UNAVAILABLE: unable to prepare Claude state directory "
+                        f"{claude_state_dir}: {exc}"
+                    ),
+                    session_id=None,
+                    cost_usd=None,
+                    exit_code=-1,
+                    raw={},
+                    profile_name=profile.name,
+                    startup_failure=True,
+                )
+        sandbox_builder = (
+            read_only_sandbox_command
+            if profile.sandbox_mode == "read-only"
+            else workspace_effect_sandbox_command
+        )
+        sandboxed_cmd = sandbox_builder(
+            cmd,
+            working_dir,
+            extra_write_roots=[claude_state_dir],
+        )
+        if sandboxed_cmd == cmd:
+            _log(
+                f"✗ claude: sandbox_mode={profile.sandbox_mode!r} requested but platform "
+                "sandbox (sandbox-exec/bwrap) is unavailable — refusing to run unsandboxed. "
+                "Set sandbox_mode: none to explicitly opt out of write containment."
+            )
+            return AgentResult(
+                success=False,
+                output=(
+                    f"SANDBOX_UNAVAILABLE: sandbox_mode={profile.sandbox_mode!r} is set but "
+                    "the platform sandbox (sandbox-exec on macOS, bwrap on Linux) is not "
+                    "available on this host. Claude CLI relies on OS sandboxing for "
+                    "mechanical write containment. Set sandbox_mode: none to run without "
+                    "write containment."
+                ),
+                session_id=None,
+                cost_usd=None,
+                exit_code=-1,
+                raw={},
+                profile_name=profile.name,
+                startup_failure=True,
+            )
+        cmd = sandboxed_cmd
 
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
     env = build_workspace_env(working_dir, extra=secrets)
