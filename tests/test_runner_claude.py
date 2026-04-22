@@ -15,10 +15,16 @@ from theforge.agent_types import AgentResult
 from theforge.config import ModelProfile
 from theforge.log_level import LogLevel, set_log_level
 from theforge.runners import run_agent, run_agent_pool
+from theforge.runners.runner_claude import _run_claude
 
 
-def _sandbox_wrap(cmd: list[str], wd: Path, extra_write_roots: list[Path]) -> list[str]:
-    return ["sandbox-exec", "-p", "profile", *cmd]
+def _sandbox_wrap(
+    cmd: list[str],
+    wd: Path,
+    sandbox_mode: str = "workspace-write",
+    extra_write_roots: list[Path] | tuple[Path, ...] = (),
+) -> list[str]:
+    return ["sandbox-exec", "-p", f"profile-{sandbox_mode}", *cmd]
 
 
 def _make_stream_mock(lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
@@ -618,8 +624,10 @@ class TestClaudePermissionMode:
         )
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
         with patch(
-            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
-            side_effect=_sandbox_wrap,
+            "theforge.runners.runner_claude.read_only_sandbox_command",
+            side_effect=lambda cmd, wd, extra_write_roots=(): _sandbox_wrap(
+                cmd, wd, sandbox_mode="read-only", extra_write_roots=extra_write_roots
+            ),
         ):
             with patch(
                 "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
@@ -665,7 +673,12 @@ class TestClaudeSandboxWrapper:
         )
         mock_proc = _make_stream_mock([_result_line(result="done")])
         claude_dir = Path.home() / ".claude"
-        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [claude_dir])
+        wrapped_cmd = _sandbox_wrap(
+            ["claude", "-p"],
+            tmp_path,
+            sandbox_mode="workspace-write",
+            extra_write_roots=[claude_dir],
+        )
         with patch(
             "theforge.runners.runner_claude.workspace_effect_sandbox_command",
             return_value=wrapped_cmd,
@@ -673,10 +686,13 @@ class TestClaudeSandboxWrapper:
             with patch(
                 "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
             ) as mock_popen:
-                with patch("pathlib.Path.mkdir") as mock_mkdir:
+                with (
+                    patch("pathlib.Path.exists", return_value=True),
+                    patch("pathlib.Path.mkdir") as mock_mkdir,
+                ):
                     _run_result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         assert _run_result.success is True
-        mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        mock_mkdir.assert_not_called()
         mock_sandbox.assert_called_once()
         assert mock_sandbox.call_args.kwargs["extra_write_roots"] == [claude_dir]
         assert mock_popen.call_args[0][0] == wrapped_cmd
@@ -693,16 +709,21 @@ class TestClaudeSandboxWrapper:
         )
         mock_proc = _make_stream_mock([_result_line(result="done")])
         claude_dir = Path.home() / ".claude"
-        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [claude_dir])
+        wrapped_cmd = _sandbox_wrap(
+            ["claude", "-p"],
+            tmp_path,
+            sandbox_mode="read-only",
+            extra_write_roots=[claude_dir],
+        )
         with patch(
-            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            "theforge.runners.runner_claude.read_only_sandbox_command",
             return_value=wrapped_cmd,
         ) as mock_sandbox:
             with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-                with patch("pathlib.Path.mkdir") as mock_mkdir:
+                with patch("pathlib.Path.exists", return_value=True):
                     run_agent(prompt="test", profile=profile, working_dir=tmp_path)
-        mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
         mock_sandbox.assert_called_once()
+        assert mock_sandbox.call_args.kwargs["extra_write_roots"] == [claude_dir]
 
     def test_none_skips_sandbox_wrapper(self, tmp_path: Path) -> None:
         profile = ModelProfile(
@@ -737,12 +758,15 @@ class TestClaudeSandboxWrapper:
         )
         with patch(
             "theforge.runners.runner_claude.workspace_effect_sandbox_command",
-            side_effect=lambda cmd, wd, extra_write_roots: cmd,
+            side_effect=lambda cmd, wd, extra_write_roots=(): cmd,
         ):
             with patch("theforge.runners.runner_claude.subprocess.Popen") as mock_popen:
-                with patch("pathlib.Path.mkdir") as mock_mkdir:
+                with (
+                    patch("pathlib.Path.exists", return_value=True),
+                    patch("pathlib.Path.mkdir") as mock_mkdir,
+                ):
                     result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
-        mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
+        mock_mkdir.assert_not_called()
         mock_popen.assert_not_called()
         assert result.success is False
         assert result.startup_failure is True
@@ -770,6 +794,28 @@ class TestClaudeSandboxWrapper:
         mock_sandbox.assert_not_called()
         mock_popen.assert_called_once()
         assert result.success is True
+
+    def test_claude_state_dir_mkdir_failure_returns_startup_failure(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read",),
+            sandbox_mode="workspace-write",
+        )
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch("pathlib.Path.mkdir", side_effect=PermissionError("nope")),
+        ):
+            result = _run_claude(prompt="test", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.startup_failure is True
+        assert result.exit_code == -1
+        assert "SANDBOX_UNAVAILABLE" in result.output
+        assert ".claude" in result.output
 
 
 class TestClaudeSessionIdHelper:

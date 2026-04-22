@@ -19,7 +19,7 @@ from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
-from .sandbox import workspace_effect_sandbox_command
+from .sandbox import read_only_sandbox_command, workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -190,8 +190,29 @@ def _run_claude(
     if profile.sandbox_mode != "none":
         cmd.extend(["--permission-mode", "default"])
         claude_state_dir = Path.home() / ".claude"
-        claude_state_dir.mkdir(parents=True, exist_ok=True)
-        sandboxed_cmd = workspace_effect_sandbox_command(
+        if not claude_state_dir.exists():
+            try:
+                claude_state_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                return AgentResult(
+                    success=False,
+                    output=(
+                        "SANDBOX_UNAVAILABLE: unable to prepare Claude state directory "
+                        f"{claude_state_dir}: {exc}"
+                    ),
+                    session_id=None,
+                    cost_usd=None,
+                    exit_code=-1,
+                    raw={},
+                    profile_name=profile.name,
+                    startup_failure=True,
+                )
+        sandbox_builder = (
+            read_only_sandbox_command
+            if profile.sandbox_mode == "read-only"
+            else workspace_effect_sandbox_command
+        )
+        sandboxed_cmd = sandbox_builder(
             cmd,
             working_dir,
             extra_write_roots=[claude_state_dir],
