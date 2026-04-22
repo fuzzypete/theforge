@@ -182,3 +182,77 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     assert "model_profiles" in captured
     assert captured["model_profiles"] == seeded
+
+
+def test_record_run_memory_is_called_from_resume_path(tmp_path):
+    """Both run_task and _run_resume_coordinator must call _record_run_memory.
+
+    Regression guard for cycle 2: resume entry points (run_from_review /
+    run_from_dev) previously skipped model_profiles.yaml updates because the
+    persistence logic lived inline in run_task. It now lives in a shared
+    helper — this test asserts the helper is referenced from both paths.
+    """
+    from theforge.coordinator import engine as _eng
+
+    source = Path(_eng.__file__).read_text(encoding="utf-8")
+    # Exactly one definition + at least two call sites (run_task + resume).
+    assert source.count("def _record_run_memory(") == 1
+    assert source.count("_record_run_memory(") >= 3  # 1 def + 2 calls
+
+
+def test_record_run_memory_writes_profiles_and_history(tmp_path):
+    """Unit test of the shared helper: both files written when gates are met."""
+    from dataclasses import replace as _replace
+
+    from theforge.coordinator.engine import _record_run_memory
+    from theforge.coordinator.state import CoordinatorResult, Phase
+
+    config = _replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="claude-sonnet",
+                provider=None,
+                model="sonnet",
+                budget_usd=10.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            )
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=True,
+            budget_per_story_usd=30.0,
+        ),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="ok")
+
+    _record_run_memory(config, task, state, result)
+
+    profiles_path = tmp_path / ".forge" / "model_profiles.yaml"
+    history_path = tmp_path / ".forge" / "assignment_history.yaml"
+    assert profiles_path.exists()
+    assert history_path.exists()
+
+
+def test_record_run_memory_skips_when_preflight_complexity_missing(tmp_path, caplog):
+    """Helper must no-op (and log) when preflight_complexity is unset."""
+    import logging
+
+    from theforge.coordinator.engine import _record_run_memory
+    from theforge.coordinator.state import CoordinatorResult, Phase
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState()  # preflight_complexity stays None
+    result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="ok")
+
+    with caplog.at_level(logging.DEBUG):
+        _record_run_memory(config, task, state, result)
+
+    profiles_path = tmp_path / ".forge" / "model_profiles.yaml"
+    assert not profiles_path.exists()
