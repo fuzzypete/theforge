@@ -509,6 +509,7 @@ def _run_review_phase(
                 "phase": "REVIEW",
                 "iteration": state.review_cycle + 1,
                 "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
             }
         )
     if logger:
@@ -577,6 +578,19 @@ def _run_review_phase(
     _review_elapsed = time.monotonic() - _review_pool_start
     _p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
     _p2_count = sum(1 for f in parsed_review.findings if f.severity == "P2")
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "REVIEW",
+                "iteration": state.review_cycle,
+                "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
+                "detail": {
+                    "review_p1": _p1_count,
+                    "review_p2": _p2_count,
+                },
+            }
+        )
     _review_cost = (
         sum(r.cost_usd or 0.0 for r in state.review_agent_results) - _review_cost_before_cycle
     )

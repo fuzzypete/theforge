@@ -79,15 +79,18 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
                 "cost_usd": 0.12,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "complexity": "medium",
+                "detail": {"review_cycle": 0, "dev_iteration": 2},
             },
             {
                 "slug": "issue-2",
                 "path": "Issue #2",
                 "status": "waiting",
-                "phase": None,
+                "phase": "PREFLIGHT",
                 "cost_usd": 0.0,
                 "bundle_candidate": True,
                 "blocked_by": [],
+                "detail": {},
             },
         ],
     )
@@ -102,11 +105,14 @@ def test_read_live_status_parses_state_file(tmp_path: Path) -> None:
     assert e1.phase == "DEV"
     assert e1.cost_usd == pytest.approx(0.12)
     assert e1.bundle_candidate is False
+    assert e1.complexity == "medium"
+    assert e1.detail == "c1 i2"
 
     e2 = entries[1]
     assert e2.slug == "issue-2"
     assert e2.status == "waiting"
     assert e2.bundle_candidate is True
+    assert e2.detail == "waiting"
 
 
 def test_read_live_status_blocked_story(tmp_path: Path) -> None:
@@ -361,15 +367,21 @@ def test_cmd_sprint_status_live_sprint(tmp_path: Path) -> None:
                 "cost_usd": 0.05,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "complexity": "medium",
+                "detail": {"review_cycle": 0, "dev_iteration": 2},
             },
             {
                 "slug": "issue-21",
                 "path": "Issue #21",
                 "status": "waiting",
-                "phase": None,
+                "phase": "PREFLIGHT",
                 "cost_usd": 0.0,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "detail": {
+                    "preflight_verdict": "PROCEED",
+                    "preflight_sufficiency": "needs_planning",
+                },
             },
         ],
     )
@@ -380,8 +392,10 @@ def test_cmd_sprint_status_live_sprint(tmp_path: Path) -> None:
     assert "[live]" in output
     assert "Issue #20" in output
     assert "DEV" in output
+    assert "medium" in output
+    assert "c1 i2" in output
     assert "Issue #21" in output
-    assert "waiting" in output
+    assert "PROCEED / needs_planning" in output
 
 
 def test_cmd_sprint_status_blocked_story_shows_dependency(tmp_path: Path) -> None:
@@ -572,6 +586,7 @@ def test_display_sprint_status_column_header_present(tmp_path: Path) -> None:
     assert code == 0
     assert "STATUS" in output
     assert "PHASE" in output
+    assert "COMPLEXITY" in output
     assert "COST" in output
     assert "ELAPSED" in output
     assert "DETAIL" in output
@@ -590,10 +605,12 @@ def test_state_writer_init_and_update(tmp_path: Path) -> None:
                 "slug": "issue-1",
                 "path": "Issue #1",
                 "status": "waiting",
-                "phase": None,
+                "phase": "PREFLIGHT",
                 "cost_usd": 0.0,
                 "bundle_candidate": False,
                 "blocked_by": [],
+                "complexity": None,
+                "detail": {},
             }
         ]
     )
@@ -605,12 +622,21 @@ def test_state_writer_init_and_update(tmp_path: Path) -> None:
         data = yaml.safe_load(f)
     assert data["sprint_name"] == "my-sprint"
     assert data["stories"][0]["status"] == "waiting"
+    assert data["stories"][0]["phase"] == "PREFLIGHT"
 
-    writer.update("issue-1", status="running", phase="DEV")
+    writer.update(
+        "issue-1",
+        status="running",
+        phase="DEV",
+        complexity="medium",
+        detail={"review_cycle": 0, "dev_iteration": 2},
+    )
     with open(state_path) as f:
         data = yaml.safe_load(f)
     assert data["stories"][0]["status"] == "running"
     assert data["stories"][0]["phase"] == "DEV"
+    assert data["stories"][0]["complexity"] == "medium"
+    assert data["stories"][0]["detail"] == {"review_cycle": 0, "dev_iteration": 2}
 
 
 def test_state_writer_remove(tmp_path: Path) -> None:
@@ -655,3 +681,121 @@ def test_state_writer_update_unknown_slug_is_noop(tmp_path: Path) -> None:
 
     # Should not raise, just ignore
     writer.update("nonexistent", status="done")
+
+
+def test_worker_phase_fn_forwards_coordinator_detail(tmp_path: Path) -> None:
+    """_make_worker_phase_fn must forward complexity/detail from coordinator updates.
+
+    Regression: a prior wrapper hardcoded DEV/VALIDATE detail and discarded
+    fields supplied by preflight/plan/review/validate phases, so the live
+    .state file never saw the real classification or gate decision.
+    """
+    import threading
+
+    from theforge.sprint.runner import _make_worker_phase_fn
+    from theforge.sprint.state_writer import SprintStateWriter
+
+    writer = SprintStateWriter("wf-run", tmp_path, "sprint")
+    writer.init(
+        [
+            {
+                "slug": "s1",
+                "path": "s1",
+                "status": "running",
+                "phase": None,
+                "cost_usd": 0.0,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "complexity": None,
+                "detail": {},
+            }
+        ]
+    )
+
+    fn = _make_worker_phase_fn(
+        slug="s1",
+        worker_phases={},
+        phase_lock=threading.Lock(),
+        outer_fn=None,
+        plan_done=None,
+        state_writer=writer,
+    )
+
+    state_path = tmp_path / ".forge" / "runs" / "wf-run.state"
+
+    # PREFLIGHT: complexity + verdict/sufficiency detail propagated
+    fn(
+        {
+            "phase": "PREFLIGHT",
+            "iteration": 0,
+            "cost_usd": 0.01,
+            "complexity": "medium",
+            "detail": {
+                "preflight_verdict": "PROCEED",
+                "preflight_sufficiency": "implementation_ready",
+            },
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    story = data["stories"][0]
+    assert story["phase"] == "PREFLIGHT"
+    assert story["complexity"] == "medium"
+    assert story["detail"]["preflight_verdict"] == "PROCEED"
+    assert story["detail"]["preflight_sufficiency"] == "implementation_ready"
+
+    # PLAN: plan_attempt/plan_max_attempts forwarded
+    fn(
+        {
+            "phase": "PLAN",
+            "iteration": 0,
+            "cost_usd": 0.1,
+            "complexity": "medium",
+            "detail": {"plan_attempt": 1, "plan_max_attempts": 3},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"plan_attempt": 1, "plan_max_attempts": 3}
+
+    # DEV: review_cycle comes from coordinator detail, NOT iteration
+    fn(
+        {
+            "phase": "DEV",
+            "iteration": 2,
+            "cost_usd": 0.5,
+            "complexity": "medium",
+            "detail": {"review_cycle": 0, "dev_iteration": 2},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"review_cycle": 0, "dev_iteration": 2}
+
+    # REVIEW: P1/P2 counts forwarded
+    fn(
+        {
+            "phase": "REVIEW",
+            "iteration": 1,
+            "cost_usd": 0.7,
+            "complexity": "medium",
+            "detail": {"review_p1": 1, "review_p2": 2},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"review_p1": 1, "review_p2": 2}
+
+    # VALIDATE with gate_status: real decision preserved, not overwritten
+    fn(
+        {
+            "phase": "VALIDATE",
+            "iteration": 2,
+            "cost_usd": 0.9,
+            "complexity": "medium",
+            "detail": {"gate_status": "PASS"},
+        }
+    )
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"gate_status": "PASS"}
+
+    # VALIDATE without detail: falls back to 'running'
+    fn({"phase": "VALIDATE", "iteration": 3, "cost_usd": 1.0})
+    data = yaml.safe_load(state_path.read_text())
+    assert data["stories"][0]["detail"] == {"gate_status": "running"}

@@ -277,6 +277,19 @@ def _run_preflight_phase(
 
     state.preflight_verdict = verdict
     state.preflight_reason = reason
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "PREFLIGHT",
+                "iteration": 0,
+                "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
+                "detail": {
+                    "preflight_verdict": verdict,
+                    "preflight_sufficiency": state.preflight_sufficiency,
+                },
+            }
+        )
 
     # ── Parsed preflight signals ────────────────────────────────────────
     if preflight_result.success:
@@ -382,6 +395,20 @@ def _run_preflight_phase(
         state.preflight_sufficiency = "needs_planning"
         state.preflight_work_type = "feature"
         state.preflight_bundle_candidate = False
+
+    if state_update_fn is not None:
+        state_update_fn(
+            {
+                "phase": "PREFLIGHT",
+                "iteration": 0,
+                "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
+                "detail": {
+                    "preflight_verdict": state.preflight_verdict,
+                    "preflight_sufficiency": state.preflight_sufficiency,
+                },
+            }
+        )
 
     config = _apply_preflight_config(config, state, log=_log, log_verbose=_log_verbose)
 

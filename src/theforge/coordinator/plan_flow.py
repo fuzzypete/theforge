@@ -200,6 +200,11 @@ def _run_plan_phase(
                 "phase": "PLAN",
                 "iteration": 0,
                 "cost_usd": state.total_cost,
+                "complexity": state.preflight_complexity,
+                "detail": {
+                    "plan_attempt": state.plan_regen_count + 1,
+                    "plan_max_attempts": config.retry.max_plan_regen_attempts,
+                },
             }
         )
     _plan_timeout = resolve_timeout(
