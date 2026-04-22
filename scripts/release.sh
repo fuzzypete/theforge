@@ -150,7 +150,7 @@ For every doc in the checklist below, verify claims **against the system**, not 
 - For every field name in a doc → grep the source, compare to the current dataclass / schema / frontmatter parser
 - For every CLI command, flag, or subcommand → run it, paste the actual output into your drift notes, compare
 - For every file or directory path referenced → confirm it exists at that path in the current working tree
-- For every example config, story, issue, or YAML snippet → run it through the relevant validator (shape-check, \`forge validate\`, config loader) and confirm it passes
+- For every example config, story, issue, or YAML snippet → run it through the relevant loader or shape-check path exercised by the tests, and confirm it passes
 - For every architectural or behavioral claim → locate the code that implements it and confirm the doc's description still matches
 
 \"It agrees with CLAUDE.md / AGENTS.md / another guide\" is **not** verification — those are docs too and may themselves be stale. The only passing signal is \"I ran it / read the code and it matches.\"
@@ -165,7 +165,7 @@ For every doc in the checklist below, verify claims **against the system**, not 
 - [ ] **forge.yaml** — inline comments match current schema and behavior
 - [ ] **CLI help text** — \`forge --help\` and every subcommand reflect current flags
 - [ ] **GitHub release notes** — body covers what users need to know
-- [ ] **docs/guides/** — every file (authoring, CLI reference, inputs reference, getting started, provider setup, model reference, troubleshooting, local models, first-run walkthrough)
+- [ ] **docs/guides/** — every file currently present (run \`ls docs/guides/\`); do not work from a hardcoded list in this template, since files are added and renamed between releases
 - [ ] **docs/vision.md** and anything under **docs/vision/** — reflect current direction, not abandoned paths
 - [ ] **docs/plans/** — active plans are still active; completed or abandoned plans are archived or marked
 - [ ] **docs/postmortems/** — referenced issue numbers and dates resolve; follow-ups are closed or tracked
