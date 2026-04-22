@@ -234,6 +234,10 @@ def test_allowed_root_files_whitelist_is_stack_neutral() -> None:
     assert "pyproject.toml" not in _ALLOWED_ROOT_FILES
     assert "setup.py" not in _ALLOWED_ROOT_FILES
     assert "setup.cfg" not in _ALLOWED_ROOT_FILES
+    assert "package-lock.json" not in _ALLOWED_ROOT_FILES
+    assert "yarn.lock" not in _ALLOWED_ROOT_FILES
+    assert "pnpm-lock.yaml" not in _ALLOWED_ROOT_FILES
+    assert "bun.lockb" not in _ALLOWED_ROOT_FILES
 
 
 class TestCheckHardConventions:
@@ -395,15 +399,19 @@ class TestNoScratchFilesCheck:
         violations = _check_no_scratch_files(tmp_path)
         assert violations == []
 
-    def test_python_specific_root_files_are_not_universally_allowed(self, tmp_path):
+    def test_stack_specific_root_files_are_not_universally_allowed(self, tmp_path):
         _write(tmp_path / "pyproject.toml", "[project]\n")
         _write(tmp_path / "conftest.py", "# root conftest\n")
         _write(tmp_path / "tox.ini", "[tox]\n")
+        _write(tmp_path / "package-lock.json", "{}\n")
+        _write(tmp_path / "yarn.lock", "# yarn lockfile\n")
         violations = _check_no_scratch_files(tmp_path)
         files = {v.file for v in violations if v.rule == "no_scratch_files"}
         assert "pyproject.toml" in files
         assert "conftest.py" in files
         assert "tox.ini" in files
+        assert "package-lock.json" in files
+        assert "yarn.lock" in files
 
     def test_project_local_allowed_root_files_extend_whitelist(self, tmp_path):
         _write(tmp_path / "pyproject.toml", "[project]\n")

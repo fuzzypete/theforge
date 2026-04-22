@@ -178,6 +178,13 @@ def test_dev_prompt_uses_configured_commands_and_no_hardcoded_layout_rule(tmp_pa
     assert "make fmt" not in prompt
     assert "make lint" not in prompt
     assert "Do not create files outside `src/`, `tests/`, or `docs/`" not in prompt
+    assert "## Workflow" in prompt
+    assert "1. Implement the spec. Write tests for new functionality." in prompt
+    assert "2. Run the gate command to validate your work:" in prompt
+    assert "```bash" in prompt
+    assert "npm run validate" in prompt
+    assert "3. Only after the gate passes, commit your changes:" in prompt
+    assert "4. Emit a `<forge_handoff>` block in your **final message**" in prompt
 
 
 class TestContractChangeTestRule:

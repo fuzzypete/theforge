@@ -250,12 +250,12 @@ def build_dev_prompt(
 
         1. Implement the spec. Write tests for new functionality.
         2. {gate_section}
-        4. Only after the gate passes, commit your changes:
+        3. Only after the gate passes, commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
            ```
-        5. Emit a `<forge_handoff>` block in your **final message** (outside any code
+        4. Emit a `<forge_handoff>` block in your **final message** (outside any code
            fence, exactly once). This allows the orchestrator to capture your handoff
            without reading the filesystem. The block must contain a YAML mapping with
            the same keys as the `dev_notes` section above:

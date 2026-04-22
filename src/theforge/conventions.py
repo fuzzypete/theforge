@@ -284,11 +284,6 @@ _ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
         "makefile",
         "Dockerfile",
         "dockerignore",
-        # Lock files
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "bun.lockb",
         # Documentation / metadata
         "README.md",
         "README.rst",
@@ -316,10 +311,11 @@ def _check_no_scratch_files(
 ) -> list[ConventionViolation]:
     """Check that no unrecognised files exist directly in the project root.
 
-    All source code must live under src/, tests/, docs/, or scripts/.
-    Files that don't match the known-good whitelist of root files are almost
-    always scratch/exploration files that were never deleted before committing
-    (e.g. bin_script, fake_forge, test_exec.py from issue #646).
+    Source files should live in appropriate project directories rather than the
+    repository root. Files that don't match the known-good whitelist of root
+    files are almost always scratch/exploration files that were never deleted
+    before committing (e.g. bin_script, fake_forge, test_exec.py from issue
+    #646).
 
     Hidden files (dotfiles) are skipped — they are conventionally tooling
     configuration and pose no risk of accidental source-code pollution.
@@ -340,7 +336,8 @@ def _check_no_scratch_files(
                 file=rel,
                 detail=(
                     f"{rel} is not an allowed root-level file — "
-                    "source files must live under src/, tests/, docs/, or scripts/"
+                    "source files must live in appropriate project directories, "
+                    "not the repository root"
                 ),
             )
         )
