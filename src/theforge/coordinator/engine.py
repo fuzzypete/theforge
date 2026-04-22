@@ -242,12 +242,34 @@ def _coordinator_loop(
     workspace_path = state.workspace_path
     branch_name = state.branch_name
     _skip_dev = skip_dev_first_iter
-    # Initialise the budget's per-cycle limit from config.  The budget tracks
-    # both the per-cycle count (cycle_count, replaces _dev_calls_this_cycle) and
-    # the cumulative count across all review cycles (total_count).  Mutations
-    # go exclusively through budget.consume() and budget.reset_cycle() so that
-    # every consumption is recorded in budget.consumption_log.
-    state.budget.max_iterations = config.retry.max_dev_iterations
+    # Derive per-story adaptive iteration limits from preflight complexity and
+    # historical usage.  RetryPolicy.adaptive_iterations=False returns the
+    # policy floor values verbatim; floor and cap always bound the outcome.
+    from .adaptive_iterations import derive_limits  # noqa: PLC0415
+
+    if state.adaptive_dev_max == 0 or state.adaptive_review_max == 0:
+        _history_path = config.project_root / ".forge" / "audits" / "history.jsonl"
+        _limits = derive_limits(
+            state.preflight_complexity_score,
+            state.preflight_complexity,
+            config.retry,
+            _history_path,
+        )
+        state.adaptive_dev_max = _limits.dev_max
+        state.adaptive_review_max = _limits.review_max
+        state.adaptive_limits_audit = _limits.audit
+        _log_verbose(
+            f"  adaptive limits: dev={_limits.dev_max} review={_limits.review_max} "
+            f"({_limits.audit.get('rationale', '')})"
+        )
+
+    # Initialise the budget's per-cycle limit from the adaptive value.  The
+    # budget tracks both the per-cycle count (cycle_count, replaces
+    # _dev_calls_this_cycle) and the cumulative count across all review cycles
+    # (total_count).  Mutations go exclusively through budget.consume() and
+    # budget.reset_cycle() so that every consumption is recorded in
+    # budget.consumption_log.
+    state.budget.max_iterations = state.adaptive_dev_max
 
     while True:
         if not _skip_dev:
@@ -315,11 +337,12 @@ def _coordinator_loop(
             if _val_outcome == _ValidateOutcome.REVIEW_CONVENTION_BLOCK:
                 state.review_cycle += 1
                 state.review_results.append(_build_convention_blocking_review(state))
-                if state.review_cycle >= config.retry.max_review_cycles:
+                _review_cap = state.adaptive_review_max or config.retry.max_review_cycles
+                if state.review_cycle >= _review_cap:
                     state.phase = Phase.ESCALATE
                     state.error = (
                         f"Convention violations persisted after {state.review_cycle} cycles. "
-                        f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+                        f"Max cycles ({_review_cap}) exhausted."
                     )
                     _log(f"✗ ESCALATE   {state.error}")
                     if logger:

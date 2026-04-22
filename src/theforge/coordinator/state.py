@@ -389,6 +389,13 @@ class CoordinatorState:
     _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
     _explicit_roles: set = field(default_factory=set)  # roles with explicit forge.yaml config
     complexity_routing_audit: dict | None = None  # set by _apply_complexity_adaptation
+    # Adaptive iteration limits (per-story). Populated by derive_limits() before
+    # the dev/review loop starts. 0 means "not computed yet"; engine falls back
+    # to config.retry.max_dev_iterations / max_review_cycles in that case.
+    adaptive_dev_max: int = 0
+    adaptive_review_max: int = 0
+    adaptive_limits_audit: dict = field(default_factory=dict)
+    review_early_terminated: bool = False  # True when early-termination triggered
 
     def __post_init__(self, dev_iteration: int) -> None:
         # Sync the budget's per-cycle counter with the constructor kwarg.

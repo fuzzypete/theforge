@@ -818,15 +818,77 @@ def _run_review_phase(
         state.surviving_families = []
 
     save_trajectory_state(workspace_path, state)
+    _adaptive_review_max = state.adaptive_review_max or config.retry.max_review_cycles
     _record_review_iteration_telemetry(
         state,
         parsed_review,
         review_cost=_review_cost,
         review_elapsed=_review_elapsed,
-        max_iterations=config.retry.max_review_cycles,
+        max_iterations=_adaptive_review_max,
     )
 
     _log_review_findings(parsed_review, _p1_count, _p2_count, _review_cost, logger)
+
+    # ── Early termination: consecutive zero-new-findings cycles ────────
+    # Stop the review loop regardless of verdict when the reviewer converges
+    # (produces zero new findings for N consecutive iterations).  This saves
+    # budget on stories where the reviewer is stuck restating the same issues.
+    _zero_stop = config.retry.review_zero_findings_stop
+    if _zero_stop > 0 and len(state.review_iteration_telemetry) >= _zero_stop:
+        _tail = state.review_iteration_telemetry[-_zero_stop:]
+        if all(sum(t.new_findings_by_severity.values()) == 0 for t in _tail):
+            _log(
+                f"  ⏹ REVIEW  early termination after {_zero_stop} consecutive cycles "
+                f"with zero new findings"
+            )
+            state.review_early_terminated = True
+            if not _blocking_p1:
+                # No blocking P1 — treat as APPROVE path.
+                _append_cycle_history(state, parsed_review)
+                return (
+                    _ReviewOutcome.DONE,
+                    _finalize_approve(
+                        state,
+                        config,
+                        task,
+                        parsed_review,
+                        workspace_path,
+                        branch_name,
+                        task_start,
+                        auto_merge=auto_merge,
+                        notify=notify,
+                        logger=logger,
+                        review_cost=_review_cost,
+                        review_elapsed=_review_elapsed,
+                        message=(
+                            f"Task '{task.name}' completed. "
+                            f"Review converged (early termination: zero new findings for "
+                            f"{_zero_stop} consecutive cycles)."
+                        ),
+                        run_id=run_id,
+                    ),
+                    config,
+                )
+            # Blocking P1 persists but reviewer has converged — escalate so
+            # the persistent issue gets human attention rather than looping.
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Review converged with unresolved blocking P1(s) after "
+                f"{_zero_stop} consecutive zero-new-findings cycles."
+            )
+            if logger:
+                logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+                logger._safe_emit("escalate", reason=state.error, phase="REVIEW")
+            return (
+                _ReviewOutcome.ESCALATE,
+                CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.error,
+                ),
+                config,
+            )
 
     # ── APPROVE (or disposition-gated pass) ─────────────────────────
     # The coordinator makes the blocking decision independently of the synthesized verdict.
@@ -939,7 +1001,7 @@ def _run_review_phase(
                     f"Persistent finding(s): {'; '.join(_persistent_descs)}"
                 )
 
-    if state.review_cycle >= config.retry.max_review_cycles:
+    if state.review_cycle >= _adaptive_review_max:
         if interactive:
             return _handle_interactive_review_decision(
                 state,
@@ -960,7 +1022,7 @@ def _run_review_phase(
             state.phase = Phase.ESCALATE
             state.error = (
                 f"Review requested changes after {state.review_cycle} cycles. "
-                f"Max cycles ({config.retry.max_review_cycles}) exhausted."
+                f"Max cycles ({_adaptive_review_max}) exhausted."
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
