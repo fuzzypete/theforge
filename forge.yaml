@@ -11,6 +11,20 @@ models:
   - deepseek/deepseek-reasoner
   - google/gemini-3.1-pro-preview
 
+plan_agent_review:
+  enabled: true
+  pool:
+    - name: plan-reviewer-deepseek
+      provider: deepseek
+      model: deepseek-reasoner
+      budget_usd: 1.00
+      timeout_seconds: 600
+    - name: plan-reviewer-gemini
+      provider: google
+      model: gemini-3.1-pro-preview
+      budget_usd: 1.00
+      timeout_seconds: 600
+      
 budget_usd: 50.0
 
 workspace:
