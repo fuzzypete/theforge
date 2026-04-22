@@ -189,10 +189,12 @@ def _run_claude(
     # remains as a cooperative layer.
     if profile.sandbox_mode != "none":
         cmd.extend(["--permission-mode", "default"])
+        claude_state_dir = Path.home() / ".claude"
+        claude_state_dir.mkdir(parents=True, exist_ok=True)
         sandboxed_cmd = workspace_effect_sandbox_command(
             cmd,
             working_dir,
-            extra_write_roots=[Path.home() / ".claude"],
+            extra_write_roots=[claude_state_dir],
         )
         if sandboxed_cmd == cmd:
             _log(

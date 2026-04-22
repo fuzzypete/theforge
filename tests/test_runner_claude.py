@@ -664,7 +664,8 @@ class TestClaudeSandboxWrapper:
             sandbox_mode="workspace-write",
         )
         mock_proc = _make_stream_mock([_result_line(result="done")])
-        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [Path.home() / ".claude"])
+        claude_dir = Path.home() / ".claude"
+        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [claude_dir])
         with patch(
             "theforge.runners.runner_claude.workspace_effect_sandbox_command",
             return_value=wrapped_cmd,
@@ -672,10 +673,12 @@ class TestClaudeSandboxWrapper:
             with patch(
                 "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
             ) as mock_popen:
-                _run_result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+                with patch("pathlib.Path.mkdir") as mock_mkdir:
+                    _run_result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         assert _run_result.success is True
+        mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
         mock_sandbox.assert_called_once()
-        assert mock_sandbox.call_args.kwargs["extra_write_roots"] == [Path.home() / ".claude"]
+        assert mock_sandbox.call_args.kwargs["extra_write_roots"] == [claude_dir]
         assert mock_popen.call_args[0][0] == wrapped_cmd
 
     def test_read_only_uses_sandbox_wrapper(self, tmp_path: Path) -> None:
@@ -689,13 +692,16 @@ class TestClaudeSandboxWrapper:
             sandbox_mode="read-only",
         )
         mock_proc = _make_stream_mock([_result_line(result="done")])
-        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [Path.home() / ".claude"])
+        claude_dir = Path.home() / ".claude"
+        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [claude_dir])
         with patch(
             "theforge.runners.runner_claude.workspace_effect_sandbox_command",
             return_value=wrapped_cmd,
         ) as mock_sandbox:
             with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+                with patch("pathlib.Path.mkdir") as mock_mkdir:
+                    run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
         mock_sandbox.assert_called_once()
 
     def test_none_skips_sandbox_wrapper(self, tmp_path: Path) -> None:
@@ -734,7 +740,9 @@ class TestClaudeSandboxWrapper:
             side_effect=lambda cmd, wd, extra_write_roots: cmd,
         ):
             with patch("theforge.runners.runner_claude.subprocess.Popen") as mock_popen:
-                result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+                with patch("pathlib.Path.mkdir") as mock_mkdir:
+                    result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_mkdir.assert_called_once_with(parents=True, exist_ok=True)
         mock_popen.assert_not_called()
         assert result.success is False
         assert result.startup_failure is True
