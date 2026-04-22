@@ -15,6 +15,21 @@ import yaml
 from .schemas import repair_review_yaml, validate_review_yaml
 
 
+def _coerce_line(value: object) -> int | None:
+    """Coerce a reviewer-supplied line value to int or None.
+
+    Reviewers sometimes emit line numbers as strings (e.g. "42") or omit them
+    entirely.  Any value that cannot be interpreted as a non-negative integer is
+    treated as None so downstream arithmetic never crashes.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class ReviewFinding:
     """A single review finding with severity and location."""
@@ -77,7 +92,7 @@ def parse_review_json(data: dict) -> ReviewResult:
                 ReviewFinding(
                     severity=f.get("severity", "P2"),
                     file=f.get("file", "unknown"),
-                    line=f.get("line"),
+                    line=_coerce_line(f.get("line")),
                     description=f.get("description", ""),
                     suggestion=f.get("suggestion"),
                 )
@@ -165,7 +180,7 @@ def parse_review_output(agent_output: str) -> ReviewResult:
                 ReviewFinding(
                     severity=f.get("severity", "P2"),
                     file=f.get("file", "unknown"),
-                    line=f.get("line"),
+                    line=_coerce_line(f.get("line")),
                     description=f.get("description", ""),
                     suggestion=f.get("suggestion"),
                 )

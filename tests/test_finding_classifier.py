@@ -13,6 +13,7 @@ from theforge.finding_classifier import (
     _matches_prior,
     _matches_prior_agnostic,
     _normalize_tokens,
+    _should_merge_line_proximity,
     has_blocking_p1,
     net_new_p1s,
     update_finding_registry,
@@ -663,6 +664,39 @@ class TestNetNewP1s:
         assert len(result) == 1
         assert result[0].disposition == "net_new"
         assert result[0].severity == "P1"
+
+
+class TestShouldMergeLineProximity:
+    """Tests for _should_merge_line_proximity."""
+
+    def _make_reports(self, line: int | None) -> list[tuple[str, ReviewFinding]]:
+        return [
+            (
+                "reviewer-a",
+                ReviewFinding(
+                    severity="P1",
+                    file="src/foo.py",
+                    line=line,
+                    description="some bug",
+                    suggestion="fix it",
+                ),
+            )
+        ]
+
+    def test_int_lines_within_3_merge(self):
+        reports_a = self._make_reports(10)
+        reports_b = self._make_reports(12)
+        assert _should_merge_line_proximity(reports_a, reports_b) is True
+
+    def test_int_lines_beyond_3_no_merge(self):
+        reports_a = self._make_reports(10)
+        reports_b = self._make_reports(20)
+        assert _should_merge_line_proximity(reports_a, reports_b) is False
+
+    def test_none_lines_no_merge(self):
+        reports_a = self._make_reports(None)
+        reports_b = self._make_reports(None)
+        assert _should_merge_line_proximity(reports_a, reports_b) is False
 
 
 class TestGetChangedFiles:

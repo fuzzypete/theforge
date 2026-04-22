@@ -4,6 +4,7 @@ from theforge.review import (
     ReviewFinding,
     ReviewResult,
     _best_individual_result,
+    _coerce_line,
     _dedup_findings,
     _try_parse_review,
     findings_to_markdown,
@@ -507,3 +508,63 @@ class TestMergeReviewResultsDedup:
         merged = merge_review_results([valid, invalid], ["a", "b"])
         assert not merged.parse_errors
         assert len(merged.findings) == 1
+
+
+# ── Tests: _coerce_line ──────────────────────────────────────────────
+
+
+class TestCoerceLine:
+    def test_none_returns_none(self):
+        assert _coerce_line(None) is None
+
+    def test_int_passthrough(self):
+        assert _coerce_line(42) == 42
+
+    def test_string_int_coerced(self):
+        assert _coerce_line("42") == 42
+
+    def test_string_zero(self):
+        assert _coerce_line("0") == 0
+
+    def test_float_truncated(self):
+        assert _coerce_line(3.9) == 3
+
+    def test_non_numeric_string_returns_none(self):
+        assert _coerce_line("N/A") is None
+
+    def test_empty_string_returns_none(self):
+        assert _coerce_line("") is None
+
+    def test_object_returns_none(self):
+        assert _coerce_line([1, 2]) is None
+
+
+# ── Tests: parse_review_output with string line values ───────────────
+
+
+REVIEW_WITH_STRING_LINE = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "String line number emitted by reviewer"
+findings:
+  - severity: P1
+    file: src/foo.py
+    line: "42"
+    description: "Bug with string line"
+    suggestion: "Fix it"
+story_compliance:
+  matches_spec: true
+  mismatches: []
+test_coverage:
+  adequate: true
+  gaps: []
+```
+"""
+
+
+class TestParseReviewOutputStringLine:
+    def test_string_line_coerced_to_int(self):
+        result = parse_review_output(REVIEW_WITH_STRING_LINE)
+        assert len(result.findings) == 1
+        assert result.findings[0].line == 42
+        assert isinstance(result.findings[0].line, int)
