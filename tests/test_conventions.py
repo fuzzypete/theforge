@@ -283,9 +283,9 @@ class TestStackNeutralityCheck:
         _write(
             tmp_path / "src" / "theforge" / "coordinator" / "neutral.py",
             '"""Mention pytest and tests/unit in docs only."""\n\n'
-            'def helper():\n'
+            "def helper():\n"
             '    """Another docstring with src/theforge and npm test."""\n'
-            '    # pytest-xdist worker output may mention tests/unit\n'
+            "    # pytest-xdist worker output may mention tests/unit\n"
             '    return "ok"\n',
         )
         violations = _check_stack_neutrality(tmp_path)
