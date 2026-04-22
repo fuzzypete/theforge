@@ -54,6 +54,9 @@ conventions:
     no_circular_imports: true
     test_mirrors_source: true
     no_scratch_files: true
+    allowed_root_files:
+      - pyproject.toml
+      - poetry.lock
   soft:
     - "Coordinator is pure Python — no LLM calls for routing or process decisions"
     - "Schema validation is the integrity boundary — do not relax cross-validation rules"

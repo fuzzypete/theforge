@@ -72,7 +72,7 @@ def build_fix_prompt(
     if test_command and test_command != gate_command:
         test_bullet = (
             f"- When running tests during development, use exactly: "
-            f"`{test_command}`. Do not hand-roll pytest invocations.\n        "
+            f"`{test_command}`. Do not hand-roll ad-hoc test invocations.\n        "
         )
     else:
         test_bullet = ""
@@ -212,10 +212,8 @@ def build_fix_prompt(
 
             {review_findings}""")
 
-    _task_framing, _next_step = _build_task_framing(surviving_families)
-    _fmt_step = _next_step
-    _commit_step = _next_step + 1
-    _handoff_step = _next_step + 2
+    _task_framing, _commit_step = _build_task_framing(surviving_families)
+    _handoff_step = _commit_step + 1
 
     return dedent(f"""\
         You are continuing work on **{task.name}** (iteration {iteration}).
@@ -232,7 +230,6 @@ def build_fix_prompt(
         ## Your Task
 
         {_task_framing}
-        {_fmt_step}. Run `make fmt` to auto-fix formatting.
         {_commit_step}. Commit your changes:
            ```bash
            git add <files-you-changed>

@@ -37,7 +37,7 @@ def build_dev_prompt(
     - It is already in the correct workspace (orchestrator created it)
     - What to implement (full spec injected)
     - What files it can modify (scope restriction)
-    - How to validate (fmt, lint, gate)
+    - How to validate (configured test/gate commands)
     - What NOT to do (merge, update plan)
     - Any review findings from previous iteration
 
@@ -176,7 +176,7 @@ def build_dev_prompt(
             ```bash
             {test_command}
             ```
-            Do not hand-roll pytest invocations — always use this command.
+            Do not hand-roll ad-hoc test invocations — always use this command.
         """)
     else:
         test_section = ""
@@ -249,14 +249,13 @@ def build_dev_prompt(
         ## Workflow
 
         1. Implement the spec. Write tests for new functionality.
-        2. Run `make fmt` then `make lint`. Fix any failures.
-        3. {gate_section}
-        4. Only after the gate passes, commit your changes:
+        2. {gate_section}
+        3. Only after the gate passes, commit your changes:
            ```bash
            git add <files-you-changed>
            git commit -m "<type>(<scope>): <description>"
            ```
-        5. Emit a `<forge_handoff>` block in your **final message** (outside any code
+        4. Emit a `<forge_handoff>` block in your **final message** (outside any code
            fence, exactly once). This allows the orchestrator to capture your handoff
            without reading the filesystem. The block must contain a YAML mapping with
            the same keys as the `dev_notes` section above:
@@ -286,8 +285,6 @@ def build_dev_prompt(
 
         - Do NOT merge to main.
         - Do NOT leave uncommitted changes.
-        - Do not create files outside `src/`, `tests/`, or `docs/`. If you need a
-          scratch file for exploration, delete it before committing.
         {test_rule}
         {provider_sdk_test_rule}
         - If you cannot finish, commit what you have and list blockers in

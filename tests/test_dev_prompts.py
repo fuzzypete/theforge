@@ -162,6 +162,31 @@ def test_dev_prompt_includes_repository_context_pack(tmp_path):
     assert "keep it deterministic" in prompt
 
 
+def test_dev_prompt_uses_configured_commands_and_no_hardcoded_layout_rule(tmp_path):
+    task = _make_task(tmp_path)
+    prompt = build_dev_prompt(
+        task,
+        workspace_path=tmp_path / "ws",
+        branch_name="feat/test",
+        story_content="# Spec",
+        gate_command="npm run validate",
+        test_command="npm test -- --runInBand",
+    )
+
+    assert "npm run validate" in prompt
+    assert "npm test -- --runInBand" in prompt
+    assert "make fmt" not in prompt
+    assert "make lint" not in prompt
+    assert "Do not create files outside `src/`, `tests/`, or `docs/`" not in prompt
+    assert "## Workflow" in prompt
+    assert "1. Implement the spec. Write tests for new functionality." in prompt
+    assert "2. Run the gate command to validate your work:" in prompt
+    assert "```bash" in prompt
+    assert "npm run validate" in prompt
+    assert "3. Only after the gate passes, commit your changes:" in prompt
+    assert "4. Emit a `<forge_handoff>` block in your **final message**" in prompt
+
+
 class TestContractChangeTestRule:
     """Verify that the test-editing rule is conditional on contract_change."""
 

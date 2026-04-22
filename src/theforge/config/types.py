@@ -383,6 +383,7 @@ class HardConventionsConfig:
     no_circular_imports: bool = True
     test_mirrors_source: bool = True
     no_scratch_files: bool = True
+    allowed_root_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
