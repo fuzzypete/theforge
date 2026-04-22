@@ -139,6 +139,9 @@ classification that controls $20-50 of downstream spend is correct.
 
 ## Conventions
 
+### Coordinator seam changes require integration tests
+Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow.
+
 ### No LLM in the loop for process decisions
 The coordinator is pure Python. If you find yourself writing code where an LLM
 decides whether to retry or escalate, stop — that decision belongs in the coordinator.

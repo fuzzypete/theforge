@@ -48,6 +48,7 @@ conventions:
     - "Separate prompt construction, output parsing, and coordinator control flow"
     - "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail — diagnosing sprint failures requires tracing real data, not reconstructing it"
     - "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing."
+    - "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
 
 retry:
   max_dev_iterations: 3
