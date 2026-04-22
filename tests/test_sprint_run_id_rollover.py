@@ -180,6 +180,7 @@ class TestRunIdRolloverReporting:
                 "outcome": "DONE",
                 "verdict": "APPROVE",
                 "cost_usd": 1.18,
+                "story_run_id": "run-a-test",
                 "preflight": "PROCEED",
                 "preflight_original_verdict": None,
                 "preflight_source_run_id": None,
@@ -279,6 +280,7 @@ class TestRunIdRolloverReporting:
                 "outcome": "DONE",
                 "verdict": "APPROVE",
                 "cost_usd": 1.18,
+                "story_run_id": "run-a-test",
                 "preflight": "PROCEED",
                 "preflight_original_verdict": None,
                 "preflight_source_run_id": None,
@@ -442,3 +444,88 @@ class TestRedirectChainResolution:
 
         found = find_sprint_summary("run-xyz", tmp_path)
         assert found == summary_path
+
+    def test_find_sprint_summary_matches_prior_worker_run_id_from_story_metadata(
+        self, tmp_path: Path
+    ) -> None:
+        """Earlier worker run_ids still resolve to the terminal sprint summary."""
+        import yaml
+
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "My Sprint"
+        sprint_log_dir.mkdir(parents=True)
+        summary_path = sprint_log_dir / "sprint-summary.yaml"
+        summary_path.write_text(
+            yaml.dump(
+                {
+                    "sprint": {"name": "My Sprint", "run_id": "run-terminal"},
+                    "stories": [
+                        {
+                            "slug": "issue-940",
+                            "path": "Issue #940",
+                            "outcome": "DONE",
+                            "cost_usd": 10.15,
+                            "story_run_id": "run-c6448a1795c0",
+                        },
+                        {
+                            "slug": "issue-930",
+                            "path": "Issue #930",
+                            "outcome": "DONE",
+                            "cost_usd": 7.11,
+                            "story_run_id": "run-656d888893ec",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        found = find_sprint_summary("run-c6448a1795c0", tmp_path)
+        assert found == summary_path
+
+    def test_summary_includes_removed_prior_run_stories(self, tmp_path: Path) -> None:
+        """Final summary retains prior-run stories removed from the resumed manifest."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-b.md"])
+        config = _make_config(tmp_path)
+        sprint_name = "Test Sprint"
+
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        prior_stories = [
+            {
+                "canonical_ref": "feature-a.md",
+                "slug": "feature-a",
+                "path": "feature-a.md",
+                "outcome": "DONE",
+                "verdict": "APPROVE",
+                "cost_usd": 1.18,
+                "story_run_id": "run-a-test",
+                "preflight": "PROCEED",
+                "preflight_original_verdict": None,
+                "preflight_source_run_id": None,
+                "error": None,
+                "error_type": None,
+                "merge": True,
+                "batch": 0,
+                "depends_on": [],
+            }
+        ]
+        _save_accumulated_stories(sprint_id, sprint_name, tmp_path, prior_stories)
+
+        result_b = _make_coordinator_result(success=True, cost=9.26)
+
+        with patch("theforge.sprint.runner.run_task", return_value=result_b):
+            run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+
+        summary_path = tmp_path / ".forge" / "logs" / sprint_name / "sprint-summary.yaml"
+        with open(summary_path, encoding="utf-8") as f:
+            summary = yaml.safe_load(f)
+
+        stories = {story["slug"]: story for story in summary["stories"]}
+        assert set(stories) == {"feature-a", "feature-b"}
+        assert stories["feature-a"]["outcome"] == "DONE"
+        assert stories["feature-a"]["story_run_id"] == "run-a-test"
+        assert stories["feature-b"]["story_run_id"] is not None
+        assert summary["sprint"]["specs_total"] == 2
+        assert summary["sprint"]["specs_succeeded"] == 2
+        assert summary["sprint"]["total_cost_usd"] == pytest.approx(10.44)

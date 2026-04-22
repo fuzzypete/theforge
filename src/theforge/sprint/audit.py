@@ -379,7 +379,9 @@ def _write_sprint_summary(
     accumulated_for_state: list[dict] = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
+    seen_refs: set[str] = set()
     for canonical_ref in canonical_refs:
+        seen_refs.add(canonical_ref)
         display_key = (
             f"Issue #{canonical_ref.split(':')[1]}"
             if canonical_ref.startswith("issue:")
@@ -425,6 +427,7 @@ def _write_sprint_summary(
                 "outcome": outcome,
                 "verdict": last_verdict or None,
                 "cost_usd": round(res.state.total_cost, 4),
+                "story_run_id": run_id,
                 "preflight": preflight,
                 "preflight_original_verdict": getattr(
                     res.state, "preflight_cached_original_verdict", None
@@ -494,6 +497,13 @@ def _write_sprint_summary(
             if drop_reason:
                 entry["drop_reason"] = drop_reason
             spec_entries.append(entry)
+
+    for canonical_ref, prior in prior_by_ref.items():
+        if canonical_ref in seen_refs:
+            continue
+        entry = {k: v for k, v in prior.items() if k != "canonical_ref"}
+        spec_entries.append(entry)
+        accumulated_for_state.append(prior)
 
     # Persist accumulated state so future runs can find stories from this invocation.
     if sprint_id and project_root:
