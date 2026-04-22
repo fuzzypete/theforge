@@ -87,6 +87,8 @@ def test_cmd_todo_create_adds_draft_label(mock_run, tmp_path, capsys):
         "create",
         "--title",
         "agent abstraction conflates provider/model/transport",
+        "--body",
+        "",
         "--label",
         "todo:draft",
     ]
@@ -200,4 +202,49 @@ def test_cmd_todo_triage_runs_interactive_actions(mock_run, tmp_path, monkeypatc
     assert calls[4][4] == "--body-file"
     assert calls[4][5].endswith(".md")
     assert calls[5] == ["gh", "issue", "close", "12"]
+    assert "timeout" not in mock_run.call_args_list[3].kwargs
     assert "Closed todo #12" in capsys.readouterr().out
+
+
+@patch("theforge.cli.todo.subprocess.run")
+def test_cmd_todo_triage_requires_issue_number(mock_run, tmp_path, capsys):
+    args = _make_args(tmp_path, todo_action="triage", text=None)
+
+    rc = cmd_todo(args)
+
+    assert rc == 1
+    assert not mock_run.called
+    assert "issue number required for triage" in capsys.readouterr().err
+
+
+@patch("theforge.cli.todo.subprocess.run")
+def test_cmd_todo_promote_requires_issue_number(mock_run, tmp_path, capsys):
+    args = _make_args(tmp_path, todo_action="promote", text=None)
+
+    rc = cmd_todo(args)
+
+    assert rc == 1
+    assert not mock_run.called
+    assert "issue number required for promote" in capsys.readouterr().err
+
+
+@patch("theforge.cli.todo.subprocess.run")
+def test_cmd_todo_triage_rejects_invalid_issue_number(mock_run, tmp_path, capsys):
+    args = _make_args(tmp_path, todo_action="triage", todo_args=["abc"], text=None)
+
+    rc = cmd_todo(args)
+
+    assert rc == 1
+    assert not mock_run.called
+    assert "invalid issue number for triage: abc" in capsys.readouterr().err
+
+
+@patch("theforge.cli.todo.subprocess.run")
+def test_cmd_todo_promote_rejects_invalid_issue_number(mock_run, tmp_path, capsys):
+    args = _make_args(tmp_path, todo_action="promote", todo_args=["abc"], text=None)
+
+    rc = cmd_todo(args)
+
+    assert rc == 1
+    assert not mock_run.called
+    assert "invalid issue number for promote: abc" in capsys.readouterr().err

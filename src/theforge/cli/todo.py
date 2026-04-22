@@ -78,11 +78,11 @@ def _create_todo(args: argparse.Namespace) -> int:
         "create",
         "--title",
         text,
+        "--body",
+        body,
         "--label",
         TODO_DRAFT_LABEL,
     ]
-    if body:
-        command.extend(["--body", body])
 
     proc = _run_gh(command, project_root)
     if proc.returncode != 0:
@@ -199,7 +199,7 @@ def _triage_todo(args: argparse.Namespace) -> int:
 
         try:
             editor_proc = subprocess.run(
-                [*_editor_command(), str(temp_path)], cwd=str(project_root), timeout=30
+                [*_editor_command(), str(temp_path)], cwd=str(project_root)
             )
             if editor_proc.returncode != 0:
                 print("editor exited with a non-zero status", file=sys.stderr)
@@ -230,20 +230,42 @@ def _triage_todo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_issue_number(raw_number: object) -> int | None:
+    if raw_number is None:
+        return None
+    try:
+        return int(raw_number)
+    except (TypeError, ValueError):
+        return None
+
+
 def cmd_todo(args: argparse.Namespace) -> int:
     action = getattr(args, "todo_action", None)
     extra_args = list(getattr(args, "todo_args", []))
-    number = getattr(args, "number", None)
+    number = _parse_issue_number(getattr(args, "number", None))
 
     if action == "list" and not extra_args:
         return _list_todos(args)
-    if action == "triage" and (number is not None or len(extra_args) == 1):
+
+    if action in {"triage", "promote"}:
         if number is None:
-            args.number = int(extra_args[0])
-        return _triage_todo(args)
-    if action == "promote" and (number is not None or len(extra_args) == 1):
-        if number is None:
-            args.number = int(extra_args[0])
+            if not extra_args:
+                print(f"issue number required for {action}", file=sys.stderr)
+                return 1
+            if len(extra_args) != 1:
+                print(f"invalid arguments for {action}", file=sys.stderr)
+                return 1
+            number = _parse_issue_number(extra_args[0])
+            if number is None:
+                print(f"invalid issue number for {action}: {extra_args[0]}", file=sys.stderr)
+                return 1
+        elif extra_args:
+            print(f"invalid arguments for {action}", file=sys.stderr)
+            return 1
+
+        args.number = number
+        if action == "triage":
+            return _triage_todo(args)
         return _promote_todo(args)
 
     if action is not None:
