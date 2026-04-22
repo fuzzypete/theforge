@@ -93,7 +93,7 @@ def _run_gemini(
     # undetected. Set sandbox_mode: none explicitly to opt out of containment.
     if profile.sandbox_mode != "none":
         sandboxed_cmd = workspace_effect_sandbox_command(cmd, working_dir)
-        if sandboxed_cmd[0] == cmd[0]:
+        if sandboxed_cmd == cmd:
             _log(
                 f"✗ gemini: sandbox_mode={profile.sandbox_mode!r} requested but platform "
                 "sandbox (sandbox-exec/bwrap) is unavailable — refusing to run unsandboxed. "

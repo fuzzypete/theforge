@@ -98,7 +98,7 @@ class TestGeminiSandboxWrapper:
         # Return the original cmd unchanged → sandbox unavailable
         with patch(
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command",
-            side_effect=lambda cmd, wd: list(cmd),
+            side_effect=lambda cmd, wd: cmd,
         ):
             with patch("theforge.runners.runner_gemini.subprocess.run") as mock_run:
                 result = _run_gemini(

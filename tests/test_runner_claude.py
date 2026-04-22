@@ -17,6 +17,10 @@ from theforge.log_level import LogLevel, set_log_level
 from theforge.runners import run_agent, run_agent_pool
 
 
+def _sandbox_wrap(cmd: list[str], wd: Path, extra_write_roots: list[Path]) -> list[str]:
+    return ["sandbox-exec", "-p", "profile", *cmd]
+
+
 def _make_stream_mock(lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
     """Return a mock Popen object whose stdout yields the given JSONL lines."""
     mock_proc = MagicMock()
@@ -154,13 +158,17 @@ class TestRunAgentClaude:
             ]
         )
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            result = run_agent(
-                prompt="implement the thing",
-                profile=dev_profile,
-                working_dir=tmp_path,
-            )
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                result = run_agent(
+                    prompt="implement the thing",
+                    profile=dev_profile,
+                    working_dir=tmp_path,
+                )
 
         assert result.success is True
         assert result.output == "I implemented the feature."
@@ -200,10 +208,14 @@ class TestRunAgentClaude:
 
         mock_proc = _make_stream_mock([_result_line(result="done")])
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            with patch.dict(os.environ, {"CLAUDECODE": "1"}):
-                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                with patch.dict(os.environ, {"CLAUDECODE": "1"}):
+                    run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         env_passed = mock_popen.call_args[1]["env"]
         assert "CLAUDECODE" not in env_passed
@@ -215,14 +227,18 @@ class TestRunAgentClaude:
         mock_proc = _make_stream_mock([_result_line(result="done")])
 
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            run_agent(
-                prompt="test",
-                profile=dev_profile,
-                working_dir=tmp_path,
-                secrets={"API_KEY": "secret"},
-            )
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                run_agent(
+                    prompt="test",
+                    profile=dev_profile,
+                    working_dir=tmp_path,
+                    secrets={"API_KEY": "secret"},
+                )
 
         env_passed = mock_popen.call_args[1]["env"]
         assert env_passed["PATH"].split(os.pathsep)[0] == str(venv_bin)
@@ -234,14 +250,18 @@ class TestRunAgentClaude:
             [_result_line(result="continued.", session_id="sess-abc123")]
         )
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            run_agent(
-                prompt="continue",
-                profile=dev_profile,
-                working_dir=tmp_path,
-                session_id="sess-abc123",
-            )
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                run_agent(
+                    prompt="continue",
+                    profile=dev_profile,
+                    working_dir=tmp_path,
+                    session_id="sess-abc123",
+                )
 
         cmd = mock_popen.call_args[0][0]
         assert "--resume" in cmd
@@ -258,9 +278,13 @@ class TestRunAgentClaude:
         )
         mock_proc = _make_stream_mock([_result_line(result="done")])
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         cmd = mock_popen.call_args[0][0]
         assert "--allowedTools" not in cmd
@@ -270,8 +294,12 @@ class TestRunAgentClaude:
             [_result_line(result="partial work", total_cost_usd=0.15)],
             returncode=1,
         )
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert result.exit_code == 1
@@ -280,8 +308,12 @@ class TestRunAgentClaude:
 
     def test_non_json_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock(["plain text output"])
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
         assert result.output == "plain text output"
@@ -290,8 +322,12 @@ class TestRunAgentClaude:
 
     def test_empty_output(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([], returncode=1, stderr="some error")
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert result.output == "some error"
@@ -322,8 +358,12 @@ class TestRunAgentClaude:
         mock_proc.wait.return_value = -1
         mock_proc.poll.return_value = None
 
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         assert result.success is False
         assert "TIMEOUT" in result.output
@@ -353,8 +393,12 @@ class TestRunAgentClaude:
         mock_proc.wait.return_value = -1
         mock_proc.poll.return_value = None
 
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
 
         assert result.success is False
         assert result.exit_code == -9
@@ -362,10 +406,14 @@ class TestRunAgentClaude:
 
     def test_cli_not_found(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen",
-            side_effect=FileNotFoundError(),
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
         ):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen",
+                side_effect=FileNotFoundError(),
+            ):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is False
         assert "not found" in result.output
@@ -376,8 +424,14 @@ class TestRunAgentClaude:
     ) -> None:
         """AgentResult.profile_name must be set to profile.name."""
         mock_proc = _make_stream_mock([_result_line(result="reviewed.", total_cost_usd=0.10)])
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="review this", profile=review_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(
+                    prompt="review this", profile=review_profile, working_dir=tmp_path
+                )
 
         assert result.profile_name == "review"
 
@@ -399,8 +453,14 @@ class TestRunAgentClaude:
         )
         set_log_level(LogLevel.VERBOSE)
         try:
-            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            with patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_sandbox_wrap,
+            ):
+                with patch(
+                    "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+                ):
+                    run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
         finally:
             set_log_level(LogLevel.PROGRESS)
 
@@ -426,8 +486,14 @@ class TestRunAgentClaude:
             mock_proc = _make_stream_mock(
                 [summary_line, _result_line(result="done", total_cost_usd=0.01)]
             )
-            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            with patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_sandbox_wrap,
+            ):
+                with patch(
+                    "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+                ):
+                    run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
             captured = capsys.readouterr()
             assert "↳ Read file.py (10 lines)" in captured.err
             assert "[dev]" not in captured.err
@@ -436,8 +502,14 @@ class TestRunAgentClaude:
             mock_proc2 = _make_stream_mock(
                 [summary_line, _result_line(result="done", total_cost_usd=0.01)]
             )
-            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc2):
-                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path, quiet=True)
+            with patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_sandbox_wrap,
+            ):
+                with patch(
+                    "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc2
+                ):
+                    run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path, quiet=True)
             captured2 = capsys.readouterr()
             assert "↳ [dev] Read file.py (10 lines)" in captured2.err
         finally:
@@ -469,8 +541,14 @@ class TestRunAgentClaude:
         )
         set_log_level(LogLevel.VERBOSE)
         try:
-            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-                run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+            with patch(
+                "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+                side_effect=_sandbox_wrap,
+            ):
+                with patch(
+                    "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+                ):
+                    run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
         finally:
             set_log_level(LogLevel.PROGRESS)
 
@@ -483,8 +561,12 @@ class TestRunAgentClaude:
         mock_proc = _make_stream_mock(
             [json.dumps({"type": "assistant", "session_id": "sess-fallback"}) + "\n"]
         )
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.success is True
         assert result.session_id == "sess-fallback"
@@ -511,19 +593,20 @@ class TestClaudePermissionMode:
         )
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" in cmd
         idx = cmd.index("--permission-mode")
         assert cmd[idx + 1] == "default"
 
-    def test_read_only_adds_permission_mode_with_warning(self, tmp_path: Path) -> None:
-        """sandbox_mode=read-only → --permission-mode default + WARNING that read-only is not
-        mechanically enforced by Claude CLI."""
-        import theforge.runners.runner_claude as _mod
-
+    def test_read_only_adds_permission_mode(self, tmp_path: Path) -> None:
+        """sandbox_mode=read-only → --permission-mode default in cmd."""
         profile = ModelProfile(
             name="dev",
             cli="claude",
@@ -535,17 +618,15 @@ class TestClaudePermissionMode:
         )
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            with patch.object(_mod, "_log") as mock_log:
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
                 run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" in cmd
-        # A warning must be logged explaining that read-only is not mechanically enforced
-        log_calls = [str(c) for c in mock_log.call_args_list]
-        assert any(
-            "read-only" in call and "not mechanically enforced" in call for call in log_calls
-        )
 
     def test_none_omits_permission_mode(self, tmp_path: Path) -> None:
         """sandbox_mode=none → no --permission-mode flag in cmd."""
@@ -560,11 +641,127 @@ class TestClaudePermissionMode:
         )
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.01)])
         with patch(
-            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-        ) as mock_popen:
-            run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
         cmd = self._popen_capture(mock_popen)
         assert "--permission-mode" not in cmd
+
+
+class TestClaudeSandboxWrapper:
+    def test_workspace_write_uses_sandbox_wrapper(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="workspace-write",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [Path.home() / ".claude"])
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            return_value=wrapped_cmd,
+        ) as mock_sandbox:
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                _run_result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        assert _run_result.success is True
+        mock_sandbox.assert_called_once()
+        assert mock_sandbox.call_args.kwargs["extra_write_roots"] == [Path.home() / ".claude"]
+        assert mock_popen.call_args[0][0] == wrapped_cmd
+
+    def test_read_only_uses_sandbox_wrapper(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="read-only",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+        wrapped_cmd = _sandbox_wrap(["claude", "-p"], tmp_path, [Path.home() / ".claude"])
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            return_value=wrapped_cmd,
+        ) as mock_sandbox:
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_sandbox.assert_called_once()
+
+    def test_none_skips_sandbox_wrapper(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="none",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command"
+        ) as mock_sandbox:
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_sandbox.assert_not_called()
+        assert mock_popen.call_args[0][0][0] == "claude"
+
+    def test_sandbox_unavailable_fails_closed(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="workspace-write",
+        )
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=lambda cmd, wd, extra_write_roots: cmd,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen") as mock_popen:
+                result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_popen.assert_not_called()
+        assert result.success is False
+        assert result.startup_failure is True
+        assert result.exit_code == -1
+        assert "SANDBOX_UNAVAILABLE" in result.output
+
+    def test_sandbox_unavailable_none_mode_still_runs(self, tmp_path: Path) -> None:
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="sonnet",
+            budget_usd=2.0,
+            timeout_seconds=900,
+            allowed_tools=("Read", "Edit", "Write", "Bash"),
+            sandbox_mode="none",
+        )
+        mock_proc = _make_stream_mock([_result_line(result="done")])
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command"
+        ) as mock_sandbox:
+            with patch(
+                "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+            ) as mock_popen:
+                result = run_agent(prompt="test", profile=profile, working_dir=tmp_path)
+        mock_sandbox.assert_not_called()
+        mock_popen.assert_called_once()
+        assert result.success is True
 
 
 class TestClaudeSessionIdHelper:
@@ -619,23 +816,35 @@ class TestRunAgentCostCoercion:
 
     def test_string_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="0.42")])
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.42
         assert isinstance(result.cost_usd, float)
 
     def test_null_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", cost_usd=None)])
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd is None
 
     def test_garbage_cost_usd(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd="not-a-number")])
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd is None
 
@@ -661,8 +870,12 @@ class TestRunAgentModelUsage:
                 )
             ]
         )
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.123
         assert len(result.model_usage) == 1
@@ -678,8 +891,12 @@ class TestRunAgentModelUsage:
         self, dev_profile: ModelProfile, tmp_path: Path
     ) -> None:
         mock_proc = _make_stream_mock([_result_line(result="done", total_cost_usd=0.05)])
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.model_usage == ()
 
@@ -709,8 +926,12 @@ class TestRunAgentModelUsage:
                 )
             ]
         )
-        with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
-            result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
+        with patch(
+            "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+            side_effect=_sandbox_wrap,
+        ):
+            with patch("theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc):
+                result = run_agent(prompt="do it", profile=dev_profile, working_dir=tmp_path)
 
         assert result.cost_usd == 0.20
         assert len(result.model_usage) == 2
@@ -743,8 +964,13 @@ class TestRunAgentUnknownCli:
 def test_claude_launcher_invokes_cmd_directly(dev_profile: ModelProfile, tmp_path: Path) -> None:
     mock_proc = _make_stream_mock([_result_line(result="done")])
     with patch(
-        "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
-    ) as mock_popen:
-        run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
+        "theforge.runners.runner_claude.workspace_effect_sandbox_command",
+        side_effect=_sandbox_wrap,
+    ):
+        with patch(
+            "theforge.runners.runner_claude.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
+            run_agent(prompt="test", profile=dev_profile, working_dir=tmp_path)
     cmd = mock_popen.call_args[0][0]
-    assert cmd[0] == "claude"
+    assert cmd[0] == "sandbox-exec"
+    assert "claude" in cmd

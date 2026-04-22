@@ -87,10 +87,23 @@ def test_macos_profile_does_not_allow_global_reads(tmp_path: Path) -> None:
     assert f'(subpath "{tmp_path.resolve()}")' in profile
 
 
+def test_macos_profile_allows_extra_write_roots(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _macos_profile
+
+    extra_write_root = tmp_path / "home" / ".claude"
+    extra_write_root.mkdir(parents=True)
+
+    profile = _macos_profile(tmp_path, extra_write_roots=(extra_write_root,))
+
+    assert f'(subpath "{extra_write_root.resolve()}")' in profile
+    write_block = profile.split("(allow file-write*", 1)[1].split("(allow file-read*", 1)[0]
+    assert f'(subpath "{extra_write_root.resolve()}")' in write_block
+
+
 def test_sandbox_command_linux_probe_uses_hashable_cache_key(tmp_path: Path) -> None:
     cmd = ["bash", "-c", "pwd"]
 
-    def fake_available(binary: str, probe_key: tuple[str, ...]) -> bool:
+    def fake_available(binary: str, probe_key: tuple[str, ...], run_id: int | None = None) -> bool:
         assert isinstance(probe_key, tuple)
         return True
 
@@ -101,6 +114,26 @@ def test_sandbox_command_linux_probe_uses_hashable_cache_key(tmp_path: Path) -> 
         wrapped = sandbox_command(cmd, tmp_path)
 
     assert wrapped[0] == "bwrap"
+
+
+def test_linux_command_uses_bind_for_extra_write_roots(tmp_path: Path) -> None:
+    from theforge.runners.sandbox import _linux_command
+
+    extra_write_root = tmp_path / "home" / ".claude"
+    extra_write_root.mkdir(parents=True)
+
+    wrapped = _linux_command(
+        ["bash", "-c", "pwd"], tmp_path, extra_write_roots=(extra_write_root,)
+    )
+
+    bind_index = wrapped.index("--bind")
+    assert wrapped[bind_index + 1 : bind_index + 3] == [
+        str(extra_write_root),
+        str(extra_write_root),
+    ]
+    assert ["--ro-bind-try", str(extra_write_root), str(extra_write_root)] not in [
+        wrapped[i : i + 3] for i in range(len(wrapped) - 2)
+    ]
 
 
 def test_workspace_sandbox_allows_project_root_but_blocks_sibling_worktrees(
