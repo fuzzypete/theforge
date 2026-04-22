@@ -118,16 +118,51 @@ def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
     return sorted(matches, key=lambda a: a.budget_usd)
 
 
+def _rerank_by_profiles(
+    candidates: list[AgentDef],
+    model_profiles: dict | None,
+    role: str,
+    complexity: str | None,
+    min_runs: int = 3,
+) -> list[AgentDef]:
+    """Stable-sort candidates: high-success-rate first when enough data exists.
+
+    Only role="dev" is profile-aware today; other roles pass through unchanged.
+    Candidates without ``min_runs`` observations retain their original relative
+    order (sort is stable) so the cheapest-budget tie-break still wins when
+    nobody has a track record yet.
+    """
+    if not model_profiles or role != "dev":
+        return candidates
+    from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
+
+    def _key(agent: AgentDef) -> tuple[int, float]:
+        rate = get_dev_success_rate(model_profiles, agent.name, complexity, min_runs)
+        if rate is None:
+            return (1, 0.0)
+        # Negative rate so higher success sorts first among observed agents.
+        return (0, -rate)
+
+    return sorted(candidates, key=_key)
+
+
 def _pick_agent(
     agents: list[AgentDef],
     tier: str,
     secrets: dict[str, str] | None = None,
+    model_profiles: dict | None = None,
+    role: str = "",
+    complexity: str | None = None,
 ) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
     Skips API agents whose provider key is missing from the environment.
+    When ``model_profiles`` is provided and ``role == "dev"``, agents with a
+    higher observed success rate at the given complexity are preferred over
+    the budget-ordered default.
     """
     candidates = [a for a in _agents_by_tier(agents, tier) if _has_auth(a, secrets)]
+    candidates = _rerank_by_profiles(candidates, model_profiles, role, complexity)
     if not candidates:
         log.debug("No authed agents for tier %s — trying any tier with auth", tier)
     return candidates[0] if candidates else None
@@ -413,6 +448,7 @@ def assign_models(
     explicit_profiles: dict[str, ModelProfile] | None = None,
     sprint_promotions: dict[str, str] | None = None,
     secrets: dict[str, str] | None = None,
+    model_profiles: dict | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -437,7 +473,14 @@ def assign_models(
         rationale["dev"] = f"explicit override: {dev_profile.model}"
     else:
         # Check promotion
-        dev_agent_for_check: AgentDef | None = _pick_agent(agents, dev_base_tier, secrets)
+        dev_agent_for_check: AgentDef | None = _pick_agent(
+            agents,
+            dev_base_tier,
+            secrets,
+            model_profiles=model_profiles,
+            role="dev",
+            complexity=norm_complexity,
+        )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
         promoted = _check_promotion(norm_complexity, dev_model_name, history, sprint_promotions)
         effective_dev_tier = dev_base_tier
@@ -458,7 +501,20 @@ def assign_models(
         else:
             rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
 
-        dev_agent = _pick_agent(agents, effective_dev_tier, secrets)
+        dev_agent = _pick_agent(
+            agents,
+            effective_dev_tier,
+            secrets,
+            model_profiles=model_profiles,
+            role="dev",
+            complexity=norm_complexity,
+        )
+        if dev_agent is not None and model_profiles:
+            from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
+
+            _rate = get_dev_success_rate(model_profiles, dev_agent.name, norm_complexity)
+            if _rate is not None:
+                rationale["dev"] += f" (profile success_rate={_rate:.2f} @ {norm_complexity})"
         if dev_agent is None:
             # Guardrail: dev tier floor prevents cheap models on MEDIUM/HIGH and
             # mid models on HIGH.  dev_base_tier is the floor (cheap/mid/strong

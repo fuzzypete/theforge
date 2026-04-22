@@ -766,32 +766,72 @@ def run_task(
             total_duration_s=round(_total_elapsed, 2),
         )
 
-        # ── Adaptive escalation memory ─────────────────────────────────
-        if config.assignment.escalation_memory and config.agents and state.preflight_complexity:
-            from theforge.assignment import (  # noqa: I001, PLC0415
-                EscalationRecord as _EscRec,
-                append_escalation_record as _append_esc,
-            )
-
-            _esc_path = config.project_root / ".forge" / "assignment_history.yaml"
-            _esc_outcome = "DONE" if result.success else "ESCALATE"
-            _esc_record = _EscRec(
-                story=task.slug,
-                complexity=state.preflight_complexity.upper()
-                if state.preflight_complexity in ("small", "medium", "large")
-                else state.preflight_complexity,
-                dev_model=config.dev_profile.name,
-                outcome=_esc_outcome,
-                reason=state.escalation_note or "",
-                timestamp=datetime.datetime.utcnow().isoformat() + "Z",
-            )
-            _append_esc(_esc_path, _esc_record)
-            _log_verbose(
-                f"[adaptive] Wrote escalation record: story={task.slug} "
-                f"complexity={_esc_record.complexity} outcome={_esc_outcome}"
-            )
-
+        _record_run_memory(config, task, state, result)
         return result
+
+
+# ── Post-run persistence (shared by run_task and resume paths) ────────
+
+
+def _record_run_memory(
+    config: "ForgeConfig",
+    task: "TaskStory",
+    state: "CoordinatorState",
+    result: "CoordinatorResult",
+) -> None:
+    """Persist end-of-run memory: escalation history + model profiles.
+
+    Called from both run_task() and _run_resume_coordinator() so a run started
+    via 'forge resume' or a sprint worker contributes the same telemetry as a
+    fresh run_task invocation. Changes to what we persist at run completion
+    belong in this one function — not duplicated at each entry point.
+    """
+    if not state.preflight_complexity:
+        _log_verbose(
+            f"[model_profiles] skipping update: preflight_complexity unset for story={task.slug}"
+        )
+        return
+
+    # ── Adaptive escalation memory ─────────────────────────────────────
+    if config.assignment.escalation_memory and config.agents:
+        from theforge.assignment import (  # noqa: I001, PLC0415
+            EscalationRecord as _EscRec,
+            append_escalation_record as _append_esc,
+        )
+
+        _esc_path = config.project_root / ".forge" / "assignment_history.yaml"
+        _esc_outcome = "DONE" if result.success else "ESCALATE"
+        _esc_record = _EscRec(
+            story=task.slug,
+            complexity=state.preflight_complexity.upper()
+            if state.preflight_complexity in ("small", "medium", "large")
+            else state.preflight_complexity,
+            dev_model=config.dev_profile.name,
+            outcome=_esc_outcome,
+            reason=state.escalation_note or "",
+            timestamp=datetime.datetime.utcnow().isoformat() + "Z",
+        )
+        _append_esc(_esc_path, _esc_record)
+        _log_verbose(
+            f"[adaptive] Wrote escalation record: story={task.slug} "
+            f"complexity={_esc_record.complexity} outcome={_esc_outcome}"
+        )
+
+    # ── Model capability profiles (independent of escalation_memory) ───
+    try:
+        from .model_profiles_bridge import update_profiles_from_run  # noqa: PLC0415
+
+        _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
+        _history_path = config.project_root / ".forge" / "assignment_history.yaml"
+        update_profiles_from_run(
+            profiles_path=_profiles_path,
+            history_path=_history_path if _history_path.exists() else None,
+            config=config,
+            state=state,
+            success=result.success,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_verbose(f"[model_profiles] update failed: {exc}")
 
 
 # ── Shared resume coordinator (run_from_review / run_from_dev) ────────
@@ -930,6 +970,7 @@ def _run_resume_coordinator(
             total_cost_usd=round(state.total_cost, 6),
             total_duration_s=round(_total_elapsed, 2),
         )
+        _record_run_memory(config, task, state, result)
         return result
 
 
