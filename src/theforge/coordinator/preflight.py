@@ -735,6 +735,11 @@ def _apply_preflight_config(
     _history_path = config.project_root / ".forge" / "assignment_history.yaml"
     _esc_history = _load_esc_history(_history_path)
 
+    from theforge.model_profiles import load_profiles as _load_profiles  # noqa: PLC0415
+
+    _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
+    _model_profiles = _load_profiles(_profiles_path)
+
     _explicit: dict[str, object] = {}
     _explicit_roles: set[str] = set()
     if config.models is None:
@@ -759,6 +764,7 @@ def _apply_preflight_config(
         _explicit if _explicit else None,
         state.sprint_promotions,
         config.secrets,
+        model_profiles=_model_profiles,
     )
 
     _replace_kwargs: dict[str, object] = {

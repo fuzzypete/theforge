@@ -791,14 +791,23 @@ def run_task(
                 f"complexity={_esc_record.complexity} outcome={_esc_outcome}"
             )
 
-            # ── Model capability profiles ──────────────────────────────
+        # ── Model capability profiles (independent of escalation_memory) ──
+        # Runs every time so model_profiles.yaml reflects actual outcomes
+        # regardless of the escalation-memory feature flag. Backfills from
+        # assignment_history.yaml on first run when it exists.
+        if state.preflight_complexity:
             try:
                 from .model_profiles_bridge import update_profiles_from_run  # noqa: PLC0415
 
                 _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
+                _history_path_for_profiles = (
+                    config.project_root / ".forge" / "assignment_history.yaml"
+                )
                 update_profiles_from_run(
                     profiles_path=_profiles_path,
-                    history_path=_esc_path,
+                    history_path=_history_path_for_profiles
+                    if _history_path_for_profiles.exists()
+                    else None,
                     config=config,
                     state=state,
                     success=result.success,
