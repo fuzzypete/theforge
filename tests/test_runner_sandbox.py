@@ -48,31 +48,24 @@ def test_sandbox_command_fallback_logs_warning(
     assert wrapped == cmd
 
 
-def test_handle_bash_uses_sandbox_command(tmp_path: Path) -> None:
-    with (
-        patch(
-            "theforge.runners.tool_runtime.sandbox_command", return_value=["bash", "-c", "pwd"]
-        ) as mock_sandbox,
-        patch("theforge.runners.tool_runtime.subprocess.run") as mock_run,
-    ):
+def test_handle_bash_runs_raw_bash_command_without_sandbox_wrapping(tmp_path: Path) -> None:
+    with patch("theforge.runners.tool_runtime.subprocess.run") as mock_run:
         mock_run.return_value.stdout = "ok\n"
         mock_run.return_value.stderr = ""
         mock_run.return_value.returncode = 0
         _handle_bash(command="pwd", working_dir=tmp_path)
-    mock_sandbox.assert_called_once()
-    assert mock_run.call_args[0][0] == ["bash", "-c", "pwd"]
+
+    argv = mock_run.call_args[0][0]
+    assert argv == ["bash", "-c", "pwd"]
+    assert argv[0] != "sandbox-exec"
+    assert "sandbox-exec" not in argv
+    assert not any("(version 1)" in arg for arg in argv)
 
 
-def test_bash_outside_allowed_root_rejected_when_sandbox_denies() -> None:
-    with (
-        patch(
-            "theforge.runners.tool_runtime.sandbox_command",
-            return_value=["bash", "-c", "cat ../other/file"],
-        ),
-        patch(
-            "theforge.runners.tool_runtime.subprocess.run",
-            side_effect=PermissionError("Operation not permitted"),
-        ),
+def test_bash_permission_error_returns_workspace_sandbox_violation() -> None:
+    with patch(
+        "theforge.runners.tool_runtime.subprocess.run",
+        side_effect=PermissionError("Operation not permitted"),
     ):
         output = _handle_bash(command="cat ../other/file", working_dir=Path("/tmp/worktree"))
     assert "workspace sandbox violation" in output

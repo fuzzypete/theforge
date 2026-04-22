@@ -15,8 +15,6 @@ from typing import Callable
 
 from theforge.workspace_env import build_workspace_env
 
-from .sandbox import sandbox_command
-
 MAX_TOOL_OUTPUT_BYTES = 51200  # 50KB default
 
 # Maps forge.yaml user-facing capitalized names → canonical internal names.
@@ -157,9 +155,8 @@ def _handle_bash(
 ) -> str:
     """Run a shell command in working_dir with a timeout."""
     try:
-        sandboxed = sandbox_command(["bash", "-c", command], Path(working_dir))
         result = subprocess.run(
-            sandboxed,
+            ["bash", "-c", command],
             cwd=working_dir,
             capture_output=True,
             text=True,
