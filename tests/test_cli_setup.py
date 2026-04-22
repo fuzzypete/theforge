@@ -126,7 +126,7 @@ class TestParseFrontmatter:
             "---\n"
             "name: Phase 6H\n"
             "slug: export-svc\n"
-            "pytest_target: tests/test_export.py\n"
+            "test_target: tests/test_export.py\n"
             "---\n\n"
             "# Spec content\n",
             encoding="utf-8",

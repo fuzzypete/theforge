@@ -1,7 +1,6 @@
 ---
 name: "Add farewell endpoint"
 slug: add-farewell
-pytest_target: tests/
 ---
 
 # Add Farewell Endpoint

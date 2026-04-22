@@ -160,7 +160,6 @@ Copy `stories/TEMPLATE.md` to `stories/my-feature.md` and fill it in:
 ---
 name: "Add health check endpoint"
 slug: add-health-check
-pytest_target: tests/
 ---
 
 # Add Health Check Endpoint

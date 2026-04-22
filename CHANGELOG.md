@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Stack-neutral story schema:** the `TaskStory.pytest_target` field and
+  `{pytest_target}` gate placeholder have been renamed to `test_target` and
+  `{test_target}`. Story frontmatter and sprint manifest overrides now use
+  `test_target`. This is a breaking change — update story files and any
+  `forge.yaml` gate commands that reference `{pytest_target}`. Story
+  scaffolding and ideation output no longer emit the field at all; gate
+  scoping belongs in `forge.yaml`. (#930)
+
 
 ## [0.8.0] — 2026-04-20
 

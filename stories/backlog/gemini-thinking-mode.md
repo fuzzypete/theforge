@@ -1,7 +1,6 @@
 ---
 name: "Gemini thinking mode — thinking_budget config support"
 slug: gemini-thinking-mode
-pytest_target: tests/
 ---
 
 # Gemini thinking mode — thinking_budget config support

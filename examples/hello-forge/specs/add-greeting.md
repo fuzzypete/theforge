@@ -1,7 +1,6 @@
 ---
 name: "Add greeting endpoint"
 slug: add-greeting
-pytest_target: tests/
 ---
 
 # Add Greeting Endpoint

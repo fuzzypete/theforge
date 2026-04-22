@@ -12,7 +12,6 @@ The coordinator remains fully deterministic. Only the ideation agents are LLMs.
 
 from __future__ import annotations
 
-import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -56,30 +55,6 @@ class IdeationResult:
 # ── Prompt builders ──────────────────────────────────────────────────
 
 
-def _extract_pytest_target(config: "ForgeConfig | None") -> str:
-    """Derive pytest target path from config gate_command, defaulting to 'tests/'.
-
-    This is a best-effort heuristic. Gate commands like 'make test' or 'make gate'
-    silently fall back to 'tests/'. The '-m' token can also match ambiguously
-    (e.g. 'python -m pytest tests/'). The spec hardcodes 'pytest_target: tests/'
-    but this heuristic reflects the actual project configuration when it can be
-    inferred from the gate command.
-    """
-    if config is None:
-        return "tests/"
-    gate_cmd = config.validation.gate_command
-    try:
-        tokens = shlex.split(gate_cmd)
-        # Walk all tokens: any token that starts with "tests" and is not a flag
-        # is the pytest target, regardless of what precedes it (handles -q, -v, etc.)
-        for tok in tokens:
-            if tok.startswith("tests") and not tok.startswith("-"):
-                return tok
-    except ValueError:
-        pass
-    return "tests/"
-
-
 def _build_phase1_prompt(brief: str) -> str:
     return f"""You are participating in a structured ideation process.
 
@@ -110,7 +85,7 @@ def _build_single_model_prompt(brief: str, *, config: "ForgeConfig | None" = Non
     (synthesis). For a single-model pool there is no cross-review and no
     separate synthesis step — one model produces the full spec directly.
     """
-    pytest_target = _extract_pytest_target(config)
+    del config  # retained for API compatibility; no stack-specific fields are injected
 
     return f"""You are writing a structured implementation spec.
 
@@ -136,7 +111,6 @@ SPEC:
 ---
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
-pytest_target: {pytest_target}
 ---
 
 # <Spec Title>
@@ -194,7 +168,7 @@ def _build_synthesis_prompt(
     *,
     config: "ForgeConfig | None" = None,
 ) -> str:
-    pytest_target = _extract_pytest_target(config)
+    del config  # retained for API compatibility; no stack-specific fields are injected
 
     phase1_section = "\n\n".join(
         f"### {model_name} (Phase 1)\n{output}" for model_name, output in phase1_outputs.items()
@@ -250,7 +224,6 @@ Keep the spec body under 150 lines.
 ---
 name: "<derived from brief>"
 slug: "<kebab-case slug>"
-pytest_target: {pytest_target}
 ---
 
 # <title>
