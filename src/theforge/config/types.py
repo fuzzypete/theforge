@@ -215,6 +215,18 @@ class RetryPolicy:
     )
     escalate_policy: str = "prompt"  # "prompt" | "auto_approve" | "reject"
     auto_model_escalation: bool = False  # escalate dev model on persistent P1; disabled by default
+    # Adaptive iteration limits: scale max_dev_iterations / max_review_cycles
+    # per-story from preflight complexity_score and historical usage. The
+    # `max_dev_iterations`/`max_review_cycles` fields act as the floor (minimum
+    # grant) when adaptive is enabled; the `*_cap` fields are the hard ceiling.
+    # Caps default to 0 (meaning "same as floor" — no adaptive growth); set
+    # them explicitly in forge.yaml to opt into scaling.
+    adaptive_iterations: bool = True
+    max_dev_iterations_cap: int = 0
+    max_review_cycles_cap: int = 0
+    # Stop the review loop early when this many consecutive iterations produce
+    # zero new findings. 0 disables early termination.
+    review_zero_findings_stop: int = 0
 
 
 @dataclass(frozen=True)

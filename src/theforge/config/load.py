@@ -358,6 +358,10 @@ def load_config(config_path: Path) -> ForgeConfig:
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
         auto_model_escalation=bool(retry_data.get("auto_model_escalation", False)),
+        adaptive_iterations=bool(retry_data.get("adaptive_iterations", True)),
+        max_dev_iterations_cap=int(retry_data.get("max_dev_iterations_cap", 0)),
+        max_review_cycles_cap=int(retry_data.get("max_review_cycles_cap", 0)),
+        review_zero_findings_stop=int(retry_data.get("review_zero_findings_stop", 0)),
     )
 
     notifications = _parse_notifications(raw.get("notifications", {}), secrets)

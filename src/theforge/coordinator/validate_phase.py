@@ -217,7 +217,7 @@ def _run_validate_phase(
         record_dev_iteration_telemetry(
             state,
             workspace_path,
-            max_iterations=config.retry.max_dev_iterations,
+            max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
             gate_result=gate_result_for_telemetry,
             gate_output_tail=gate_output_tail or gate_err,
             is_timeout=is_timeout,
@@ -327,7 +327,7 @@ def _run_validate_phase(
             record_dev_iteration_telemetry(
                 state,
                 workspace_path,
-                max_iterations=config.retry.max_dev_iterations,
+                max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
                 gate_result=gate_decision,
                 gate_output_tail=gate_output_tail,
             )
@@ -359,7 +359,7 @@ def _run_validate_phase(
         record_dev_iteration_telemetry(
             state,
             workspace_path,
-            max_iterations=config.retry.max_dev_iterations,
+            max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
             gate_result=gate_decision,
             gate_output_tail=gate_output_tail,
         )
@@ -418,7 +418,7 @@ def _run_validate_phase(
     record_dev_iteration_telemetry(
         state,
         workspace_path,
-        max_iterations=config.retry.max_dev_iterations,
+        max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
         gate_result=gate_decision,
         gate_output_tail=gate_output_tail,
     )

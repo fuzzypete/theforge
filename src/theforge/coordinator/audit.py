@@ -235,15 +235,23 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
 def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig) -> dict:
     dev_used = len(state.dev_iteration_telemetry)
     dev_max = (
-        state.dev_iteration_telemetry[0].max_iterations
-        if state.dev_iteration_telemetry
-        else config.retry.max_dev_iterations
+        state.adaptive_dev_max
+        if state.adaptive_dev_max
+        else (
+            state.dev_iteration_telemetry[0].max_iterations
+            if state.dev_iteration_telemetry
+            else config.retry.max_dev_iterations
+        )
     )
     review_used = len(state.review_iteration_telemetry)
     review_max = (
-        state.review_iteration_telemetry[0].max_iterations
-        if state.review_iteration_telemetry
-        else config.retry.max_review_cycles
+        state.adaptive_review_max
+        if state.adaptive_review_max
+        else (
+            state.review_iteration_telemetry[0].max_iterations
+            if state.review_iteration_telemetry
+            else config.retry.max_review_cycles
+        )
     )
     return {
         "dev": {
@@ -257,6 +265,7 @@ def _build_iteration_usage_summary(state: CoordinatorState, config: ForgeConfig)
             "max": review_max,
             "hit_limit": review_used >= review_max and review_used > 0,
             "early_finish": 0 < review_used < review_max,
+            "early_terminated": state.review_early_terminated,
         },
     }
 
@@ -403,6 +412,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "gate_debug": _serialize_gate_debug_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),
             "usage_summary": _build_iteration_usage_summary(state, config),
+            "adaptive_limits": state.adaptive_limits_audit or None,
             "budget_consumption_log": [
                 {
                     "cycle": entry.cycle,
