@@ -5,7 +5,7 @@ import os
 import platform
 import shutil
 import subprocess
-from functools import cache, lru_cache
+from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -18,14 +18,14 @@ _SYSTEM = platform.system()
 # per-story worktree root, not the repository root.
 
 
-@cache
+@lru_cache(maxsize=None)
 def _sandbox_available(binary: str, probe_key: tuple[str, ...]) -> bool:
     probe = list(probe_key)
     if shutil.which(binary) is None:
         logger.warning("Sandbox binary '%s' not found; filesystem isolation disabled", binary)
         return False
     try:
-        result = subprocess.run(probe, capture_output=True, text=True, check=False, timeout=5)
+        result = subprocess.run(probe, capture_output=True, text=True, timeout=5, check=False)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "Sandbox binary '%s' probe failed (%s); filesystem isolation disabled",
@@ -145,19 +145,10 @@ def _workspace_read_roots(allowed_root: Path) -> tuple[Path, ...]:
     return _unique_existing_paths(roots)
 
 
-def _workspace_write_roots(allowed_root: Path, sandbox_mode: str) -> tuple[Path, ...]:
-    root = allowed_root.resolve()
-    if sandbox_mode == "read-only":
-        return ()
-    return (root,)
-
-
 def _macos_profile(
     allowed_root: Path,
     *,
-    sandbox_mode: str = "workspace-write",
     extra_read_roots: tuple[Path, ...] = (),
-    extra_write_roots: tuple[Path, ...] = (),
     denied_read_roots: tuple[Path, ...] = (),
 ) -> str:
     root = allowed_root.resolve()
@@ -180,24 +171,21 @@ def _macos_profile(
         f'    (subpath "{_escape_subpath(path)}")'
         for path in _unique_existing_paths(list(denied_read_roots))
     )
-    write_roots = _unique_existing_paths(
-        [*_workspace_write_roots(root, sandbox_mode), *extra_write_roots]
-    )
-    write_rules = "\n".join(f'    (subpath "{_escape_subpath(path)}")' for path in write_roots)
+    escaped_root = _escape_subpath(root)
     deny_block = ""
     if deny_rules:
         deny_block = f"""(deny file-read*
 {deny_rules}
 )
 """
-    return f"""(version 1)
+    return f'''(version 1)
 (deny default)
 (import "system.sb")
 (allow process-exec)
 (allow process-fork)
 (allow signal (target self))
 (allow file-write*
-{write_rules}
+    (subpath "{escaped_root}")
     (subpath "/private/tmp")
     (subpath "/tmp")
     (subpath "/dev")
@@ -205,16 +193,14 @@ def _macos_profile(
 (allow file-read*
 {read_rules}
 )
-{deny_block}"""
+{deny_block}'''
 
 
 def _linux_command(
     cmd: list[str],
     allowed_root: Path,
     *,
-    sandbox_mode: str = "workspace-write",
     extra_read_roots: tuple[Path, ...] = (),
-    extra_write_roots: tuple[Path, ...] = (),
     masked_read_roots: tuple[Path, ...] = (),
 ) -> list[str]:
     root = allowed_root.resolve()
@@ -245,21 +231,15 @@ def _linux_command(
         "/etc",
         "/etc",
     ]
-    write_roots = _unique_existing_paths(
-        [*_workspace_write_roots(root, sandbox_mode), *extra_write_roots]
-    )
     for read_root in read_roots:
-        if read_root == root or read_root in write_roots:
+        if read_root == root:
             continue
         wrapped.extend(["--ro-bind-try", str(read_root), str(read_root)])
-    for write_root in write_roots:
-        wrapped.extend(["--bind", str(write_root), str(write_root)])
     for masked_root in _unique_existing_paths(list(masked_read_roots)):
         wrapped.extend(["--tmpfs", str(masked_root)])
-    root_bind_flag = "--bind" if root in write_roots else "--ro-bind"
     wrapped.extend(
         [
-            root_bind_flag,
+            "--bind",
             str(root),
             str(root),
             "--tmpfs",
@@ -272,54 +252,21 @@ def _linux_command(
     return wrapped
 
 
-def workspace_effect_sandbox_command(
-    cmd: list[str],
-    allowed_root: Path,
-    *,
-    sandbox_mode: str = "workspace-write",
-    extra_write_roots: list[Path] | tuple[Path, ...] = (),
-) -> list[str]:
+def workspace_effect_sandbox_command(cmd: list[str], allowed_root: Path) -> list[str]:
     root = allowed_root.resolve()
     blocked_worktrees = _blocked_worktree_roots(root)
-    write_roots = _unique_existing_paths(list(extra_write_roots))
     if _SYSTEM == "Darwin":
-        profile = _macos_profile(
-            root,
-            sandbox_mode=sandbox_mode,
-            extra_write_roots=write_roots,
-            denied_read_roots=blocked_worktrees,
-        )
+        profile = _macos_profile(root, denied_read_roots=blocked_worktrees)
         if _sandbox_available(
-            "sandbox-exec",
-            ("sandbox-exec", "-p", "(version 1) (allow default)", "true"),
+            "sandbox-exec", ("sandbox-exec", "-p", "(version 1) (allow default)", "true")
         ):
             return ["sandbox-exec", "-p", profile, *cmd]
         return cmd
     if _SYSTEM == "Linux":
         if _sandbox_available("bwrap", ("bwrap", "--ro-bind", "/", "/", "true")):
-            return _linux_command(
-                cmd,
-                root,
-                sandbox_mode=sandbox_mode,
-                extra_write_roots=write_roots,
-                masked_read_roots=blocked_worktrees,
-            )
+            return _linux_command(cmd, root, masked_read_roots=blocked_worktrees)
         return cmd
     return cmd
-
-
-def read_only_sandbox_command(
-    cmd: list[str],
-    allowed_root: Path,
-    *,
-    extra_write_roots: list[Path] | tuple[Path, ...] = (),
-) -> list[str]:
-    return workspace_effect_sandbox_command(
-        cmd,
-        allowed_root,
-        sandbox_mode="read-only",
-        extra_write_roots=extra_write_roots,
-    )
 
 
 def sandbox_command(cmd: list[str], allowed_root: Path) -> list[str]:
