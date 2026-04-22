@@ -137,22 +137,60 @@ NEXT_MILESTONE="v$(echo "$VERSION" | awk -F. '{print $1"."$2+1".0"}')"
 echo "==> Creating post-release doc review issue for $NEXT_MILESTONE..."
 DOC_REVIEW_BODY="## What
 
-Review all public-facing documentation after v$VERSION ships to ensure it matches what was released.
+Review every public-facing and decision-preserving doc after v$VERSION ships. Verify each concrete claim against the current code, CLI, or schema — not against another doc. Record every mismatch as a drift entry in this issue before closing.
 
 ## Why
 
-v$VERSION is a new release. Documentation written before or during development may describe stale behavior, missing flags, or outdated architecture. This review ensures users see accurate docs.
+Docs drift past release reviews when reviewers check whether docs agree with each other or simply \"read neatly,\" instead of checking whether the claims match the system. Recent concrete example: \`docs/guides/inputs-reference.md\` documented a deprecated \`pytest_target\` frontmatter field through multiple releases — it survived every review because reviewers triangulated across CLAUDE.md, AGENTS.md, and other guides instead of comparing against the current schema. This template forces verification against code and makes drift findings the required output.
 
-## Checklist
+## How to verify (read before ticking anything)
 
-- [ ] **README.md** — capabilities, install instructions, CLI usage
-- [ ] **CHANGELOG.md** — release section accurately covers what shipped
-- [ ] **CLAUDE.md** — conventions, architecture notes, phase descriptions
+For every doc in the checklist below, verify claims **against the system**, not against other docs:
+
+- For every field name in a doc → grep the source, compare to the current dataclass / schema / frontmatter parser
+- For every CLI command, flag, or subcommand → run it, paste the actual output into your drift notes, compare
+- For every file or directory path referenced → confirm it exists at that path in the current working tree
+- For every example config, story, issue, or YAML snippet → run it through the relevant loader or shape-check path exercised by the tests, and confirm it passes
+- For every architectural or behavioral claim → locate the code that implements it and confirm the doc's description still matches
+
+\"It agrees with CLAUDE.md / AGENTS.md / another guide\" is **not** verification — those are docs too and may themselves be stale. The only passing signal is \"I ran it / read the code and it matches.\"
+
+## Scope — docs to review
+
+- [ ] **README.md** — capabilities, install instructions, quick start
+- [ ] **CHANGELOG.md** — v$VERSION section accurately covers what shipped
+- [ ] **CLAUDE.md** (root and all directory-level) — conventions, phase descriptions, invariants
 - [ ] **AGENTS.md** — agent instructions match current prompt construction and tool usage
 - [ ] **RELEASING.md** — process gaps from this release
-- [ ] **forge.yaml comments** — inline config docs match current behavior
-- [ ] **CLI help text** — \`forge --help\` and subcommands reflect current flags
-- [ ] **GitHub release notes** — body covers what users need to know"
+- [ ] **forge.yaml** — inline comments match current schema and behavior
+- [ ] **CLI help text** — \`forge --help\` and every subcommand reflect current flags
+- [ ] **GitHub release notes** — body covers what users need to know
+- [ ] **docs/guides/** — every file currently present (run \`ls docs/guides/\`); do not work from a hardcoded list in this template, since files are added and renamed between releases
+- [ ] **docs/vision.md** and anything under **docs/vision/** — reflect current direction, not abandoned paths
+- [ ] **docs/plans/** — active plans are still active; completed or abandoned plans are archived or marked
+- [ ] **docs/postmortems/** — referenced issue numbers and dates resolve; follow-ups are closed or tracked
+
+## Required output — drift report
+
+Before closing this issue, add a comment containing a drift report with one entry per mismatch found:
+
+\`\`\`
+<path/to/doc>:<line> — doc says \"<X>\" — code/CLI/schema says \"<Y>\"
+\`\`\`
+
+For each drift entry, either:
+- Patch the doc in a follow-up PR and link it, **or**
+- File a follow-up issue and link it here
+
+An empty drift report is acceptable — it means every claim was checked and confirmed. But \"empty\" must be an explicit comment (\"no drift found — verified against X, Y, Z\"), not a missing one. A missing drift report blocks closure.
+
+## Acceptance criteria
+
+- A drift-report comment exists on this issue listing every mismatch found, in the format above, or explicitly stating \"no drift found\" with a list of the verification steps that were actually executed
+- For each drifted line, either a patch PR or a follow-up issue is linked in the drift report
+- The verification method for each reviewed doc is auditable from the drift report: which command was run, which file/schema was read, not just \"I reviewed it\"
+- No checklist item is marked done on the basis of agreement with another doc
+- Every checkbox in the scope list above is ticked before the issue closes"
 run gh issue create --repo fuzzypete/theforge \
     --title "Post-release doc review for v$VERSION" \
     --body "$DOC_REVIEW_BODY" \
