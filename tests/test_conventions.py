@@ -7,6 +7,7 @@ from pathlib import Path
 
 from theforge.config.types import HardConventionsConfig
 from theforge.conventions import (
+    _ALLOWED_ROOT_FILES,
     ConventionViolation,
     _check_circular_imports,
     _check_hard_conventions_at_git_ref,
@@ -227,6 +228,14 @@ class TestTestMirrorCheck:
 # ── check_hard_conventions integration ───────────────────────────────
 
 
+def test_allowed_root_files_whitelist_is_stack_neutral() -> None:
+    assert "conftest.py" not in _ALLOWED_ROOT_FILES
+    assert "tox.ini" not in _ALLOWED_ROOT_FILES
+    assert "pyproject.toml" not in _ALLOWED_ROOT_FILES
+    assert "setup.py" not in _ALLOWED_ROOT_FILES
+    assert "setup.cfg" not in _ALLOWED_ROOT_FILES
+
+
 class TestCheckHardConventions:
     def test_all_checks_run(self, tmp_path):
         """check_hard_conventions calls all enabled checks."""
@@ -379,12 +388,26 @@ class TestNoScratchFilesCheck:
         assert "bin_script2" in files
 
     def test_allowed_root_files_not_flagged(self, tmp_path):
-        """Known-good root files (forge.yaml, Makefile, etc.) are not flagged."""
+        """Known-good stack-neutral root files are not flagged."""
         (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
         (tmp_path / "Makefile").write_text("all:\n\techo hi\n", encoding="utf-8")
-        (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         (tmp_path / "README.md").write_text("# Readme\n", encoding="utf-8")
         violations = _check_no_scratch_files(tmp_path)
+        assert violations == []
+
+    def test_python_specific_root_files_are_not_universally_allowed(self, tmp_path):
+        _write(tmp_path / "pyproject.toml", "[project]\n")
+        _write(tmp_path / "conftest.py", "# root conftest\n")
+        _write(tmp_path / "tox.ini", "[tox]\n")
+        violations = _check_no_scratch_files(tmp_path)
+        files = {v.file for v in violations if v.rule == "no_scratch_files"}
+        assert "pyproject.toml" in files
+        assert "conftest.py" in files
+        assert "tox.ini" in files
+
+    def test_project_local_allowed_root_files_extend_whitelist(self, tmp_path):
+        _write(tmp_path / "pyproject.toml", "[project]\n")
+        violations = _check_no_scratch_files(tmp_path, ("pyproject.toml",))
         assert violations == []
 
     def test_dotfiles_not_flagged(self, tmp_path):
@@ -394,11 +417,11 @@ class TestNoScratchFilesCheck:
         violations = _check_no_scratch_files(tmp_path)
         assert violations == []
 
-    def test_conftest_py_allowed(self, tmp_path):
-        """conftest.py at root is a legitimate pytest file — not flagged."""
+    def test_conftest_py_requires_project_local_allowance(self, tmp_path):
+        """conftest.py at root is stack-specific and must come from project config."""
         _write(tmp_path / "conftest.py", "# root conftest\n")
         violations = _check_no_scratch_files(tmp_path)
-        assert not any(v.rule == "no_scratch_files" for v in violations)
+        assert any(v.rule == "no_scratch_files" for v in violations)
 
     def test_py_in_src_is_ok(self, tmp_path):
         """Python files under src/ are not flagged."""

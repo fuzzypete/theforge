@@ -198,7 +198,7 @@ def test_synthesis_prompt_includes_all_outputs() -> None:
     assert "SPEC:" in prompt
     # Lean output instructions
     assert "observable behavior" in prompt
-    assert "Function signatures" in prompt
+    assert "Language-specific signatures" in prompt
     assert "Code snippets" in prompt
     assert "150 lines" in prompt
 
@@ -207,7 +207,7 @@ def test_single_model_prompt_includes_lean_constraints() -> None:
     brief = "Build a caching layer."
     prompt = _build_single_model_prompt(brief)
     assert "observable behavior" in prompt
-    assert "Function signatures" in prompt
+    assert "Language-specific signatures" in prompt
     assert "Code snippets" in prompt
     assert "150 lines" in prompt
 
@@ -327,33 +327,32 @@ def test_has_prohibited_content_code_block() -> None:
     assert "code block" in reason
 
 
-def test_has_prohibited_content_function_def() -> None:
-    spec = _VALID_SPEC + "\ndef my_func(arg1, arg2):\n    pass\n"
+def test_has_prohibited_content_function_def_in_prose_is_allowed() -> None:
+    spec = _VALID_SPEC + "\nMention examples like def my_func(arg1, arg2): in prose only.\n"
     found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "function" in reason
+    assert found is False
+    assert reason == ""
 
 
-def test_has_prohibited_content_class_def() -> None:
-    spec = _VALID_SPEC + "\nclass MyClass:\n    pass\n"
+def test_has_prohibited_content_class_def_in_prose_is_allowed() -> None:
+    spec = _VALID_SPEC + "\nMention examples like class MyClass: in prose only.\n"
     found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "class" in reason
+    assert found is False
+    assert reason == ""
 
 
-def test_has_prohibited_content_dataclass() -> None:
-    spec = _VALID_SPEC + "\n@dataclass\nclass MyModel:\n    field: str\n"
+def test_has_prohibited_content_dataclass_marker_in_prose_is_allowed() -> None:
+    spec = _VALID_SPEC + "\nMention examples like @dataclass in prose only.\n"
     found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "dataclass" in reason
+    assert found is False
+    assert reason == ""
 
 
-def test_has_prohibited_content_bare_signature() -> None:
-    """Bare typed function signature (no 'def') is detected as prohibited."""
-    spec = _VALID_SPEC + "\nmy_func(a: int) -> bool\n"
+def test_has_prohibited_content_bare_signature_in_prose_is_allowed() -> None:
+    spec = _VALID_SPEC + "\nMention examples like my_func(a: int) -> bool in prose only.\n"
     found, reason = _has_prohibited_content(spec)
-    assert found is True
-    assert "signature" in reason
+    assert found is False
+    assert reason == ""
 
 
 def test_has_prohibited_content_prose_with_parenthetical() -> None:
@@ -390,10 +389,14 @@ def test_single_model_spec_with_code_block_returns_failed(tmp_path: Path) -> Non
     assert "prohibited" in result.final_synthesis.lower()
 
 
-def test_synthesis_spec_with_function_def_returns_failed(tmp_path: Path) -> None:
-    """Multi-model synthesis output with a function definition → failed IdeationResult."""
+def test_synthesis_spec_with_function_def_in_prose_is_allowed(tmp_path: Path) -> None:
+    """Language-specific code-shape text in prose no longer blocks ideation."""
     config = _make_config(tmp_path, [_REVIEWER_A, _REVIEWER_B], _SYNTH_PROFILE)
-    spec_with_func = _VALID_SPEC + "\ndef build_cache(ttl: int) -> Cache:\n    pass\n"
+    spec_with_func = (
+        _VALID_SPEC
+        + "\nMention examples like def build_cache(ttl: int) -> Cache:"
+        + " in prose only.\n"
+    )
     synthesis = f"CONVERGED_ITEMS:\n- item\n\nDIVERGENT_ITEMS:\n\nSPEC:\n{spec_with_func}"
 
     def _pool(*, prompt, profiles, working_dir, **kwargs):
@@ -408,8 +411,7 @@ def test_synthesis_spec_with_function_def_returns_failed(tmp_path: Path) -> None
     ):
         result = run_ideation(config, "A brief", None, max_rounds=1)
 
-    assert result.success is False
-    assert "prohibited" in result.final_synthesis.lower()
+    assert result.success is True
 
 
 # ── Synthesis parsing tests ──────────────────────────────────────────

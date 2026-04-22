@@ -547,13 +547,13 @@ class TestFixPromptTrajectoryFraming:
         """When surviving families add a step 2, remaining steps are renumbered."""
         families = [{"seed_anchor": "load_config", "cycles": [1, 2], "descriptions": ["d1", "d2"]}]
         prompt = self._make_prompt(tmp_path, surviving_families=families)
-        assert "3. Run `make fmt`" in prompt
-        assert "4. Commit" in prompt
+        assert "3. Commit" in prompt
+        assert "4. Emit an updated `<forge_handoff>`" in prompt
 
     def test_step_numbers_standard_without_surviving_families(self, tmp_path):
         prompt = self._make_prompt(tmp_path, surviving_families=None)
-        assert "2. Run `make fmt`" in prompt
-        assert "3. Commit" in prompt
+        assert "2. Commit" in prompt
+        assert "3. Emit an updated `<forge_handoff>`" in prompt
 
 
 # ── 4. Trajectory state persistence (sidecar round-trip) ─────────────────────

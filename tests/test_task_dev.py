@@ -200,7 +200,7 @@ class TestBuildFixPrompt:
         )
         assert "iteration 2" in prompt
 
-    def test_instructs_make_fmt(self, tmp_path):
+    def test_does_not_hardcode_make_fmt(self, tmp_path):
         task = _make_task(tmp_path)
         prompt = build_fix_prompt(
             task,
@@ -209,7 +209,7 @@ class TestBuildFixPrompt:
             review_findings="P1: bug",
             gate_command="make gate",
         )
-        assert "make fmt" in prompt
+        assert "make fmt" not in prompt
 
     def test_instructs_commit(self, tmp_path):
         task = _make_task(tmp_path)
@@ -581,6 +581,7 @@ class TestTestCommandInPrompts:
             test_command="pytest tests/ -v -n auto --dist worksteal",
         )
         assert "pytest tests/ -v -n auto --dist worksteal" in prompt
+        assert "hand-roll ad-hoc test invocations" in prompt
 
     def test_dev_prompt_omits_test_section_when_test_command_equals_gate(self, tmp_path):
         task = _make_task(tmp_path)
@@ -617,6 +618,7 @@ class TestTestCommandInPrompts:
             test_command="pytest tests/ -v -n auto --dist worksteal",
         )
         assert "pytest tests/ -v -n auto --dist worksteal" in prompt
+        assert "hand-roll ad-hoc test invocations" in prompt
 
     def test_fix_prompt_omits_test_bullet_when_test_command_equals_gate(self, tmp_path):
         task = _make_task(tmp_path)
@@ -630,3 +632,4 @@ class TestTestCommandInPrompts:
             test_command=cmd,
         )
         assert "hand-roll pytest" not in prompt
+        assert "hand-roll ad-hoc test invocations" not in prompt

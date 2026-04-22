@@ -30,7 +30,7 @@ def check_hard_conventions(
     if config.test_mirrors_source:
         violations.extend(_check_test_mirrors(project_root))
     if config.no_scratch_files:
-        violations.extend(_check_no_scratch_files(project_root))
+        violations.extend(_check_no_scratch_files(project_root, config.allowed_root_files))
     return violations
 
 
@@ -279,21 +279,16 @@ def _best_match(name: str, adjacency: dict[str, list[str]]) -> str | None:
 # Hidden files (dotfiles) are always skipped — they're almost always tooling config.
 _ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
     {
-        # Build / packaging
-        "pyproject.toml",
-        "setup.py",
-        "setup.cfg",
+        # Build / tooling
         "Makefile",
         "makefile",
+        "Dockerfile",
+        "dockerignore",
         # Lock files
-        "uv.lock",
-        "poetry.lock",
         "package-lock.json",
         "yarn.lock",
-        # Requirements
-        "requirements.txt",
-        "requirements-dev.txt",
-        "requirements-test.txt",
+        "pnpm-lock.yaml",
+        "bun.lockb",
         # Documentation / metadata
         "README.md",
         "README.rst",
@@ -312,17 +307,13 @@ _ALLOWED_ROOT_FILES: frozenset[str] = frozenset(
         "AGENTS.md",
         # Orchestrator config
         "forge.yaml",
-        # Python test config
-        "conftest.py",
-        # Tooling config
-        "tox.ini",
-        "Dockerfile",
-        "dockerignore",
     }
 )
 
 
-def _check_no_scratch_files(project_root: Path) -> list[ConventionViolation]:
+def _check_no_scratch_files(
+    project_root: Path, allowed_root_files: tuple[str, ...] = ()
+) -> list[ConventionViolation]:
     """Check that no unrecognised files exist directly in the project root.
 
     All source code must live under src/, tests/, docs/, or scripts/.
@@ -334,12 +325,13 @@ def _check_no_scratch_files(project_root: Path) -> list[ConventionViolation]:
     configuration and pose no risk of accidental source-code pollution.
     """
     violations: list[ConventionViolation] = []
+    allowed_files = _ALLOWED_ROOT_FILES | frozenset(allowed_root_files)
     for f in sorted(project_root.iterdir()):
         if not f.is_file():
             continue
         if f.name.startswith("."):
             continue  # dotfiles are tooling config — always allowed
-        if f.name in _ALLOWED_ROOT_FILES:
+        if f.name in allowed_files:
             continue
         rel = str(f.relative_to(project_root))
         violations.append(

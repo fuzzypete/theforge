@@ -625,6 +625,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         _no_circular = conventions_hard_raw.get("no_circular_imports", True)
         _test_mirrors = conventions_hard_raw.get("test_mirrors_source", True)
         _no_scratch = conventions_hard_raw.get("no_scratch_files", True)
+        _allowed_root_files = conventions_hard_raw.get("allowed_root_files", [])
         if not isinstance(_max_module, int):
             raise ValueError(
                 "forge.yaml 'conventions.hard.max_module_lines' must be an int,"
@@ -650,12 +651,20 @@ def load_config(config_path: Path) -> ForgeConfig:
                 "forge.yaml 'conventions.hard.no_scratch_files' must be a bool,"
                 f" got {_no_scratch!r}"
             )
+        if not isinstance(_allowed_root_files, list) or not all(
+            isinstance(item, str) for item in _allowed_root_files
+        ):
+            raise ValueError(
+                "forge.yaml 'conventions.hard.allowed_root_files' must be a list of strings,"
+                f" got {_allowed_root_files!r}"
+            )
         conventions_hard_cfg = HardConventionsConfig(
             max_module_lines=_max_module,
             max_test_file_lines=_max_test,
             no_circular_imports=_no_circular,
             test_mirrors_source=_test_mirrors,
             no_scratch_files=_no_scratch,
+            allowed_root_files=tuple(_allowed_root_files),
         )
 
     _fc_raw = raw.get("finding_classifier", {})

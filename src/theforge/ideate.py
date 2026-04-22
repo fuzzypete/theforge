@@ -12,7 +12,6 @@ The coordinator remains fully deterministic. Only the ideation agents are LLMs.
 
 from __future__ import annotations
 
-import re
 import shlex
 import sys
 import time
@@ -125,10 +124,9 @@ derives the implementation from the codebase. Acceptance criteria must describe
 observable behavior that a human or automated test can verify from outside the
 system.
 
-Prohibited in the spec output:
-- Function signatures or method names
-- Dataclass, class, or type definitions
-- Code snippets or pseudocode
+Avoid in the spec output:
+- Code snippets, pseudocode, or other implementation-shaped examples
+- Language-specific signatures, declarations, or type definitions
 - File-internal implementation steps (e.g. "in foo.py, add a field")
 - Specific variable or parameter names
 
@@ -241,10 +239,9 @@ derives the implementation from the codebase. Acceptance criteria must describe
 observable behavior that a human or automated test can verify from outside the
 system.
 
-Prohibited in the spec output:
-- Function signatures or method names
-- Dataclass, class, or type definitions
-- Code snippets or pseudocode
+Avoid in the spec output:
+- Code snippets, pseudocode, or other implementation-shaped examples
+- Language-specific signatures, declarations, or type definitions
 - File-internal implementation steps (e.g. "in foo.py, add a field")
 - Specific variable or parameter names
 
@@ -369,12 +366,10 @@ def _extract_slug_from_spec(spec_text: str) -> str | None:
 def _has_prohibited_content(spec_text: str) -> tuple[bool, str]:
     """Return (True, reason) if the spec body contains prohibited implementation detail.
 
-    Scans only the markdown body (after the closing --- of frontmatter) for:
-    - Fenced code blocks (lines starting with ```)
-    - Python/JS function definitions (def name()
-    - Class or dataclass definitions
+    Scans only the markdown body (after the closing --- of frontmatter) for
+    language-neutral implementation-shaped content that should still block
+    ideation output.
     """
-    # Strip frontmatter; scan only the body.
     body = spec_text
     stripped = spec_text.strip()
     if stripped.startswith("---"):
@@ -382,25 +377,9 @@ def _has_prohibited_content(spec_text: str) -> tuple[bool, str]:
         if end != -1:
             body = stripped[end + 3 :]
 
-    # Regex for bare typed signatures: "name(args) -> Type" or "name(args):"
-    # Requires no space between name and '(' to avoid matching prose like
-    # "Background (current state)" or "Context (current state):".
-    _sig_re = re.compile(r"^\w[\w.]*\(.*\)\s*(->.*)?:?\s*$")
-
     for line in body.splitlines():
-        s = line.strip()
-        if s.startswith("```"):
+        if line.strip().startswith("```"):
             return True, "fenced code block"
-        if s.startswith("def ") and "(" in s:
-            return True, "function definition"
-        if s.startswith("function ") and "(" in s:
-            return True, "JS function definition"
-        if s.startswith("class ") and (":" in s or "(" in s):
-            return True, "class definition"
-        if s == "@dataclass" or s.startswith("@dataclass("):
-            return True, "@dataclass decorator"
-        if _sig_re.match(s) and len(s) > 10:
-            return True, "bare function signature"
 
     return False, ""
 
