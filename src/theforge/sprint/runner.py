@@ -887,7 +887,6 @@ def run_sprint(
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
-                action_label = triage.action.upper().replace("_", " ")
                 _log(f"SKIP {slug} ({triage.reason})")
                 if triage.action == "skip_merged":
                     specs_succeeded += 1
@@ -942,6 +941,7 @@ def run_sprint(
     if run_id:
         _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
         _initial_stories: list[dict] = []
+        _initial_story_slugs: set[str] = set()
         for _slug, (_task, _src, _canonical_ref) in slug_to_context.items():
             _display_key = (
                 f"Issue #{_canonical_ref.split(':')[1]}"
@@ -984,6 +984,25 @@ def run_sprint(
                     "detail": _detail,
                 }
             )
+            _initial_story_slugs.add(_slug)
+        for _closed_slug in sorted(resolved.closed_dependency_slugs):
+            if _closed_slug in _initial_story_slugs:
+                continue
+            _issue_number = _closed_slug.removeprefix("issue-")
+            _initial_stories.append(
+                {
+                    "slug": _closed_slug,
+                    "path": f"Issue #{_issue_number}" if _issue_number.isdigit() else _closed_slug,
+                    "status": "done",
+                    "phase": None,
+                    "cost_usd": 0.0,
+                    "bundle_candidate": False,
+                    "blocked_by": [],
+                    "complexity": None,
+                    "detail": {"final_outcome": "ALREADY_DONE"},
+                }
+            )
+            _initial_story_slugs.add(_closed_slug)
         _state_writer = SprintStateWriter(run_id, config.project_root, resolved.name)
         _state_writer.init(_initial_stories)
 
@@ -1618,6 +1637,7 @@ def run_sprint(
             project_root=config.project_root,
             dropped_slugs=_dropped_slugs,
             skipped_issues=skipped_issues,
+            triage_actions_by_ref={canonical_ref: triage.action for canonical_ref, triage in triages.items()},
         )
 
     # Remove live state file now that sprint-summary.yaml is the permanent record.

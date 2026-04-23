@@ -350,6 +350,7 @@ def _write_sprint_summary(
     project_root: Path | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
+    triage_actions_by_ref: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -365,6 +366,7 @@ def _write_sprint_summary(
     tasks_by_slug = tasks_by_slug or {}
     dropped_slugs = dropped_slugs or {}
     skipped_issues = skipped_issues or []
+    triage_actions_by_ref = triage_actions_by_ref or {}
 
     # Load prior accumulated story entries from the sprint-level state file.
     # Keyed by canonical_ref so we can substitute them for stories not in
@@ -476,10 +478,13 @@ def _write_sprint_summary(
             accumulated_for_state.append(prior)
         else:
             drop_reason = dropped_slugs.get(slug)
+            triage_action = triage_actions_by_ref.get(canonical_ref)
             if drop_reason == "preserved-escalated":
                 drop_outcome = "PRESERVED"
             elif drop_reason is not None:
                 drop_outcome = "DROPPED"
+            elif triage_action == "skip_merged":
+                drop_outcome = "ALREADY_DONE"
             else:
                 drop_outcome = "SKIPPED"
             entry = {
@@ -510,13 +515,6 @@ def _write_sprint_summary(
     # Preserve prior entries that were not part of this invocation's canonical_refs
     # so re-exec/resume summaries retain the full logical sprint history.
     if sprint_id and project_root:
-        accumulated_refs = {
-            story["canonical_ref"] for story in accumulated_for_state if "canonical_ref" in story
-        }
-        for prior in prior_stories:
-            canonical_ref = prior.get("canonical_ref")
-            if canonical_ref and canonical_ref not in accumulated_refs:
-                accumulated_for_state.append(prior)
         _save_accumulated_stories(sprint_id, manifest.name, project_root, accumulated_for_state)
 
     usage_distribution = []

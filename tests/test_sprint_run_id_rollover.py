@@ -31,10 +31,13 @@ from theforge.sprint.audit import (
     _save_accumulated_stories,
 )
 from theforge.sprint.dag import StoryTriage
+from theforge.sprint.manifest import ResolvedSprint
+from theforge.task import TaskStory
 from theforge.sprint.status_reader import (
     _follow_redirect_chain,
     find_sprint_summary,
     read_completed_status,
+    read_live_status,
 )
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -162,7 +165,9 @@ class TestRunIdRolloverReporting:
         """A resume run shows stories from prior run_ids in sprint-summary.yaml.
 
         Simulates: story-a ran under run_id A (already merged), story-b runs
-        under run_id B (resume).  The final summary must show both.
+        under run_id B (resume). The final summary must show both, and the
+        resumed skip_merged story must remain ALREADY_DONE even if accumulated
+        state was only created by the first run.
         """
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         _make_spec_file(tmp_path, "Feature B", "feature-b")
@@ -262,6 +267,55 @@ class TestRunIdRolloverReporting:
         assert summary["sprint"]["total_cost_usd"] == pytest.approx(1.18 + 9.26)
         assert summary["sprint"]["specs_succeeded"] == 2
         assert summary["sprint"]["specs_failed"] == 0
+        assert summary["sprint"]["specs_skipped"] == 0
+
+    def test_summary_marks_skip_merged_story_already_done_without_prior_state(self, tmp_path: Path) -> None:
+        """Resume summary uses triage to preserve ALREADY_DONE before sprint-end persistence."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+        config = _make_config(tmp_path)
+        sprint_name = "Test Sprint"
+
+        _get_or_create_sprint_id(sprint_name, tmp_path)
+
+        skip_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+            slug="feature-a",
+        )
+        full_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="full",
+            reason="no prior run",
+            worktree_path=None,
+            slug="feature-b",
+        )
+
+        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+            slug = task.slug if task else Path(canonical_ref).stem
+            return skip_triage if slug == "feature-a" else full_triage
+
+        result_b = _make_coordinator_result(success=True, cost=9.26)
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
+            patch("theforge.sprint.runner.run_task", return_value=result_b),
+        ):
+            sprint_result = run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+
+        assert sprint_result.specs_total == 2
+
+        summary_path = tmp_path / ".forge" / "logs" / sprint_name / "sprint-summary.yaml"
+        with open(summary_path, encoding="utf-8") as f:
+            summary = yaml.safe_load(f)
+
+        stories = {story["slug"]: story for story in summary["stories"]}
+        assert stories["feature-a"]["outcome"] == "ALREADY_DONE"
+        assert stories["feature-b"]["outcome"] == "DONE"
+        assert summary["sprint"]["specs_succeeded"] == 2
         assert summary["sprint"]["specs_skipped"] == 0
 
     def test_read_completed_status_shows_all_stories(self, tmp_path: Path) -> None:
@@ -533,8 +587,6 @@ class TestRedirectChainResolution:
 
     def test_live_state_includes_prior_run_skip_merged_story(self, tmp_path: Path) -> None:
         """Live status keeps prior-run completed stories visible after resume triage."""
-        from theforge.sprint.status_reader import read_live_status
-
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         _make_spec_file(tmp_path, "Feature B", "feature-b")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
@@ -602,6 +654,48 @@ class TestRedirectChainResolution:
             patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state),
         ):
             run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+
+    def test_live_state_includes_closed_issue_dropped_at_query_time(self, tmp_path: Path) -> None:
+        """Live status surfaces closed-at-fetch issues even when query mode drops them."""
+        config = _make_config(tmp_path)
+        result_b = _make_coordinator_result(success=True, cost=9.26)
+
+        def _mock_build_resolved_sprint(*args, **kwargs):
+            task = TaskStory(
+                name="Issue 960",
+                slug="issue-960",
+                story_text="# Issue 960",
+                depends_on=[],
+                inferred_dependencies=[],
+                dependency_warnings=[],
+                github_issue=960,
+            )
+            return ResolvedSprint(
+                name="Test Sprint",
+                budget_usd=50.0,
+                stories=[(task, MagicMock(), "issue:960")],
+                max_parallel=None,
+                worker_timeout_seconds=None,
+                closed_dependency_slugs={"issue-959"},
+            )
+
+        def _capture_live_state(*args, **kwargs):
+            entries = read_live_status("run-b-test", tmp_path)
+            assert entries is not None
+            by_slug = {entry.slug: entry for entry in entries}
+            assert by_slug["issue-959"].status == "done"
+            assert by_slug["issue-959"].detail == "ALREADY_DONE"
+            assert by_slug["issue-960"].status in {"waiting", "running", "done"}
+            return result_b
+
+        with patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state):
+            sprint_result = run_sprint(
+                config,
+                sprint=_mock_build_resolved_sprint(),
+                run_id="run-b-test",
+            )
+
+        assert sprint_result.specs_total == 1
 
     def test_accumulated_state_preserves_prior_removed_story(self, tmp_path: Path) -> None:
         """Saving current-run state does not drop prior stories absent from this manifest."""
