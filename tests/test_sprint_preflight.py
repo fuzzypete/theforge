@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from theforge.sprint.lock import _read_lock_metadata
 from theforge.sprint.preflight import (
     abort_for_active_worktrees,
     abort_for_running_stories,
@@ -45,32 +47,28 @@ def test_check_active_worktrees_returns_abort_when_active(tmp_path: Path) -> Non
     assert rc == 1
 
 
-def test_reacquire_story_locks_in_daemon_updates_pid_in_place() -> None:
-    # Simulate two inherited lock FDs (StringIO-like objects with seek/truncate/write/flush)
-    import io
-
+def test_reacquire_story_locks_in_daemon_updates_pid_and_fingerprint_in_place() -> None:
     fd_a = io.StringIO()
-    fd_a.write("11111")  # parent PID written before fork
+    fd_a.write("11111|parent-start")
     fd_b = io.StringIO()
-    fd_b.write("11111")
+    fd_b.write("11111|parent-start")
 
-    import os
-
-    returned = reacquire_story_locks_in_daemon(
-        ["story-a", "story-b"],
-        Path("/tmp/project"),
-        [fd_a, fd_b],
-    )
+    with patch("theforge.sprint.lock._current_process_fingerprint", return_value="daemon-start"):
+        returned = reacquire_story_locks_in_daemon(
+            ["story-a", "story-b"],
+            Path("/tmp/project"),
+            [fd_a, fd_b],
+        )
 
     # Same FD objects returned — no close, no re-acquire
     assert returned == [fd_a, fd_b]
 
-    # Each FD now contains the daemon's PID
-    daemon_pid = str(os.getpid())
-    fd_a.seek(0)
-    assert fd_a.read() == daemon_pid
-    fd_b.seek(0)
-    assert fd_b.read() == daemon_pid
+    pid_a, fingerprint_a = _read_lock_metadata(fd_a)
+    pid_b, fingerprint_b = _read_lock_metadata(fd_b)
+    assert pid_a is not None
+    assert pid_b is not None
+    assert fingerprint_a == "daemon-start"
+    assert fingerprint_b == "daemon-start"
 
 
 def test_reacquire_story_locks_in_daemon_does_not_close_fds() -> None:

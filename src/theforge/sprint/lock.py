@@ -10,7 +10,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from theforge.artifacts import ESCALATED_MARKER_PATH
-from theforge.pid import _is_pid_alive
+from theforge.pid import _current_process_fingerprint, _pid_matches_fingerprint
+
+_LOCK_METADATA_SEPARATOR = "|"
 
 
 def _is_escalated_worktree(worktree_path: Path) -> bool:
@@ -26,16 +28,34 @@ class SprintConflictError(Exception):
         super().__init__(f"Stories already running: {', '.join(conflicting_slugs)}")
 
 
-def _read_lock_pid(fd) -> int | None:
-    """Return the lock owner PID from the file, if present and valid."""
+def _read_lock_metadata(fd) -> tuple[int | None, str | None]:
+    """Return ``(pid, fingerprint)`` from a lock file, if present and valid."""
     fd.seek(0)
-    raw_pid = fd.read().strip()
-    if not raw_pid:
-        return None
+    raw = fd.read().strip()
+    if not raw:
+        return None, None
+
+    pid_text, separator, fingerprint = raw.partition(_LOCK_METADATA_SEPARATOR)
     try:
-        return int(raw_pid)
+        pid = int(pid_text)
     except ValueError:
-        return None
+        return None, None
+
+    normalized_fingerprint = fingerprint.strip() if separator else None
+    return pid, normalized_fingerprint or None
+
+
+def _write_lock_metadata(fd) -> None:
+    """Persist the current process PID plus a stable process fingerprint."""
+    pid = os.getpid()
+    fingerprint = _current_process_fingerprint(pid)
+    payload = str(pid)
+    if fingerprint:
+        payload = f"{payload}{_LOCK_METADATA_SEPARATOR}{fingerprint}"
+    fd.truncate(0)
+    fd.seek(0)
+    fd.write(payload)
+    fd.flush()
 
 
 def check_escalated_worktrees(
@@ -125,25 +145,22 @@ def acquire_story_locks(slugs: list[str], project_root: Path) -> tuple[list, lis
             fd = open(lock_path, "a+")  # noqa: WPS515,SIM115
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fd.truncate(0)
-                fd.seek(0)
-                fd.write(str(os.getpid()))
-                fd.flush()
+                _write_lock_metadata(fd)
                 acquired_fd = fd
                 break
             except BlockingIOError:
-                owner_pid = _read_lock_pid(fd)
+                owner_pid, owner_fingerprint = _read_lock_metadata(fd)
                 fd.close()
-                if owner_pid is None or _is_pid_alive(owner_pid):
+                if owner_pid is None or _pid_matches_fingerprint(owner_pid, owner_fingerprint):
                     conflicted.append(slug)
                     break
                 # TOCTOU: a live process could acquire this lock and write its
-                # PID between the _is_pid_alive check above and unlink() below.
+                # metadata between the ownership check above and unlink() below.
                 # If that happens, we delete a valid lock file and two callers
-                # may briefly believe they hold the lock.  The risk is
-                # acceptable: the window is extremely narrow, and the 3-attempt
-                # retry loop means any caller that loses the race will re-detect
-                # the conflict on the next flock attempt and back off cleanly.
+                # may briefly believe they hold the lock. The risk is acceptable:
+                # the window is extremely narrow, and the 3-attempt retry loop
+                # means any caller that loses the race will re-detect the
+                # conflict on the next flock attempt and back off cleanly.
                 try:
                     lock_path.unlink()
                 except FileNotFoundError:
@@ -204,13 +221,10 @@ def integration_lock(
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
-                fd.truncate(0)
-                fd.seek(0)
-                fd.write(str(os.getpid()))
-                fd.flush()
+                _write_lock_metadata(fd)
                 break
             except BlockingIOError:
-                owner_pid = _read_lock_pid(fd)
+                owner_pid, _owner_fingerprint = _read_lock_metadata(fd)
                 if time.monotonic() >= deadline:
                     owner_suffix = f" (held by pid {owner_pid})" if owner_pid is not None else ""
                     raise TimeoutError(
