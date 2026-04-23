@@ -455,7 +455,6 @@ def _stopped_run_lock_slugs(run_id: str, project_root: Path, slug: str) -> list[
     return [slug]
 
 
-
 def _cleanup_stopped_run(
     run_id: str,
     project_root: Path,
@@ -477,7 +476,6 @@ def cmd_stop(args: object) -> int:
     import signal as _signal
 
     from theforge import detach as _detach
-    from theforge.sprint.lock import cleanup_story_locks
 
     config_path = _find_config()
     if config_path is None or not config_path.exists():
