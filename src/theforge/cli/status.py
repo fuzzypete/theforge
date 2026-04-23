@@ -444,6 +444,33 @@ def cmd_logs(args: object) -> int:
     return 0
 
 
+def _stopped_run_lock_slugs(run_id: str, project_root: Path, slug: str) -> list[str]:
+    from theforge.sprint.status_reader import read_live_status
+
+    entries = read_live_status(run_id, project_root)
+    if entries:
+        story_slugs = [entry.slug for entry in entries if entry.slug]
+        if story_slugs:
+            return story_slugs
+    return [slug]
+
+
+def _cleanup_stopped_run(
+    run_id: str,
+    project_root: Path,
+    slug: str,
+    *,
+    pid: int | None = None,
+) -> None:
+    from theforge import detach as _detach
+    from theforge.sprint.lock import cleanup_story_locks
+
+    lock_slugs = _stopped_run_lock_slugs(run_id, project_root, slug)
+    _detach.remove_pid(run_id, project_root)
+    _detach.write_run_ended(run_id, project_root, "stopped", force=True)
+    cleanup_story_locks(lock_slugs, project_root, pid=pid)
+
+
 def cmd_stop(args: object) -> int:
     """Send SIGTERM to a running forge process."""
     import signal as _signal
@@ -474,8 +501,7 @@ def cmd_stop(args: object) -> int:
         print(f"[forge] Sent SIGTERM to run {run_id} (PID {pid})")
     except ProcessLookupError:
         print(f"Process {pid} not found — cleaning up stale PID file")
-        _detach.remove_pid(run_id, project_root)
-        _detach.write_run_ended(run_id, project_root, "stopped", force=True)
+        _cleanup_stopped_run(run_id, project_root, slug, pid=pid)
         return 1
     except OSError as exc:
         print(f"Could not signal process {pid}: {exc}", file=sys.stderr)
@@ -487,17 +513,43 @@ def cmd_stop(args: object) -> int:
     start = time.monotonic()
     while time.monotonic() - start < args.timeout:
         if not _detach._is_pid_alive(pid):
+            _cleanup_stopped_run(run_id, project_root, slug, pid=pid)
             print(f"[forge] Run {run_id} has stopped.")
             return 0
         time.sleep(0.1)
 
     if not _detach._is_pid_alive(pid):
-        _detach.write_run_ended(run_id, project_root, "stopped", force=True)
+        _cleanup_stopped_run(run_id, project_root, slug, pid=pid)
         print(f"[forge] Run {run_id} has stopped.")
         return 0
 
+    try:
+        os.kill(pid, _signal.SIGKILL)
+        print(f"[forge] SIGTERM timed out for run {run_id}; sent SIGKILL to PID {pid}")
+    except ProcessLookupError:
+        _cleanup_stopped_run(run_id, project_root, slug, pid=pid)
+        print(f"[forge] Run {run_id} has stopped.")
+        return 0
+    except OSError as exc:
+        print(f"Could not SIGKILL process {pid}: {exc}", file=sys.stderr)
+        print(
+            f"Timed out waiting for run {run_id} to stop (PID {pid} still alive). "
+            f"Kill it manually and remove stale locks for {slug} if needed.",
+            file=sys.stderr,
+        )
+        return 1
+
+    kill_start = time.monotonic()
+    while time.monotonic() - kill_start < 5.0:
+        if not _detach._is_pid_alive(pid):
+            _cleanup_stopped_run(run_id, project_root, slug, pid=pid)
+            print(f"[forge] Run {run_id} has stopped.")
+            return 0
+        time.sleep(0.1)
+
     print(
-        f"Timed out waiting for run {run_id} to stop (PID {pid} still alive)",
+        f"Timed out waiting for run {run_id} to stop after SIGKILL (PID {pid} still alive). "
+        f"Kill it manually and remove stale locks for {slug} if needed.",
         file=sys.stderr,
     )
     return 1

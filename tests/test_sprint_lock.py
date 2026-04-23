@@ -15,6 +15,7 @@ from theforge.sprint.lock import (
     _read_lock_metadata,
     acquire_story_locks,
     check_active_worktrees,
+    cleanup_story_locks,
     integration_lock,
     release_story_locks,
 )
@@ -241,6 +242,49 @@ class TestAcquireStoryLocks:
             assert lock_path.read_text(encoding="utf-8") == ""
         finally:
             release_story_locks(fds)
+
+
+class TestCleanupStoryLocks:
+    def test_removes_matching_pid_lock(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / ".forge" / "locks" / "story-a.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242|same-start\n", encoding="utf-8")
+
+        with patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=True):
+            cleaned = cleanup_story_locks(["story-a"], tmp_path, pid=424242)
+
+        assert cleaned == ["story-a"]
+        assert not lock_path.exists()
+
+    def test_removes_dead_matching_pid_lock_without_fingerprint_match(
+        self, tmp_path: Path
+    ) -> None:
+        lock_path = tmp_path / ".forge" / "locks" / "story-a.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242|old-start\n", encoding="utf-8")
+
+        with (
+            patch("theforge.sprint.lock._is_pid_alive", return_value=False),
+            patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=False),
+        ):
+            cleaned = cleanup_story_locks(["story-a"], tmp_path, pid=424242)
+
+        assert cleaned == ["story-a"]
+        assert not lock_path.exists()
+
+    def test_keeps_live_matching_pid_with_different_fingerprint_lock(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / ".forge" / "locks" / "story-a.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242|other-start\n", encoding="utf-8")
+
+        with (
+            patch("theforge.sprint.lock._is_pid_alive", return_value=True),
+            patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=False),
+        ):
+            cleaned = cleanup_story_locks(["story-a"], tmp_path, pid=424242)
+
+        assert cleaned == []
+        assert lock_path.exists()
 
 
 class TestCheckActiveWorktrees:

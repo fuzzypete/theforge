@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from theforge.artifacts import ESCALATED_MARKER_PATH
+from theforge.detach import _is_pid_alive
 from theforge.pid import _current_process_fingerprint, _pid_matches_fingerprint
 
 _LOCK_METADATA_SEPARATOR = "|"
@@ -195,6 +196,54 @@ def release_story_locks(fds: list) -> None:
             fd.close()
         except Exception:
             pass
+
+
+def cleanup_story_locks(
+    slugs: list[str],
+    project_root: Path,
+    *,
+    pid: int | None = None,
+) -> list[str]:
+    """Best-effort removal of stale story lock files for a stopped or killed run.
+
+    When ``pid`` is provided, only lock files whose metadata still points at that
+    process instance are removed. Empty/corrupt lock files are also removed as
+    stale. If the owning PID matches ``pid`` but the process is no longer alive,
+    the lock file is also removed so a freshly stopped run does not leave stale
+    lock files behind. Returns the list of slugs whose lock files were deleted.
+    """
+    if not slugs:
+        return []
+
+    cleaned: list[str] = []
+    lock_dir = project_root / ".forge" / "locks"
+    if not lock_dir.exists():
+        return cleaned
+
+    for slug in slugs:
+        lock_path = lock_dir / f"{slug}.lock"
+        if not lock_path.exists():
+            continue
+        try:
+            with open(lock_path, "a+") as fd:
+                owner_pid, owner_fingerprint = _read_lock_metadata(fd)
+                should_remove = owner_pid is None
+                if pid is None:
+                    should_remove = True
+                elif owner_pid == pid:
+                    if owner_fingerprint is None:
+                        should_remove = True
+                    else:
+                        should_remove = not _is_pid_alive(owner_pid) or _pid_matches_fingerprint(
+                            owner_pid, owner_fingerprint
+                        )
+            if should_remove:
+                lock_path.unlink(missing_ok=True)
+                cleaned.append(slug)
+        except OSError:
+            continue
+
+    return cleaned
 
 
 @contextmanager
