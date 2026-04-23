@@ -207,7 +207,9 @@ def cleanup_story_locks(
 
     When ``pid`` is provided, only lock files whose metadata still points at that
     process instance are removed. Empty/corrupt lock files are also removed as
-    stale. Returns the list of slugs whose lock files were deleted.
+    stale. If the owning PID matches ``pid`` but the process is no longer alive,
+    the lock file is also removed so a freshly stopped run does not leave stale
+    lock files behind. Returns the list of slugs whose lock files were deleted.
     """
     if not slugs:
         return []
@@ -227,8 +229,10 @@ def cleanup_story_locks(
                 should_remove = owner_pid is None
                 if pid is None:
                     should_remove = True
-                elif owner_pid == pid and _pid_matches_fingerprint(owner_pid, owner_fingerprint):
-                    should_remove = True
+                elif owner_pid == pid:
+                    should_remove = not _is_pid_alive(owner_pid) or _pid_matches_fingerprint(
+                        owner_pid, owner_fingerprint
+                    )
             if should_remove:
                 lock_path.unlink(missing_ok=True)
                 cleaned.append(slug)

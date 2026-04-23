@@ -8,7 +8,6 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import cast
 
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
@@ -445,6 +444,18 @@ def cmd_logs(args: object) -> int:
     return 0
 
 
+def _stopped_run_lock_slugs(run_id: str, project_root: Path, slug: str) -> list[str]:
+    from theforge.sprint.status_reader import read_live_status
+
+    entries = read_live_status(run_id, project_root)
+    if entries:
+        story_slugs = [entry.slug for entry in entries if entry.slug]
+        if story_slugs:
+            return story_slugs
+    return [slug]
+
+
+
 def _cleanup_stopped_run(
     run_id: str,
     project_root: Path,
@@ -455,9 +466,10 @@ def _cleanup_stopped_run(
     from theforge import detach as _detach
     from theforge.sprint.lock import cleanup_story_locks
 
+    lock_slugs = _stopped_run_lock_slugs(run_id, project_root, slug)
     _detach.remove_pid(run_id, project_root)
     _detach.write_run_ended(run_id, project_root, "stopped", force=True)
-    cleanup_story_locks([slug], project_root, pid=pid)
+    cleanup_story_locks(lock_slugs, project_root, pid=pid)
 
 
 def cmd_stop(args: object) -> int:
@@ -473,8 +485,7 @@ def cmd_stop(args: object) -> int:
         return 1
     config = load_config(config_path)
     project_root = config.project_root
-    ns = cast(object, args)
-    run_id = ns.run_id
+    run_id = args.run_id
 
     pid_file = project_root / ".forge" / "runs" / f"{run_id}.pid"
     if not pid_file.exists():
@@ -498,11 +509,11 @@ def cmd_stop(args: object) -> int:
         print(f"Could not signal process {pid}: {exc}", file=sys.stderr)
         return 1
 
-    if ns.no_wait:
+    if args.no_wait:
         return 0
 
     start = time.monotonic()
-    while time.monotonic() - start < ns.timeout:
+    while time.monotonic() - start < args.timeout:
         if not _detach._is_pid_alive(pid):
             _cleanup_stopped_run(run_id, project_root, slug, pid=pid)
             print(f"[forge] Run {run_id} has stopped.")
@@ -538,7 +549,6 @@ def cmd_stop(args: object) -> int:
             return 0
         time.sleep(0.1)
 
-    cleanup_story_locks([slug], project_root, pid=pid)
     print(
         f"Timed out waiting for run {run_id} to stop after SIGKILL (PID {pid} still alive). "
         f"Kill it manually and remove stale locks for {slug} if needed.",
