@@ -6,7 +6,7 @@ import argparse
 import signal as _signal
 import warnings
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from theforge.cli import cmd_run
 from theforge.config import (
@@ -589,8 +589,49 @@ class TestCmdStop:
         assert result == 0
         mock_sleep.assert_called_once_with(0.1)
 
-    def test_timeout_returns_nonzero(self, tmp_path):
-        """forge stop returns 1 when the process does not exit before timeout."""
+    def test_timeout_escalates_to_sigkill_and_cleans_up(self, tmp_path):
+        """forge stop escalates to SIGKILL after SIGTERM timeout and cleans up locks."""
+        from theforge.cli import cmd_stop
+
+        run_id = "abc123"
+        target_pid = 54321
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / f"{run_id}.pid").write_text(f"{target_pid}\nmy-slug\n")
+        lock_dir = tmp_path / ".forge" / "locks"
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "my-slug.lock").write_text(f"{target_pid}|fingerprint\n", encoding="utf-8")
+
+        forge_yaml = tmp_path / "forge.yaml"
+        forge_yaml.write_text("project:\n  root: .\n")
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(run_id=run_id, no_wait=False, timeout=60)
+
+        with (
+            patch("theforge.cli.status._find_config", return_value=forge_yaml),
+            patch("theforge.cli.status.load_config", return_value=config),
+            patch("theforge.cli.status.os.kill") as mock_kill,
+            patch("theforge.cli.status.time.sleep"),
+            patch(
+                "theforge.cli.status.time.monotonic",
+                side_effect=[0.0, 0.0, 61.0, 61.0, 61.1],
+            ),
+            patch("theforge.detach._is_pid_alive", side_effect=[True, True, False]),
+            patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=True),
+        ):
+            result = cmd_stop(args)
+
+        assert result == 0
+        assert mock_kill.call_args_list == [
+            call(target_pid, _signal.SIGTERM),
+            call(target_pid, _signal.SIGKILL),
+        ]
+        assert not (runs_dir / f"{run_id}.pid").exists()
+        assert (runs_dir / f"{run_id}.ended").read_text(encoding="utf-8") == "stopped"
+        assert not (lock_dir / "my-slug.lock").exists()
+
+    def test_sigkill_failure_returns_nonzero_with_manual_instruction(self, tmp_path, capsys):
+        """forge stop returns 1 with explicit escalation guidance when SIGKILL fails."""
         from theforge.cli import cmd_stop
 
         run_id = "abc123"
@@ -604,17 +645,23 @@ class TestCmdStop:
         config = _make_forge_config(tmp_path)
         args = argparse.Namespace(run_id=run_id, no_wait=False, timeout=60)
 
+        def fake_kill(pid, sig):
+            if sig == _signal.SIGKILL:
+                raise OSError("permission denied")
+
         with (
             patch("theforge.cli.status._find_config", return_value=forge_yaml),
             patch("theforge.cli.status.load_config", return_value=config),
-            patch("theforge.cli.status.os.kill"),
+            patch("theforge.cli.status.os.kill", side_effect=fake_kill),
             patch("theforge.cli.status.time.sleep"),
             patch("theforge.cli.status.time.monotonic", side_effect=[0.0, 0.0, 61.0]),
             patch("theforge.detach._is_pid_alive", return_value=True),
         ):
             result = cmd_stop(args)
 
+        captured = capsys.readouterr()
         assert result == 1
+        assert "Kill it manually" in captured.err
 
     def test_no_wait_skips_polling(self, tmp_path):
         """forge stop --no-wait returns immediately without polling."""

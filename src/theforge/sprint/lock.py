@@ -197,6 +197,47 @@ def release_story_locks(fds: list) -> None:
             pass
 
 
+def cleanup_story_locks(
+    slugs: list[str],
+    project_root: Path,
+    *,
+    pid: int | None = None,
+) -> list[str]:
+    """Best-effort removal of stale story lock files for a stopped or killed run.
+
+    When ``pid`` is provided, only lock files whose metadata still points at that
+    process instance are removed. Empty/corrupt lock files are also removed as
+    stale. Returns the list of slugs whose lock files were deleted.
+    """
+    if not slugs:
+        return []
+
+    cleaned: list[str] = []
+    lock_dir = project_root / ".forge" / "locks"
+    if not lock_dir.exists():
+        return cleaned
+
+    for slug in slugs:
+        lock_path = lock_dir / f"{slug}.lock"
+        if not lock_path.exists():
+            continue
+        try:
+            with open(lock_path, "a+") as fd:
+                owner_pid, owner_fingerprint = _read_lock_metadata(fd)
+                should_remove = owner_pid is None
+                if pid is None:
+                    should_remove = True
+                elif owner_pid == pid and _pid_matches_fingerprint(owner_pid, owner_fingerprint):
+                    should_remove = True
+            if should_remove:
+                lock_path.unlink(missing_ok=True)
+                cleaned.append(slug)
+        except OSError:
+            continue
+
+    return cleaned
+
+
 @contextmanager
 def integration_lock(
     forge_root: Path,
