@@ -12,6 +12,7 @@ import pytest
 
 from theforge.sprint.lock import (
     SprintConflictError,
+    _read_lock_metadata,
     acquire_story_locks,
     check_active_worktrees,
     integration_lock,
@@ -38,7 +39,9 @@ class TestAcquireStoryLocks:
             assert conflicted == []
             assert len(fds) == 1
             lock_path = tmp_path / ".forge" / "locks" / "my-story.lock"
-            assert lock_path.read_text(encoding="utf-8").strip().isdigit()
+            pid_text, fingerprint = lock_path.read_text(encoding="utf-8").strip().split("|", 1)
+            assert pid_text.isdigit()
+            assert fingerprint
         finally:
             release_story_locks(fds)
 
@@ -147,7 +150,7 @@ class TestAcquireStoryLocks:
         """A conflicting lock with a dead PID is removed and retried."""
         lock_path = tmp_path / ".forge" / "locks" / "story-z.lock"
         lock_path.parent.mkdir(parents=True)
-        lock_path.write_text("424242", encoding="utf-8")
+        lock_path.write_text("424242|old-start", encoding="utf-8")
 
         flock_calls = []
 
@@ -159,7 +162,8 @@ class TestAcquireStoryLocks:
 
         with (
             patch("theforge.sprint.lock.fcntl.flock", side_effect=fake_flock),
-            patch("theforge.sprint.lock.os.kill", side_effect=ProcessLookupError),
+            patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=False),
+            patch("theforge.sprint.lock._current_process_fingerprint", return_value="new-start"),
         ):
             fds, conflicted = acquire_story_locks(["story-z"], tmp_path)
 
@@ -167,7 +171,57 @@ class TestAcquireStoryLocks:
             assert conflicted == []
             assert len(fds) == 1
             assert len(flock_calls) == 2
-            assert lock_path.read_text(encoding="utf-8").strip().isdigit()
+            pid, fingerprint = _read_lock_metadata(fds[0])
+            assert pid is not None
+            assert fingerprint == "new-start"
+        finally:
+            release_story_locks(fds)
+
+    def test_recycled_pid_lock_is_removed_and_retried(self, tmp_path: Path) -> None:
+        """A lock whose PID is alive but fingerprint changed is treated as stale."""
+        lock_path = tmp_path / ".forge" / "locks" / "story-recycled.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242|old-start", encoding="utf-8")
+
+        flock_calls = []
+
+        def fake_flock(_fd, _flags):
+            flock_calls.append(1)
+            if len(flock_calls) == 1:
+                raise BlockingIOError
+            return None
+
+        with (
+            patch("theforge.sprint.lock.fcntl.flock", side_effect=fake_flock),
+            patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=False),
+            patch("theforge.sprint.lock._current_process_fingerprint", return_value="new-start"),
+        ):
+            fds, conflicted = acquire_story_locks(["story-recycled"], tmp_path)
+
+        try:
+            assert conflicted == []
+            assert len(fds) == 1
+            assert len(flock_calls) == 2
+            assert lock_path.read_text(encoding="utf-8").strip().endswith("|new-start")
+        finally:
+            release_story_locks(fds)
+
+    def test_live_matching_pid_lock_remains_conflict(self, tmp_path: Path) -> None:
+        """A lock owned by the same live process instance must remain a conflict."""
+        lock_path = tmp_path / ".forge" / "locks" / "story-live.lock"
+        lock_path.parent.mkdir(parents=True)
+        lock_path.write_text("424242|same-start", encoding="utf-8")
+
+        with (
+            patch("theforge.sprint.lock.fcntl.flock", side_effect=BlockingIOError),
+            patch("theforge.sprint.lock._pid_matches_fingerprint", return_value=True),
+        ):
+            fds, conflicted = acquire_story_locks(["story-live"], tmp_path)
+
+        try:
+            assert fds == []
+            assert conflicted == ["story-live"]
+            assert lock_path.read_text(encoding="utf-8") == "424242|same-start"
         finally:
             release_story_locks(fds)
 
@@ -300,7 +354,7 @@ class TestIntegrationLock:
             ),
             patch("theforge.sprint.lock.time.sleep"),
         ):
-            with patch("theforge.sprint.lock._read_lock_pid", return_value=424242):
+            with patch("theforge.sprint.lock._read_lock_metadata", return_value=(424242, None)):
                 with pytest.raises(TimeoutError, match="held by pid 424242"):
                     with integration_lock(
                         tmp_path,
@@ -496,4 +550,9 @@ class TestCmdSprintConflictGuard:
 
         assert rc == 0
         mock_run.assert_called_once()
-        mock_git.assert_not_called()
+        git_calls_for_worktree = [
+            call
+            for call in mock_git.call_args_list
+            if call.args and call.args[0][:3] == ["git", "-C", str(worktree)]
+        ]
+        assert git_calls_for_worktree == []
