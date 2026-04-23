@@ -550,6 +550,8 @@ class TestCmdSprintConflictGuard:
 
         assert rc == 0
         mock_run.assert_called_once()
+        # Resume skips the active-worktree guard, but other git subprocesses may still
+        # run elsewhere in cmd_sprint. Filter specifically for the worktree collision check.
         git_calls_for_worktree = [
             call
             for call in mock_git.call_args_list
