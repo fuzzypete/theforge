@@ -45,3 +45,19 @@ def test_pid_matches_fingerprint_detects_recycled_pid() -> None:
 def test_pid_matches_fingerprint_accepts_matching_process_instance() -> None:
     with patch("theforge.pid._current_process_fingerprint", return_value="same-start"):
         assert _pid_matches_fingerprint(12345, "same-start") is True
+
+
+def test_pid_matches_fingerprint_falls_back_to_pid_liveness_when_ps_fails() -> None:
+    with (
+        patch("theforge.pid._current_process_fingerprint", return_value=None),
+        patch("theforge.pid._is_pid_alive", return_value=True),
+    ):
+        assert _pid_matches_fingerprint(12345, "same-start") is True
+
+
+def test_pid_matches_fingerprint_rejects_missing_process_when_ps_fails() -> None:
+    with (
+        patch("theforge.pid._current_process_fingerprint", return_value=None),
+        patch("theforge.pid._is_pid_alive", return_value=False),
+    ):
+        assert _pid_matches_fingerprint(12345, "same-start") is False

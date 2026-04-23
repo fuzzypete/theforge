@@ -56,4 +56,6 @@ def _pid_matches_fingerprint(pid: int, fingerprint: str | None) -> bool:
     if fingerprint is None:
         return _is_pid_alive(pid)
     current = _current_process_fingerprint(pid)
-    return current is not None and current == fingerprint
+    if current is None:
+        return _is_pid_alive(pid)
+    return current == fingerprint
