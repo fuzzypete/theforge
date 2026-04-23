@@ -7,6 +7,7 @@ sprint, not just those completed under the terminal run_id.
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -529,3 +530,129 @@ class TestRedirectChainResolution:
         assert summary["sprint"]["specs_total"] == 2
         assert summary["sprint"]["specs_succeeded"] == 2
         assert summary["sprint"]["total_cost_usd"] == pytest.approx(10.44)
+
+    def test_live_state_includes_prior_run_skip_merged_story(self, tmp_path: Path) -> None:
+        """Live status keeps prior-run completed stories visible after resume triage."""
+        from theforge.sprint.status_reader import read_live_status
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+        config = _make_config(tmp_path)
+        sprint_name = "Test Sprint"
+
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        _save_accumulated_stories(
+            sprint_id,
+            sprint_name,
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "verdict": "APPROVE",
+                    "cost_usd": 1.18,
+                    "story_run_id": "run-a-test",
+                    "preflight": "PROCEED",
+                    "preflight_original_verdict": None,
+                    "preflight_source_run_id": None,
+                    "error": None,
+                    "error_type": None,
+                    "merge": True,
+                    "batch": 0,
+                    "depends_on": [],
+                }
+            ],
+        )
+
+        skip_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged",
+            worktree_path=None,
+            slug="feature-a",
+        )
+        full_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="full",
+            reason="no prior run",
+            worktree_path=None,
+            slug="feature-b",
+        )
+
+        def _mock_triage(canonical_ref, cfg, project_root, task=None):
+            slug = task.slug if task else Path(canonical_ref).stem
+            return skip_triage if slug == "feature-a" else full_triage
+
+        result_b = _make_coordinator_result(success=True, cost=9.26)
+
+        def _capture_live_state(*args, **kwargs):
+            entries = read_live_status("run-b-test", tmp_path)
+            assert entries is not None
+            by_slug = {entry.slug: entry for entry in entries}
+            assert by_slug["feature-a"].status == "done"
+            assert by_slug["feature-a"].detail == "ALREADY_DONE"
+            assert by_slug["feature-b"].status in {"waiting", "running", "done"}
+            return result_b
+
+        with (
+            patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
+            patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state),
+        ):
+            run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+
+    def test_accumulated_state_preserves_prior_removed_story(self, tmp_path: Path) -> None:
+        """Saving current-run state does not drop prior stories absent from this manifest."""
+        sprint_name = "Test Sprint"
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        prior_story = {
+            "canonical_ref": "feature-a.md",
+            "slug": "feature-a",
+            "path": "feature-a.md",
+            "outcome": "DONE",
+            "verdict": "APPROVE",
+            "cost_usd": 1.18,
+        }
+        _save_accumulated_stories(sprint_id, sprint_name, tmp_path, [prior_story])
+
+        from theforge.sprint.audit import _write_sprint_summary
+        from theforge.sprint.manifest import SprintManifest, SprintResult
+
+        sprint_log_dir = tmp_path / ".forge" / "logs" / sprint_name
+        manifest = SprintManifest(name=sprint_name, budget_usd=50.0, stories=["feature-b.md"])
+        result = SprintResult(
+            name=sprint_name,
+            specs_total=1,
+            specs_succeeded=1,
+            specs_failed=0,
+            specs_skipped=0,
+            total_cost_usd=9.26,
+            budget_usd=50.0,
+            results=[],
+            stopped_reason=None,
+        )
+
+        _write_sprint_summary(
+            manifest=manifest,
+            result=result,
+            canonical_refs=["feature-b.md"],
+            started_at=datetime.datetime.now(datetime.timezone.utc),
+            finished_at=datetime.datetime.now(datetime.timezone.utc),
+            duration=1.0,
+            sprint_log_dir=sprint_log_dir,
+            story_times={},
+            batch_assignments={},
+            slug_map={"feature-b.md": "feature-b"},
+            run_id="run-b-test",
+            tasks_by_slug={},
+            ci_break_slug=None,
+            sprint_id=sprint_id,
+            project_root=tmp_path,
+            dropped_slugs={},
+            skipped_issues=[],
+        )
+
+        accumulated = _load_accumulated_stories(sprint_id, tmp_path)
+        assert {story["canonical_ref"] for story in accumulated} == {"feature-a.md"}

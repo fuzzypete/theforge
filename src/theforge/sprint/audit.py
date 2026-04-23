@@ -370,6 +370,7 @@ def _write_sprint_summary(
     # Keyed by canonical_ref so we can substitute them for stories not in
     # this invocation's results (e.g., stories completed under an earlier run_id).
     prior_by_ref: dict[str, dict] = {}
+    prior_stories: list[dict] = []
     if sprint_id and project_root:
         prior_stories = _load_accumulated_stories(sprint_id, project_root)
         prior_by_ref = {s["canonical_ref"]: s for s in prior_stories if "canonical_ref" in s}
@@ -506,7 +507,16 @@ def _write_sprint_summary(
         accumulated_for_state.append(prior)
 
     # Persist accumulated state so future runs can find stories from this invocation.
+    # Preserve prior entries that were not part of this invocation's canonical_refs
+    # so re-exec/resume summaries retain the full logical sprint history.
     if sprint_id and project_root:
+        accumulated_refs = {
+            story["canonical_ref"] for story in accumulated_for_state if "canonical_ref" in story
+        }
+        for prior in prior_stories:
+            canonical_ref = prior.get("canonical_ref")
+            if canonical_ref and canonical_ref not in accumulated_refs:
+                accumulated_for_state.append(prior)
         _save_accumulated_stories(sprint_id, manifest.name, project_root, accumulated_for_state)
 
     usage_distribution = []

@@ -879,16 +879,23 @@ def run_sprint(
     # for deferred integration ordering.
     merged_slugs.update(satisfied_slugs)
 
-    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
+    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG.
+    # skip_merged stories count as succeeded for this invocation because they
+    # represent work already completed by the sprint and may satisfy deps/budget
+    # checks immediately. Plain skip stories count as skipped.
     if resume:
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
                 action_label = triage.action.upper().replace("_", " ")
                 _log(f"SKIP {slug} ({triage.reason})")
-                specs_succeeded += 1
-                merged_slugs.add(slug)
-                dag.mark_complete(slug)
+                if triage.action == "skip_merged":
+                    specs_succeeded += 1
+                    merged_slugs.add(slug)
+                    dag.mark_complete(slug)
+                else:
+                    dag.mark_skipped(slug)
+                    specs_skipped += 1
 
     auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - merged_slugs
     if (
@@ -943,6 +950,7 @@ def run_sprint(
             )
             _blocked_by = list(blocked_slugs.get(_slug, []))
             _drop_reason = _dropped_slugs.get(_slug)
+            _triage = triages.get(_canonical_ref) if resume else None
             if _drop_reason == "preserved-escalated":
                 _status = "preserved"
                 _blocked_by = [f"preserved: {_drop_reason}"]
@@ -951,6 +959,12 @@ def run_sprint(
                 _status = "failed"
                 _blocked_by = [f"dropped: {_drop_reason}"]
                 _detail = {"final_outcome": "ESCALATE"}
+            elif _triage and _triage.action == "skip_merged":
+                _status = "done"
+                _detail = {"final_outcome": "ALREADY_DONE"}
+            elif _triage and _triage.action == "skip":
+                _status = "skipped"
+                _detail = {"final_outcome": "SKIPPED"}
             elif _blocked_by:
                 _status = "blocked"
                 _detail = {}
