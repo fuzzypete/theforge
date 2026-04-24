@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -30,6 +30,7 @@ class ResolvedSprint:
     max_parallel: int | None = None
     worker_timeout_seconds: int | None = None
     closed_dependency_slugs: set[str] = field(default_factory=set)
+    baseline_gate: dict[str, Any] | None = None
 
 
 @dataclass

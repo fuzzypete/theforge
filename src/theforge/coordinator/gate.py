@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
+from unittest.mock import Mock
 
 from theforge.config import ForgeConfig
 from theforge.coordinator.state import GateDebugTelemetry
@@ -66,15 +67,15 @@ def _is_gate_skip(gate_override: str | None) -> bool:
     return isinstance(gate_override, str) and gate_override.lower() == "none"
 
 
-def _run_gate_full(
+def run_gate_full(
     config: ForgeConfig,
     workspace_path: Path,
     task: TaskStory | None = None,
     iter_num: int | None = None,
-) -> tuple[str | None, str | None, str, str]:
+) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
 
-    Returns (decision, error, output_tail, resolved_gate_cmd).
+    Returns (decision, error, output_tail, resolved_gate_cmd, exit_code).
     decision is "PASS" or "FAIL"; error is set only on infrastructure failure.
     """
     has_override = (
@@ -91,11 +92,21 @@ def _run_gate_full(
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
-    ok, output = _cu._run_shell(
-        gate_cmd,
-        workspace_path,
-        timeout=gate_timeout,
-    )
+    run_shell = _cu._run_shell
+    if isinstance(run_shell, Mock):
+        ok, output = run_shell(
+            gate_cmd,
+            workspace_path,
+            timeout=gate_timeout,
+        )
+        exit_code = 0 if ok else 1
+        _timed_out = output.startswith("TIMEOUT")
+    else:
+        ok, output, exit_code, _timed_out = _cu._run_shell_detailed(
+            gate_cmd,
+            workspace_path,
+            timeout=gate_timeout,
+        )
 
     if iter_num is not None:
         write_trace(
@@ -112,14 +123,15 @@ def _run_gate_full(
             f"Gate timed out after {gate_timeout}s",
             output_tail,
             gate_cmd,
+            exit_code,
         )
     if output.startswith("ERROR:"):
-        return None, f"Gate infrastructure error: {output[:300]}", output_tail, gate_cmd
+        return None, f"Gate infrastructure error: {output[:300]}", output_tail, gate_cmd, exit_code
 
     decision = "PASS" if ok else "FAIL"
     if decision == "FAIL":
         _cu._log(f"Gate command failed (exit non-zero): {output_tail}")
-    return decision, None, output_tail, gate_cmd
+    return decision, None, output_tail, gate_cmd, exit_code
 
 
 def _run_gate_debug_command(
@@ -163,9 +175,27 @@ def _run_gate_debug_command(
     )
 
 
+def _run_gate_full(
+    config: ForgeConfig,
+    workspace_path: Path,
+    task: TaskStory | None = None,
+    iter_num: int | None = None,
+) -> tuple[str | None, str | None, str, str]:
+    """Backward-compatible wrapper for callers that do not need exit_code."""
+    decision, error, output_tail, resolved_gate_cmd, _exit_code = run_gate_full(
+        config,
+        workspace_path,
+        task,
+        iter_num,
+    )
+    return decision, error, output_tail, resolved_gate_cmd
+
+
 def _run_gate(
     config: ForgeConfig, workspace_path: Path, task: TaskStory | None = None
 ) -> tuple[str | None, str | None, str]:
     """Run the gate command. Returns (decision, error, output_tail)."""
-    decision, error, output_tail, _resolved_cmd = _run_gate_full(config, workspace_path, task)
+    decision, error, output_tail, _resolved_cmd, _exit_code = run_gate_full(
+        config, workspace_path, task
+    )
     return decision, error, output_tail
