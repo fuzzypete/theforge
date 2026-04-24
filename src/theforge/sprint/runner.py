@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime
 import os
+import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -16,7 +18,7 @@ import yaml
 
 from ..config import ForgeConfig
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
-from ..coordinator.gate import _run_gate_full
+from ..coordinator.gate import run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, get_worker_slug, set_worker_slug
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
@@ -91,21 +93,28 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
 def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
     """Run the configured gate on the sprint merge base before any agent work starts."""
 
-    git_dir = config.project_root / ".git"
-    if not git_dir.exists():
+    git_dir_check = subprocess.run(
+        ["git", "rev-parse", "--git-dir"],
+        cwd=config.project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if git_dir_check.returncode != 0:
+        now = datetime.datetime.now(datetime.timezone.utc)
         return {
             "status": "skipped",
             "passed": True,
             "exit_code": 0,
             "duration_seconds": 0.0,
-            "started_at": datetime.datetime.now(datetime.timezone.utc),
-            "finished_at": datetime.datetime.now(datetime.timezone.utc),
+            "started_at": now,
+            "finished_at": now,
             "merge_base": None,
             "command": config.validation.gate_command,
             "message": "Baseline gate skipped: project root is not a git checkout",
         }
 
-    started_at = datetime.datetime.now(datetime.timezone.utc)
+    baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     started_monotonic = time.monotonic()
     merge_base = subprocess.run(
         ["git", "merge-base", "HEAD", config.workspace.base_branch],
@@ -122,7 +131,7 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "passed": False,
             "exit_code": merge_base.returncode,
             "duration_seconds": round(duration, 2),
-            "started_at": started_at,
+            "started_at": baseline_started_at,
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": None,
             "command": config.validation.gate_command,
@@ -140,7 +149,7 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "passed": False,
             "exit_code": merge_base.returncode,
             "duration_seconds": round(duration, 2),
-            "started_at": started_at,
+            "started_at": baseline_started_at,
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": None,
             "command": config.validation.gate_command,
@@ -150,16 +159,12 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             ),
         }
 
-    env = os.environ.copy()
-    env["GIT_WORK_TREE"] = str(config.project_root)
-    env["GIT_DIR"] = str(config.project_root / ".git")
     show_top = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         cwd=config.project_root,
         capture_output=True,
         text=True,
         check=False,
-        env=env,
     )
     if show_top.returncode != 0 or (show_top.stdout or "").strip() != str(config.project_root):
         duration = time.monotonic() - started_monotonic
@@ -168,7 +173,7 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "passed": False,
             "exit_code": show_top.returncode,
             "duration_seconds": round(duration, 2),
-            "started_at": started_at,
+            "started_at": baseline_started_at,
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": merge_base_ref,
             "command": config.validation.gate_command,
@@ -178,95 +183,85 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             ),
         }
 
-    original_head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=config.project_root,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
-    original_head_ref = (
-        (original_head.stdout or "").strip() if original_head.returncode == 0 else None
-    )
-
+    temp_root = Path(tempfile.mkdtemp(prefix="forge-baseline-", dir=config.project_root))
+    baseline_worktree = temp_root / "worktree"
     try:
-        checkout = subprocess.run(
-            ["git", "checkout", "--detach", merge_base_ref],
+        add_worktree = subprocess.run(
+            ["git", "worktree", "add", "--detach", str(baseline_worktree), merge_base_ref],
             cwd=config.project_root,
             capture_output=True,
             text=True,
             check=False,
-            env=env,
         )
-        if checkout.returncode != 0:
+        if add_worktree.returncode != 0:
             duration = time.monotonic() - started_monotonic
-            stderr = (checkout.stderr or "").strip()
+            stderr = (add_worktree.stderr or "").strip()
             return {
                 "status": "error",
                 "passed": False,
-                "exit_code": checkout.returncode,
+                "exit_code": add_worktree.returncode,
                 "duration_seconds": round(duration, 2),
-                "started_at": started_at,
+                "started_at": baseline_started_at,
                 "finished_at": datetime.datetime.now(datetime.timezone.utc),
                 "merge_base": merge_base_ref,
                 "command": config.validation.gate_command,
                 "message": (
-                    "Broken baseline: unable to check out merge base "
-                    f"{merge_base_ref}: {stderr or 'git checkout failed'}"
+                    "Broken baseline: unable to create temporary worktree for merge base "
+                    f"{merge_base_ref}: {stderr or 'git worktree add failed'}"
                 ),
             }
 
-        decision, error, output_tail, resolved_gate_cmd = _run_gate_full(
-            config, config.project_root
+        decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
+            config, baseline_worktree
         )
         duration = time.monotonic() - started_monotonic
         finished_at = datetime.datetime.now(datetime.timezone.utc)
-        exit_code = 0 if decision == "PASS" and error is None else 1
-        if error is not None:
-            message = (
-                "Broken baseline: configured gate failed on sprint merge base "
-                f"{merge_base_ref} before any dev work started ({error})"
-            )
+        exit_code = gate_exit_code if gate_exit_code is not None else 1
+        if decision == "PASS" and error is None:
+            exit_code = gate_exit_code if gate_exit_code is not None else 0
             return {
-                "status": "fail",
-                "passed": False,
+                "status": "pass",
+                "passed": True,
                 "exit_code": exit_code,
                 "duration_seconds": round(duration, 2),
-                "started_at": started_at,
+                "started_at": baseline_started_at,
                 "finished_at": finished_at,
                 "merge_base": merge_base_ref,
                 "command": resolved_gate_cmd,
                 "decision": decision,
                 "output_tail": output_tail,
-                "message": message,
+                "message": (
+                    "Baseline gate passed on sprint merge base "
+                    f"{merge_base_ref} before dev iterations started"
+                ),
             }
+
+        message = (
+            "Broken baseline: configured gate failed on sprint merge base "
+            f"{merge_base_ref} before any dev work started ({error or 'Gate returned FAIL'})"
+        )
         return {
-            "status": "pass",
-            "passed": True,
+            "status": "fail",
+            "passed": False,
             "exit_code": exit_code,
             "duration_seconds": round(duration, 2),
-            "started_at": started_at,
+            "started_at": baseline_started_at,
             "finished_at": finished_at,
             "merge_base": merge_base_ref,
             "command": resolved_gate_cmd,
             "decision": decision,
             "output_tail": output_tail,
-            "message": (
-                "Baseline gate passed on sprint merge base "
-                f"{merge_base_ref} before dev iterations started"
-            ),
+            "message": message,
         }
     finally:
-        if original_head_ref:
-            subprocess.run(
-                ["git", "checkout", "--detach", original_head_ref],
-                cwd=config.project_root,
-                capture_output=True,
-                text=True,
-                check=False,
-                env=env,
-            )
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(baseline_worktree)],
+            cwd=config.project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
@@ -1017,7 +1012,7 @@ def run_sprint(
     except Exception:
         pass
 
-    started_at = datetime.datetime.now(datetime.timezone.utc)
+    baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     baseline_gate = _run_baseline_gate(config, resolved)
     resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
@@ -1036,7 +1031,7 @@ def run_sprint(
                 stopped_reason="broken_baseline",
             ),
             canonical_refs=[ref for _, _, ref in task_entries],
-            started_at=started_at,
+            started_at=baseline_started_at,
             finished_at=datetime.datetime.now(datetime.timezone.utc),
             duration=float(baseline_gate.get("duration_seconds", 0.0)),
             project_root=config.project_root,

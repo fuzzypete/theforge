@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +16,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.sprint.manifest import ResolvedSprint
-from theforge.sprint.runner import run_sprint
+from theforge.sprint.runner import _run_baseline_gate, run_sprint
 from theforge.sprint.sources import FileSource
 
 
@@ -29,7 +30,7 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
             branch_pattern="forge/{slug}",
             base_branch="main",
         ),
-        validation=DEFAULT_VALIDATION,
+        validation=DEFAULT_VALIDATION.model_copy(update={"gate_command": ".venv/bin/python -c \"import pathlib; print(pathlib.Path('baseline.txt').read_text().strip())\""}),
         dev_profile=DEFAULT_DEV_PROFILE,
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
@@ -62,26 +63,56 @@ def _fake_result():
     return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="ok")
 
 
-def test_baseline_pass_proceeds_to_normal_sprint_flow(tmp_path: Path) -> None:
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _commit_all(cwd: Path, message: str) -> str:
+    _git(cwd, "add", ".")
+    _git(cwd, "commit", "-m", message)
+    return _git(cwd, "rev-parse", "HEAD")
+
+
+def _init_repo(tmp_path: Path) -> tuple[ForgeConfig, ResolvedSprint, str]:
     config = _make_config(tmp_path)
     resolved = _make_resolved(tmp_path)
-
-    with (
-        patch(
-            "theforge.sprint.runner._run_baseline_gate",
-            return_value={"passed": True, "message": "ok"},
-        ),
-        patch("theforge.sprint.runner.run_task", return_value=_fake_result()) as mock_run_task,
-        patch("theforge.sprint.runner._write_sprint_audit"),
-        patch("theforge.sprint.runner._write_sprint_summary"),
-    ):
-        result = run_sprint(config, resolved)
-
-    assert result.specs_succeeded == 1
-    assert mock_run_task.called
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / "baseline.txt").write_text("BASELINE\n", encoding="utf-8")
+    base_commit = _commit_all(tmp_path, "base")
+    _git(tmp_path, "checkout", "-b", "feat/test")
+    (tmp_path / "baseline.txt").write_text("FEATURE\n", encoding="utf-8")
+    _commit_all(tmp_path, "feature")
+    return config, resolved, base_commit
 
 
-def test_baseline_fail_aborts_before_any_agent_runner(tmp_path: Path) -> None:
+def test_baseline_gate_uses_temp_worktree_and_restores_branch_state(tmp_path: Path) -> None:
+    config, resolved, base_commit = _init_repo(tmp_path)
+    original_branch = _git(tmp_path, "branch", "--show-current")
+    original_head = _git(tmp_path, "rev-parse", "HEAD")
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["merge_base"] == base_commit
+    assert baseline["exit_code"] == 0
+    assert "BASELINE" in str(baseline.get("output_tail", ""))
+    assert _git(tmp_path, "branch", "--show-current") == original_branch
+    assert _git(tmp_path, "rev-parse", "HEAD") == original_head
+    assert (tmp_path / "baseline.txt").read_text(encoding="utf-8") == "FEATURE\n"
+    worktrees = _git(tmp_path, "worktree", "list")
+    assert "forge-baseline-" not in worktrees
+
+
+def test_baseline_gate_fail_aborts_before_any_agent_runner(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     resolved = _make_resolved(tmp_path)
     baseline = {
@@ -114,3 +145,22 @@ def test_baseline_fail_aborts_before_any_agent_runner(tmp_path: Path) -> None:
     assert audit["baseline_check"]["passed"] is False
     assert audit["baseline_check"]["exit_code"] == 2
     assert audit["sprint"]["stopped_reason"] == "broken_baseline"
+
+
+def test_baseline_pass_proceeds_to_normal_sprint_flow(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    resolved = _make_resolved(tmp_path)
+
+    with (
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_task", return_value=_fake_result()) as mock_run_task,
+        patch("theforge.sprint.runner._write_sprint_audit"),
+        patch("theforge.sprint.runner._write_sprint_summary"),
+    ):
+        result = run_sprint(config, resolved)
+
+    assert result.specs_succeeded == 1
+    assert mock_run_task.called
