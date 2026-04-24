@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,7 +31,13 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
             branch_pattern="forge/{slug}",
             base_branch="main",
         ),
-        validation=DEFAULT_VALIDATION.model_copy(update={"gate_command": ".venv/bin/python -c \"import pathlib; print(pathlib.Path('baseline.txt').read_text().strip())\""}),
+        validation=replace(
+            DEFAULT_VALIDATION,
+            gate_command=(
+                'python -c "import pathlib; '
+                "print(pathlib.Path('baseline.txt').read_text().strip())\""
+            ),
+        ),
         dev_profile=DEFAULT_DEV_PROFILE,
         preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
         review_pool=[DEFAULT_REVIEW_PROFILE],
@@ -94,7 +101,9 @@ def _init_repo(tmp_path: Path) -> tuple[ForgeConfig, ResolvedSprint, str]:
     return config, resolved, base_commit
 
 
-def test_baseline_gate_uses_temp_worktree_and_restores_branch_state(tmp_path: Path) -> None:
+def test_baseline_gate_uses_temp_worktree_and_restores_branch_state(
+    tmp_path: Path,
+) -> None:
     config, resolved, base_commit = _init_repo(tmp_path)
     original_branch = _git(tmp_path, "branch", "--show-current")
     original_head = _git(tmp_path, "rev-parse", "HEAD")
@@ -147,7 +156,9 @@ def test_baseline_gate_fail_aborts_before_any_agent_runner(tmp_path: Path) -> No
     assert audit["sprint"]["stopped_reason"] == "broken_baseline"
 
 
-def test_baseline_pass_proceeds_to_normal_sprint_flow(tmp_path: Path) -> None:
+def test_baseline_pass_proceeds_to_normal_sprint_flow(
+    tmp_path: Path,
+) -> None:
     config = _make_config(tmp_path)
     resolved = _make_resolved(tmp_path)
 
@@ -156,7 +167,10 @@ def test_baseline_pass_proceeds_to_normal_sprint_flow(tmp_path: Path) -> None:
             "theforge.sprint.runner._run_baseline_gate",
             return_value={"passed": True, "message": "ok"},
         ),
-        patch("theforge.sprint.runner.run_task", return_value=_fake_result()) as mock_run_task,
+        patch(
+            "theforge.sprint.runner.run_task",
+            return_value=_fake_result(),
+        ) as mock_run_task,
         patch("theforge.sprint.runner._write_sprint_audit"),
         patch("theforge.sprint.runner._write_sprint_summary"),
     ):

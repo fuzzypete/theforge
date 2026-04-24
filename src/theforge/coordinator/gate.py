@@ -91,11 +91,12 @@ def run_gate_full(
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
-    ok, output, exit_code, _timed_out = _cu._run_shell_detailed(
+    ok, output = _cu._run_shell(
         gate_cmd,
         workspace_path,
         timeout=gate_timeout,
     )
+    exit_code: int | None = 0 if ok else 1
 
     if iter_num is not None:
         write_trace(
