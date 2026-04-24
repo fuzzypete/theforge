@@ -269,6 +269,10 @@ class TestRunIdRolloverReporting:
         assert summary["sprint"]["specs_failed"] == 0
         assert summary["sprint"]["specs_skipped"] == 0
 
+        # Operator-facing counters should match the summary classification.
+        assert sprint_result.specs_succeeded == 1
+        assert sprint_result.specs_skipped == 1
+
     def test_summary_marks_skip_merged_story_already_done_without_prior_state(
         self, tmp_path: Path
     ) -> None:
@@ -486,6 +490,71 @@ class TestRunIdRolloverReporting:
         assert len(stories) == 1
         assert stories[0]["canonical_ref"] == "feature-a.md"
         assert stories[0]["outcome"] == "ALREADY_DONE"
+
+    def test_resume_preserves_prior_accumulated_stories_when_persisting_skip_merged(
+        self, tmp_path: Path
+    ) -> None:
+        """Resume persistence merges new ALREADY_DONE entries into prior accumulated state."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-b.md"])
+        config = _make_config(tmp_path)
+        sprint_name = "Test Sprint"
+        sprint_id = _get_or_create_sprint_id(sprint_name, tmp_path)
+        _save_accumulated_stories(
+            sprint_id,
+            sprint_name,
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "verdict": "APPROVE",
+                    "cost_usd": 1.18,
+                    "story_run_id": "run-a-test",
+                    "preflight": "PROCEED",
+                    "preflight_original_verdict": None,
+                    "preflight_source_run_id": None,
+                    "error": None,
+                    "error_type": None,
+                    "merge": True,
+                    "batch": 0,
+                    "depends_on": [],
+                }
+            ],
+        )
+
+        skip_triage = StoryTriage(
+            story_path="feature-b.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+            slug="feature-b",
+        )
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
+            run_sprint(config, manifest_path, resume=True, run_id="run-resume-test")
+
+        stories = {
+            story["canonical_ref"]: story for story in _load_accumulated_stories(sprint_id, tmp_path)
+        }
+        assert set(stories) == {"feature-a.md", "feature-b.md"}
+        assert stories["feature-a.md"]["outcome"] == "DONE"
+        assert stories["feature-b.md"]["outcome"] == "ALREADY_DONE"
+
+    def test_run_sprint_removes_live_state_file_on_success(self, tmp_path: Path) -> None:
+        """Successful sprint completion removes the live state file to avoid false crash reports."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+        result_a = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner.run_task", return_value=result_a):
+            run_sprint(config, manifest_path, run_id="run-cleanup-test")
+
+        assert not (tmp_path / ".forge" / "runs" / "run-cleanup-test.state").exists()
 
 
 # ── redirect chain: earlier run_id finds terminal summary ────────────────────

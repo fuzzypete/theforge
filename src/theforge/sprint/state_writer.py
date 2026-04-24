@@ -34,10 +34,17 @@ class SprintStateWriter:
             detail: {}          # phase-specific structured detail for status rendering
     """
 
-    def __init__(self, run_id: str, project_root: Path, sprint_name: str) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        project_root: Path,
+        sprint_name: str,
+        *,
+        sprint_id: str | None = None,
+    ) -> None:
         self._run_id = run_id
         self._sprint_name = sprint_name
-        self._sprint_id: str | None = None
+        self._sprint_id = sprint_id
         self._state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
         self._lock = threading.Lock()
         self._stories: dict[str, dict] = {}

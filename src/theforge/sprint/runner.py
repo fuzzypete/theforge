@@ -337,24 +337,24 @@ def _run_fresh(
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
-        # Tests may construct synthetic issue-backed TaskStory objects without a
-        # materialized story_path/source payload. In that case we still want the
-        # sprint runner to initialize live state and summary plumbing without
-        # crashing the worker thread on task text reads deeper in run_task().
+        # Synthetic issue-backed tasks may be created before query materialization.
+        # Fail them explicitly at the sprint seam instead of relying on downstream
+        # task text reads inside run_task().
         if task.story_path is None and task.github_issue is not None:
-            if task.story_text is None and preflight_states is not None:
-                if run_task.__module__ == "theforge.coordinator.engine":
-                    return CoordinatorResult(
-                        success=False,
+            if task.story_text is None:
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.PREFLIGHT,
+                    state=CoordinatorState(
                         phase=Phase.PREFLIGHT,
-                        state=CoordinatorState(
-                            phase=Phase.PREFLIGHT,
-                            started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                            workspace_path=None,
-                            log_dir=None,
-                        ),
-                        message="Issue-backed story has no materialized story text",
-                    )
+                        started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        workspace_path=None,
+                        log_dir=None,
+                        error="Issue-backed story has no materialized story text",
+                        error_type="ValueError",
+                    ),
+                    message="Issue-backed story has no materialized story text",
+                )
             cached_state = (preflight_states or {}).get(task.slug)
             if cached_state is None:
                 placeholder_state = CoordinatorState()
@@ -937,7 +937,7 @@ def run_sprint(
                 if triage.action == "skip_merged":
                     merged_slugs.add(slug)
                     dag.mark_complete(slug)
-                    specs_succeeded += 1
+                    specs_skipped += 1
                 else:
                     dag.mark_skipped(slug)
                     specs_skipped += 1
@@ -993,37 +993,47 @@ def run_sprint(
                 for story in _load_accumulated_stories(_sprint_id, config.project_root)
                 if "canonical_ref" in story
             }
-        _resume_accumulated_stories: list[dict] = []
+
+        def _already_done_story_entry(
+            canonical_ref: str,
+            slug: str,
+            *,
+            depends_on: list[str],
+        ) -> dict:
+            display_key = (
+                f"Issue #{canonical_ref.split(':')[1]}"
+                if canonical_ref.startswith("issue:")
+                else canonical_ref
+            )
+            return {
+                "canonical_ref": canonical_ref,
+                "path": display_key,
+                "slug": slug,
+                "outcome": "ALREADY_DONE",
+                "verdict": None,
+                "cost_usd": 0.0,
+                "story_run_id": run_id,
+                "preflight": None,
+                "preflight_original_verdict": None,
+                "preflight_source_run_id": None,
+                "error": None,
+                "error_type": None,
+                "merge": False,
+                "batch": 0,
+                "depends_on": depends_on,
+            }
+
+        _resume_accumulated_by_ref: dict[str, dict] = dict(_prior_accumulated_by_ref)
         for _canonical_ref, _triage in triages.items():
             if _triage.action != "skip_merged":
                 continue
-            _prior_story = _prior_accumulated_by_ref.get(_canonical_ref)
-            if _prior_story is not None:
-                _resume_accumulated_stories.append(_prior_story)
-                continue
             _resume_slug = _triage.slug
-            _resume_display_key = (
-                f"Issue #{_canonical_ref.split(':')[1]}"
-                if _canonical_ref.startswith("issue:")
-                else _canonical_ref
-            )
-            _resume_accumulated_stories.append(
-                {
-                    "canonical_ref": _canonical_ref,
-                    "path": _resume_display_key,
-                    "slug": _resume_slug,
-                    "outcome": "ALREADY_DONE",
-                    "verdict": None,
-                    "cost_usd": 0.0,
-                    "story_run_id": run_id,
-                    "preflight": None,
-                    "preflight_original_verdict": None,
-                    "preflight_source_run_id": None,
-                    "error": None,
-                    "error_type": None,
-                    "merge": False,
-                    "batch": 0,
-                    "depends_on": list(
+            _resume_accumulated_by_ref.setdefault(
+                _canonical_ref,
+                _already_done_story_entry(
+                    _canonical_ref,
+                    _resume_slug,
+                    depends_on=list(
                         getattr(
                             slug_to_context.get(_resume_slug, (None, None, None))[0],
                             "depends_on",
@@ -1031,42 +1041,22 @@ def run_sprint(
                         )
                         or []
                     ),
-                }
+                ),
             )
         for _closed_slug in sorted(resolved.closed_dependency_slugs):
             _canonical_ref = f"issue:{_closed_slug.removeprefix('issue-')}"
             if _canonical_ref in triages:
                 continue
-            _prior_story = _prior_accumulated_by_ref.get(_canonical_ref)
-            if _prior_story is not None:
-                _resume_accumulated_stories.append(_prior_story)
-                continue
-            _issue_number = _closed_slug.removeprefix("issue-")
-            _resume_accumulated_stories.append(
-                {
-                    "canonical_ref": _canonical_ref,
-                    "path": f"Issue #{_issue_number}" if _issue_number.isdigit() else _closed_slug,
-                    "slug": _closed_slug,
-                    "outcome": "ALREADY_DONE",
-                    "verdict": None,
-                    "cost_usd": 0.0,
-                    "story_run_id": run_id,
-                    "preflight": None,
-                    "preflight_original_verdict": None,
-                    "preflight_source_run_id": None,
-                    "error": None,
-                    "error_type": None,
-                    "merge": False,
-                    "batch": 0,
-                    "depends_on": [],
-                }
+            _resume_accumulated_by_ref.setdefault(
+                _canonical_ref,
+                _already_done_story_entry(_canonical_ref, _closed_slug, depends_on=[]),
             )
-        if _resume_accumulated_stories:
+        if _resume_accumulated_by_ref:
             persist_accumulated_story_state(
                 _sprint_id,
                 resolved.name,
                 config.project_root,
-                _resume_accumulated_stories,
+                list(_resume_accumulated_by_ref.values()),
             )
 
     # Initialise live state file for forge sprint-status (only when a CLI run_id
@@ -1137,8 +1127,12 @@ def run_sprint(
                 }
             )
             _initial_story_slugs.add(_closed_slug)
-        _state_writer = SprintStateWriter(run_id, config.project_root, resolved.name)
-        _state_writer._sprint_id = _sprint_id
+        _state_writer = SprintStateWriter(
+            run_id,
+            config.project_root,
+            resolved.name,
+            sprint_id=_sprint_id,
+        )
         _state_writer.init(_initial_stories)
 
     # Parallel scheduling state
@@ -1782,6 +1776,9 @@ def run_sprint(
                 canonical_ref: triage.action for canonical_ref, triage in triages.items()
             },
         )
+
+    if _state_writer is not None:
+        _state_writer.remove()
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if config.hooks and config.hooks.post_sprint:
