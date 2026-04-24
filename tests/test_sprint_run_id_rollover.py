@@ -317,8 +317,8 @@ class TestRunIdRolloverReporting:
         stories = {story["slug"]: story for story in summary["stories"]}
         assert stories["feature-a"]["outcome"] == "ALREADY_DONE"
         assert stories["feature-b"]["outcome"] == "DONE"
-        assert summary["sprint"]["specs_succeeded"] == 2
-        assert summary["sprint"]["specs_skipped"] == 0
+        assert summary["sprint"]["specs_succeeded"] == 1
+        assert summary["sprint"]["specs_skipped"] == 1
 
     def test_live_status_includes_closed_issue_dropped_at_fetch(self, tmp_path: Path) -> None:
         """Live status retains closed issue stories omitted from resolved.stories."""

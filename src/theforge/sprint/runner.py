@@ -927,18 +927,17 @@ def run_sprint(
     merged_slugs.update(satisfied_slugs)
 
     # Resume mode: pre-mark skip_merged / skip stories as complete in DAG.
-    # skip_merged stories count as succeeded for this invocation because they
-    # represent work already completed by the sprint and may satisfy deps/budget
-    # checks immediately. Plain skip stories count as skipped.
+    # skip_merged stories are already merged and should satisfy dependencies
+    # immediately, but they still count as skipped in sprint aggregates.
     if resume:
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
                 _log(f"SKIP {slug} ({triage.reason})")
                 if triage.action == "skip_merged":
-                    specs_succeeded += 1
                     merged_slugs.add(slug)
                     dag.mark_complete(slug)
+                    specs_skipped += 1
                 else:
                     dag.mark_skipped(slug)
                     specs_skipped += 1

@@ -772,9 +772,10 @@ class TestSprintDependencies:
             with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
-        # spec-a was skip_merged (counted as succeeded), spec-b ran successfully
+        # spec-a was skip_merged (counted as skipped), spec-b ran successfully
         mock_run.assert_called_once()
-        assert result.specs_succeeded == 2
+        assert result.specs_succeeded == 1
+        assert result.specs_skipped == 1
         assert result.stopped_reason is None
 
     def test_resume_approved_satisfies_dependency(self, tmp_path: Path) -> None:
