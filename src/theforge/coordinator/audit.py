@@ -388,6 +388,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "success": result.success,
             "final_phase": result.phase.name,
             "message": result.message,
+            "error_type": state.error_type,
             "start_phase": state.start_phase.name if state.start_phase else None,
             "stop_phase": state.stop_phase.name if state.stop_phase else None,
         },

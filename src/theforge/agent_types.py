@@ -40,3 +40,4 @@ class AgentResult:
         None  # model that actually ran (set by runners; None for legacy results)
     )
     dev_handoff: dict | None = None  # parsed <forge_handoff> block from agent output
+    failure_code: str | None = None  # stable machine-readable failure identifier

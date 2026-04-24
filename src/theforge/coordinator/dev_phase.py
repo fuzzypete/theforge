@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.config import ForgeConfig
+from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.sessions import save_sessions
@@ -20,6 +20,7 @@ from theforge.traces import write_trace
 from .gate import _is_gate_skip
 from .logging import StructuredLogger
 from .notify import _escalate_notify
+from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
 from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
 
@@ -233,6 +234,7 @@ def _run_dev_phase(
             "  WARNING: sandbox_mode: none — dev agent runs without write containment. "
             "Use for debugging only."
         )
+    state.error_type = None
     _log_phase(
         state.phase,
         f"{config.dev_profile.model}  iter={state.dev_iteration}",
@@ -298,6 +300,40 @@ def _run_dev_phase(
             )
             state.dev_prompt_injected_finding_ids.append(injected_finding_ids)
             state.escalation_note = None  # consumed
+        case RetryReason.MAX_ITERATIONS_NO_SUBMIT:
+            dev_context = ContextAssembler.from_config(config).assemble(
+                phase="dev",
+                story_text=story_content,
+                file_list=plan_file_list(state.plan_structured) or None,
+            )
+            state.context_manifests.append({"phase": "dev", "manifest": dev_context})
+            prompt = build_dev_prompt(
+                task,
+                workspace_path=workspace_path,
+                branch_name=branch_name,
+                story_content=story_content,
+                gate_command=_gate_cmd,
+                test_command=_test_cmd,
+                gate_skipped=_is_gate_skip(task.gate_override),
+                review_findings=state.last_review_findings,
+                human_feedback=state.human_feedback,
+                preflight_output=(
+                    state.preflight_result.output if state.preflight_result else None
+                ),
+                plan_output=state.plan_structured
+                if state.plan_structured is not None
+                else state.plan_output,
+                plan_review_advisory=state.plan_agent_review_findings,
+                iteration=state.dev_iteration,
+                escalation_note=state.escalation_note,
+                cycle_history=state.cycle_history or None,
+                preflight_sufficiency=state.preflight_sufficiency,
+                contract_change=state.preflight_contract_change,
+                conventions=config.conventions_soft,
+                assembled_context=dev_context,
+            )
+            state.dev_prompt_injected_finding_ids.append([])
+            state.escalation_note = None
         case (
             None
             | RetryReason.GATE_FAIL
@@ -427,6 +463,40 @@ def _run_dev_phase(
 
     if not dev_result.success:
         _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
+        if dev_result.failure_code == "max_iterations_reached" and dev_result.dev_handoff is None:
+            state.error_type = "max_iterations_no_submit"
+            state.retry_reason = RetryReason.MAX_ITERATIONS_NO_SUBMIT
+            if not state.dev_escalated:
+                _old_model = config.dev_profile.model
+                if config.retry.auto_model_escalation and config.models is not None:
+                    _curr_key = _find_registry_key_for_profile(config.dev_profile)
+                    if _curr_key is not None:
+                        _next_key = _escalate_dev_model(_curr_key, config.models)
+                        if _next_key is not None:
+                            _next_info = MODEL_REGISTRY[_next_key]
+                            _new_dev = apply_model_info(config.dev_profile, _next_info)
+                            config.dev_profile = _new_dev
+                            state.dev_escalated = True
+                            state.escalation_note = (
+                                "MODEL ESCALATION: The previous dev iteration exhausted "
+                                "its iteration budget without calling submit. "
+                                f"Previous model: {_old_model}. "
+                                f"Escalated model: {_next_info.model}."
+                            )
+                if not state.dev_escalated:
+                    state.escalation_note = (
+                        "RETRY ADAPTATION: The previous dev iteration exhausted its "
+                        "iteration budget without calling submit. "
+                        f"Previous model: {_old_model}. The retry uses a shorter "
+                        "timeout and explicit submit pressure instead of repeating "
+                        "unchanged."
+                    )
+            state.human_feedback = (
+                "The previous dev iteration exhausted its iteration budget without calling the "
+                "submit tool, so there is no structured handoff to continue from. Do not repeat "
+                "the same exploratory loop. Narrow scope, stabilize the worktree, and submit a "
+                "structured result promptly."
+            )
         # Don't immediately escalate — try validation anyway,
         # the agent may have committed partial work + run the gate
 
