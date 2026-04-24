@@ -7,7 +7,7 @@ project: theforge
 models:
   - claude/sonnet
   - claude/opus
-  - openai-api/gpt-5.4
+  - openai/gpt-5.4
   - deepseek/deepseek-reasoner
   - google/gemini-3.1-pro-preview
 
@@ -25,6 +25,11 @@ plan_agent_review:
       budget_usd: 1.00
       timeout_seconds: 600
       
+provider_fallbacks:
+  openai:
+    model: gpt-5.4
+    timeout_seconds: 600
+
 budget_usd: 50.0
 
 workspace:
