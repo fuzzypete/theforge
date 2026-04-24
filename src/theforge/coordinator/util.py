@@ -105,7 +105,6 @@ def resolve_timeout(
     return resolve_timeout_with_active(base, medium, large, complexity, complexity_score)[0]
 
 
-
 def resolve_timeout_with_active(
     base: int,
     medium: int | None,

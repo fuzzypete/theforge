@@ -72,25 +72,30 @@
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: same policy concern as above.
 
-3. `src/theforge/coordinator/plan_flow.py:145,179`
+3. `src/theforge/coordinator/engine.py:829-831`
+   - Site: escalation-memory persistence normalizes `small/medium/large` to uppercase assignment-history labels
+   - Classification: **(b) display/log only — leave as-is**
+   - Rationale: this affects persisted telemetry labels only; it does not influence coordinator routing.
+
+4. `src/theforge/coordinator/plan_flow.py:145,179`
    - Site: spec-validation and PLAN-phase gating via `state.preflight_complexity in ("medium", "large")`
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: these are meaningful coordinator routing gates, but converting them to score-native policy changes when PLAN runs at all and needs a dedicated policy decision plus seam tests.
    - Follow-up: `#977`
 
-4. `src/theforge/coordinator/preflight.py:614`
+5. `src/theforge/coordinator/preflight.py:614`
    - Site: `_PHASE_COMPLEXITY_TIER["plan"][norm]` drives adaptive plan model routing
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: meaningful plan routing still keyed by normalized band; converting it expands the routing matrix beyond the timeout/dev-tier scope of this issue.
    - Follow-up: `#977`
 
-5. `src/theforge/coordinator/preflight.py:648`
+6. `src/theforge/coordinator/preflight.py:648`
    - Site: `norm == "LOW"` drives single-reviewer vs broader review-pool routing
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: meaningful review routing still keyed by normalized band; converting it requires a dedicated score-native review policy.
    - Follow-up: `#977`
 
-6. `src/theforge/config/role_derivation.py`
+7. `src/theforge/config/role_derivation.py`
    - Site: plan-role and review-pool routing still keyed by normalized complexity band
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: these are meaningful routing decisions, but widening them to score-native behavior changes more of the routing matrix and should be handled as a dedicated follow-up.

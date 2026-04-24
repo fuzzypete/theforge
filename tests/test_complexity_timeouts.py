@@ -503,15 +503,21 @@ class TestScorePropagationSeam:
         def _run_for_preflight_output(preflight_output: str) -> tuple[int, int]:
             workspace = tmp_path / f"test-task-{abs(hash(preflight_output))}"
             workspace.mkdir()
-            task_for_run = TaskStory(name="Test Task", story_path=task.story_path, slug=workspace.name)
+            task_for_run = TaskStory(
+                name="Test Task",
+                story_path=task.story_path,
+                slug=workspace.name,
+            )
             mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
             mock_plan_agent.side_effect = mock_agent
-            mock_preflight.return_value = _make_agent_result(output=preflight_output, cost_usd=0.05)
             mock_agent.reset_mock()
             mock_plan_agent.reset_mock()
             mock_preflight.reset_mock()
             mock_pool.reset_mock()
-            mock_preflight.return_value = _make_agent_result(output=preflight_output, cost_usd=0.05)
+            mock_preflight.return_value = _make_agent_result(
+                output=preflight_output,
+                cost_usd=0.05,
+            )
             mock_agent.side_effect = [
                 _make_agent_result(output="# Plan\n\nDo it.", cost_usd=0.10),
                 _make_agent_result(output="Implemented.", cost_usd=0.20),
