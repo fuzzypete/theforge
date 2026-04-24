@@ -1,0 +1,213 @@
+from pathlib import Path
+from unittest.mock import patch
+
+import yaml
+
+from tests.coord_test_helpers import (
+    APPROVE_REVIEW,
+    PREFLIGHT_PROCEED,
+    _make_agent_result,
+    _make_config,
+    _make_task,
+)
+from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.engine import run_task
+from theforge.runners import AgentResult
+from theforge.sprint.audit import _write_sprint_audit
+
+
+def _max_iter_no_submit_result(profile_name: str = "dev") -> AgentResult:
+    return AgentResult(
+        success=False,
+        output=(
+            "Agent loop terminated: max iterations reached after 55 iterations. "
+            "Accumulated cost reported."
+        ),
+        session_id="sess-maxed",
+        cost_usd=1.94,
+        exit_code=1,
+        raw={},
+        profile_name=profile_name,
+        failure_code="max_iterations_reached",
+        dev_handoff=None,
+    )
+
+
+def _shell_pass(workspace: Path, gate_decisions: list[str] | None = None):
+    gate_decisions = gate_decisions or ["PASS"]
+    gate_idx = {"n": 0}
+
+    def side_effect(cmd, cwd, **kwargs):
+        if "gate" in cmd:
+            decision = gate_decisions[min(gate_idx["n"], len(gate_decisions) - 1)]
+            gate_idx["n"] += 1
+            return (decision == "PASS", "OK" if decision == "PASS" else "FAIL")
+        if "git status --porcelain" in cmd:
+            return (True, "")
+        if "rev-parse --abbrev-ref HEAD" in cmd:
+            return (True, "forge/test-task")
+        if "--oneline" in cmd and "git log" in cmd:
+            return (True, "abc1234 feat: implement")
+        if "--format=%ct" in cmd:
+            return (True, "1234567890")
+        return (True, "OK")
+
+    return side_effect
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.util._run_shell")
+def test_max_iterations_without_submit_is_distinct_outcome(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace)
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_dev.side_effect = [_max_iter_no_submit_result(), _make_agent_result(profile_name="dev")]
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+
+    assert result.success is True
+    assert result.state.dev_results[0].failure_code == "max_iterations_reached"
+    assert result.state.dev_handoff_snapshots[0]["source"] == "missing"
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.util._run_shell")
+def test_audit_records_distinct_code_for_max_iterations_without_submit(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace)
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_dev.side_effect = [_max_iter_no_submit_result(), _make_agent_result(profile_name="dev")]
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+    audit = generate_audit_log(config, task, result)
+
+    assert audit["outcome"]["error_type"] == "max_iterations_no_submit"
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.util._run_shell")
+def test_followup_after_max_iterations_no_submit_does_not_retry_unchanged_conditions(
+    mock_shell, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    config = _make_config(tmp_path)
+    config = config.__class__(
+        **{
+            **config.__dict__,
+            "dev_profile": config.dev_profile.__class__(
+                **{**config.dev_profile.__dict__, "budget_usd": 10.0}
+            ),
+        }
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace, ["PASS"])
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+
+    seen_prompts: list[str] = []
+
+    def dev_side_effect(**kwargs):
+        seen_prompts.append(kwargs["prompt"])
+        if len(seen_prompts) == 1:
+            return _max_iter_no_submit_result(profile_name="dev")
+        return _make_agent_result(profile_name="dev")
+
+    mock_dev.side_effect = dev_side_effect
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+
+    assert result.success is True
+    assert len(seen_prompts) == 2
+    assert seen_prompts[1] != seen_prompts[0]
+    assert "submit tool" not in seen_prompts[0]
+    assert "submit tool" in seen_prompts[1]
+    assert result.state.gate_decisions == ["PASS"]
+
+
+def test_sprint_audit_records_stable_outcome_code(tmp_path):
+    task = _make_task(tmp_path)
+    state_result = type("R", (), {})()
+    state_result.phase = type("P", (), {"name": "ESCALATE"})
+    state_result.merge = None
+    state_result.state = type(
+        "S",
+        (),
+        {
+            "total_cost": 0.0,
+            "preflight_verdict": None,
+            "preflight_cached_original_verdict": None,
+            "preflight_cached_from_run_id": None,
+            "error": "max iterations without submit",
+            "error_type": "max_iterations_no_submit",
+            "dev_iteration_telemetry": [],
+            "review_iteration_telemetry": [],
+            "review_results": [],
+            "review_cycle_metadata": [],
+            "run_id": "run-1",
+        },
+    )()
+
+    manifest = type("M", (), {"name": "s", "budget_usd": 1.0, "max_parallel": 1})()
+    sprint_result = type(
+        "SR",
+        (),
+        {
+            "results": [(str(task.story_path), state_result)],
+            "total_cost_usd": 0.0,
+            "specs_total": 1,
+            "specs_succeeded": 0,
+            "specs_failed": 1,
+            "specs_skipped": 0,
+            "stopped_reason": None,
+        },
+    )()
+
+    _write_sprint_audit(
+        project_root=tmp_path,
+        manifest=manifest,
+        result=sprint_result,
+        canonical_refs=[str(task.story_path)],
+        started_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        finished_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
+        duration=0.1,
+        sprint_id="sprint-1",
+        tasks_by_slug={task.slug: task},
+        slug_map={str(task.story_path): task.slug},
+    )
+
+    audit = yaml.safe_load((tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text())
+    assert audit["specs"][0]["outcome_code"] == "max_iterations_no_submit"

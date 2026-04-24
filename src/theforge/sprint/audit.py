@@ -202,6 +202,7 @@ def _write_sprint_audit(
                 ),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
+                "outcome_code": res.state.error_type or outcome.lower(),
                 "merge": res.merge is not None and res.merge.get("merged", False),
                 "iteration_usage": {
                     "dev": {
@@ -452,6 +453,7 @@ def _write_sprint_summary(
                 ),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
+                "outcome_code": res.state.error_type or outcome.lower(),
                 "merge": res.merge is not None and res.merge.get("merged", False),
                 "iteration_usage": {
                     "dev": {

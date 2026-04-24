@@ -589,6 +589,9 @@ class AgentLoopManager:
     def _failure_result(self, reason: str) -> AgentResult:
         usage = self._usage.to_model_usage(self._profile.model, self._provider)
         usage, cost = self._zero_cost_if_local(usage)
+        failure_code = None
+        if reason.startswith("Agent loop terminated: max iterations reached"):
+            failure_code = "max_iterations_reached"
         return AgentResult(
             success=False,
             output=reason,
@@ -598,6 +601,7 @@ class AgentLoopManager:
             raw={},
             profile_name=self._profile.name,
             model_usage=(usage,),
+            failure_code=failure_code,
         )
 
     def _timeout_result(self, iterations: int, reason: str = "wall-clock timeout") -> AgentResult:

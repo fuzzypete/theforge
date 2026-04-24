@@ -85,6 +85,7 @@ class RetryReason(str, Enum):
     REJECT = "reject"
     TIMEOUT_RESUME = "timeout_resume"
     CONVENTION_VIOLATIONS = "convention_violations"
+    MAX_ITERATIONS_NO_SUBMIT = "max_iterations_no_submit"
 
 
 # ── Disposition enum ──────────────────────────────────────────────────
