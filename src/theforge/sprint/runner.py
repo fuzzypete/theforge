@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import shutil
 import subprocess
 import sys
@@ -165,7 +166,14 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
         text=True,
         check=False,
     )
-    if show_top.returncode != 0 or (show_top.stdout or "").strip() != str(config.project_root):
+    show_top_path = (show_top.stdout or "").strip()
+    same_toplevel = False
+    if show_top.returncode == 0 and show_top_path:
+        try:
+            same_toplevel = os.path.samefile(show_top_path, config.project_root)
+        except OSError:
+            same_toplevel = Path(show_top_path).resolve() == config.project_root.resolve()
+    if not same_toplevel:
         duration = time.monotonic() - started_monotonic
         return {
             "status": "error",
@@ -182,7 +190,9 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             ),
         }
 
-    temp_root = Path(tempfile.mkdtemp(prefix="forge-baseline-", dir=config.project_root))
+    forge_temp_root = config.project_root / ".forge"
+    forge_temp_root.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(tempfile.mkdtemp(prefix="forge-baseline-", dir=forge_temp_root))
     baseline_worktree = temp_root / "worktree"
     try:
         add_worktree = subprocess.run(

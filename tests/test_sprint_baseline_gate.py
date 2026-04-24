@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -119,6 +120,41 @@ def test_baseline_gate_uses_temp_worktree_and_restores_branch_state(
     assert (tmp_path / "baseline.txt").read_text(encoding="utf-8") == "FEATURE\n"
     worktrees = _git(tmp_path, "worktree", "list")
     assert "forge-baseline-" not in worktrees
+    forge_entries = [path.name for path in (tmp_path / ".forge").iterdir()]
+    assert not any(name.startswith("forge-baseline-") for name in forge_entries)
+
+
+def test_baseline_gate_preserves_actual_gate_exit_code(tmp_path: Path) -> None:
+    config, resolved, base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command="python -c 'import sys; print(\"boom\"); sys.exit(2)'",
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is False
+    assert baseline["status"] == "fail"
+    assert baseline["merge_base"] == base_commit
+    assert baseline["exit_code"] == 2
+    assert "boom" in str(baseline.get("output_tail", ""))
+
+
+def test_baseline_gate_accepts_symlinked_project_root(tmp_path: Path) -> None:
+    real_root = tmp_path / "real-root"
+    real_root.mkdir()
+    config, resolved, _base_commit = _init_repo(real_root)
+    symlink_root = tmp_path / "linked-root"
+    os.symlink(real_root, symlink_root)
+    config = replace(config, project_root=symlink_root)
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["status"] == "pass"
 
 
 def test_baseline_gate_fail_aborts_before_any_agent_runner(tmp_path: Path) -> None:
