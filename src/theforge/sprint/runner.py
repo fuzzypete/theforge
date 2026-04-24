@@ -542,11 +542,6 @@ def _run_fresh(
                     ),
                     message="Issue-backed story has no materialized story text",
                 )
-            cached_state = (preflight_states or {}).get(task.slug)
-            if cached_state is None:
-                placeholder_state = CoordinatorState()
-                placeholder_state.preflight_verdict = "PROCEED"
-                cached_state = placeholder_state
             return run_task(
                 config,
                 task,
@@ -557,7 +552,7 @@ def _run_fresh(
                 sprint_name=sprint_name,
                 state_update_fn=state_update_fn,
                 no_pull=no_pull,
-                cached_preflight_state=cached_state,
+                cached_preflight_state=(preflight_states or {}).get(task.slug),
                 defer_landing=True,
             )
         return run_task(
@@ -1107,24 +1102,14 @@ def run_sprint(
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
-    _preflight_tasks = [
-        task
-        for task in normalized.tasks
-        if not (task.story_path is None and task.github_issue is not None)
-    ]
     preflight_states = run_batch_preflight(
-        _preflight_tasks,
+        normalized.tasks,
         config,
         sprint_name=resolved.name,
         no_pull=no_pull,
         max_parallel=max_parallel,
         notify=notify,
     )
-    for _task in normalized.tasks:
-        if _task.slug not in preflight_states:
-            _placeholder_state = CoordinatorState()
-            _placeholder_state.preflight_verdict = "PROCEED"
-            preflight_states[_task.slug] = _placeholder_state
     if resume:
         _register_resumed_story_footprints(triages, preflight_states)
     bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)

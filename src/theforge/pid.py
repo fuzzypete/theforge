@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
+
+_LOCAL_PROCESS_FALLBACK_FINGERPRINT = f"local-{os.getpid()}-{time.time_ns()}"
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -48,7 +51,12 @@ def _current_process_fingerprint(pid: int) -> str | None:
     """Return the current ownership fingerprint for *pid*, if the process exists."""
     if not _is_pid_alive(pid):
         return None
-    return _pid_start_time(pid)
+    fingerprint = _pid_start_time(pid)
+    if fingerprint is not None:
+        return fingerprint
+    if pid == os.getpid():
+        return _LOCAL_PROCESS_FALLBACK_FINGERPRINT
+    return None
 
 
 def _pid_matches_fingerprint(pid: int, fingerprint: str | None) -> bool:

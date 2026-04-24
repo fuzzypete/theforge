@@ -24,7 +24,10 @@ from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phas
 from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage, _triage_spec
 from theforge.sprint.lock import acquire_story_locks, release_story_locks
-from theforge.sprint.manifest import _build_task_from_story
+from theforge.sprint.manifest import ResolvedSprint, _build_task_from_story
+from theforge.sprint.runner import _run_fresh
+from theforge.sprint.sources import GitHubIssueSource
+from theforge.task import TaskStory
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -992,3 +995,72 @@ class TestSprintDependencies:
             assert len(fds) == 1
         finally:
             release_story_locks(fds)
+
+
+def test_issue_backed_stories_are_batch_preflighted_before_fresh_run(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    task = TaskStory(
+        name="Issue 283",
+        slug="issue-283",
+        story_path=None,
+        story_text="# Issue 283\n\nBody",
+        github_issue=283,
+    )
+    resolved = ResolvedSprint(
+        name="GitHub Sprint",
+        budget_usd=5.0,
+        stories=[(task, GitHubIssueSource(), "issue:283")],
+        max_parallel=1,
+    )
+    cached_preflight = CoordinatorState(
+        preflight_verdict="PROCEED",
+        preflight_complexity="medium",
+        preflight_complexity_score=6,
+        preflight_sufficiency="implementation_ready",
+        preflight_work_type="bug",
+    )
+    coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+    with patch(
+        "theforge.sprint.runner.run_batch_preflight",
+        return_value={task.slug: cached_preflight},
+    ) as mock_batch_preflight:
+        with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_run_task:
+            result = run_sprint(config, resolved)
+
+    assert result.specs_succeeded == 1
+    batch_tasks = mock_batch_preflight.call_args.args[0]
+    assert [preflight_task.slug for preflight_task in batch_tasks] == ["issue-283"]
+    assert batch_tasks[0].github_issue == 283
+    assert batch_tasks[0].story_text == "# Issue 283\n\nBody"
+    assert mock_run_task.call_args.kwargs["cached_preflight_state"] is cached_preflight
+
+
+def test_run_fresh_issue_backed_story_does_not_fabricate_cached_preflight(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    task = TaskStory(
+        name="Issue 283",
+        slug="issue-283",
+        story_path=None,
+        story_text="# Issue 283\n\nBody",
+        github_issue=283,
+    )
+    coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+    with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_run_task:
+        result = _run_fresh(
+            config,
+            task,
+            sprint_run_id="run-123",
+            sprint_name="GitHub Sprint",
+            interactive=False,
+            notify=False,
+            effective_auto_merge=False,
+            state_update_fn=None,
+            no_pull=False,
+            plan_gate=None,
+            preflight_states={},
+        )
+
+    assert result is coord_result
+    assert mock_run_task.call_args.kwargs["cached_preflight_state"] is None
