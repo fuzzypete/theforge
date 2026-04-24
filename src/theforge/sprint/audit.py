@@ -564,16 +564,16 @@ def _write_sprint_summary(
     # contributed by the accumulated state are included in the totals.
     effective_specs_total = len(spec_entries)
     effective_cost_usd = round(sum(e.get("cost_usd", 0.0) for e in spec_entries), 4)
-    effective_succeeded = sum(
-        1 for e in spec_entries if e.get("outcome") in ("DONE", "ALREADY_DONE")
-    )
+    effective_succeeded = sum(1 for e in spec_entries if e.get("outcome") == "DONE")
     effective_failed = sum(
         1
         for e in spec_entries
         if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", "PRESERVED", None)
     )
     effective_skipped = sum(
-        1 for e in spec_entries if e.get("outcome") in ("SKIPPED", "PRESERVED", None)
+        1
+        for e in spec_entries
+        if e.get("outcome") in ("ALREADY_DONE", "SKIPPED", "PRESERVED", None)
     )
 
     summary = {

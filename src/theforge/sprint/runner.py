@@ -937,7 +937,7 @@ def run_sprint(
                 if triage.action == "skip_merged":
                     merged_slugs.add(slug)
                     dag.mark_complete(slug)
-                    specs_skipped += 1
+                    specs_succeeded += 1
                 else:
                     dag.mark_skipped(slug)
                     specs_skipped += 1
