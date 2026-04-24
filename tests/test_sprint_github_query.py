@@ -442,11 +442,15 @@ class TestRunSprintAcceptsResolvedSprint:
         config = self._make_config(tmp_path)
 
         with patch(
-            "theforge.sprint.runner.run_task", return_value=self._make_coordinator_result()
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
         ):
-            with patch("theforge.sprint.runner._write_sprint_audit"):
-                with patch("theforge.sprint.runner._write_sprint_summary"):
-                    result = run_sprint(config, resolved)
+            with patch(
+                "theforge.sprint.runner.run_task", return_value=self._make_coordinator_result()
+            ):
+                with patch("theforge.sprint.runner._write_sprint_audit"):
+                    with patch("theforge.sprint.runner._write_sprint_summary"):
+                        result = run_sprint(config, resolved)
 
         assert result.specs_total == 1
         assert result.specs_succeeded == 1
@@ -470,11 +474,15 @@ class TestRunSprintAcceptsResolvedSprint:
         config = self._make_config(tmp_path)
 
         with patch(
-            "theforge.sprint.runner.run_task", return_value=self._make_coordinator_result()
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
         ):
-            with patch("theforge.sprint.runner._write_sprint_audit"):
-                with patch("theforge.sprint.runner._write_sprint_summary"):
-                    result = run_sprint(config, resolved)
+            with patch(
+                "theforge.sprint.runner.run_task", return_value=self._make_coordinator_result()
+            ):
+                with patch("theforge.sprint.runner._write_sprint_audit"):
+                    with patch("theforge.sprint.runner._write_sprint_summary"):
+                        result = run_sprint(config, resolved)
 
         assert result.specs_total == 1
         assert result.name == "GitHub Sprint"

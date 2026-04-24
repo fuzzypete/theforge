@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import os
 import subprocess
 import sys
 import threading
@@ -15,6 +16,7 @@ import yaml
 
 from ..config import ForgeConfig
 from ..coordinator.engine import run_from_dev, run_from_review, run_task
+from ..coordinator.gate import _run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, get_worker_slug, set_worker_slug
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
@@ -84,6 +86,187 @@ def _read_prior_sprint_cost(project_root: Path) -> float:
         return float(data.get("sprint", {}).get("total_cost_usd", 0.0))
     except (OSError, ValueError, TypeError):
         return 0.0
+
+
+def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
+    """Run the configured gate on the sprint merge base before any agent work starts."""
+
+    git_dir = config.project_root / ".git"
+    if not git_dir.exists():
+        return {
+            "status": "skipped",
+            "passed": True,
+            "exit_code": 0,
+            "duration_seconds": 0.0,
+            "started_at": datetime.datetime.now(datetime.timezone.utc),
+            "finished_at": datetime.datetime.now(datetime.timezone.utc),
+            "merge_base": None,
+            "command": config.validation.gate_command,
+            "message": "Baseline gate skipped: project root is not a git checkout",
+        }
+
+    started_at = datetime.datetime.now(datetime.timezone.utc)
+    started_monotonic = time.monotonic()
+    merge_base = subprocess.run(
+        ["git", "merge-base", "HEAD", config.workspace.base_branch],
+        cwd=config.project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if merge_base.returncode != 0:
+        duration = time.monotonic() - started_monotonic
+        stderr = (merge_base.stderr or "").strip()
+        return {
+            "status": "error",
+            "passed": False,
+            "exit_code": merge_base.returncode,
+            "duration_seconds": round(duration, 2),
+            "started_at": started_at,
+            "finished_at": datetime.datetime.now(datetime.timezone.utc),
+            "merge_base": None,
+            "command": config.validation.gate_command,
+            "message": (
+                "Broken baseline: unable to determine merge base against "
+                f"{config.workspace.base_branch}: {stderr or 'git merge-base failed'}"
+            ),
+        }
+
+    merge_base_ref = (merge_base.stdout or "").strip()
+    if not merge_base_ref:
+        duration = time.monotonic() - started_monotonic
+        return {
+            "status": "error",
+            "passed": False,
+            "exit_code": merge_base.returncode,
+            "duration_seconds": round(duration, 2),
+            "started_at": started_at,
+            "finished_at": datetime.datetime.now(datetime.timezone.utc),
+            "merge_base": None,
+            "command": config.validation.gate_command,
+            "message": (
+                "Broken baseline: unable to determine merge base against "
+                f"{config.workspace.base_branch}: empty merge-base result"
+            ),
+        }
+
+    env = os.environ.copy()
+    env["GIT_WORK_TREE"] = str(config.project_root)
+    env["GIT_DIR"] = str(config.project_root / ".git")
+    show_top = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=config.project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if show_top.returncode != 0 or (show_top.stdout or "").strip() != str(config.project_root):
+        duration = time.monotonic() - started_monotonic
+        return {
+            "status": "error",
+            "passed": False,
+            "exit_code": show_top.returncode,
+            "duration_seconds": round(duration, 2),
+            "started_at": started_at,
+            "finished_at": datetime.datetime.now(datetime.timezone.utc),
+            "merge_base": merge_base_ref,
+            "command": config.validation.gate_command,
+            "message": (
+                "Broken baseline: sprint baseline gate requires running from the root checkout; "
+                "current workspace is not the project toplevel"
+            ),
+        }
+
+    original_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=config.project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    original_head_ref = (
+        (original_head.stdout or "").strip() if original_head.returncode == 0 else None
+    )
+
+    try:
+        checkout = subprocess.run(
+            ["git", "checkout", "--detach", merge_base_ref],
+            cwd=config.project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        if checkout.returncode != 0:
+            duration = time.monotonic() - started_monotonic
+            stderr = (checkout.stderr or "").strip()
+            return {
+                "status": "error",
+                "passed": False,
+                "exit_code": checkout.returncode,
+                "duration_seconds": round(duration, 2),
+                "started_at": started_at,
+                "finished_at": datetime.datetime.now(datetime.timezone.utc),
+                "merge_base": merge_base_ref,
+                "command": config.validation.gate_command,
+                "message": (
+                    "Broken baseline: unable to check out merge base "
+                    f"{merge_base_ref}: {stderr or 'git checkout failed'}"
+                ),
+            }
+
+        decision, error, output_tail, resolved_gate_cmd = _run_gate_full(
+            config, config.project_root
+        )
+        duration = time.monotonic() - started_monotonic
+        finished_at = datetime.datetime.now(datetime.timezone.utc)
+        exit_code = 0 if decision == "PASS" and error is None else 1
+        if error is not None:
+            message = (
+                "Broken baseline: configured gate failed on sprint merge base "
+                f"{merge_base_ref} before any dev work started ({error})"
+            )
+            return {
+                "status": "fail",
+                "passed": False,
+                "exit_code": exit_code,
+                "duration_seconds": round(duration, 2),
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "merge_base": merge_base_ref,
+                "command": resolved_gate_cmd,
+                "decision": decision,
+                "output_tail": output_tail,
+                "message": message,
+            }
+        return {
+            "status": "pass",
+            "passed": True,
+            "exit_code": exit_code,
+            "duration_seconds": round(duration, 2),
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "merge_base": merge_base_ref,
+            "command": resolved_gate_cmd,
+            "decision": decision,
+            "output_tail": output_tail,
+            "message": (
+                "Baseline gate passed on sprint merge base "
+                f"{merge_base_ref} before dev iterations started"
+            ),
+        }
+    finally:
+        if original_head_ref:
+            subprocess.run(
+                ["git", "checkout", "--detach", original_head_ref],
+                cwd=config.project_root,
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+            )
 
 
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
@@ -833,6 +1016,37 @@ def run_sprint(
         _sprint_id = _get_or_create_sprint_id(resolved.name, config.project_root)
     except Exception:
         pass
+
+    started_at = datetime.datetime.now(datetime.timezone.utc)
+    baseline_gate = _run_baseline_gate(config, resolved)
+    resolved.baseline_gate = baseline_gate
+    _log(str(baseline_gate.get("message", "Baseline gate check completed")))
+    if not bool(baseline_gate.get("passed", False)):
+        _write_sprint_audit(
+            manifest=resolved,
+            result=SprintResult(
+                name=resolved.name,
+                specs_total=total,
+                specs_succeeded=0,
+                specs_failed=total,
+                specs_skipped=0,
+                total_cost_usd=0.0,
+                budget_usd=resolved.budget_usd,
+                results=[],
+                stopped_reason="broken_baseline",
+            ),
+            canonical_refs=[ref for _, _, ref in task_entries],
+            started_at=started_at,
+            finished_at=datetime.datetime.now(datetime.timezone.utc),
+            duration=float(baseline_gate.get("duration_seconds", 0.0)),
+            project_root=config.project_root,
+            slug_map={ref: task.slug for task, _src, ref in task_entries},
+            tasks_by_slug={task.slug: task for task, _src, _ref in task_entries},
+            sprint_id=_sprint_id,
+            dropped_slugs=dropped_slugs,
+            skipped_issues=skipped_issues,
+        )
+        raise RuntimeError(str(baseline_gate.get("message", "Broken baseline")))
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
     accumulated_cost = 0.0

@@ -326,6 +326,11 @@ def _write_sprint_audit(
             "stopped_reason": result.stopped_reason,
             "ci_break_slug": ci_break_slug,
         },
+        "baseline_check": (
+            getattr(manifest, "baseline_gate", None)
+            if isinstance(getattr(manifest, "baseline_gate", None), dict)
+            else None
+        ),
         "specs": spec_entries,
         "skipped": [s.as_dict() if hasattr(s, "as_dict") else dict(s) for s in skipped_issues],
         "iteration_usage_distribution": usage_distribution,
