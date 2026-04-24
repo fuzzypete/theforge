@@ -14,6 +14,7 @@ from theforge.detach import _is_pid_alive
 from theforge.pid import _current_process_fingerprint, _pid_matches_fingerprint
 
 _LOCK_METADATA_SEPARATOR = "|"
+_UNAVAILABLE_FINGERPRINT = "unavailable"
 
 
 def _is_escalated_worktree(worktree_path: Path) -> bool:
@@ -49,10 +50,8 @@ def _read_lock_metadata(fd) -> tuple[int | None, str | None]:
 def _write_lock_metadata(fd) -> None:
     """Persist the current process PID plus a stable process fingerprint."""
     pid = os.getpid()
-    fingerprint = _current_process_fingerprint(pid)
-    payload = str(pid)
-    if fingerprint:
-        payload = f"{payload}{_LOCK_METADATA_SEPARATOR}{fingerprint}"
+    fingerprint = _current_process_fingerprint(pid) or _UNAVAILABLE_FINGERPRINT
+    payload = f"{pid}{_LOCK_METADATA_SEPARATOR}{fingerprint}"
     fd.truncate(0)
     fd.seek(0)
     fd.write(payload)
