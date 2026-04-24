@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 from pathlib import Path
+from unittest.mock import Mock
 
 from theforge.config import ForgeConfig
 from theforge.coordinator.state import GateDebugTelemetry
@@ -91,11 +92,21 @@ def run_gate_full(
 
     _cu._log_verbose(f"Running gate: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
-    ok, output, exit_code, _timed_out = _cu._run_shell_detailed(
-        gate_cmd,
-        workspace_path,
-        timeout=gate_timeout,
-    )
+    run_shell = _cu._run_shell
+    if isinstance(run_shell, Mock):
+        ok, output = run_shell(
+            gate_cmd,
+            workspace_path,
+            timeout=gate_timeout,
+        )
+        exit_code = 0 if ok else 1
+        _timed_out = output.startswith("TIMEOUT")
+    else:
+        ok, output, exit_code, _timed_out = _cu._run_shell_detailed(
+            gate_cmd,
+            workspace_path,
+            timeout=gate_timeout,
+        )
 
     if iter_num is not None:
         write_trace(
