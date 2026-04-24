@@ -130,7 +130,7 @@ def test_followup_after_max_iterations_no_submit_does_not_retry_unchanged_condit
     workspace = tmp_path / task.slug
     workspace.mkdir()
 
-    mock_shell.side_effect = _shell_pass(workspace, ["FAIL", "PASS"])
+    mock_shell.side_effect = _shell_pass(workspace, ["PASS"])
     mock_preflight.return_value = _make_agent_result(
         success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
     )
@@ -153,6 +153,9 @@ def test_followup_after_max_iterations_no_submit_does_not_retry_unchanged_condit
     assert result.success is True
     assert len(seen_prompts) == 2
     assert seen_prompts[1] != seen_prompts[0]
+    assert "submit tool" not in seen_prompts[0]
+    assert "submit tool" in seen_prompts[1]
+    assert result.state.gate_decisions == ["PASS"]
 
 
 def test_sprint_audit_records_stable_outcome_code(tmp_path):

@@ -234,7 +234,9 @@ def _run_dev_phase(
             "  WARNING: sandbox_mode: none — dev agent runs without write containment. "
             "Use for debugging only."
         )
-    state.error_type = None
+    _preserve_error_type = state.error_type == "max_iterations_no_submit"
+    if not _preserve_error_type:
+        state.error_type = None
     _log_phase(
         state.phase,
         f"{config.dev_profile.model}  iter={state.dev_iteration}",
@@ -487,9 +489,8 @@ def _run_dev_phase(
                     state.escalation_note = (
                         "RETRY ADAPTATION: The previous dev iteration exhausted its "
                         "iteration budget without calling submit. "
-                        f"Previous model: {_old_model}. The retry uses a shorter "
-                        "timeout and explicit submit pressure instead of repeating "
-                        "unchanged."
+                        f"Previous model: {_old_model}. The retry uses explicit submit "
+                        "pressure and narrower scope instead of repeating unchanged."
                     )
             state.human_feedback = (
                 "The previous dev iteration exhausted its iteration budget without calling the "
@@ -497,8 +498,7 @@ def _run_dev_phase(
                 "the same exploratory loop. Narrow scope, stabilize the worktree, and submit a "
                 "structured result promptly."
             )
-        # Don't immediately escalate — try validation anyway,
-        # the agent may have committed partial work + run the gate
+            return None
 
     # ── Zero-change guard (review-driven retry only) ─────────────────
     # If the coordinator retried DEV after review REQUEST_CHANGES and the dev
