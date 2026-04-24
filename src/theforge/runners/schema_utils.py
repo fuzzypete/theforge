@@ -126,7 +126,7 @@ _NO_SUBMIT_PHASES = {"preflight", "dev"}
 _MAX_MALFORMED = 3
 
 # Default max loop iterations
-_DEFAULT_MAX_ITERATIONS = 50
+_DEFAULT_MAX_ITERATIONS = 75
 
 
 _MISSING_PRICING_WARNED: set[tuple[str, str]] = set()
