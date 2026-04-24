@@ -37,6 +37,18 @@ def test_current_process_fingerprint_returns_ps_start_time() -> None:
     mock_run.assert_called_once()
 
 
+def test_current_process_fingerprint_falls_back_for_current_pid_when_ps_unavailable() -> None:
+    with (
+        patch("theforge.pid.os.kill", return_value=None),
+        patch("theforge.pid.os.getpid", return_value=12345),
+        patch("theforge.pid.subprocess.run", side_effect=PermissionError),
+    ):
+        fingerprint = _current_process_fingerprint(12345)
+
+    assert fingerprint is not None
+    assert fingerprint.startswith("local-")
+
+
 def test_pid_matches_fingerprint_detects_recycled_pid() -> None:
     with patch("theforge.pid._current_process_fingerprint", return_value="new-start"):
         assert _pid_matches_fingerprint(12345, "old-start") is False
