@@ -64,7 +64,7 @@ from .plan_trajectory import (
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .remote_gates import _plan_review_remote
 from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
-from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout
+from .util import _fmt_cost, _fmt_duration, _log_phase, resolve_timeout_with_active
 
 if TYPE_CHECKING:
     from theforge.agent_types import AgentResult
@@ -207,22 +207,13 @@ def _run_plan_phase(
                 },
             }
         )
-    _plan_timeout = resolve_timeout(
+    _plan_timeout, _plan_override_active = resolve_timeout_with_active(
         config.plan.timeout,
         config.plan.timeout_medium,
         config.plan.timeout_large,
         state.preflight_complexity,
         state.preflight_complexity_score,
     )
-    _plan_override_active = False
-    if state.preflight_complexity_score is not None:
-        _plan_override_active = (
-            state.preflight_complexity_score >= 8 and config.plan.timeout_large is not None
-        ) or (state.preflight_complexity_score >= 6 and config.plan.timeout_medium is not None)
-    else:
-        _plan_override_active = (
-            state.preflight_complexity == "large" and config.plan.timeout_large is not None
-        ) or (state.preflight_complexity == "medium" and config.plan.timeout_medium is not None)
     if _plan_override_active:
         _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
     else:

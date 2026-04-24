@@ -15,6 +15,7 @@
    - Previous routing: `small/medium/large -> cheap/mid/strong`
    - Classification: **(a) meaningful routing decision — convert to numeric score**
    - Change: added optional `complexity_score` input and now use `score_to_dev_tier()` when present, so score 6 and score 7 no longer route identically.
+   - Status note: this conversion is currently staged behind callers that pass `complexity_score`; runtime adaptive dev-tier routing in coordinator remains driven by `src/theforge/coordinator/preflight.py::_apply_complexity_adaptation()`.
 
 2. `src/theforge/coordinator/dev_phase.py`
    - Site: DEV timeout override selection via `resolve_timeout()`
@@ -71,12 +72,31 @@
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: same policy concern as above.
 
-3. `src/theforge/config/role_derivation.py`
+3. `src/theforge/coordinator/plan_flow.py:145,179`
+   - Site: spec-validation and PLAN-phase gating via `state.preflight_complexity in ("medium", "large")`
+   - Classification: **(c) out of scope — file follow-up**
+   - Rationale: these are meaningful coordinator routing gates, but converting them to score-native policy changes when PLAN runs at all and needs a dedicated policy decision plus seam tests.
+   - Follow-up: `#977`
+
+4. `src/theforge/coordinator/preflight.py:614`
+   - Site: `_PHASE_COMPLEXITY_TIER["plan"][norm]` drives adaptive plan model routing
+   - Classification: **(c) out of scope — file follow-up**
+   - Rationale: meaningful plan routing still keyed by normalized band; converting it expands the routing matrix beyond the timeout/dev-tier scope of this issue.
+   - Follow-up: `#977`
+
+5. `src/theforge/coordinator/preflight.py:648`
+   - Site: `norm == "LOW"` drives single-reviewer vs broader review-pool routing
+   - Classification: **(c) out of scope — file follow-up**
+   - Rationale: meaningful review routing still keyed by normalized band; converting it requires a dedicated score-native review policy.
+   - Follow-up: `#977`
+
+6. `src/theforge/config/role_derivation.py`
    - Site: plan-role and review-pool routing still keyed by normalized complexity band
    - Classification: **(c) out of scope — file follow-up**
    - Rationale: these are meaningful routing decisions, but widening them to score-native behavior changes more of the routing matrix and should be handled as a dedicated follow-up.
+   - Follow-up: `#977`
 
 ## Follow-up issues filed from this audit
 
-- `#977` Convert contract-change complexity escalation in preflight flow from band bumping to score-native policy.
-- `#978` Extend score-native routing beyond dev tier/timeouts to plan and review routing matrices in role derivation.
+- `#978` Convert contract-change complexity escalation in preflight flow from band bumping to score-native policy.
+- `#977` Extend score-native routing beyond dev tier/timeouts to remaining plan and review routing matrices/gates.

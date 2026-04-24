@@ -102,17 +102,29 @@ def resolve_timeout(
     override, 6-7 uses the medium override, and lower scores fall back to base.
     When no score is available, legacy band-based behavior is preserved.
     """
+    return resolve_timeout_with_active(base, medium, large, complexity, complexity_score)[0]
+
+
+
+def resolve_timeout_with_active(
+    base: int,
+    medium: int | None,
+    large: int | None,
+    complexity: str | None,
+    complexity_score: int | None = None,
+) -> tuple[int, bool]:
+    """Return ``(timeout, override_active)`` for the given complexity inputs."""
     if complexity_score is not None:
         if complexity_score >= 8 and large is not None:
-            return large
+            return large, True
         if complexity_score >= 6 and medium is not None:
-            return medium
-        return base
+            return medium, True
+        return base, False
     if complexity == "large" and large is not None:
-        return large
+        return large, True
     if complexity == "medium" and medium is not None:
-        return medium
-    return base
+        return medium, True
+    return base, False
 
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:

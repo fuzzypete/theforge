@@ -148,7 +148,28 @@ PREFLIGHT_PROCEED_MEDIUM = """\
 verdict: PROCEED
 complexity: medium
 complexity_score: 6
-sufficiency: implementation_ready
+reason: "Medium complexity spec."
+spec_issues: []
+criteria_checked: []
+```
+"""
+
+PREFLIGHT_PROCEED_MEDIUM_SCORE_5 = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+complexity_score: 5
+reason: "Medium complexity spec."
+spec_issues: []
+criteria_checked: []
+```
+"""
+
+PREFLIGHT_PROCEED_MEDIUM_SCORE_7 = """\
+```yaml
+verdict: PROCEED
+complexity: medium
+complexity_score: 7
 reason: "Medium complexity spec."
 spec_issues: []
 criteria_checked: []
@@ -451,6 +472,68 @@ class TestDevPhaseTimeout:
 
 
 # ── PLAN phase timeout resolution ──────────────────────────────────────
+
+
+class TestScorePropagationSeam:
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_same_band_scores_propagate_to_different_plan_and_dev_timeouts(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Preflight score propagates across phase boundaries and changes PLAN/DEV timeouts."""
+        dev_profile = dataclasses.replace(
+            DEFAULT_DEV_PROFILE,
+            timeout_seconds=600,
+            timeout_medium_seconds=900,
+            timeout_large_seconds=1800,
+        )
+        plan = PlanConfig(
+            enabled=True,
+            timeout=600,
+            timeout_medium=900,
+            timeout_large=1800,
+            validate_spec=False,
+        )
+        config = _make_config(tmp_path, dev_profile=dev_profile, plan=plan)
+        task = _make_task(tmp_path)
+
+        def _run_for_preflight_output(preflight_output: str) -> tuple[int, int]:
+            workspace = tmp_path / f"test-task-{abs(hash(preflight_output))}"
+            workspace.mkdir()
+            task_for_run = TaskStory(name="Test Task", story_path=task.story_path, slug=workspace.name)
+            mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+            mock_plan_agent.side_effect = mock_agent
+            mock_preflight.return_value = _make_agent_result(output=preflight_output, cost_usd=0.05)
+            mock_agent.reset_mock()
+            mock_plan_agent.reset_mock()
+            mock_preflight.reset_mock()
+            mock_pool.reset_mock()
+            mock_preflight.return_value = _make_agent_result(output=preflight_output, cost_usd=0.05)
+            mock_agent.side_effect = [
+                _make_agent_result(output="# Plan\n\nDo it.", cost_usd=0.10),
+                _make_agent_result(output="Implemented.", cost_usd=0.20),
+            ]
+            mock_pool.return_value = [
+                _make_agent_result(output=APPROVE_REVIEW, profile_name="review")
+            ]
+
+            result = run_task(config, task_for_run)
+
+            assert result.success is True
+            plan_profile_used = _get_call_profile(mock_agent, 0)
+            dev_profile_used = _get_call_profile(mock_agent, 1)
+            return plan_profile_used.timeout_seconds, dev_profile_used.timeout_seconds
+
+        plan_timeout_5, dev_timeout_5 = _run_for_preflight_output(PREFLIGHT_PROCEED_MEDIUM_SCORE_5)
+        plan_timeout_7, dev_timeout_7 = _run_for_preflight_output(PREFLIGHT_PROCEED_MEDIUM_SCORE_7)
+
+        assert plan_timeout_5 == 600
+        assert dev_timeout_5 == 600
+        assert plan_timeout_7 == 900
+        assert dev_timeout_7 == 900
 
 
 class TestPlanPhaseTimeout:
