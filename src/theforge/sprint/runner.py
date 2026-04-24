@@ -29,6 +29,7 @@ from .audit import (
     _write_sprint_audit,
     _write_sprint_summary,
     _write_story_audit,
+    persist_accumulated_story_state,
 )
 from .ci_checks import poll_required_checks
 from .collision import (
@@ -50,9 +51,7 @@ from .manifest import (
     ResolvedSprint,
     SprintResult,
     _build_task_from_story,
-    _validate_story_paths,
-    build_tasks_from_manifest,
-    load_sprint_manifest,
+    resolve_from_manifest,
 )
 from .query import normalize_dependency_plan
 from .sources import StorySource
@@ -250,7 +249,19 @@ def _release_plan_gates(
                 del plan_gates[deferred_slug]
 
 
-def _extract_plan_footprint(workspace_path: Path) -> set[str]:
+def _validate_story_paths(config: ForgeConfig, manifest_path: Path) -> list[Path]:
+    """Backward-compatible shim for tests that patch story path validation.
+
+    The sprint runner now resolves manifests through ``resolve_from_manifest`` and
+    no longer needs a separate validation pass here, but daemon tests still patch
+    this symbol to isolate ``run_sprint``. Keep a no-op helper so those patches
+    remain valid without affecting runtime behavior.
+    """
+    del config, manifest_path
+    return []
+
+
+def _extract_plan_footprint(workspace_path: Path | None) -> set[str]:
     """Extract the set of files referenced in a plan's steps.
 
     Reads .forge/plan.md from the workspace, parses YAML plan data, and collects
@@ -259,6 +270,8 @@ def _extract_plan_footprint(workspace_path: Path) -> set[str]:
     from ..artifacts import PLAN_PATH  # noqa: PLC0415
     from ..task.plan_parser import parse_plan_output  # noqa: PLC0415
 
+    if workspace_path is None:
+        return set()
     plan_file = workspace_path / PLAN_PATH
     if not plan_file.exists():
         return set()
@@ -324,6 +337,42 @@ def _run_fresh(
 ) -> CoordinatorResult:
     """Run a fresh story, optionally splitting at PLAN_REVIEW for overlap gating."""
     if plan_gate is None:
+        # Synthetic issue-backed tasks may be created before query materialization.
+        # Fail them explicitly at the sprint seam instead of relying on downstream
+        # task text reads inside run_task().
+        if task.story_path is None and task.github_issue is not None:
+            if task.story_text is None:
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.PREFLIGHT,
+                    state=CoordinatorState(
+                        phase=Phase.PREFLIGHT,
+                        started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        workspace_path=None,
+                        log_dir=None,
+                        error="Issue-backed story has no materialized story text",
+                        error_type="ValueError",
+                    ),
+                    message="Issue-backed story has no materialized story text",
+                )
+            cached_state = (preflight_states or {}).get(task.slug)
+            if cached_state is None:
+                placeholder_state = CoordinatorState()
+                placeholder_state.preflight_verdict = "PROCEED"
+                cached_state = placeholder_state
+            return run_task(
+                config,
+                task,
+                interactive=interactive,
+                auto_merge=effective_auto_merge,
+                notify=notify,
+                run_id=sprint_run_id,
+                sprint_name=sprint_name,
+                state_update_fn=state_update_fn,
+                no_pull=no_pull,
+                cached_preflight_state=cached_state,
+                defer_landing=True,
+            )
         return run_task(
             config,
             task,
@@ -709,22 +758,9 @@ def run_sprint(
     if isinstance(sprint, ResolvedSprint):
         resolved = sprint
     else:
-        # Backward-compat: Path was passed — load, validate, and resolve inline
-        # so that individual steps remain patchable by tests.
-        _manifest = load_sprint_manifest(sprint)
-        _validate_story_paths(_manifest, config.project_root)
-        _closed: set[str] = set()
-        _task_entries = build_tasks_from_manifest(
-            _manifest, config.project_root, closed_slugs=_closed
-        )
-        resolved = ResolvedSprint(
-            name=_manifest.name,
-            budget_usd=_manifest.budget_usd,
-            stories=_task_entries,
-            max_parallel=_manifest.max_parallel,
-            worker_timeout_seconds=_manifest.worker_timeout_seconds,
-            closed_dependency_slugs=_closed,
-        )
+        # Backward-compat: Path was passed — resolve via the shared helper so
+        # tests can patch the boundary and query-mode behavior stays aligned.
+        resolved = resolve_from_manifest(sprint, config.project_root)
 
     # Defensive scrub for the root checkout used by sprint commands.
     _scrub_root_forge_artifacts(config)
@@ -830,8 +866,9 @@ def run_sprint(
         for slug, (task, _src, canonical_ref) in slug_to_context.items():
             triage = _triage_spec(canonical_ref, config, config.project_root, task=task)
             triages[canonical_ref] = triage
-            action_label = triage.action.upper().replace("_", " ")
-            _log(f"  {triage.slug:<20} {action_label} ({triage.reason})")
+            _log(
+                f"  {triage.slug:<20} {triage.action.upper().replace('_', ' ')} ({triage.reason})"
+            )
 
     # Build satisfied set: closed dep slugs detected at manifest build time,
     # resume-mode skip states, plus any cross-sprint depends_on slugs whose
@@ -852,14 +889,24 @@ def run_sprint(
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
+    _preflight_tasks = [
+        task
+        for task in normalized.tasks
+        if not (task.story_path is None and task.github_issue is not None)
+    ]
     preflight_states = run_batch_preflight(
-        normalized.tasks,
+        _preflight_tasks,
         config,
         sprint_name=resolved.name,
         no_pull=no_pull,
         max_parallel=max_parallel,
         notify=notify,
     )
+    for _task in normalized.tasks:
+        if _task.slug not in preflight_states:
+            _placeholder_state = CoordinatorState()
+            _placeholder_state.preflight_verdict = "PROCEED"
+            preflight_states[_task.slug] = _placeholder_state
     if resume:
         _register_resumed_story_footprints(triages, preflight_states)
     bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)
@@ -879,16 +926,21 @@ def run_sprint(
     # for deferred integration ordering.
     merged_slugs.update(satisfied_slugs)
 
-    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG
+    # Resume mode: pre-mark skip_merged / skip stories as complete in DAG.
+    # skip_merged stories are already merged and should satisfy dependencies
+    # immediately, but they still count as skipped in sprint aggregates.
     if resume:
         for slug, (_task, _src, canonical_ref) in slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
-                action_label = triage.action.upper().replace("_", " ")
                 _log(f"SKIP {slug} ({triage.reason})")
-                specs_succeeded += 1
-                merged_slugs.add(slug)
-                dag.mark_complete(slug)
+                if triage.action == "skip_merged":
+                    merged_slugs.add(slug)
+                    dag.mark_complete(slug)
+                    specs_skipped += 1
+                else:
+                    dag.mark_skipped(slug)
+                    specs_skipped += 1
 
     auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - merged_slugs
     if (
@@ -929,12 +981,91 @@ def run_sprint(
             dag.mark_skipped(slug)
             specs_failed += 1
 
+    # Persist resume-time already-completed stories before any possible re-exec
+    # handoff so later generations can recover the full logical sprint history.
+    if resume:
+        _prior_accumulated_by_ref: dict[str, dict] = {}
+        if _sprint_id:
+            from .audit import _load_accumulated_stories  # noqa: PLC0415
+
+            _prior_accumulated_by_ref = {
+                story["canonical_ref"]: story
+                for story in _load_accumulated_stories(_sprint_id, config.project_root)
+                if "canonical_ref" in story
+            }
+
+        def _already_done_story_entry(
+            canonical_ref: str,
+            slug: str,
+            *,
+            depends_on: list[str],
+        ) -> dict:
+            display_key = (
+                f"Issue #{canonical_ref.split(':')[1]}"
+                if canonical_ref.startswith("issue:")
+                else canonical_ref
+            )
+            return {
+                "canonical_ref": canonical_ref,
+                "path": display_key,
+                "slug": slug,
+                "outcome": "ALREADY_DONE",
+                "verdict": None,
+                "cost_usd": 0.0,
+                "story_run_id": run_id,
+                "preflight": None,
+                "preflight_original_verdict": None,
+                "preflight_source_run_id": None,
+                "error": None,
+                "error_type": None,
+                "merge": False,
+                "batch": 0,
+                "depends_on": depends_on,
+            }
+
+        _resume_accumulated_by_ref: dict[str, dict] = dict(_prior_accumulated_by_ref)
+        for _canonical_ref, _triage in triages.items():
+            if _triage.action != "skip_merged":
+                continue
+            _resume_slug = _triage.slug
+            _resume_accumulated_by_ref.setdefault(
+                _canonical_ref,
+                _already_done_story_entry(
+                    _canonical_ref,
+                    _resume_slug,
+                    depends_on=list(
+                        getattr(
+                            slug_to_context.get(_resume_slug, (None, None, None))[0],
+                            "depends_on",
+                            None,
+                        )
+                        or []
+                    ),
+                ),
+            )
+        for _closed_slug in sorted(resolved.closed_dependency_slugs):
+            _canonical_ref = f"issue:{_closed_slug.removeprefix('issue-')}"
+            if _canonical_ref in triages:
+                continue
+            _resume_accumulated_by_ref.setdefault(
+                _canonical_ref,
+                _already_done_story_entry(_canonical_ref, _closed_slug, depends_on=[]),
+            )
+        if _resume_accumulated_by_ref:
+            persist_accumulated_story_state(
+                _sprint_id,
+                resolved.name,
+                config.project_root,
+                list(_resume_accumulated_by_ref.values()),
+            )
+
     # Initialise live state file for forge sprint-status (only when a CLI run_id
     # is present — headless/test invocations without a run_id skip this).
     _state_writer: SprintStateWriter | None = None
     if run_id:
         _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
         _initial_stories: list[dict] = []
+        _initial_story_slugs: set[str] = set()
         for _slug, (_task, _src, _canonical_ref) in slug_to_context.items():
             _display_key = (
                 f"Issue #{_canonical_ref.split(':')[1]}"
@@ -943,6 +1074,7 @@ def run_sprint(
             )
             _blocked_by = list(blocked_slugs.get(_slug, []))
             _drop_reason = _dropped_slugs.get(_slug)
+            _triage = triages.get(_canonical_ref) if resume else None
             if _drop_reason == "preserved-escalated":
                 _status = "preserved"
                 _blocked_by = [f"preserved: {_drop_reason}"]
@@ -951,6 +1083,12 @@ def run_sprint(
                 _status = "failed"
                 _blocked_by = [f"dropped: {_drop_reason}"]
                 _detail = {"final_outcome": "ESCALATE"}
+            elif _triage and _triage.action == "skip_merged":
+                _status = "done"
+                _detail = {"final_outcome": "ALREADY_DONE"}
+            elif _triage and _triage.action == "skip":
+                _status = "skipped"
+                _detail = {"final_outcome": "SKIPPED"}
             elif _blocked_by:
                 _status = "blocked"
                 _detail = {}
@@ -970,7 +1108,31 @@ def run_sprint(
                     "detail": _detail,
                 }
             )
-        _state_writer = SprintStateWriter(run_id, config.project_root, resolved.name)
+            _initial_story_slugs.add(_slug)
+        for _closed_slug in sorted(resolved.closed_dependency_slugs):
+            if _closed_slug in _initial_story_slugs:
+                continue
+            _issue_number = _closed_slug.removeprefix("issue-")
+            _initial_stories.append(
+                {
+                    "slug": _closed_slug,
+                    "path": f"Issue #{_issue_number}" if _issue_number.isdigit() else _closed_slug,
+                    "status": "done",
+                    "phase": None,
+                    "cost_usd": 0.0,
+                    "bundle_candidate": False,
+                    "blocked_by": [],
+                    "complexity": None,
+                    "detail": {"final_outcome": "ALREADY_DONE"},
+                }
+            )
+            _initial_story_slugs.add(_closed_slug)
+        _state_writer = SprintStateWriter(
+            run_id,
+            config.project_root,
+            resolved.name,
+            sprint_id=_sprint_id,
+        )
         _state_writer.init(_initial_stories)
 
     # Parallel scheduling state
@@ -1401,6 +1563,12 @@ def run_sprint(
                         if (result.success or result.state.preflight_verdict == "ALREADY_DONE")
                         else "failed"
                     )
+                    if (
+                        task.story_path is None
+                        and task.github_issue is not None
+                        and result.phase == Phase.PREFLIGHT
+                    ):
+                        _done_status = "waiting"
                     _state_writer.update(
                         slug,
                         status=_done_status,
@@ -1604,9 +1772,11 @@ def run_sprint(
             project_root=config.project_root,
             dropped_slugs=_dropped_slugs,
             skipped_issues=skipped_issues,
+            triage_actions_by_ref={
+                canonical_ref: triage.action for canonical_ref, triage in triages.items()
+            },
         )
 
-    # Remove live state file now that sprint-summary.yaml is the permanent record.
     if _state_writer is not None:
         _state_writer.remove()
 

@@ -460,12 +460,13 @@ class TestResumeSprintSkipApproved:
                 result = run_sprint(config, manifest_path, resume=True)
 
         mock_run_task.assert_not_called()
-        assert result.specs_succeeded == 1
+        assert result.specs_succeeded == 0
+        assert result.specs_skipped == 1
 
 
 class TestResumeSprintIntegration:
     def test_resume_sprint_skips_merged(self, tmp_path: Path) -> None:
-        """End-to-end resume: merged spec counts as succeeded (work is done)."""
+        """End-to-end resume: merged spec counts as skipped/already done."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
         config = _make_config(tmp_path)
@@ -482,8 +483,8 @@ class TestResumeSprintIntegration:
                 result = run_sprint(config, manifest_path, resume=True)
 
         mock_run.assert_not_called()
-        assert result.specs_succeeded == 1  # already-merged = success
-        assert result.specs_skipped == 0
+        assert result.specs_succeeded == 0
+        assert result.specs_skipped == 1
 
     def test_resume_sprint_enters_dev(self, tmp_path: Path) -> None:
         """End-to-end resume: gate-failing worktree uses run_from_dev."""
@@ -514,7 +515,7 @@ class TestResumeSprintIntegration:
         assert result.specs_succeeded == 1
 
     def test_resume_budget_exhausted_merged_spec_still_succeeds(self, tmp_path: Path) -> None:
-        """Merged spec counts as succeeded even when budget is exhausted."""
+        """Merged spec stays skipped/already done even when budget is exhausted."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         _make_spec_file(tmp_path, "Feature B", "feature-b")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=1.0)
@@ -549,9 +550,9 @@ class TestResumeSprintIntegration:
             with patch("theforge.sprint.runner.run_task") as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
-        # Merged spec should be succeeded, not budget-skipped
-        assert result.specs_succeeded == 1  # feature-a (merged)
-        assert result.specs_skipped == 1  # feature-b (budget)
+        # Merged spec should remain already-done/skipped, not budget-skipped.
+        assert result.specs_succeeded == 0
+        assert result.specs_skipped == 2  # feature-a already done, feature-b budget
         mock_run.assert_not_called()
 
     def test_resume_sprint_enters_review(self, tmp_path: Path) -> None:
@@ -772,9 +773,10 @@ class TestSprintDependencies:
             with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
-        # spec-a was skip_merged (counted as succeeded), spec-b ran successfully
+        # spec-a was skip_merged (already done), spec-b ran successfully
         mock_run.assert_called_once()
-        assert result.specs_succeeded == 2
+        assert result.specs_succeeded == 1
+        assert result.specs_skipped == 1
         assert result.stopped_reason is None
 
     def test_resume_approved_satisfies_dependency(self, tmp_path: Path) -> None:
@@ -809,9 +811,10 @@ class TestSprintDependencies:
             with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
                 result = run_sprint(config, manifest_path, resume=True)
 
-        # spec-a was skip (prior APPROVE) — should satisfy dep so spec-b runs
+        # spec-a was skip_merged (already done) — should satisfy dep so spec-b runs
         mock_run.assert_called_once()
-        assert result.specs_succeeded == 2
+        assert result.specs_succeeded == 1
+        assert result.specs_skipped == 1
         assert result.stopped_reason is None
 
     def test_skips_dependent_continues_independent(self, tmp_path: Path) -> None:
@@ -901,7 +904,8 @@ class TestSprintDependencies:
         mock_run_task.assert_not_called()
         mock_review.assert_not_called()
         mock_dev.assert_not_called()
-        assert result.specs_succeeded == 1
+        assert result.specs_succeeded == 0
+        assert result.specs_skipped == 1
         assert result.total_cost_usd == 0.0
 
     def test_already_done_satisfies_dependency(self, tmp_path: Path) -> None:

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from .audit import _load_accumulated_stories
+
 
 @dataclass
 class StoryStatusEntry:
@@ -271,6 +273,10 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
 
     Returns a list of ``StoryStatusEntry`` objects, or ``None`` if the state
     file does not exist.
+
+    When the live state file records a ``sprint_id``, merge in accumulated story
+    entries from prior process generations so live status reflects the full
+    logical sprint across re-exec boundaries.
     """
     state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
     if not state_path.exists():
@@ -286,9 +292,11 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
 
     stories_data = data.get("stories", [])
     entries = []
+    seen_slugs: set[str] = set()
     for story in stories_data:
         if not isinstance(story, dict):
             continue
+        slug = story.get("slug", "")
         status_val = story.get("status", "waiting")
         phase_val = story.get("phase")
         blocked_by_val = list(story.get("blocked_by") or [])
@@ -296,8 +304,8 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
 
         entries.append(
             StoryStatusEntry(
-                slug=story.get("slug", ""),
-                path=story.get("path", story.get("slug", "")),
+                slug=slug,
+                path=story.get("path", slug),
                 status=status_val,
                 phase=phase_val,
                 cost_usd=float(story.get("cost_usd", 0.0)),
@@ -308,4 +316,30 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 complexity=complexity,
             )
         )
+        if slug:
+            seen_slugs.add(slug)
+
+    sprint_id = data.get("sprint_id")
+    if isinstance(sprint_id, str) and sprint_id:
+        for story in _load_accumulated_stories(sprint_id, project_root):
+            if not isinstance(story, dict):
+                continue
+            slug = story.get("slug", "")
+            if not slug or slug in seen_slugs:
+                continue
+            entries.append(
+                StoryStatusEntry(
+                    slug=slug,
+                    path=story.get("path", slug),
+                    status=_outcome_to_status(str(story.get("outcome", "SKIPPED"))),
+                    phase=None,
+                    cost_usd=float(story.get("cost_usd", 0.0)),
+                    blocked_by=list(story.get("depends_on") or []),
+                    bundle_candidate=False,
+                    elapsed_seconds=None,
+                    detail=str(story.get("outcome", "")),
+                    complexity=None,
+                )
+            )
+            seen_slugs.add(slug)
     return entries

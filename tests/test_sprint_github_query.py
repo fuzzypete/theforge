@@ -480,12 +480,17 @@ class TestRunSprintAcceptsResolvedSprint:
         assert result.name == "GitHub Sprint"
 
     def test_unresolved_external_blocker_is_skipped_at_runtime(self, tmp_path: Path) -> None:
+        from dataclasses import replace
+
         from theforge.sprint.manifest import ResolvedSprint
         from theforge.sprint.runner import run_sprint
         from theforge.sprint.sources import GitHubIssueSource
 
         blocked = TaskStory(name="Blocked", slug="issue-2", github_issue=2, depends_on=["issue-1"])
-        ready = TaskStory(name="Ready", slug="issue-3", github_issue=3)
+        ready = replace(
+            TaskStory(name="Ready", slug="issue-3", github_issue=3),
+            story_text="# Ready\n\nBody",
+        )
         resolved = ResolvedSprint(
             name="GitHub Sprint",
             budget_usd=5.0,

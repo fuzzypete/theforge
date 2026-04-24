@@ -12,6 +12,18 @@ import yaml
 from ..log_util import _log_line
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
+
+def persist_accumulated_story_state(
+    sprint_id: str | None,
+    sprint_name: str,
+    project_root: Path | None,
+    stories: list[dict],
+) -> None:
+    """Persist sprint-level accumulated story state when identity and root are known."""
+    if sprint_id and project_root:
+        _save_accumulated_stories(sprint_id, sprint_name, project_root, stories)
+
+
 if TYPE_CHECKING:
     from ..config import ForgeConfig
     from ..coordinator.state import CoordinatorResult
@@ -350,6 +362,7 @@ def _write_sprint_summary(
     project_root: Path | None = None,
     dropped_slugs: "dict[str, str] | None" = None,
     skipped_issues: "list | None" = None,
+    triage_actions_by_ref: "dict[str, str] | None" = None,
 ) -> None:
     """Write sprint-summary.yaml to <project_root>/.forge/logs/<sprint-name>/.
 
@@ -365,11 +378,13 @@ def _write_sprint_summary(
     tasks_by_slug = tasks_by_slug or {}
     dropped_slugs = dropped_slugs or {}
     skipped_issues = skipped_issues or []
+    triage_actions_by_ref = triage_actions_by_ref or {}
 
     # Load prior accumulated story entries from the sprint-level state file.
     # Keyed by canonical_ref so we can substitute them for stories not in
     # this invocation's results (e.g., stories completed under an earlier run_id).
     prior_by_ref: dict[str, dict] = {}
+    prior_stories: list[dict] = []
     if sprint_id and project_root:
         prior_stories = _load_accumulated_stories(sprint_id, project_root)
         prior_by_ref = {s["canonical_ref"]: s for s in prior_stories if "canonical_ref" in s}
@@ -475,10 +490,13 @@ def _write_sprint_summary(
             accumulated_for_state.append(prior)
         else:
             drop_reason = dropped_slugs.get(slug)
+            triage_action = triage_actions_by_ref.get(canonical_ref)
             if drop_reason == "preserved-escalated":
                 drop_outcome = "PRESERVED"
             elif drop_reason is not None:
                 drop_outcome = "DROPPED"
+            elif triage_action == "skip_merged":
+                drop_outcome = "ALREADY_DONE"
             else:
                 drop_outcome = "SKIPPED"
             entry = {
@@ -506,8 +524,14 @@ def _write_sprint_summary(
         accumulated_for_state.append(prior)
 
     # Persist accumulated state so future runs can find stories from this invocation.
-    if sprint_id and project_root:
-        _save_accumulated_stories(sprint_id, manifest.name, project_root, accumulated_for_state)
+    # Preserve prior entries that were not part of this invocation's canonical_refs
+    # so re-exec/resume summaries retain the full logical sprint history.
+    persist_accumulated_story_state(
+        sprint_id,
+        manifest.name,
+        project_root,
+        accumulated_for_state,
+    )
 
     usage_distribution = []
     for spec_str, res in result.results:
@@ -540,16 +564,16 @@ def _write_sprint_summary(
     # contributed by the accumulated state are included in the totals.
     effective_specs_total = len(spec_entries)
     effective_cost_usd = round(sum(e.get("cost_usd", 0.0) for e in spec_entries), 4)
-    effective_succeeded = sum(
-        1 for e in spec_entries if e.get("outcome") in ("DONE", "ALREADY_DONE")
-    )
+    effective_succeeded = sum(1 for e in spec_entries if e.get("outcome") == "DONE")
     effective_failed = sum(
         1
         for e in spec_entries
         if e.get("outcome") not in ("DONE", "ALREADY_DONE", "SKIPPED", "PRESERVED", None)
     )
     effective_skipped = sum(
-        1 for e in spec_entries if e.get("outcome") in ("SKIPPED", "PRESERVED", None)
+        1
+        for e in spec_entries
+        if e.get("outcome") in ("ALREADY_DONE", "SKIPPED", "PRESERVED", None)
     )
 
     summary = {
