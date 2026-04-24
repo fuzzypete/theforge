@@ -93,12 +93,21 @@ def resolve_timeout(
     medium: int | None,
     large: int | None,
     complexity: str | None,
+    complexity_score: int | None = None,
 ) -> int:
     """Return the appropriate timeout for the given preflight complexity.
 
-    Selects large/medium override when complexity matches and override is set;
-    falls back to base otherwise.
+    Converted routing sites prefer the numeric score when present so stories in
+    the same legacy band can still diverge. Current policy: 8-10 uses the large
+    override, 6-7 uses the medium override, and lower scores fall back to base.
+    When no score is available, legacy band-based behavior is preserved.
     """
+    if complexity_score is not None:
+        if complexity_score >= 8 and large is not None:
+            return large
+        if complexity_score >= 6 and medium is not None:
+            return medium
+        return base
     if complexity == "large" and large is not None:
         return large
     if complexity == "medium" and medium is not None:

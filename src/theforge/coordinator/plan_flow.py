@@ -212,10 +212,17 @@ def _run_plan_phase(
         config.plan.timeout_medium,
         config.plan.timeout_large,
         state.preflight_complexity,
+        state.preflight_complexity_score,
     )
-    _plan_override_active = (
-        state.preflight_complexity == "large" and config.plan.timeout_large is not None
-    ) or (state.preflight_complexity == "medium" and config.plan.timeout_medium is not None)
+    _plan_override_active = False
+    if state.preflight_complexity_score is not None:
+        _plan_override_active = (
+            state.preflight_complexity_score >= 8 and config.plan.timeout_large is not None
+        ) or (state.preflight_complexity_score >= 6 and config.plan.timeout_medium is not None)
+    else:
+        _plan_override_active = (
+            state.preflight_complexity == "large" and config.plan.timeout_large is not None
+        ) or (state.preflight_complexity == "medium" and config.plan.timeout_medium is not None)
     if _plan_override_active:
         _log(f"  Plan timeout: {_plan_timeout}s ({state.preflight_complexity} complexity)")
     else:

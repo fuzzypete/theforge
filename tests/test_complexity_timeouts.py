@@ -45,6 +45,10 @@ class TestResolveTimeout:
     def test_small_complexity_uses_base(self):
         assert resolve_timeout(600, 900, 1800, "small") == 600
 
+    def test_same_band_scores_can_route_to_different_timeouts(self):
+        assert resolve_timeout(600, 900, 1800, "medium", 5) == 600
+        assert resolve_timeout(600, 900, 1800, "medium", 7) == 900
+
     def test_none_complexity_uses_base(self):
         assert resolve_timeout(600, 900, 1800, None) == 600
 
@@ -143,6 +147,8 @@ PREFLIGHT_PROCEED_MEDIUM = """\
 ```yaml
 verdict: PROCEED
 complexity: medium
+complexity_score: 6
+sufficiency: implementation_ready
 reason: "Medium complexity spec."
 spec_issues: []
 criteria_checked: []

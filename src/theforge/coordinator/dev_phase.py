@@ -394,14 +394,25 @@ def _run_dev_phase(
         config.dev_profile.timeout_medium_seconds,
         config.dev_profile.timeout_large_seconds,
         state.preflight_complexity,
+        state.preflight_complexity_score,
     )
-    _dev_override_active = (
-        state.preflight_complexity == "large"
-        and config.dev_profile.timeout_large_seconds is not None
-    ) or (
-        state.preflight_complexity == "medium"
-        and config.dev_profile.timeout_medium_seconds is not None
-    )
+    _dev_override_active = False
+    if state.preflight_complexity_score is not None:
+        _dev_override_active = (
+            state.preflight_complexity_score >= 8
+            and config.dev_profile.timeout_large_seconds is not None
+        ) or (
+            state.preflight_complexity_score >= 6
+            and config.dev_profile.timeout_medium_seconds is not None
+        )
+    else:
+        _dev_override_active = (
+            state.preflight_complexity == "large"
+            and config.dev_profile.timeout_large_seconds is not None
+        ) or (
+            state.preflight_complexity == "medium"
+            and config.dev_profile.timeout_medium_seconds is not None
+        )
     if _dev_override_active:
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
     else:
