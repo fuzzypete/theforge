@@ -319,6 +319,9 @@ def _coordinator_loop(
                     message=state.error,
                 )
 
+            if state.retry_reason == RetryReason.MAX_ITERATIONS_NO_SUBMIT:
+                continue
+
             # ── Scrub forge-artifact commits from branch history ──
             _scrub_forge_history(workspace_path, branch_name, config.workspace.base_branch)
 

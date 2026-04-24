@@ -446,25 +446,7 @@ def _run_dev_phase(
             duration_s=round(_dev_elapsed, 2),
         )
 
-    if state.total_dev_cost > config.dev_profile.budget_usd:
-        state.phase = Phase.ESCALATE
-        state.error = (
-            f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
-            f"(limit ${config.dev_profile.budget_usd:.4f})"
-        )
-        _log(f"✗ ESCALATE   {state.error}")
-        if logger:
-            logger._safe_emit("escalate", reason=state.error, phase="DEV")
-        _escalate_notify(task, state, notify, config)
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
-        )
-
     if not dev_result.success:
-        _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
         if dev_result.failure_code == "max_iterations_reached" and dev_result.dev_handoff is None:
             state.error_type = "max_iterations_no_submit"
             state.retry_reason = RetryReason.MAX_ITERATIONS_NO_SUBMIT
@@ -490,7 +472,8 @@ def _run_dev_phase(
                         "RETRY ADAPTATION: The previous dev iteration exhausted its "
                         "iteration budget without calling submit. "
                         f"Previous model: {_old_model}. The retry uses explicit submit "
-                        "pressure and narrower scope instead of repeating unchanged."
+                        "pressure and narrower scope instead of repeating unchanged "
+                        "conditions."
                     )
             state.human_feedback = (
                 "The previous dev iteration exhausted its iteration budget without calling the "
@@ -499,6 +482,30 @@ def _run_dev_phase(
                 "structured result promptly."
             )
             return None
+
+    if (
+        dev_result.success
+        and state.error_type != "max_iterations_no_submit"
+        and state.total_dev_cost > config.dev_profile.budget_usd
+    ):
+        state.phase = Phase.ESCALATE
+        state.error = (
+            f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
+            f"(limit ${config.dev_profile.budget_usd:.4f})"
+        )
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("escalate", reason=state.error, phase="DEV")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
+
+    if not dev_result.success:
+        _log_verbose(f"Dev agent failed (exit={dev_result.exit_code})")
 
     # ── Zero-change guard (review-driven retry only) ─────────────────
     # If the coordinator retried DEV after review REQUEST_CHANGES and the dev
