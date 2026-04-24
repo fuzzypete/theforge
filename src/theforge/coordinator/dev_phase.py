@@ -22,7 +22,13 @@ from .logging import StructuredLogger
 from .notify import _escalate_notify
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .state import CoordinatorResult, CoordinatorState, DevIterationTelemetry, Phase, RetryReason
-from .util import _fmt_duration, _log, _log_phase, _log_verbose, resolve_timeout
+from .util import (
+    _fmt_duration,
+    _log,
+    _log_phase,
+    _log_verbose,
+    resolve_timeout_with_active,
+)
 
 # ── Lazy runner slot ──────────────────────────────────────────────────
 # None until first call; tests may replace before calling run_task.
@@ -389,18 +395,12 @@ def _run_dev_phase(
         prompt,
     )
 
-    _dev_timeout = resolve_timeout(
+    _dev_timeout, _dev_override_active = resolve_timeout_with_active(
         config.dev_profile.timeout_seconds,
         config.dev_profile.timeout_medium_seconds,
         config.dev_profile.timeout_large_seconds,
         state.preflight_complexity,
-    )
-    _dev_override_active = (
-        state.preflight_complexity == "large"
-        and config.dev_profile.timeout_large_seconds is not None
-    ) or (
-        state.preflight_complexity == "medium"
-        and config.dev_profile.timeout_medium_seconds is not None
+        state.preflight_complexity_score,
     )
     if _dev_override_active:
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")

@@ -197,6 +197,14 @@ class TestDeriveRolesComplexityMatrix:
             f"(model={ra.dev.ref.model})"
         )
 
+    def test_same_band_scores_can_route_to_different_dev_tiers(self):
+        """Scores 6 and 7 are both medium band but should diverge after conversion."""
+        ra_score_6 = derive_roles(_GOLD_POOL, complexity="medium", complexity_score=6)
+        ra_score_7 = derive_roles(_GOLD_POOL, complexity="medium", complexity_score=7)
+
+        assert _tier_of(ra_score_6.dev.ref.cli, ra_score_6.dev.ref.model) == "mid"
+        assert _tier_of(ra_score_7.dev.ref.cli, ra_score_7.dev.ref.model) == "strong"
+
     def test_medium_complexity_plan_routes_to_strong_tier(self):
         """MEDIUM complexity → plan role uses strong-tier model (AC: plan medium→strong)."""
         ra = derive_roles(_GOLD_POOL, complexity="medium")

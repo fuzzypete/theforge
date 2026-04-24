@@ -93,17 +93,44 @@ def resolve_timeout(
     medium: int | None,
     large: int | None,
     complexity: str | None,
+    complexity_score: int | None = None,
 ) -> int:
     """Return the appropriate timeout for the given preflight complexity.
 
-    Selects large/medium override when complexity matches and override is set;
-    falls back to base otherwise.
+    Converted routing sites prefer the numeric score when present so stories in
+    the same legacy band can still diverge. Current policy: 8-10 uses the large
+    override, 6-7 uses the medium override, and lower scores fall back to base.
+    When no score is available, legacy band-based behavior is preserved.
     """
+    return resolve_timeout_with_active(base, medium, large, complexity, complexity_score)[0]
+
+
+def resolve_timeout_with_active(
+    base: int,
+    medium: int | None,
+    large: int | None,
+    complexity: str | None,
+    complexity_score: int | None = None,
+) -> tuple[int, bool]:
+    """Return ``(timeout, override_active)`` for the given complexity inputs.
+
+    Score-native routing must preserve the legacy fallback contract for each
+    threshold independently: large-score stories use the large override when it
+    exists, otherwise base; medium-score stories use the medium override when it
+    exists, otherwise base. Large stories must not cascade into the medium
+    override when the large override is unset.
+    """
+    if complexity_score is not None:
+        if complexity_score >= 8:
+            return (large, True) if large is not None else (base, False)
+        if complexity_score >= 6:
+            return (medium, True) if medium is not None else (base, False)
+        return base, False
     if complexity == "large" and large is not None:
-        return large
+        return large, True
     if complexity == "medium" and medium is not None:
-        return medium
-    return base
+        return medium, True
+    return base, False
 
 
 def _kill_process_group(proc: subprocess.Popen[str]) -> None:

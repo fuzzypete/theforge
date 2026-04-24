@@ -49,6 +49,15 @@ _COMPLEXITY_NORM: dict[str, str] = {
 }
 
 
+def _score_to_dev_tier(score: int) -> str:
+    """Map a 1-10 complexity score to a dev-phase model tier."""
+    if score <= 3:
+        return "cheap"
+    if score <= 6:
+        return "mid"
+    return "strong"
+
+
 def _pick_by_tier(
     candidates: list[tuple[str, ModelInfo]],
     target_tier: str,
@@ -156,6 +165,7 @@ def derive_roles(
     *,
     budget_usd: float = 10.0,
     complexity: str | None = None,
+    complexity_score: int | None = None,
 ) -> RoleAssignment:
     """Map a simple model list to a RoleAssignment.
 
@@ -190,6 +200,9 @@ def derive_roles(
         budget_usd: Total budget to distribute across all roles. Defaults to $10.
         complexity: Optional complexity level; if supplied activates tier × complexity
             routing. Accepts "small"/"medium"/"large" or "LOW"/"MEDIUM"/"HIGH".
+        complexity_score: Optional 1-10 preflight complexity score. When present,
+            converted routing sites may use it to differentiate stories that share
+            the same legacy complexity band.
 
     Returns:
         A RoleAssignment holding the four derived role configs plus optional synthesis.
@@ -228,7 +241,11 @@ def derive_roles(
     _apply_tier_routing = norm_complexity is not None
 
     if _apply_tier_routing:
-        target_dev_tier = _COMPLEXITY_TIER["dev"][norm_complexity]
+        target_dev_tier = (
+            _score_to_dev_tier(complexity_score)
+            if complexity_score is not None
+            else _COMPLEXITY_TIER["dev"][norm_complexity]
+        )
         dev_key, dev_info = _pick_by_tier(dev_candidates, target_dev_tier)
     else:
         dev_key, dev_info = dev_candidates[0]
