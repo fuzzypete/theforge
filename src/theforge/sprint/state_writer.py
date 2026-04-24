@@ -37,6 +37,7 @@ class SprintStateWriter:
     def __init__(self, run_id: str, project_root: Path, sprint_name: str) -> None:
         self._run_id = run_id
         self._sprint_name = sprint_name
+        self._sprint_id: str | None = None
         self._state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
         self._lock = threading.Lock()
         self._stories: dict[str, dict] = {}
@@ -70,6 +71,7 @@ class SprintStateWriter:
         """Write the state file atomically. Caller must hold self._lock."""
         data: dict = {
             "sprint_name": self._sprint_name,
+            "sprint_id": getattr(self, "_sprint_id", None),
             "stories": list(self._stories.values()),
         }
         tmp_path = self._state_path.with_name(self._state_path.name + ".tmp")

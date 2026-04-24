@@ -12,6 +12,18 @@ import yaml
 from ..log_util import _log_line
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
+
+def persist_accumulated_story_state(
+    sprint_id: str | None,
+    sprint_name: str,
+    project_root: Path | None,
+    stories: list[dict],
+) -> None:
+    """Persist sprint-level accumulated story state when identity and root are known."""
+    if sprint_id and project_root:
+        _save_accumulated_stories(sprint_id, sprint_name, project_root, stories)
+
+
 if TYPE_CHECKING:
     from ..config import ForgeConfig
     from ..coordinator.state import CoordinatorResult
@@ -514,8 +526,12 @@ def _write_sprint_summary(
     # Persist accumulated state so future runs can find stories from this invocation.
     # Preserve prior entries that were not part of this invocation's canonical_refs
     # so re-exec/resume summaries retain the full logical sprint history.
-    if sprint_id and project_root:
-        _save_accumulated_stories(sprint_id, manifest.name, project_root, accumulated_for_state)
+    persist_accumulated_story_state(
+        sprint_id,
+        manifest.name,
+        project_root,
+        accumulated_for_state,
+    )
 
     usage_distribution = []
     for spec_str, res in result.results:

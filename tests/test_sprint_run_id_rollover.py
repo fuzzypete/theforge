@@ -32,13 +32,13 @@ from theforge.sprint.audit import (
 )
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.manifest import ResolvedSprint
-from theforge.task import TaskStory
 from theforge.sprint.status_reader import (
     _follow_redirect_chain,
     find_sprint_summary,
     read_completed_status,
     read_live_status,
 )
+from theforge.task import TaskStory
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -269,7 +269,9 @@ class TestRunIdRolloverReporting:
         assert summary["sprint"]["specs_failed"] == 0
         assert summary["sprint"]["specs_skipped"] == 0
 
-    def test_summary_marks_skip_merged_story_already_done_without_prior_state(self, tmp_path: Path) -> None:
+    def test_summary_marks_skip_merged_story_already_done_without_prior_state(
+        self, tmp_path: Path
+    ) -> None:
         """Resume summary uses triage to preserve ALREADY_DONE before sprint-end persistence."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         _make_spec_file(tmp_path, "Feature B", "feature-b")
@@ -317,6 +319,41 @@ class TestRunIdRolloverReporting:
         assert stories["feature-b"]["outcome"] == "DONE"
         assert summary["sprint"]["specs_succeeded"] == 2
         assert summary["sprint"]["specs_skipped"] == 0
+
+    def test_live_status_includes_closed_issue_dropped_at_fetch(self, tmp_path: Path) -> None:
+        """Live status retains closed issue stories omitted from resolved.stories."""
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.write_text(
+            yaml.dump(
+                {
+                    "name": "Test Sprint",
+                    "budget_usd": 50.0,
+                    "stories": [{"issue": 959}, {"issue": 960}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = _make_config(tmp_path)
+
+        issue_960 = TaskStory(
+            name="Issue 960", story_path=None, slug="issue-960", github_issue=960
+        )
+        resolved = ResolvedSprint(
+            name="Test Sprint",
+            budget_usd=50.0,
+            stories=[(issue_960, MagicMock(), "issue:960")],
+            closed_dependency_slugs={"issue-959"},
+        )
+
+        with patch("theforge.sprint.runner.resolve_from_manifest", return_value=resolved):
+            run_sprint(config, manifest_path, resume=True, run_id="run-live-test")
+
+        entries = read_live_status("run-live-test", tmp_path)
+        assert entries is not None
+        stories = {entry.slug: entry for entry in entries}
+        assert stories["issue-959"].status == "done"
+        assert stories["issue-959"].detail == "ALREADY_DONE"
+        assert stories["issue-960"].status == "waiting"
 
     def test_read_completed_status_shows_all_stories(self, tmp_path: Path) -> None:
         """read_completed_status returns entries for all stories including prior-run ones."""
@@ -424,6 +461,31 @@ class TestRunIdRolloverReporting:
         sprint_entries = [ln for ln in lines if "sprint" in ln and "specs" in ln]
         assert sprint_entries, "No sprint-level history entry found"
         assert sprint_entries[0]["sprint"].get("sprint_id") == sprint_id
+
+    def test_resume_persists_already_done_story_before_reexec_handoff(
+        self, tmp_path: Path
+    ) -> None:
+        """Resume-mode skip_merged stories are persisted before sprint-end summary writing."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+        sprint_id = _get_or_create_sprint_id("Test Sprint", tmp_path)
+
+        skip_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged to main",
+            worktree_path=None,
+            slug="feature-a",
+        )
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
+            run_sprint(config, manifest_path, resume=True, run_id="run-resume-test")
+
+        stories = _load_accumulated_stories(sprint_id, tmp_path)
+        assert len(stories) == 1
+        assert stories[0]["canonical_ref"] == "feature-a.md"
+        assert stories[0]["outcome"] == "ALREADY_DONE"
 
 
 # ── redirect chain: earlier run_id finds terminal summary ────────────────────

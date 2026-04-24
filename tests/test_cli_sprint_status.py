@@ -142,6 +142,57 @@ def test_read_live_status_blocked_story(tmp_path: Path) -> None:
     assert entries[0].blocked_by == ["issue-98"]
 
 
+def test_read_live_status_merges_accumulated_prior_run_stories(tmp_path: Path) -> None:
+    from theforge.sprint.audit import persist_accumulated_story_state
+    from theforge.sprint.status_reader import read_live_status
+
+    state_path = _make_state_file(
+        tmp_path,
+        "run-reexec",
+        "issues-959,960",
+        [
+            {
+                "slug": "issue-960",
+                "path": "Issue #960",
+                "status": "running",
+                "phase": "PLAN",
+                "cost_usd": 0.0,
+                "bundle_candidate": False,
+                "blocked_by": [],
+                "detail": {"plan_attempt": 1, "plan_max_attempts": 3},
+            }
+        ],
+    )
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+    data["sprint_id"] = "sprint-abc"
+    state_path.write_text(yaml.dump(data), encoding="utf-8")
+
+    persist_accumulated_story_state(
+        "sprint-abc",
+        "issues-959,960",
+        tmp_path,
+        [
+            {
+                "canonical_ref": "issue:959",
+                "slug": "issue-959",
+                "path": "Issue #959",
+                "outcome": "DONE",
+                "cost_usd": 10.31,
+                "depends_on": [],
+            }
+        ],
+    )
+
+    entries = read_live_status("run-reexec", tmp_path)
+    assert entries is not None
+    by_slug = {entry.slug: entry for entry in entries}
+    assert set(by_slug) == {"issue-959", "issue-960"}
+    assert by_slug["issue-959"].status == "done"
+    assert by_slug["issue-959"].detail == "DONE"
+    assert by_slug["issue-959"].cost_usd == pytest.approx(10.31)
+    assert by_slug["issue-960"].status == "running"
+
+
 # ── find_sprint_summary ───────────────────────────────────────────────────────
 
 
@@ -170,6 +221,36 @@ def test_find_sprint_summary_returns_none_when_no_logs(tmp_path: Path) -> None:
 
     result = find_sprint_summary("run-001", tmp_path)
     assert result is None
+
+
+def test_find_sprint_summary_matches_story_run_id_from_prior_generation(tmp_path: Path) -> None:
+    from theforge.sprint.status_reader import find_sprint_summary
+
+    _make_summary_file(
+        tmp_path,
+        "issues-959,960",
+        "run-new",
+        [
+            {
+                "slug": "issue-959",
+                "path": "Issue #959",
+                "outcome": "DONE",
+                "cost_usd": 10.31,
+                "story_run_id": "run-old",
+            },
+            {
+                "slug": "issue-960",
+                "path": "Issue #960",
+                "outcome": "DONE",
+                "cost_usd": 1.0,
+                "story_run_id": "run-new",
+            },
+        ],
+    )
+
+    result = find_sprint_summary("run-old", tmp_path)
+    assert result is not None
+    assert result.parent.name == "issues-959,960"
 
 
 # ── read_completed_status ────────────────────────────────────────────────────
