@@ -350,7 +350,9 @@ class TestRunIdRolloverReporting:
         )
 
         with patch("theforge.sprint.runner.resolve_from_manifest", return_value=resolved):
-            run_sprint(config, manifest_path, resume=True, run_id="run-live-test")
+            with patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()):
+                with patch("theforge.sprint.runner.SprintStateWriter.remove"):
+                    run_sprint(config, manifest_path, resume=True, run_id="run-live-test")
 
         entries = read_live_status("run-live-test", tmp_path)
         assert entries is not None
@@ -537,15 +539,17 @@ class TestRunIdRolloverReporting:
         with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
             run_sprint(config, manifest_path, resume=True, run_id="run-resume-test")
 
-        stories = {
-            story["canonical_ref"]: story for story in _load_accumulated_stories(sprint_id, tmp_path)
-        }
+        accumulated = _load_accumulated_stories(sprint_id, tmp_path)
+        stories = {story["canonical_ref"]: story for story in accumulated}
         assert set(stories) == {"feature-a.md", "feature-b.md"}
         assert stories["feature-a.md"]["outcome"] == "DONE"
         assert stories["feature-b.md"]["outcome"] == "ALREADY_DONE"
 
     def test_run_sprint_removes_live_state_file_on_success(self, tmp_path: Path) -> None:
-        """Successful sprint completion removes the live state file to avoid false crash reports."""
+        """Successful sprint completion removes the live state file.
+
+        This avoids false crash reports from stale live-state files.
+        """
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
         config = _make_config(tmp_path)
