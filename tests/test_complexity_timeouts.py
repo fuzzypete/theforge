@@ -64,6 +64,13 @@ class TestResolveTimeout:
     def test_large_override_absent_falls_back_to_base(self):
         assert resolve_timeout(600, 900, None, "large") == 600
 
+    def test_large_score_without_large_override_falls_back_to_base_not_medium(self):
+        assert resolve_timeout(600, 900, None, "large", 8) == 600
+        assert resolve_timeout(600, 900, None, "large", 10) == 600
+
+    def test_large_score_ignores_medium_override_when_large_override_missing(self):
+        assert resolve_timeout(600, 900, None, "medium", 8) == 600
+
     def test_both_overrides_absent_always_returns_base(self):
         assert resolve_timeout(600, None, None, "large") == 600
         assert resolve_timeout(600, None, None, "medium") == 600

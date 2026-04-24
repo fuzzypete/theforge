@@ -112,12 +112,19 @@ def resolve_timeout_with_active(
     complexity: str | None,
     complexity_score: int | None = None,
 ) -> tuple[int, bool]:
-    """Return ``(timeout, override_active)`` for the given complexity inputs."""
+    """Return ``(timeout, override_active)`` for the given complexity inputs.
+
+    Score-native routing must preserve the legacy fallback contract for each
+    threshold independently: large-score stories use the large override when it
+    exists, otherwise base; medium-score stories use the medium override when it
+    exists, otherwise base. Large stories must not cascade into the medium
+    override when the large override is unset.
+    """
     if complexity_score is not None:
-        if complexity_score >= 8 and large is not None:
-            return large, True
-        if complexity_score >= 6 and medium is not None:
-            return medium, True
+        if complexity_score >= 8:
+            return (large, True) if large is not None else (base, False)
+        if complexity_score >= 6:
+            return (medium, True) if medium is not None else (base, False)
         return base, False
     if complexity == "large" and large is not None:
         return large, True
