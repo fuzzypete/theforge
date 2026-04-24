@@ -8,6 +8,8 @@ import time
 
 _LOCAL_PROCESS_FALLBACK_FINGERPRINT = f"local-{os.getpid()}-{time.time_ns()}"
 
+_UNAVAILABLE_FINGERPRINT = "unavailable"
+
 
 def _is_pid_alive(pid: int) -> bool:
     """Return True when *pid* refers to a running process."""
@@ -61,7 +63,7 @@ def _current_process_fingerprint(pid: int) -> str | None:
 
 def _pid_matches_fingerprint(pid: int, fingerprint: str | None) -> bool:
     """Return True when *pid* still belongs to the recorded process instance."""
-    if fingerprint is None:
+    if fingerprint is None or fingerprint == _UNAVAILABLE_FINGERPRINT:
         return _is_pid_alive(pid)
     current = _current_process_fingerprint(pid)
     if current is None:
