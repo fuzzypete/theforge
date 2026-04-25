@@ -73,6 +73,34 @@ if TYPE_CHECKING:
 _log = _cu._log
 _log_verbose = _cu._log_verbose
 
+_TRANSIENT_PLAN_REVIEW_ERROR_PATTERNS = (
+    "429",
+    "rate limit",
+    "rate-limited",
+    "resource_exhausted",
+    "resource exhausted",
+    "quota exceeded",
+    "quota_exceeded",
+    "500",
+    "502",
+    "503",
+    "504",
+    "internal error",
+    "server error",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "connection reset",
+    "connection-reset",
+    "econnreset",
+    "connection aborted",
+    "connection refused",
+    "peer closed connection",
+    "temporarily unavailable",
+    "try again later",
+    "timeout awaiting headers",
+)
+
 # ── Lazy runner slots ─────────────────────────────────────────────────
 # None until first call; tests may replace before calling run_task.
 # Patch targets:
@@ -92,6 +120,89 @@ def _ensure_runners() -> None:
         run_agent = _r.run_agent
     if run_agent_pool is None:
         run_agent_pool = _r.run_agent_pool
+
+
+def _is_transient_plan_review_failure(result: "AgentResult") -> bool:
+    """Return True when a failed plan-review invocation looks transient/retryable."""
+    if result.success:
+        return False
+    failure_code = (result.failure_code or "").lower()
+    if failure_code in {"rate_limit", "provider_internal_error", "connection_reset"}:
+        return True
+    output = (result.output or "").lower()
+    return any(pattern in output for pattern in _TRANSIENT_PLAN_REVIEW_ERROR_PATTERNS)
+
+
+def _summarize_plan_review_failure(result: "AgentResult") -> str:
+    """Produce a compact, audit-friendly failure summary."""
+    parts = [f"exit={result.exit_code}"]
+    if result.failure_code:
+        parts.append(f"failure_code={result.failure_code}")
+    output = " ".join((result.output or "").split())
+    if output:
+        parts.append(output[:200])
+    return ": ".join((parts[0], " | ".join(parts[1:]))) if len(parts) > 1 else parts[0]
+
+
+def _retry_transient_plan_review_failures(
+    *,
+    prompt: str,
+    profiles: list[ModelProfile],
+    results: list["AgentResult"],
+    state: CoordinatorState,
+    config: ForgeConfig,
+    workspace_path: Path,
+    attempt: int,
+) -> tuple[list["AgentResult"], list[dict]]:
+    """Retry transient plan-review transport failures per reviewer."""
+    max_retries = config.retry.max_plan_review_transport_retries
+    if max_retries <= 0:
+        return results, []
+
+    retried_results = list(results)
+    retry_events: list[dict] = []
+
+    for index, (profile, result) in enumerate(zip(profiles, retried_results)):
+        if not _is_transient_plan_review_failure(result):
+            continue
+
+        retry_count = 0
+        current = result
+        while retry_count < max_retries and _is_transient_plan_review_failure(current):
+            retry_count += 1
+            _log(
+                f"  ↻ PLAN_REVIEW   {profile.name} transient transport failure "
+                f"(retry {retry_count}/{max_retries})"
+            )
+            retried = run_agent(
+                prompt=prompt,
+                profile=profile,
+                working_dir=workspace_path,
+                quiet=True,
+                secrets=config.secrets,
+                session_id=current.session_id if profile.mode == "cli" else None,
+            )
+            if retried.session_id:
+                state.plan_review_session_ids[profile.name] = retried.session_id
+            state.plan_review_results.append(retried)
+            _write_log_artifact(
+                state.log_dir,
+                f"plan-review/attempt-{attempt}/{profile.name}-retry{retry_count}.yaml",
+                retried.output or "",
+            )
+            retry_events.append(
+                {
+                    "attempt": attempt,
+                    "reviewer": profile.name,
+                    "retry": retry_count,
+                    "error": _summarize_plan_review_failure(current),
+                }
+            )
+            current = retried
+
+        retried_results[index] = current
+
+    return retried_results, retry_events
 
 
 def _clean_stale_plan_files(workspace_path: Path) -> None:
@@ -464,6 +575,16 @@ def _run_plan_agent_review(
             session_ids=_pool_session_ids,
             secrets=config.secrets,
         )
+        pr_results, _transport_retry_events = _retry_transient_plan_review_failures(
+            prompt=pr_prompt,
+            profiles=par_profiles,
+            results=pr_results,
+            state=state,
+            config=config,
+            workspace_path=workspace_path,
+            attempt=_attempt,
+        )
+        state.plan_review_transport_retries.extend(_transport_retry_events)
         _pr_elapsed = time.monotonic() - _pr_start
         state.plan_review_durations.append(_pr_elapsed)
 
@@ -481,11 +602,16 @@ def _run_plan_agent_review(
         _parsed_prs: list[PlanReviewResult] = []
         for _prof, _res in zip(par_profiles, pr_results):
             if not _res.success:
+                _failure_summary = _summarize_plan_review_failure(_res)
                 _log(
                     f"  ✗ PLAN_REVIEW   {_prof.name} failed "
-                    f"(exit={_res.exit_code}) — treating as REJECT"
+                    f"({_failure_summary}) — treating as REJECT"
                 )
-                _parsed = parse_plan_review_output("")  # force parse error → REJECT
+                _parsed = PlanReviewResult(
+                    verdict="REJECT",
+                    findings=[],
+                    parse_errors=[f"Transport failure: {_failure_summary}"],
+                )
             else:
                 if not (_res.output or "").strip():
                     _log(
@@ -497,6 +623,12 @@ def _run_plan_agent_review(
                     _parsed = parse_plan_review_output(_res.output)
 
             if _parsed.parse_errors:
+                _failure_kind = "parse" if _res.success else "transport"
+                _retry_count = sum(
+                    1
+                    for _event in _transport_retry_events
+                    if _event["attempt"] == _attempt and _event["reviewer"] == _prof.name
+                )
                 _log(
                     f"  ⚠ PLAN_REVIEW   {_prof.name} parse issues: "
                     f"{'; '.join(_parsed.parse_errors)}"
@@ -505,6 +637,9 @@ def _run_plan_agent_review(
                     {
                         "attempt": _attempt,
                         "reviewer": _prof.name,
+                        "failure_kind": _failure_kind,
+                        "retry_count": _retry_count,
+                        "retryable": (_failure_kind == "transport"),
                         "errors": list(_parsed.parse_errors),
                     }
                 )

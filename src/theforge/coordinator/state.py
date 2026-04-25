@@ -322,9 +322,12 @@ class CoordinatorState:
     plan_review_results: list[AgentResult] = field(
         default_factory=list
     )  # separate from plan_results to avoid corrupting plan generation cost tracking
+    plan_review_transport_retries: list[dict] = field(
+        default_factory=list
+    )  # per-retry audit trail: {"attempt": int, "reviewer": str, "retry": int, "error": str}
     plan_review_failures: list[dict] = field(
         default_factory=list
-    )  # per-reviewer parse failures: {"attempt": int, "reviewer": str, "errors": list[str]}
+    )  # per-reviewer failures: {"attempt": int, "reviewer": str, "errors": list[str], ...}
     plan_attempt_metadata: list[dict] = field(
         default_factory=list
     )  # per-attempt: {files_touched, p1_count, p2_count, finding_themes}
