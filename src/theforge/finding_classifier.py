@@ -16,9 +16,6 @@ Corroboration grouping uses a single-pass Jaccard similarity assignment:
 # A higher threshold (e.g. 0.7) is more conservative but may miss paraphrased duplicates.
 JACCARD_THRESHOLD = 0.5
 
-# "Near changed code" is interpreted as same-file only (not line-level proximity).
-# This keeps the classification deterministic without parsing diff hunks.
-# If line-level proximity is required in future, parse git diff unified output.
 """
 
 from __future__ import annotations
@@ -70,7 +67,13 @@ def _matches_prior(
     prior: FindingRecord,
     threshold: float = JACCARD_THRESHOLD,
 ) -> bool:
-    """Return True if finding matches prior record (same file + same severity + token overlap)."""
+    """Return True if finding matches prior record (same file + same severity + token overlap).
+
+    Resolution commentary is intentionally excluded so "the prior finding is fixed"
+    language cannot revive or keep alive an older record just by quoting it.
+    """
+    if _is_resolution_commentary(finding.description):
+        return False
     if finding.file != prior.file:
         return False
     if finding.severity != prior.severity:
@@ -89,11 +92,41 @@ def _matches_prior_agnostic(
 
     Used to detect severity downgrades between cycles (e.g. P1 → P2).
     """
+    if _is_resolution_commentary(finding.description):
+        return False
     if finding.file != prior.file:
         return False
     tokens_new = _normalize_tokens(finding.description)
     tokens_prior = _normalize_tokens(prior.description)
     return _jaccard(tokens_new, tokens_prior) >= threshold
+
+
+def _is_resolution_commentary(description: str) -> bool:
+    """Return True for closure-style commentary that should not be treated as a regression."""
+    tokens = _normalize_tokens(description)
+    resolution_terms = frozenset({"fixed", "resolved", "addressed"})
+    reference_terms = frozenset({"prior", "previous", "cycle", "finding", "issue"})
+    return bool(tokens & resolution_terms) and bool(tokens & reference_terms)
+
+
+def _matches_fixed_finding_regression_candidate(
+    finding: ReviewFinding,
+    prior: FindingRecord,
+) -> bool:
+    """Return True when a new finding looks like a reintroduced prior fixed finding."""
+    if prior.disposition != "fixed":
+        return False
+    if _is_resolution_commentary(finding.description):
+        return False
+    if _matches_prior(finding, prior):
+        return True
+    return (
+        finding.file == prior.file
+        and finding.severity == prior.severity
+        and finding.line is not None
+        and prior.line is not None
+        and finding.line == prior.line
+    )
 
 
 def _get_changed_files(workspace_path: Path, prev_commit: str | None) -> frozenset[str]:
@@ -191,23 +224,22 @@ def update_finding_registry(
 
     Called after every review cycle (including cycle 1).
     Cycle 1: all findings recorded as net_new (no prior registry to compare against).
-    Cycle 2+: compare against prior registry, correlate with changed files.
+    Cycle 2+: compare against prior registry and classify regressions only when a
+    new finding looks like a reintroduced prior fixed finding.
 
     Args:
         state: Mutable coordinator state (finding_registry mutated in-place).
         cycle_results: List of (reviewer_profile_name, ReviewResult) for this cycle.
-        workspace_path: Path to the worktree (for git diff).
+        workspace_path: Path to the worktree.
         cycle_num: Current review cycle number (1-indexed).
-        prev_commit: Commit hash of the start of the latest dev iteration (for git diff).
-                     Pass None to skip changed-file correlation.
+        prev_commit: Commit hash of the start of the latest dev iteration. Reserved for
+                     audit correlation with changed files; currently unused by classification.
 
     Returns:
         List of FindingRecord objects classified this cycle (all severities).
         Callers use this list for disposition-gated exit criteria.
     """
     from .coordinator.state import FindingRecord  # avoid circular at module level
-
-    changed_files = _get_changed_files(workspace_path, prev_commit)
 
     # Collect all findings across reviewers
     all_findings: list[tuple[str, ReviewFinding]] = []
@@ -289,7 +321,10 @@ def update_finding_registry(
                         is_severity_downgrade = True
                     break
 
-        in_changed_files = first_finding.file in changed_files if first_finding.file else False
+        has_regression_evidence = any(
+            _matches_fixed_finding_regression_candidate(first_finding, record)
+            for record in prior_registry
+        )
         num_reporters = len({r for r, _ in reports})  # unique reviewer count
 
         if prior_match is not None:
@@ -318,7 +353,7 @@ def update_finding_registry(
             classified_this_cycle.append(prior_match)
         else:
             # New finding this cycle
-            if in_changed_files:
+            if has_regression_evidence:
                 disposition = "regression"
             elif num_reporters >= 2:
                 disposition = "corroborated_new"
