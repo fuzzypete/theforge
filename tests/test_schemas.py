@@ -163,11 +163,11 @@ class TestRepairReviewYaml:
         repair_review_yaml(data)
         assert data["test_coverage"] == {"adequate": True, "gaps": []}
 
-    def test_flips_approve_with_p1(self):
+    def test_does_not_flip_approve_with_p1(self):
         data = _valid_review()
         data["findings"] = [{"severity": "P1", "file": "foo.py", "line": 10, "description": "bug"}]
         repair_review_yaml(data)
-        assert data["verdict"] == "REQUEST_CHANGES"
+        assert data["verdict"] == "APPROVE"
 
     def test_does_not_flip_request_changes_without_p1(self):
         """REQUEST_CHANGES with zero P1s is a schema error, not repaired.
@@ -197,8 +197,8 @@ class TestRepairReviewYaml:
         assert data["story_compliance"] == original["story_compliance"]
         assert data["test_coverage"] == original["test_coverage"]
 
-    def test_repaired_data_passes_validation(self):
-        """DeepSeek-style output: APPROVE + P1 + missing sections."""
+    def test_contradictory_data_still_fails_validation(self):
+        """DeepSeek-style output: APPROVE + P1 + missing sections must retry."""
         data = {
             "verdict": "APPROVE",
             "summary": "Looks good",
@@ -214,5 +214,5 @@ class TestRepairReviewYaml:
         }
         repair_review_yaml(data)
         errors = validate_review_yaml(data)
-        assert errors == [], f"Repaired data should validate clean: {errors}"
-        assert data["verdict"] == "REQUEST_CHANGES"
+        assert any("APPROVE" in error and "P1" in error for error in errors)
+        assert data["verdict"] == "APPROVE"

@@ -17,8 +17,10 @@ def repair_review_yaml(data: Any) -> Any:
     """Best-effort repair of common review YAML issues before validation.
 
     Fixes predictable errors from models that struggle with the schema
-    (especially DeepSeek): missing sections, verdict/finding contradictions,
-    findings as string instead of list. Mutates and returns the dict.
+    (especially DeepSeek): missing sections and findings as string instead of
+    list. Cross-field verdict/finding contradictions are schema violations and
+    must survive to validation so the reviewer output is retried instead of
+    silently rewritten. Mutates and returns the dict.
     """
     if not isinstance(data, dict):
         return data
@@ -41,18 +43,6 @@ def repair_review_yaml(data: Any) -> Any:
     # ── test_coverage: fill if missing ──────────────────────────
     if "test_coverage" not in data:
         data["test_coverage"] = {"adequate": True, "gaps": []}
-
-    # ── APPROVE + P1 → flip verdict to REQUEST_CHANGES ─────────
-    # This is a safe repair: the reviewer found blocking issues but
-    # contradicted itself. Flipping to REQUEST_CHANGES is conservative.
-    # We do NOT flip REQUEST_CHANGES→APPROVE (zero P1) because that
-    # would silently turn a rejection into approval — a schema integrity
-    # violation that should trigger retry, not be papered over.
-    findings = data.get("findings", [])
-    if isinstance(findings, list):
-        p1_count = sum(1 for f in findings if isinstance(f, dict) and f.get("severity") == "P1")
-        if data.get("verdict") == "APPROVE" and p1_count > 0:
-            data["verdict"] = "REQUEST_CHANGES"
 
     return data
 
