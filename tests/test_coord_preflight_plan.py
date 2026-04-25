@@ -86,10 +86,11 @@ def _make_smart_config(
 def _make_review_finding(
     severity: str = "P1",
     file: str = "src/cli.py",
+    line: int | None = None,
     description: str = "cli.py never wires gate_override into TaskStory",
 ) -> ReviewFinding:
     return ReviewFinding(
-        severity=severity, file=file, line=None, description=description, suggestion=None
+        severity=severity, file=file, line=line, description=description, suggestion=None
     )
 
 
@@ -563,8 +564,8 @@ class TestPersistentP1Descriptions:
         result = _persistent_p1_descriptions(curr, prev)
         assert result == []
 
-    def test_returns_match_for_same_file_cascading_p1(self):
-        """Different descriptions in the same file are reported as persistent."""
+    def test_returns_empty_for_distinct_same_file_p1(self):
+        """Different descriptions in the same file are not reported as persistent."""
         curr = [
             _make_review_finding(file="src/plan_flow.py", description="skip branch drops abandon")
         ]
@@ -575,7 +576,26 @@ class TestPersistentP1Descriptions:
             )
         ]
         result = _persistent_p1_descriptions(curr, prev)
-        assert result == ["skip branch drops abandon"]
+        assert result == []
+
+    def test_returns_match_for_same_file_and_line_p1(self):
+        """Matching file+line still reports the current finding as persistent."""
+        curr = [
+            _make_review_finding(
+                file="src/plan_flow.py",
+                line=88,
+                description="skip branch drops abandon path after refactor",
+            )
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/plan_flow.py",
+                line=88,
+                description="refactor skip branch loses abandon handling",
+            )
+        ]
+        result = _persistent_p1_descriptions(curr, prev)
+        assert result == ["skip branch drops abandon path after refactor"]
 
     def test_returns_empty_when_no_current_p1s(self):
         """Returns empty list when there are no current P1 findings."""

@@ -39,10 +39,11 @@ from theforge.review import ReviewFinding
 def _make_review_finding(
     severity: str = "P1",
     file: str = "src/cli.py",
+    line: int | None = None,
     description: str = "cli.py never wires gate_override into TaskStory",
 ) -> ReviewFinding:
     return ReviewFinding(
-        severity=severity, file=file, line=None, description=description, suggestion=None
+        severity=severity, file=file, line=line, description=description, suggestion=None
     )
 
 
@@ -120,8 +121,8 @@ class TestHasPersistentP1:
         prev = [_make_review_finding(file="src/bar.py", description="Missing validation")]
         assert _has_persistent_p1(curr, prev) is False
 
-    def test_same_file_cascading_p1_is_persistent(self):
-        """Different descriptions in the same file still count as persistent."""
+    def test_same_file_cascading_p1_is_not_persistent(self):
+        """Different descriptions in the same file do not match without line/text evidence."""
         curr = [
             _make_review_finding(file="src/plan_flow.py", description="skip branch drops abandon")
         ]
@@ -129,6 +130,24 @@ class TestHasPersistentP1:
             _make_review_finding(
                 file="src/plan_flow.py",
                 description="skip branch wrong for refactor",
+            )
+        ]
+        assert _has_persistent_p1(curr, prev) is False
+
+    def test_same_file_and_line_is_persistent(self):
+        """Matching file+line is sufficient even when the wording changes."""
+        curr = [
+            _make_review_finding(
+                file="src/plan_flow.py",
+                line=88,
+                description="skip branch drops abandon path after refactor",
+            )
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/plan_flow.py",
+                line=88,
+                description="refactor skip branch loses abandon handling",
             )
         ]
         assert _has_persistent_p1(curr, prev) is True
@@ -391,10 +410,10 @@ class TestDevModelEscalationIntegration:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
-    def test_escalation_with_cascading_same_file_p1(
+    def test_escalation_not_triggered_for_distinct_same_file_p1(
         self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
     ):
-        """Escalation fires when a new P1 appears in the same file on the next cycle."""
+        """A new P1 in the same file does not escalate unless it matches by text or line."""
         config = _make_smart_config(tmp_path, max_review_cycles=3)
         task = _make_task(tmp_path)
         workspace = tmp_path / task.slug
@@ -434,7 +453,7 @@ class TestDevModelEscalationIntegration:
         result = run_task(config, task)
 
         assert result.success is True
-        assert result.state.dev_escalated is True
+        assert result.state.dev_escalated is False
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.plan_flow.run_agent")
