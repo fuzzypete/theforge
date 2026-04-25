@@ -12,7 +12,6 @@ from enum import Enum, auto
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.review import append_convention_retry_findings
 from theforge.task import TaskStory
 
 from . import util as _cu
@@ -198,6 +197,10 @@ def _run_validate_phase(
 
     _cv_all: list = _cv_result_raw[0] if _cv_result_raw is not None else []
     _cv_violations: list = _cv_result_raw[1] if _cv_result_raw is not None else []
+    state.convention_violations = [
+        {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
+        for v in _cv_violations
+    ]
 
     if gate_err:
         is_timeout = "timed out" in (gate_err or "").lower()
@@ -387,15 +390,7 @@ def _run_validate_phase(
         if _cv_violations:
             _blocking_cv2 = [v for v in _cv_violations if v.blocking]
             _followup_cv2 = [v for v in _cv_violations if not v.blocking]
-            state.convention_violations = [
-                {"rule": v.rule, "file": v.file, "detail": v.detail, "blocking": v.blocking}
-                for v in _cv_violations
-            ]
             if _blocking_cv2:
-                state.last_review_findings = append_convention_retry_findings(
-                    state.last_review_findings,
-                    state.convention_violations,
-                )
                 lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in _blocking_cv2]
                 state.human_feedback += (
                     "\n\nAdditionally, hard convention violations were detected:\n"
@@ -436,17 +431,6 @@ def _run_validate_phase(
             blocking_violations = [v for v in _cv_violations if v.blocking]
             followup_violations = [v for v in _cv_violations if not v.blocking]
 
-            # Record ALL violations on state — blocking flag preserved
-            state.convention_violations = [
-                {
-                    "rule": v.rule,
-                    "file": v.file,
-                    "detail": v.detail,
-                    "blocking": v.blocking,
-                }
-                for v in _cv_violations
-            ]
-
             # Log and emit follow-up (hygiene) violations — not blocking
             for v in followup_violations:
                 _log(f"  Convention follow-up [hygiene]: {v.rule} in {v.file} — {v.detail}")
@@ -461,10 +445,6 @@ def _run_validate_phase(
                     )
 
             if blocking_violations:
-                state.last_review_findings = append_convention_retry_findings(
-                    state.last_review_findings,
-                    state.convention_violations,
-                )
                 lines = [f"  - [{v.rule}] {v.file}: {v.detail}" for v in blocking_violations]
                 human_feedback = "Hard convention violations detected:\n" + "\n".join(lines)
                 state.human_feedback = human_feedback
@@ -492,7 +472,7 @@ def _run_validate_phase(
                     logger._safe_emit("phase_end", phase="VALIDATE", outcome="convention_fail")
                 return _ValidateOutcome.REVIEW_CONVENTION_BLOCK, None
             # Only follow-up violations — proceed to PASS
-        else:
+        elif _cv_all:
             state.convention_violations = [
                 {
                     "rule": v.rule,
@@ -502,9 +482,6 @@ def _run_validate_phase(
                 }
                 for v in _cv_all
             ]
-    else:
-        state.convention_violations = []
-
     return _ValidateOutcome.PASS, None
 
 

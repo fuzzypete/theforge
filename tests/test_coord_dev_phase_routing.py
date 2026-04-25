@@ -311,6 +311,79 @@ test_coverage:
         assert "Resolve the [no_scratch_files] convention violation" in retry_findings
         assert not mock_fix_prompt.called
 
+    @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
+    @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
+    @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_convention_violation_retry_does_not_duplicate_or_leak_stale_findings(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_pool,
+        mock_dev_prompt,
+        mock_fix_prompt,
+        mock_check_conventions,
+        tmp_path,
+    ):
+        """Retry prompts derive convention findings from the current validate result only."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            retry=RetryPolicy(max_dev_iterations=4, max_review_cycles=2),
+            conventions_hard=HardConventionsConfig(max_module_lines=500),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        violation = type(
+            "Violation",
+            (),
+            {
+                "rule": "no_scratch_files",
+                "file": "test_resolution_commentary.py",
+                "detail": "Unexpected root-level scratch file",
+                "blocking": True,
+            },
+        )()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "FAIL", "FAIL", "PASS"])
+        mock_check_conventions.side_effect = [
+            ([violation], [violation]),
+            ([violation], [violation]),
+            ([], []),
+            ([], []),
+        ]
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = [
+            _make_agent_result(),
+            _make_agent_result(),
+            _make_agent_result(),
+            _make_agent_result(),
+        ]
+        mock_dev_prompt.return_value = "full dev prompt"
+        mock_fix_prompt.return_value = "fix prompt"
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert mock_dev_prompt.call_count == 4
+        first_retry_findings = mock_dev_prompt.call_args_list[1].kwargs["review_findings"]
+        second_retry_findings = mock_dev_prompt.call_args_list[2].kwargs["review_findings"]
+        third_retry_findings = mock_dev_prompt.call_args_list[3].kwargs["review_findings"]
+        assert first_retry_findings is not None
+        assert first_retry_findings.count("## Blocking Convention Violations") == 1
+        assert second_retry_findings is not None
+        assert second_retry_findings.count("## Blocking Convention Violations") == 1
+        assert third_retry_findings is None
+        assert not mock_fix_prompt.called
+
     @patch("theforge.coordinator.dev_phase.build_fix_prompt", wraps=None)
     @patch("theforge.coordinator.dev_phase.build_dev_prompt", wraps=None)
     @patch("theforge.coordinator.review_pool.run_agent_pool")
