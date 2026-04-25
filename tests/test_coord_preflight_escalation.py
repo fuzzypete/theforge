@@ -162,12 +162,12 @@ class TestHasPersistentP1:
         assert _has_persistent_p1(curr, prev) is True
 
     def test_persistent_p1_different_files(self):
-        """Same P1 description on different files → still detected as persistent."""
+        """Same description on different real files is NOT persistent (no file evidence)."""
         curr = [
             _make_review_finding(file="src/coordinator.py", description="extend resets session ID")
         ]
         prev = [_make_review_finding(file="src/task.py", description="extend resets session ID")]
-        assert _has_persistent_p1(curr, prev) is True
+        assert _has_persistent_p1(curr, prev) is False
 
     def test_p1_similarity_matching(self):
         """Substring containment and token overlap both match."""
@@ -203,6 +203,65 @@ class TestHasPersistentP1:
         """'unknown' file P1s with similar descriptions are still caught by text similarity."""
         curr = [_make_review_finding(file="unknown", description="gate_override never wired")]
         prev = [_make_review_finding(file="unknown", description="gate_override never wired in")]
+        assert _has_persistent_p1(curr, prev) is True
+
+    def test_same_file_far_apart_lines_distinct_descriptions_not_persistent(self):
+        """Two P1s in the same file at distant lines with distinct descriptions are not persistent.
+
+        Reproduces the v0.9.0 issue #169 scenario: cycle 1 finds a bug at engine.py:770,
+        dev fixes it, cycle 2 finds a different bug at engine.py:957. These must NOT be
+        tagged persistent even though both share the file name.
+        """
+        curr = [
+            _make_review_finding(
+                file="src/engine.py",
+                line=957,
+                description="resume entry points omit profile update",
+            )
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/engine.py",
+                line=770,
+                description="model profiles nested under escalation_memory guard skips update",
+            )
+        ]
+        assert _has_persistent_p1(curr, prev) is False
+
+    def test_same_file_nearby_lines_is_persistent(self):
+        """Same file, lines within 10 of each other → persistent even with different wording."""
+        curr = [
+            _make_review_finding(
+                file="src/engine.py",
+                line=775,
+                description="profile update dropped after refactor",
+            )
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/engine.py",
+                line=770,
+                description="model profile update skipped by guard",
+            )
+        ]
+        assert _has_persistent_p1(curr, prev) is True
+
+    def test_same_file_description_overlap_is_persistent(self):
+        """Same file + description overlap → persistent even without line numbers."""
+        curr = [
+            _make_review_finding(
+                file="src/engine.py",
+                line=None,
+                description="model profiles update skipped after escalation guard",
+            )
+        ]
+        prev = [
+            _make_review_finding(
+                file="src/engine.py",
+                line=None,
+                description="model profiles update missing in escalation guard path",
+            )
+        ]
         assert _has_persistent_p1(curr, prev) is True
 
 
@@ -272,7 +331,7 @@ summary: "New blocker in same file."
 findings:
   - severity: P1
     file: src/cli.py
-    line: 43
+    line: 957
     description: "cli.py now drops abandon handling after wiring gate_override"
     suggestion: "Preserve the abandon path"
 story_compliance:
