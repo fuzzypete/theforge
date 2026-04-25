@@ -382,8 +382,7 @@ class TestIsSprintRun:
         self, tmp_path: Path
     ) -> None:
         """During the window after .pid is written but before .state exists, a
-        .redirect file from the predecessor run must be enough to identify the
-        new run as a sprint."""
+        .redirect from a sprint predecessor run identifies the new run as a sprint."""
         import json
 
         from theforge.cli.status import _is_sprint_run
@@ -393,8 +392,28 @@ class TestIsSprintRun:
         (runs_dir / "oldrun.redirect").write_text(
             json.dumps({"new_run_id": "newrun", "new_log": "/tmp/x.log"})
         )
+        # Predecessor has a .state file — it was a sprint
+        (runs_dir / "oldrun.state").write_text("sprint_name: x\nstories: []\n")
         with patch("theforge.sprint.status_reader.find_sprint_summary", return_value=None):
             assert _is_sprint_run("newrun", tmp_path) is True
+
+    def test_redirect_from_single_run_reexec_is_not_misclassified_as_sprint(
+        self, tmp_path: Path
+    ) -> None:
+        """A forge run re-exec produces a .redirect but no predecessor .state;
+        _is_sprint_run must return False so status falls back to the single-run view."""
+        import json
+
+        from theforge.cli.status import _is_sprint_run
+
+        runs_dir = tmp_path / ".forge" / "runs"
+        runs_dir.mkdir(parents=True)
+        (runs_dir / "oldrun.redirect").write_text(
+            json.dumps({"new_run_id": "newrun", "new_log": "/tmp/x.log"})
+        )
+        # No oldrun.state — predecessor was not a sprint
+        with patch("theforge.sprint.status_reader.find_sprint_summary", return_value=None):
+            assert _is_sprint_run("newrun", tmp_path) is False
 
     def test_redirect_for_different_run_does_not_match(self, tmp_path: Path) -> None:
         import json
@@ -406,6 +425,7 @@ class TestIsSprintRun:
         (runs_dir / "oldrun.redirect").write_text(
             json.dumps({"new_run_id": "otherid", "new_log": "/tmp/x.log"})
         )
+        (runs_dir / "oldrun.state").write_text("sprint_name: x\nstories: []\n")
         with patch("theforge.sprint.status_reader.find_sprint_summary", return_value=None):
             assert _is_sprint_run("newrun", tmp_path) is False
 

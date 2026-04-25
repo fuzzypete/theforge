@@ -76,11 +76,19 @@ def _is_sprint_run(run_id: str, project_root: Path) -> bool:
         return True
     if find_sprint_summary(run_id, project_root) is not None:
         return True
+    # Re-exec startup window: the predecessor's .redirect is written at the same
+    # time as the new .pid, before SprintStateWriter.init() writes .state.
+    # Only treat this as a sprint if the predecessor itself was a sprint run
+    # (has a .state file), so we don't misclassify a re-exec of `forge run`.
     runs_dir = project_root / ".forge" / "runs"
     for redirect_file in runs_dir.glob("*.redirect"):
         try:
             d = json.loads(redirect_file.read_text(encoding="utf-8"))
-            if d.get("new_run_id") == run_id:
+            if d.get("new_run_id") != run_id:
+                continue
+            predecessor_id = redirect_file.stem
+            predecessor_state = runs_dir / f"{predecessor_id}.state"
+            if predecessor_state.exists():
                 return True
         except (OSError, ValueError, json.JSONDecodeError):
             pass
