@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest.mock import patch
 
+import pytest
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
 from theforge.coordinator.engine import run_task
@@ -143,6 +144,46 @@ class TestCachedPreflightVerdictDispatch:
 
         assert result.state.preflight_complexity_score == 7
         assert result.state.preflight_complexity == "medium"
+
+    def test_cached_preflight_cost_flows_into_result_state(self, tmp_path):
+        """Batch preflight cost must appear in result.state.total_preflight_cost.
+
+        When a story uses a cached preflight state (e.g. ALREADY_DONE from batch
+        preflight), the cost recorded in the batch run must be carried into the
+        per-story result so the sprint accumulator counts it.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        preflight_agent_result = _make_agent_result(cost_usd=0.349, profile_name="preflight")
+
+        cached_state = _with_cache_snapshot(
+            replace(
+                CoordinatorState(),
+                preflight_verdict="ALREADY_DONE",
+                preflight_reason="All acceptance criteria already satisfied.",
+                preflight_complexity="medium",
+                preflight_sufficiency="implementation_ready",
+                preflight_work_type="feature",
+                preflight_result=preflight_agent_result,
+            )
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_matching_cache),
+            patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
+            patch("theforge.coordinator.preflight_flow.run_agent"),
+            patch("theforge.coordinator.dev_phase.run_agent"),
+            patch("theforge.coordinator.plan_flow.run_agent"),
+            patch("theforge.coordinator.review_pool.run_agent_pool"),
+        ):
+            result = run_task(config, task, cached_preflight_state=cached_state)
+
+        assert result.state.preflight_result is preflight_agent_result
+        assert result.state.total_preflight_cost == pytest.approx(0.349)
+        assert result.state.total_cost == pytest.approx(0.349)
 
     def test_stale_cached_preflight_is_invalidated_and_rerun(self, tmp_path):
         """Changed git state must invalidate cached preflight and trigger a fresh run."""
