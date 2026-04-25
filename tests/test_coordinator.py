@@ -4,6 +4,7 @@ Uses mocked runner to test all state transitions without real agent calls.
 """
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -893,4 +894,63 @@ class TestStartupFailureEscalation:
         assert "agent launcher startup failed" in result.message
         # dev_agent called once; no VALIDATE or REVIEW
         assert mock_dev_agent.call_count == 1
+        mock_pool.assert_not_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_dev_runner_argument_crash_escalates_with_runner_reason(
+        self, mock_shell, mock_dev_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        """Runner arg-parse crashes escalate immediately with runner-specific messaging."""
+        from theforge.runners import AgentResult
+
+        config = replace(
+            _make_config(tmp_path),
+            dev_profile=replace(DEFAULT_DEV_PROFILE, cli="codex"),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+
+        def shell_side(cmd, cwd=None, **kw):
+            if "rev-parse --abbrev-ref HEAD" in cmd:
+                return (True, "forge/test-task")
+            if "git diff --name-only" in cmd:
+                return (True, "")
+            if "git status --porcelain" in cmd:
+                return (True, "?? scratch.py")
+            return _shell_with_gate(workspace, "PASS")(cmd, cwd, **kw)
+
+        mock_shell.side_effect = shell_side
+        mock_dev_agent.return_value = AgentResult(
+            success=False,
+            output=(
+                "error: unexpected argument '-C' found\n"
+                "Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]\n"
+            ),
+            session_id=None,
+            cost_usd=None,
+            exit_code=2,
+            raw={},
+        )
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.error_type == "runner_argument_error"
+        assert "Runner crashed before agent execution: codex" in result.message
+        assert "unexpected argument '-C' found" in result.message
+        assert result.state.dev_iteration_telemetry[0].gate_result == "RUNNER_CRASH"
+        assert (
+            result.state.dev_iteration_telemetry[0].runner_failure_code == "runner_argument_error"
+        )
+        assert result.state.dev_iteration_telemetry[0].runner_failure_summary == (
+            "error: unexpected argument '-C' found"
+        )
+        assert result.state.dev_iteration_telemetry[0].files_changed == ["scratch.py"]
         mock_pool.assert_not_called()

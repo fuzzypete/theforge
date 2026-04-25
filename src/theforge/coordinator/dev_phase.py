@@ -38,6 +38,58 @@ from .util import (
 run_agent = None
 log_agent_result = None
 
+_RUNNER_FAILURE_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "runner_argument_error",
+        (
+            "error: unexpected argument",
+            "unexpected argument",
+            "unrecognized option",
+            "unknown option",
+            "invalid option",
+        ),
+    ),
+    (
+        "runner_command_not_found",
+        (
+            "command not found",
+            "no such file or directory",
+        ),
+    ),
+    (
+        "runner_permission_denied",
+        ("permission denied",),
+    ),
+)
+
+
+def _summarize_runner_failure(output: str, indicators: tuple[str, ...]) -> str:
+    """Return a short, operator-friendly summary line for a runner crash."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    lowered = tuple(line.lower() for line in lines)
+    for indicator in indicators:
+        for idx, line in enumerate(lowered):
+            if indicator in line:
+                return lines[idx][:200]
+    for idx, line in enumerate(lowered):
+        if not line.startswith("usage:"):
+            return lines[idx][:200]
+    return lines[0][:200] if lines else "(no output)"
+
+
+def classify_runner_subprocess_failure(output: str) -> tuple[str, str] | None:
+    """Classify a runner subprocess crash that occurred before agent execution."""
+    lowered = output.lower()
+    for failure_code, indicators in _RUNNER_FAILURE_SIGNATURES:
+        if any(indicator in lowered for indicator in indicators):
+            return failure_code, _summarize_runner_failure(output, indicators)
+    return None
+
+
+def _runner_display_name(config: ForgeConfig) -> str:
+    """Return a stable operator-facing runner label for escalation messages."""
+    return config.dev_profile.cli or config.dev_profile.provider or config.dev_profile.name
+
 
 def _extract_failed_tests(gate_output_tail: str) -> list[str]:
     """Best-effort extraction of failing test identifiers from gate output."""
@@ -81,6 +133,9 @@ def record_dev_iteration_telemetry(
     gate_result: str | None,
     gate_output_tail: str = "",
     is_timeout: bool = False,
+    agent_exit_code: int | None = None,
+    runner_failure_code: str | None = None,
+    runner_failure_summary: str | None = None,
 ) -> None:
     """Capture per-iteration dev telemetry after validation completes."""
     if not state.dev_results or not state.dev_durations:
@@ -120,6 +175,9 @@ def record_dev_iteration_telemetry(
             tests_fixed_count=tests_fixed_count,
             meaningful_progress=meaningful_progress,
             sandboxed=state.sandboxed,
+            agent_exit_code=agent_exit_code,
+            runner_failure_code=runner_failure_code,
+            runner_failure_summary=runner_failure_summary,
         )
     )
 
@@ -416,6 +474,11 @@ def _run_dev_phase(
         session_id=state.dev_session_id,
         secrets=config.secrets,
     )
+    _runner_failure = None
+    if not dev_result.success and not dev_result.startup_failure:
+        _runner_failure = classify_runner_subprocess_failure(dev_result.output)
+        if _runner_failure is not None and dev_result.failure_code is None:
+            dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
     _dev_elapsed = time.monotonic() - _dev_start
     write_trace(
         workspace_path / ".forge/traces" / f"{state.dev_trace_count}-dev-output.txt",
@@ -447,6 +510,39 @@ def _run_dev_phase(
         )
 
     if not dev_result.success:
+        if _runner_failure is not None:
+            runner_name = _runner_display_name(config)
+            state.phase = Phase.ESCALATE
+            state.error_type = dev_result.failure_code
+            state.error = (
+                f"Runner crashed before agent execution: {runner_name}: {_runner_failure[1]}"
+            )
+            record_dev_iteration_telemetry(
+                state,
+                workspace_path,
+                max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                gate_result="RUNNER_CRASH",
+                agent_exit_code=dev_result.exit_code,
+                runner_failure_code=dev_result.failure_code,
+                runner_failure_summary=_runner_failure[1],
+            )
+            _log(f"✗ ESCALATE   {state.error}")
+            if logger:
+                logger._safe_emit(
+                    "phase_end",
+                    phase="DEV",
+                    outcome="escalate",
+                    cost_usd=dev_result.cost_usd,
+                    duration_s=round(_dev_elapsed, 2),
+                )
+                logger._safe_emit("escalate", reason=state.error, phase="DEV")
+            _escalate_notify(task, state, notify, config)
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            )
         if dev_result.failure_code == "max_iterations_reached" and dev_result.dev_handoff is None:
             state.error_type = "max_iterations_no_submit"
             state.retry_reason = RetryReason.MAX_ITERATIONS_NO_SUBMIT

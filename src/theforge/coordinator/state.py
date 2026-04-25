@@ -176,6 +176,9 @@ class DevIterationTelemetry:
     tests_fixed_count: int = 0
     meaningful_progress: bool | None = None
     sandboxed: bool = True
+    agent_exit_code: int | None = None
+    runner_failure_code: str | None = None
+    runner_failure_summary: str | None = None
 
 
 @dataclass(frozen=True)

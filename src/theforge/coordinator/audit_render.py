@@ -40,7 +40,13 @@ def _agent_entry(r: object, role: str, profile_fallback: str, dur: float | None)
         "profile": r.profile_name or profile_fallback,
         "cost_usd": r.cost_usd,
         "duration_seconds": dur,
+        "success": r.success,
+        "exit_code": r.exit_code,
     }
+    if r.failure_code:
+        entry["failure_code"] = r.failure_code
+    if r.startup_failure:
+        entry["startup_failure"] = True
     if r.model_usage:
         entry["model_usage"] = _model_usage_entries(r)
     # model_used: prefer the explicit field (set by runners for CLI and preference-list
