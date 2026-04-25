@@ -163,6 +163,7 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     def _fake_assign_models(*args, **kwargs):
         captured["model_profiles"] = kwargs.get("model_profiles")
+        captured["complexity_score"] = kwargs.get("complexity_score")
         # Return a minimal decision with the configured dev profile to avoid
         # exercising the real logic.
         from theforge.assignment import AssignmentDecision
@@ -182,6 +183,133 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     assert "model_profiles" in captured
     assert captured["model_profiles"] == seeded
+    assert captured["complexity_score"] == 5
+
+
+def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeypatch):
+    """Adaptive assignment details must be visible on state for audit rendering."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    config = replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="claude-sonnet",
+                provider="anthropic",
+                model="sonnet",
+                budget_usd=10.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            )
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=30.0,
+            min_reviewers=1,
+            max_reviewers=1,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 7
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    assert audit["complexity_score"] == 7
+    assert audit["source"] == "adaptive_assignment"
+    assert audit["adaptive_enabled"] is True
+    assert audit["role_sources"]["dev"] == "adaptive"
+    assert audit["assignments"]["dev"] == state._adaptive_decision.dev.model
+    assert "dev" in audit["rationale"]
+    assert "budget_cap_usd" in audit["budget"]
+
+
+def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):
+    """Seam: adaptive_enabled toggles between score-aware routing and static bands."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    base_agents = [
+        AgentDef(
+            name="haiku",
+            provider="anthropic",
+            model="haiku",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            tier="cheap",
+            cli="claude",
+        ),
+        AgentDef(
+            name="sonnet",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="mid",
+            cli="claude",
+        ),
+        AgentDef(
+            name="opus",
+            provider="anthropic",
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            cli="claude",
+        ),
+    ]
+
+    def _build(adaptive_enabled: bool):
+        return replace(
+            _make_config(tmp_path),
+            agents=base_agents,
+            assignment=AssignmentConfig(
+                enabled=True,
+                escalation_memory=False,
+                budget_per_story_usd=100.0,
+                min_reviewers=1,
+                max_reviewers=3,
+                prefer_cross_provider=False,
+                adaptive_enabled=adaptive_enabled,
+            ),
+        )
+
+    def _state_with_score(score: int) -> CoordinatorState:
+        s = CoordinatorState()
+        s.preflight_complexity = "medium"
+        s.preflight_complexity_score = score
+        return s
+
+    # Adaptive ON: scores 2 and 9 should diverge.
+    cfg_on = _build(True)
+    state_low = _state_with_score(2)
+    state_high = _state_with_score(9)
+    _pf._apply_preflight_config(cfg_on, state_low)
+    _pf._apply_preflight_config(cfg_on, state_high)
+    assert state_low._adaptive_decision.dev.model != state_high._adaptive_decision.dev.model
+    assert state_low.complexity_routing_audit["adaptive_enabled"] is True
+    assert state_low.complexity_routing_audit["role_sources"]["dev"] == "adaptive"
+
+    # Adaptive OFF: same band → same assignment regardless of score.
+    cfg_off = _build(False)
+    state_low_off = _state_with_score(2)
+    state_high_off = _state_with_score(9)
+    _pf._apply_preflight_config(cfg_off, state_low_off)
+    _pf._apply_preflight_config(cfg_off, state_high_off)
+    assert (
+        state_low_off._adaptive_decision.dev.model == state_high_off._adaptive_decision.dev.model
+    )
+    assert state_low_off.complexity_routing_audit["adaptive_enabled"] is False
+    assert state_low_off.complexity_routing_audit["source"] == "static_assignment"
+    assert state_low_off.complexity_routing_audit["role_sources"]["dev"] == "static"
 
 
 def test_record_run_memory_is_called_from_resume_path(tmp_path):

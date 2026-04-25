@@ -761,10 +761,11 @@ def _apply_preflight_config(
         config.agents,
         config.assignment,
         complexity,
-        _esc_history,
-        _explicit if _explicit else None,
-        state.sprint_promotions,
-        config.secrets,
+        complexity_score=complexity_score,
+        escalation_history=_esc_history,
+        explicit_profiles=_explicit if _explicit else None,
+        sprint_promotions=state.sprint_promotions,
+        secrets=config.secrets,
         model_profiles=_model_profiles,
     )
 
@@ -794,6 +795,50 @@ def _apply_preflight_config(
 
     state._adaptive_decision = _decision
     state._explicit_roles = _explicit_roles
+    _existing_routing_audit = dict(state.complexity_routing_audit or {})
+    _adaptive_enabled = config.assignment.adaptive_enabled
+    _budget_audit = dict(_decision.budget_audit)
+    _budget_downgraded_roles = {
+        str(step.get("role"))
+        for step in _budget_audit.get("steps", [])
+        if isinstance(step, dict) and step.get("role")
+    }
+
+    def _role_source(role: str, override_keys: set[str]) -> str:
+        if role in override_keys:
+            return "explicit_override"
+        if not _adaptive_enabled:
+            return "static"
+        if role in _budget_downgraded_roles:
+            return "budget_downgrade"
+        return "adaptive"
+
+    _override_keys = set(_explicit.keys()) if isinstance(_explicit, dict) else set()
+    _per_role_sources = {
+        "preflight": _role_source("preflight", _override_keys),
+        "planner": _role_source("planner", _override_keys),
+        "plan_review": _role_source("plan_review", _override_keys),
+        "dev": _role_source("dev", _override_keys),
+        "code_review": _role_source("code_review", _override_keys),
+    }
+    state.complexity_routing_audit = {
+        "complexity": complexity,
+        "complexity_score": complexity_score,
+        "adaptive_enabled": _adaptive_enabled,
+        "source": "adaptive_assignment" if _adaptive_enabled else "static_assignment",
+        "explicit_overrides": sorted(_explicit_roles),
+        "role_sources": _per_role_sources,
+        "assignments": {
+            "preflight": _decision.preflight.model,
+            "planner": _decision.planner.model,
+            "plan_reviewers": [p.model for p in _decision.plan_reviewers],
+            "dev": _decision.dev.model,
+            "code_reviewers": [p.model for p in _decision.code_reviewers],
+        },
+        "rationale": dict(_decision.rationale),
+        "budget": _budget_audit,
+        **({"config_model_routing": _existing_routing_audit} if _existing_routing_audit else {}),
+    }
 
     _dev_base_tier = _PHASE_TIER["dev"][_norm_complexity(complexity)]
     _dev_agent = _pick_agt(config.agents, _dev_base_tier, config.secrets)
