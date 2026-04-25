@@ -523,6 +523,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                     else {}
                 ),
                 **(
+                    {"transport_retries": state.plan_review_transport_retries}
+                    if state.plan_review_transport_retries
+                    else {}
+                ),
+                **(
                     {"reviewer_failures": state.plan_review_failures}
                     if state.plan_review_failures
                     else {}

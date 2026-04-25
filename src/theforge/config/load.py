@@ -354,6 +354,9 @@ def load_config(config_path: Path) -> ForgeConfig:
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
         max_review_cycles=int(retry_data.get("max_review_cycles", 2)),
         max_review_parse_retries=int(retry_data.get("max_review_parse_retries", 2)),
+        max_plan_review_transport_retries=int(
+            retry_data.get("max_plan_review_transport_retries", 2)
+        ),
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),

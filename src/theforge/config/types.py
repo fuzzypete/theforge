@@ -209,6 +209,9 @@ class RetryPolicy:
     max_dev_iterations: int = 3  # retries within a single review cycle
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
+    max_plan_review_transport_retries: int = (
+        2  # per-reviewer retries on transient plan-review transport/provider failure
+    )
     max_plan_regen_attempts: int = 3  # plan review rejection → regen cycles before escalating
     demotion_threshold: int = 2  # parse failures per reviewer per run before exclusion; 0 disables
     plan_escalation_threshold: int = (

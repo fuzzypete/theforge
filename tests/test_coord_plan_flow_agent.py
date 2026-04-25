@@ -1506,6 +1506,273 @@ class TestPlanReviewerFailureAudit:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch("theforge.coordinator.util._run_shell")
+    def test_transient_plan_review_failure_retries_and_preserves_pool(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """A transient 500 is retried before min_reviewers gating shrinks the pool."""
+        pool_config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_review_transport_retries=2,
+            ),
+            plan_agent_review=PlanAgentReviewConfig(
+                enabled=True,
+                min_reviewers=2,
+                pool=[
+                    ModelProfile(
+                        name="reviewer-a",
+                        provider="google",
+                        model="gemini-2.5-pro",
+                        budget_usd=2.00,
+                        timeout_seconds=600,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                    ModelProfile(
+                        name="reviewer-b",
+                        provider="deepseek",
+                        model="deepseek-chat",
+                        budget_usd=1.00,
+                        timeout_seconds=300,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                ],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.08,
+                profile_name="reviewer-a",
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+        mock_plan_pool.return_value = [
+            _make_agent_result(
+                success=False,
+                output="google.genai.errors.ServerError: 500 INTERNAL",
+                cost_usd=0.08,
+                profile_name="reviewer-a",
+            ),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.04,
+                profile_name="reviewer-b",
+            ),
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config=pool_config, task=task, interactive=True)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.plan_review_decision == "approve"
+        assert result.state.plan_review_failures == []
+        assert len(result.state.plan_review_transport_retries) == 1
+        assert len(result.state.plan_review_results) == 3
+        assert result.state.total_plan_review_cost == pytest.approx(0.20)
+        retry = result.state.plan_review_transport_retries[0]
+        assert retry["reviewer"] == "reviewer-a"
+        assert retry["retry"] == 1
+
+        audit = generate_audit_log(pool_config, task, result)
+        assert (
+            audit["plan_review"]["transport_retries"] == result.state.plan_review_transport_retries
+        )
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_transient_plan_review_failure_exhausts_retries_then_escalates(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        """Transient transport failures only shrink the pool after retry exhaustion."""
+        pool_config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_review_transport_retries=2,
+            ),
+            plan_agent_review=PlanAgentReviewConfig(
+                enabled=True,
+                min_reviewers=2,
+                pool=[
+                    ModelProfile(
+                        name="reviewer-a",
+                        provider="google",
+                        model="gemini-2.5-pro",
+                        budget_usd=2.00,
+                        timeout_seconds=600,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                    ModelProfile(
+                        name="reviewer-b",
+                        provider="deepseek",
+                        model="deepseek-chat",
+                        budget_usd=1.00,
+                        timeout_seconds=300,
+                        allowed_tools=("Read", "Glob"),
+                    ),
+                ],
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+            _make_agent_result(
+                success=False,
+                output="500 INTERNAL provider failure",
+                cost_usd=0.03,
+                profile_name="reviewer-a",
+            ),
+            _make_agent_result(
+                success=False,
+                output="connection reset by peer",
+                cost_usd=0.03,
+                profile_name="reviewer-a",
+            ),
+        ]
+        mock_plan_pool.return_value = [
+            _make_agent_result(
+                success=False,
+                output="google.genai.errors.ServerError: 500 INTERNAL",
+                cost_usd=0.08,
+                profile_name="reviewer-a",
+            ),
+            _make_agent_result(
+                success=True,
+                output=PLAN_AGENT_APPROVE,
+                cost_usd=0.04,
+                profile_name="reviewer-b",
+            ),
+        ]
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config=pool_config, task=task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.plan_review_decision == "reject"
+        assert "minimum required is 2" in (result.message or "")
+        assert len(result.state.plan_review_transport_retries) == 2
+        assert len(result.state.plan_review_results) == 4
+        assert result.state.total_plan_review_cost == pytest.approx(0.18)
+        assert len(result.state.plan_review_failures) == 1
+        failure = result.state.plan_review_failures[0]
+        assert failure["reviewer"] == "reviewer-a"
+        assert failure["failure_kind"] == "transport"
+        assert failure["retryable"] is True
+        assert failure["retry_count"] == 2
+        assert "Transport failure:" in failure["errors"][0]
+
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_non_transient_plan_review_failure_is_not_labeled_transport(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Non-retryable reviewer failures retain a non-transport failure kind."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_transport_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=False,
+                output="authentication failed",
+                cost_usd=0.08,
+                profile_name="plan-review",
+                session_id=None,
+            )
+        ]
+        mock_pool.return_value[0] = dataclasses.replace(
+            mock_pool.return_value[0], failure_code="auth_error"
+        )
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.plan_review_transport_retries == []
+        assert len(result.state.plan_review_failures) == 1
+        failure = result.state.plan_review_failures[0]
+        assert failure["reviewer"] == "plan-review"
+        assert failure["failure_kind"] == "auth_error"
+        assert failure["retryable"] is False
+        assert failure["retry_count"] == 0
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
     def test_reviewer_failures_appear_in_audit(
         self,
         mock_shell,
