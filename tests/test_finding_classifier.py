@@ -158,6 +158,13 @@ class TestMatchesPrior:
         record = self._make_record("Missing null check in handler method call")
         assert not _matches_prior(finding, record)
 
+    def test_resolution_commentary_does_not_match_even_with_high_overlap(self):
+        finding = _make_finding(
+            "Previous finding fixed: missing null check in handler",
+        )
+        record = self._make_record("Missing null check in handler")
+        assert not _matches_prior(finding, record)
+
 
 class TestMatchesPriorAgnostic:
     def _make_record(
@@ -194,6 +201,14 @@ class TestMatchesPriorAgnostic:
     def test_low_overlap_no_match(self):
         finding = _make_finding("Completely different description about something else")
         record = self._make_record("Missing null check in handler method call")
+        assert not _matches_prior_agnostic(finding, record)
+
+    def test_resolution_commentary_does_not_match_even_with_high_overlap(self):
+        finding = _make_finding(
+            "Previous finding fixed: missing null check in handler",
+            severity="P2",
+        )
+        record = self._make_record("Missing null check in handler", severity="P1")
         assert not _matches_prior_agnostic(finding, record)
 
 
@@ -557,7 +572,7 @@ class TestUpdateFindingRegistryCycle2:
 
     def test_new_resolution_commentary_on_changed_file_is_not_regression(self, tmp_path):
         state = _make_state()
-        self._populate_cycle1(
+        prior = self._populate_cycle1(
             state,
             "Missing null handling in runtime path",
             file="src/changed.py",
@@ -565,7 +580,7 @@ class TestUpdateFindingRegistryCycle2:
         )
 
         finding = _make_finding(
-            "Prior P1 from Cycle 1 is fixed: runtime path now handles null safely",
+            "Previous finding fixed: missing null handling in runtime path",
             file="src/changed.py",
             line=10,
         )
@@ -580,6 +595,36 @@ class TestUpdateFindingRegistryCycle2:
 
         p1s = [r for r in classified if r.severity == "P1"]
         assert p1s[0].disposition == "net_new"
+        assert prior.disposition == "fixed"
+        assert prior.cycle_last_seen == 1
+
+    def test_resolution_commentary_does_not_keep_unresolved_prior_open(self, tmp_path):
+        state = _make_state()
+        prior = self._populate_cycle1(
+            state,
+            "Missing null handling in runtime path",
+            file="src/changed.py",
+            disposition="unresolved",
+        )
+
+        finding = _make_finding(
+            "Previous finding fixed: missing null handling in runtime path",
+            file="src/changed.py",
+            line=10,
+        )
+        review = _make_review([finding])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch(
+            "theforge.finding_classifier._get_changed_files",
+            return_value=frozenset(["src/changed.py"]),
+        ):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert p1s[0].disposition == "net_new"
+        assert prior.disposition == "fixed"
+        assert prior.cycle_last_seen == 1
 
     def test_new_finding_not_in_changed_file_single_reviewer_is_net_new(self, tmp_path):
         state = _make_state()

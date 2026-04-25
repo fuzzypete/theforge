@@ -67,7 +67,13 @@ def _matches_prior(
     prior: FindingRecord,
     threshold: float = JACCARD_THRESHOLD,
 ) -> bool:
-    """Return True if finding matches prior record (same file + same severity + token overlap)."""
+    """Return True if finding matches prior record (same file + same severity + token overlap).
+
+    Resolution commentary is intentionally excluded so "the prior finding is fixed"
+    language cannot revive or keep alive an older record just by quoting it.
+    """
+    if _is_resolution_commentary(finding.description):
+        return False
     if finding.file != prior.file:
         return False
     if finding.severity != prior.severity:
@@ -86,6 +92,8 @@ def _matches_prior_agnostic(
 
     Used to detect severity downgrades between cycles (e.g. P1 → P2).
     """
+    if _is_resolution_commentary(finding.description):
+        return False
     if finding.file != prior.file:
         return False
     tokens_new = _normalize_tokens(finding.description)
