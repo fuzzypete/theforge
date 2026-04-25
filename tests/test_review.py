@@ -308,6 +308,25 @@ findings: []
         assert result is not None
         assert result.verdict == "APPROVE"
 
+    def test_contradictory_approve_with_p1_returns_none(self):
+        data = {
+            "verdict": "APPROVE",
+            "summary": "Looks good",
+            "findings": [
+                {
+                    "severity": "P1",
+                    "file": "src/foo.py",
+                    "line": 12,
+                    "description": "Prior P1 from cycle 1 is fixed",
+                    "suggestion": "No action needed",
+                }
+            ],
+            "story_compliance": {"matches_spec": True, "mismatches": []},
+            "test_coverage": {"adequate": True, "gaps": []},
+        }
+        result = _try_parse_review("", structured_data=data)
+        assert result is None
+
 
 # ── Tests: _best_individual_result ───────────────────────────────────
 
