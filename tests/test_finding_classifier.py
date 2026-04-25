@@ -9,7 +9,9 @@ import pytest
 from theforge.coordinator.state import CoordinatorState, FindingRecord
 from theforge.finding_classifier import (
     _fingerprint,
+    _is_resolution_commentary,
     _jaccard,
+    _matches_fixed_finding_regression_candidate,
     _matches_prior,
     _matches_prior_agnostic,
     _normalize_tokens,
@@ -193,6 +195,59 @@ class TestMatchesPriorAgnostic:
         finding = _make_finding("Completely different description about something else")
         record = self._make_record("Missing null check in handler method call")
         assert not _matches_prior_agnostic(finding, record)
+
+
+class TestRegressionCandidates:
+    def _make_record(
+        self,
+        description: str,
+        *,
+        disposition: str = "fixed",
+        file: str = "src/foo.py",
+        severity: str = "P1",
+        line: int | None = 10,
+    ) -> FindingRecord:
+        fp = _fingerprint(severity, file, description, line)
+        return FindingRecord(
+            finding_id=fp,
+            cycle_first_seen=1,
+            cycle_last_seen=1,
+            file=file,
+            line=line,
+            severity=severity,
+            description=description,
+            reporter="reviewer-a",
+            disposition=disposition,
+        )
+
+    def test_resolution_commentary_detected(self):
+        assert _is_resolution_commentary(
+            "Prior P1 from Cycle 1 is fixed: null handling is safe now"
+        )
+
+    def test_resolution_commentary_not_treated_as_regression_candidate(self):
+        prior = self._make_record("Missing null handling in runtime path")
+        finding = _make_finding(
+            "Prior P1 from Cycle 1 is fixed: runtime path now handles null safely",
+            file=prior.file or "src/foo.py",
+            line=prior.line,
+        )
+
+        assert not _matches_fixed_finding_regression_candidate(finding, prior)
+
+    def test_same_file_line_and_severity_fixed_finding_counts_as_regression_candidate(self):
+        prior = self._make_record(
+            "Missing null handling in runtime path",
+            file="src/runtime.py",
+            line=42,
+        )
+        finding = _make_finding(
+            "Value can still be None in runtime path branch",
+            file="src/runtime.py",
+            line=42,
+        )
+
+        assert _matches_fixed_finding_regression_candidate(finding, prior)
 
 
 class TestUpdateFindingRegistryCycle1:
@@ -462,9 +517,8 @@ class TestUpdateFindingRegistryCycle2:
 
         assert record.disposition == "fixed"
 
-    def test_new_finding_in_changed_file_is_regression(self, tmp_path):
+    def test_new_finding_in_changed_file_without_fixed_match_is_net_new(self, tmp_path):
         state = _make_state()
-        # No prior registry entries for this finding
 
         finding = _make_finding("Index out of bounds in new loop", file="src/changed.py")
         review = _make_review([finding])
@@ -477,7 +531,55 @@ class TestUpdateFindingRegistryCycle2:
             classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
 
         p1s = [r for r in classified if r.severity == "P1"]
+        assert p1s[0].disposition == "net_new"
+
+    def test_new_finding_matching_prior_fixed_finding_is_regression(self, tmp_path):
+        state = _make_state()
+        self._populate_cycle1(
+            state,
+            "Missing null check in handler",
+            file="src/changed.py",
+            disposition="fixed",
+        )
+
+        finding = _make_finding("Missing null check in handler", file="src/changed.py")
+        review = _make_review([finding])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch(
+            "theforge.finding_classifier._get_changed_files",
+            return_value=frozenset(["src/changed.py"]),
+        ):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        p1s = [r for r in classified if r.severity == "P1"]
         assert p1s[0].disposition == "regression"
+
+    def test_new_resolution_commentary_on_changed_file_is_not_regression(self, tmp_path):
+        state = _make_state()
+        self._populate_cycle1(
+            state,
+            "Missing null handling in runtime path",
+            file="src/changed.py",
+            disposition="fixed",
+        )
+
+        finding = _make_finding(
+            "Prior P1 from Cycle 1 is fixed: runtime path now handles null safely",
+            file="src/changed.py",
+            line=10,
+        )
+        review = _make_review([finding])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch(
+            "theforge.finding_classifier._get_changed_files",
+            return_value=frozenset(["src/changed.py"]),
+        ):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        p1s = [r for r in classified if r.severity == "P1"]
+        assert p1s[0].disposition == "net_new"
 
     def test_new_finding_not_in_changed_file_single_reviewer_is_net_new(self, tmp_path):
         state = _make_state()
