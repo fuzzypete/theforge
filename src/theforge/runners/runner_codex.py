@@ -127,7 +127,7 @@ def _run_codex(
         ]
         if profile.reasoning_effort:
             cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-        cmd += ["-C", str(working_dir), "-o", str(output_file), session_id, "-"]
+        cmd += ["-o", str(output_file), session_id, "-"]
         stdin_prompt: str | None = prompt
     else:
         cmd = [
