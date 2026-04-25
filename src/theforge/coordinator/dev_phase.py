@@ -512,6 +512,7 @@ def _run_dev_phase(
         config.dev_profile,
         timeout_seconds=_dev_timeout,
         max_iterations=state.adaptive_dev_max or config.dev_profile.max_iterations,
+        stuck_detection=config.stuck_detection,
     )
 
     _dev_start = time.monotonic()
