@@ -129,6 +129,23 @@ class TestCodexSandboxFlag:
         assert "--sandbox" not in cmd
         assert "resume" in cmd
 
+    def test_resume_omits_working_dir_flag(self, tmp_path: Path) -> None:
+        """`codex exec resume` does not accept -C; working dir is passed via cwd= instead."""
+        profile = _make_profile(sandbox_mode="workspace-write")
+        mock_proc = _make_subprocess_mock()
+        with patch(
+            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
+        ) as mock_run:
+            _run_codex(
+                prompt="continue",
+                profile=profile,
+                working_dir=tmp_path,
+                session_id="sess-abc123",
+            )
+        cmd = _extract_codex_cmd(mock_run)
+        assert "resume" in cmd
+        assert "-C" not in cmd
+
     def test_resume_orders_session_id_after_flags(self, tmp_path: Path) -> None:
         """Resume command keeps flags before the positional session id."""
         profile = _make_profile(sandbox_mode="workspace-write")
