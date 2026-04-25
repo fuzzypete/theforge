@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING
@@ -484,7 +485,7 @@ def _has_persistent_p1(
     """Return True if any P1 appears in both current and previous cycles.
 
     Matches when findings are text-similar (substring containment or
-    >=60% token overlap) or when they recur in the same file.
+    >=60% token overlap) or when they recur at the same file+line location.
     """
     current_p1s = [f for f in current_findings if f.severity == "P1"]
     previous_p1s = [f for f in previous_findings if f.severity == "P1"]
@@ -530,17 +531,27 @@ def _p1_findings_match(current: ReviewFinding, previous: ReviewFinding) -> bool:
     if (
         current.file
         and previous.file
+        and current.line is not None
+        and previous.line is not None
         and current.file != "unknown"
         and previous.file != "unknown"
         and current.file == previous.file
+        and current.line == previous.line
     ):
         return True
 
-    if current.description in previous.description or previous.description in current.description:
+    if (
+        current.description
+        and previous.description
+        and (
+            current.description in previous.description
+            or previous.description in current.description
+        )
+    ):
         return True
 
-    curr_tokens = set(current.description.lower().split())
-    prev_tokens = set(previous.description.lower().split())
+    curr_tokens = set(re.findall(r"\w+", current.description.lower()))
+    prev_tokens = set(re.findall(r"\w+", previous.description.lower()))
     if curr_tokens and prev_tokens:
         overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
         if overlap >= 0.6:
