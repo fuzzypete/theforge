@@ -254,7 +254,9 @@ def derive_limits(
         chosen_dev = static_dev_max
         chosen_timeout = base_timeout_seconds
         chosen_budget = base_budget_usd
-        dev_rationale = "insufficient profile history for complexity band; using static configured dev limits"
+        dev_rationale = (
+            "insufficient profile history for complexity band; using static configured dev limits"
+        )
     else:
         raw_dev = profile_stats["avg_iterations"] * _HEADROOM_FACTOR
         chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
@@ -263,8 +265,10 @@ def derive_limits(
         chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _HEADROOM_FACTOR)
         audit["profile_raw_dev_max"] = round(raw_dev, 4)
         dev_rationale = (
-            f"derived dev limits from {profile_runs} {complexity_band or 'unknown'}-band profile runs "
-            f"with {_HEADROOM_FACTOR}x headroom; timeout scaled from static per-iteration baseline."
+            f"derived dev limits from {profile_runs} "
+            f"{complexity_band or 'unknown'}-band profile runs with "
+            f"{_HEADROOM_FACTOR}x headroom; timeout scaled from static "
+            "per-iteration baseline."
         )
     audit["chosen_dev_max"] = chosen_dev
     audit["chosen_dev_timeout_seconds"] = chosen_timeout
