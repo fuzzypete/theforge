@@ -169,6 +169,7 @@ def _retry_transient_plan_review_failures(
         retry_count = 0
         current = result
         while retry_count < max_retries and _is_transient_plan_review_failure(current):
+            state.plan_review_results.append(current)
             retry_count += 1
             _log(
                 f"  ↻ PLAN_REVIEW   {profile.name} transient transport failure "
@@ -184,7 +185,6 @@ def _retry_transient_plan_review_failures(
             )
             if retried.session_id:
                 state.plan_review_session_ids[profile.name] = retried.session_id
-            state.plan_review_results.append(retried)
             _write_log_artifact(
                 state.log_dir,
                 f"plan-review/attempt-{attempt}/{profile.name}-retry{retry_count}.yaml",
@@ -601,6 +601,7 @@ def _run_plan_agent_review(
 
         _parsed_prs: list[PlanReviewResult] = []
         for _prof, _res in zip(par_profiles, pr_results):
+            _transport_failure = _is_transient_plan_review_failure(_res)
             if not _res.success:
                 _failure_summary = _summarize_plan_review_failure(_res)
                 _log(
@@ -623,7 +624,12 @@ def _run_plan_agent_review(
                     _parsed = parse_plan_review_output(_res.output)
 
             if _parsed.parse_errors:
-                _failure_kind = "parse" if _res.success else "transport"
+                if _res.success:
+                    _failure_kind = "parse"
+                elif _transport_failure:
+                    _failure_kind = "transport"
+                else:
+                    _failure_kind = _res.failure_code or "generic"
                 _retry_count = sum(
                     1
                     for _event in _transport_retry_events
@@ -639,7 +645,7 @@ def _run_plan_agent_review(
                         "reviewer": _prof.name,
                         "failure_kind": _failure_kind,
                         "retry_count": _retry_count,
-                        "retryable": (_failure_kind == "transport"),
+                        "retryable": _transport_failure,
                         "errors": list(_parsed.parse_errors),
                     }
                 )

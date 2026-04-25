@@ -1592,6 +1592,8 @@ class TestPlanReviewerFailureAudit:
         assert result.state.plan_review_decision == "approve"
         assert result.state.plan_review_failures == []
         assert len(result.state.plan_review_transport_retries) == 1
+        assert len(result.state.plan_review_results) == 3
+        assert result.state.total_plan_review_cost == pytest.approx(0.20)
         retry = result.state.plan_review_transport_retries[0]
         assert retry["reviewer"] == "reviewer-a"
         assert retry["retry"] == 1
@@ -1699,6 +1701,8 @@ class TestPlanReviewerFailureAudit:
         assert result.state.plan_review_decision == "reject"
         assert "minimum required is 2" in (result.message or "")
         assert len(result.state.plan_review_transport_retries) == 2
+        assert len(result.state.plan_review_results) == 4
+        assert result.state.total_plan_review_cost == pytest.approx(0.18)
         assert len(result.state.plan_review_failures) == 1
         failure = result.state.plan_review_failures[0]
         assert failure["reviewer"] == "reviewer-a"
@@ -1706,6 +1710,61 @@ class TestPlanReviewerFailureAudit:
         assert failure["retryable"] is True
         assert failure["retry_count"] == 2
         assert "Transport failure:" in failure["errors"][0]
+
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_non_transient_plan_review_failure_is_not_labeled_transport(
+        self, mock_shell, mock_agent, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        """Non-retryable reviewer failures retain a non-transport failure kind."""
+        config = dataclasses.replace(
+            _make_plan_agent_review_config(tmp_path),
+            retry=RetryPolicy(
+                max_dev_iterations=2,
+                max_review_cycles=2,
+                max_plan_regen_attempts=0,
+                max_plan_review_transport_retries=2,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(success=True, output="# Plan\n\nA plan.", cost_usd=0.10),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=False,
+                output="authentication failed",
+                cost_usd=0.08,
+                profile_name="plan-review",
+                session_id=None,
+            )
+        ]
+        mock_pool.return_value[0] = dataclasses.replace(
+            mock_pool.return_value[0], failure_code="auth_error"
+        )
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.plan_review_transport_retries == []
+        assert len(result.state.plan_review_failures) == 1
+        failure = result.state.plan_review_failures[0]
+        assert failure["reviewer"] == "plan-review"
+        assert failure["failure_kind"] == "auth_error"
+        assert failure["retryable"] is False
+        assert failure["retry_count"] == 0
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
