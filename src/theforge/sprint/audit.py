@@ -105,6 +105,114 @@ def _save_accumulated_stories(
         pass
 
 
+def _load_story_summary_entry_from_audit(
+    sprint_log_dir: Path,
+    canonical_ref: str,
+    slug: str,
+) -> dict | None:
+    """Return a sprint-summary story entry derived from per-story audit.yaml."""
+    audit_path = sprint_log_dir / slug / "audit.yaml"
+    if not audit_path.exists():
+        return None
+
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            audit_data = yaml.safe_load(f) or {}
+    except Exception:
+        return None
+
+    if not isinstance(audit_data, dict):
+        return None
+
+    outcome_block = audit_data.get("outcome")
+    timing_block = audit_data.get("timing")
+    preflight_block = audit_data.get("preflight")
+    cost_block = audit_data.get("cost")
+    iteration_block = audit_data.get("iterations")
+
+    if not isinstance(outcome_block, dict):
+        return None
+
+    final_phase = outcome_block.get("final_phase")
+    if not isinstance(final_phase, str) or not final_phase:
+        return None
+    if isinstance(preflight_block, dict) and preflight_block.get("verdict") == "ALREADY_DONE":
+        final_phase = "ALREADY_DONE"
+
+    display_key = (
+        f"Issue #{canonical_ref.split(':')[1]}"
+        if canonical_ref.startswith("issue:")
+        else canonical_ref
+    )
+
+    reviews = audit_data.get("reviews")
+    verdict = None
+    if isinstance(reviews, list) and reviews:
+        last_review = reviews[-1]
+        if isinstance(last_review, dict):
+            raw_verdict = last_review.get("verdict")
+            if isinstance(raw_verdict, str) and raw_verdict:
+                verdict = raw_verdict
+    if verdict is None and outcome_block.get("success") is True:
+        verdict = "APPROVE"
+
+    usage_summary = (
+        iteration_block.get("usage_summary") if isinstance(iteration_block, dict) else {}
+    )
+    if not isinstance(usage_summary, dict):
+        usage_summary = {}
+
+    dev_usage = usage_summary.get("dev") if isinstance(usage_summary.get("dev"), dict) else {}
+    review_usage = (
+        usage_summary.get("review") if isinstance(usage_summary.get("review"), dict) else {}
+    )
+
+    preflight_verdict = (
+        preflight_block.get("verdict") if isinstance(preflight_block, dict) else None
+    )
+
+    return {
+        "canonical_ref": canonical_ref,
+        "path": display_key,
+        "slug": slug,
+        "outcome": final_phase,
+        "verdict": verdict,
+        "cost_usd": round(float(cost_block.get("total_usd", 0.0)), 4)
+        if isinstance(cost_block, dict)
+        else 0.0,
+        "story_run_id": audit_data.get("run_id"),
+        "preflight": preflight_verdict,
+        "preflight_original_verdict": (
+            preflight_block.get("original_verdict") if isinstance(preflight_block, dict) else None
+        ),
+        "preflight_source_run_id": (
+            preflight_block.get("source_run_id") if isinstance(preflight_block, dict) else None
+        ),
+        "error": audit_data.get("error"),
+        "error_type": audit_data.get("error_type") or outcome_block.get("error_type"),
+        "outcome_code": (
+            audit_data.get("error_type") or outcome_block.get("error_type") or final_phase.lower()
+        ),
+        "merge": bool((audit_data.get("merge") or {}).get("merged", False)),
+        "iteration_usage": {
+            "dev": {
+                "used": dev_usage.get("used", 0),
+                "max": dev_usage.get("max"),
+                "hit_limit": bool(dev_usage.get("hit_limit", False)),
+                "early_finish": bool(dev_usage.get("early_finish", False)),
+            },
+            "review": {
+                "used": review_usage.get("used", 0),
+                "max": review_usage.get("max"),
+                "hit_limit": bool(review_usage.get("hit_limit", False)),
+                "early_finish": bool(review_usage.get("early_finish", False)),
+            },
+        },
+        "started_at": timing_block.get("started_at") if isinstance(timing_block, dict) else None,
+        "finished_at": timing_block.get("finished_at") if isinstance(timing_block, dict) else None,
+    }
+
+
 def _write_sprint_audit(
     manifest: SprintManifest | ResolvedSprint,
     result: SprintResult,
@@ -491,7 +599,9 @@ def _write_sprint_summary(
         elif canonical_ref in prior_by_ref:
             # Story ran under an earlier run_id — use its accumulated data instead
             # of emitting a SKIPPED entry (which would hide a completed story).
-            prior = prior_by_ref[canonical_ref]
+            prior = _load_story_summary_entry_from_audit(sprint_log_dir, canonical_ref, slug)
+            if prior is None:
+                prior = prior_by_ref[canonical_ref]
             entry = {k: v for k, v in prior.items() if k != "canonical_ref"}
             spec_entries.append(entry)
             accumulated_for_state.append(prior)
