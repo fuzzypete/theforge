@@ -7,13 +7,13 @@ on consecutive zero-new-findings review cycles.
 
 from __future__ import annotations
 
-import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from coord_test_helpers import _make_config, _make_task
 
-from theforge.config.types import RetryPolicy
+from theforge.config.types import AssignmentConfig, RetryPolicy
 from theforge.coordinator.adaptive_iterations import derive_limits
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.state import (
@@ -35,9 +35,34 @@ def _make_adaptive_config(tmp_path: Path, **retry_overrides):
         review_zero_findings_stop=2,
     )
     defaults.update(retry_overrides)
-    from dataclasses import replace
+    return replace(
+        config,
+        retry=RetryPolicy(**defaults),
+        assignment=AssignmentConfig(enabled=True, adaptive_enabled=True),
+    )
 
-    return replace(config, retry=RetryPolicy(**defaults))
+
+def _profiles(*, runs: int = 3, avg_iterations: float = 4.0, avg_cost_usd: float = 1.0) -> dict:
+    return {
+        "models": {
+            "dev": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": runs,
+                            "avg_iterations": avg_iterations,
+                            "avg_cost_usd": avg_cost_usd,
+                        },
+                        "large": {
+                            "runs": runs,
+                            "avg_iterations": avg_iterations,
+                            "avg_cost_usd": avg_cost_usd,
+                        },
+                    }
+                }
+            }
+        }
+    }
 
 
 def test_adaptive_limits_populated_in_audit(tmp_path: Path):
@@ -48,10 +73,14 @@ def test_adaptive_limits_populated_in_audit(tmp_path: Path):
     state.preflight_complexity_score = 7
     state.adaptive_dev_max = 5
     state.adaptive_review_max = 3
+    state.adaptive_dev_timeout_seconds = 1500
+    state.adaptive_dev_budget_usd = 1.8
     state.adaptive_limits_audit = {
         "enabled": True,
         "chosen_dev_max": 5,
         "chosen_review_max": 3,
+        "chosen_dev_timeout_seconds": 1500,
+        "chosen_dev_budget_usd": 1.8,
         "rationale": "complexity-derived",
     }
     audit = generate_audit_log(
@@ -88,6 +117,8 @@ def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
     state.preflight_complexity_score = 9
     state.workspace_path = tmp_path
     state.branch_name = "feat/test"
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / "model_profiles.yaml").write_text("models: {}\n", encoding="utf-8")
 
     # Short-circuit the loop by raising before DEV starts.
     class _StopLoop(Exception):
@@ -106,29 +137,14 @@ def test_engine_populates_adaptive_limits_before_dev_loop(tmp_path: Path):
     assert state.adaptive_review_max > 0
     assert state.adaptive_dev_max <= config.retry.max_dev_iterations_cap
     assert state.adaptive_review_max <= config.retry.max_review_cycles_cap
-    # Score 9 should bump the limits above the floor.
-    assert state.adaptive_dev_max >= config.retry.max_dev_iterations
+    assert state.adaptive_dev_timeout_seconds == config.dev_profile.timeout_seconds
+    assert state.adaptive_dev_budget_usd == config.dev_profile.budget_usd
     assert state.adaptive_limits_audit.get("enabled") is True
     assert state.adaptive_limits_audit.get("complexity_score_used") == 9
 
 
-def test_history_informs_adaptive_limits(tmp_path: Path):
-    """derive_limits reads .forge/audits/history.jsonl and bumps limits on heavy history."""
-    audits = tmp_path / ".forge" / "audits"
-    audits.mkdir(parents=True)
-    history = audits / "history.jsonl"
-    records = [
-        {
-            "preflight": {"complexity_score": 5},
-            "iterations": {
-                "dev_iterations_productive": 5,
-                "review_cycles_total": 3,
-            },
-        }
-        for _ in range(6)
-    ]
-    history.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-
+def test_profiles_inform_adaptive_dev_limits(tmp_path: Path):
+    """derive_limits uses model capability profiles for dev budgeting."""
     policy = RetryPolicy(
         max_dev_iterations=3,
         max_review_cycles=2,
@@ -136,21 +152,25 @@ def test_history_informs_adaptive_limits(tmp_path: Path):
         max_review_cycles_cap=4,
         adaptive_iterations=True,
     )
-    result = derive_limits(5, None, policy, history)
-    # History p75=5 → dev_max raised above complexity-derived base.
-    assert result.dev_max == 6
-    assert result.audit["p75_dev"] == 5
-    assert result.audit["history_sample_size"] == 6
+    result = derive_limits(
+        5,
+        "medium",
+        policy,
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_budget_usd=10.0,
+        static_dev_max=3,
+        review_history_path=None,
+        model_profiles=_profiles(avg_iterations=3.2, avg_cost_usd=1.2),
+    )
+    assert result.dev_max == 5
+    assert result.dev_timeout_seconds == 1500
+    assert result.dev_budget_usd == 1.8
+    assert result.audit["profile_history_runs"] == 3
 
 
 def test_determinism_seam(tmp_path: Path):
     """Same complexity + same history → identical adaptive limits."""
-    history = tmp_path / "history.jsonl"
-    records = [
-        {"preflight": {"complexity_score": 6}, "iterations": {"dev_iterations_productive": 4}}
-        for _ in range(5)
-    ]
-    history.write_text("\n".join(json.dumps(r) for r in records) + "\n")
     policy = RetryPolicy(
         max_dev_iterations=3,
         max_review_cycles=2,
@@ -158,8 +178,29 @@ def test_determinism_seam(tmp_path: Path):
         max_review_cycles_cap=4,
         adaptive_iterations=True,
     )
-    a = derive_limits(6, None, policy, history)
-    b = derive_limits(6, None, policy, history)
+    profiles = _profiles(avg_iterations=4.0, avg_cost_usd=1.0)
+    a = derive_limits(
+        6,
+        "medium",
+        policy,
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_budget_usd=10.0,
+        static_dev_max=3,
+        review_history_path=None,
+        model_profiles=profiles,
+    )
+    b = derive_limits(
+        6,
+        "medium",
+        policy,
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_budget_usd=10.0,
+        static_dev_max=3,
+        review_history_path=None,
+        model_profiles=profiles,
+    )
     assert a == b
 
 
@@ -251,6 +292,93 @@ def test_adaptive_off_produces_policy_values(tmp_path: Path):
         max_review_cycles_cap=4,
         adaptive_iterations=False,
     )
-    result = derive_limits(10, "large", policy, None)
+    result = derive_limits(
+        10,
+        "large",
+        policy,
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_budget_usd=10.0,
+        static_dev_max=3,
+        review_history_path=None,
+        model_profiles=_profiles(),
+    )
     assert result.dev_max == 3
     assert result.review_max == 2
+
+
+def test_adaptive_assignment_off_keeps_review_limits_adaptive(tmp_path: Path):
+    from theforge.coordinator.engine import _coordinator_loop
+
+    config = replace(
+        _make_adaptive_config(tmp_path),
+        assignment=AssignmentConfig(enabled=True, adaptive_enabled=False),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState()
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 9
+    state.workspace_path = tmp_path
+    state.branch_name = "feat/test"
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / "model_profiles.yaml").write_text("models: {}\n", encoding="utf-8")
+
+    class _StopLoop(Exception):
+        pass
+
+    def _fake_dev(*args, **kwargs):
+        raise _StopLoop()
+
+    with patch("theforge.coordinator.engine._run_dev_phase", _fake_dev):
+        try:
+            _coordinator_loop(state, config, task, "story", task_start=0.0)
+        except _StopLoop:
+            pass
+
+    assert state.adaptive_dev_max == (
+        config.dev_profile.max_iterations or config.retry.max_dev_iterations
+    )
+    assert state.adaptive_review_max == config.retry.max_review_cycles_cap
+    assert state.adaptive_limits_audit["base_review"] == config.retry.max_review_cycles_cap
+    assert state.adaptive_limits_audit["profile_history_runs"] == 0
+    assert "complexity-derived review limit" in state.adaptive_limits_audit["rationale"]
+
+
+def test_explicit_dev_override_wins_over_computed_limits(tmp_path: Path):
+    from theforge.coordinator.engine import _coordinator_loop
+
+    config = replace(
+        _make_adaptive_config(tmp_path),
+        dev_profile=replace(
+            _make_adaptive_config(tmp_path).dev_profile,
+            budget_usd=12.0,
+            timeout_seconds=1200,
+            max_iterations=4,
+        ),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 6
+    state.workspace_path = tmp_path
+    state.branch_name = "feat/test"
+    state._explicit_roles = {"dev"}
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / "model_profiles.yaml").write_text("models: {}\n", encoding="utf-8")
+
+    class _StopLoop(Exception):
+        pass
+
+    def _fake_dev(*args, **kwargs):
+        raise _StopLoop()
+
+    with patch("theforge.coordinator.engine._run_dev_phase", _fake_dev):
+        try:
+            _coordinator_loop(state, config, task, "story", task_start=0.0)
+        except _StopLoop:
+            pass
+
+    assert state.adaptive_dev_max == 4
+    assert state.adaptive_dev_timeout_seconds == 1200
+    assert state.adaptive_dev_budget_usd == 12.0
+    assert "explicit dev forge.yaml override" in state.adaptive_limits_audit["rationale"]

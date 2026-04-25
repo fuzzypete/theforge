@@ -1,8 +1,9 @@
-"""Adaptive iteration limits: derive per-story dev/review budgets.
+"""Adaptive resource limits: derive per-story dev budgets and review-cycle caps.
 
-Pure-Python (stdlib only). Given a preflight complexity score (1-10) and the
-tail of ``.forge/audits/history.jsonl`` produced by prior runs, compute
-per-story ``max_dev_iterations`` / ``max_review_cycles``.
+Pure-Python (stdlib only). Given preflight complexity and model capability
+profiles, compute per-story dev ``max_iterations``, ``timeout_seconds``, and
+``budget_usd``. Review-cycle caps continue to use the existing complexity plus
+recent audit-history signal.
 
 Design:
 
@@ -10,17 +11,17 @@ Design:
   (never grant fewer iterations than the operator configured).
 - ``retry.max_dev_iterations_cap`` / ``retry.max_review_cycles_cap`` are the
   hard ceiling (safety rail) — adaptive growth never exceeds them.
-- Base grant scales with the 1-10 complexity score: higher score → more budget,
-  interpolated linearly between floor and cap.
-- Historical p75 usage for matching complexity (within ±1 of the score) bumps
-  the base when history shows recent runs at similar complexity ran long.
+- Dev limits are learned from per-complexity model profile averages with a
+  deterministic headroom factor.
+- Review-cycle caps keep the existing complexity + recent-history uplift path.
 - Deterministic: same inputs always yield the same limits.
-- Fallback: no score + no history → floor values from RetryPolicy verbatim.
+- Fallback: insufficient profile history → static configured dev limits.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,8 @@ _HISTORY_TAIL = 50
 _HISTORY_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 _BAND_TO_SCORE = {"small": 2, "medium": 5, "large": 9}
+_HEADROOM_FACTOR = 1.5
+_MIN_PROFILE_RUNS = 3
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,8 @@ class AdaptiveLimits:
 
     dev_max: int
     review_max: int
+    dev_timeout_seconds: int
+    dev_budget_usd: float
     audit: dict = field(default_factory=dict)
 
 
@@ -63,9 +68,15 @@ def _scale_to_band(score: int, floor: int, cap: int) -> int:
     # Fraction of the (cap - floor) range allocated at this score.
     frac = (score - 1) / 9  # score 1..10 → 0.0..1.0
     frac = max(0.0, min(1.0, frac))
-    import math
-
     return floor + math.ceil(frac * (cap - floor))
+
+
+def _round_money(value: float) -> float:
+    return round(max(value, 0.01), 4)
+
+
+def _ceil_int(value: float) -> int:
+    return max(1, int(math.ceil(value)))
 
 
 def _read_history_tail(history_path: Path) -> list[dict]:
@@ -157,14 +168,20 @@ def derive_limits(
     complexity_score: int | None,
     complexity_band: str | None,
     retry_policy: "RetryPolicy",
-    history_path: Path | None,
+    *,
+    model_name: str,
+    base_timeout_seconds: int,
+    base_budget_usd: float,
+    static_dev_max: int,
+    review_history_path: Path | None,
+    model_profiles: dict | None,
 ) -> AdaptiveLimits:
-    """Compute per-story iteration limits.
+    """Compute per-story adaptive limits.
 
     Returns an :class:`AdaptiveLimits` with the chosen maximums and an audit
-    dict describing the inputs used, historical sample size, the p75 values
-    observed, and the final chosen limits. When ``adaptive_iterations`` is
-    disabled on the policy, returns the policy floors verbatim.
+    dict describing the inputs used, profile sample size, the learned averages,
+    any review-history uplift, and the final chosen limits. When adaptive
+    derivation is disabled on the policy, returns static config values verbatim.
     """
     floor_dev = max(1, retry_policy.max_dev_iterations)
     floor_review = max(1, retry_policy.max_review_cycles)
@@ -179,65 +196,118 @@ def derive_limits(
         "floor_review": floor_review,
         "cap_dev": cap_dev,
         "cap_review": cap_review,
+        "model_name": model_name,
+        "headroom_factor": _HEADROOM_FACTOR,
+        "min_profile_runs": _MIN_PROFILE_RUNS,
+        "base_timeout_seconds": base_timeout_seconds,
+        "base_budget_usd": base_budget_usd,
+        "static_dev_max": static_dev_max,
     }
 
     if not retry_policy.adaptive_iterations:
-        audit["rationale"] = "adaptive_iterations disabled; using policy floors"
-        return AdaptiveLimits(dev_max=floor_dev, review_max=floor_review, audit=audit)
+        audit["rationale"] = "adaptive_iterations disabled; using static configured limits"
+        return AdaptiveLimits(
+            dev_max=static_dev_max,
+            review_max=floor_review,
+            dev_timeout_seconds=base_timeout_seconds,
+            dev_budget_usd=base_budget_usd,
+            audit=audit,
+        )
 
     score = _score_from_inputs(complexity_score, complexity_band)
     audit["complexity_score_used"] = score
 
     if score is None:
-        audit["rationale"] = "no complexity score available; using policy floors"
-        return AdaptiveLimits(dev_max=floor_dev, review_max=floor_review, audit=audit)
+        audit["rationale"] = "no complexity score available; using static configured limits"
+        return AdaptiveLimits(
+            dev_max=static_dev_max,
+            review_max=floor_review,
+            dev_timeout_seconds=base_timeout_seconds,
+            dev_budget_usd=base_budget_usd,
+            audit=audit,
+        )
 
-    # Base: scale floor→cap by complexity score.
-    base_dev = _scale_to_band(score, floor_dev, cap_dev)
+    # Review-cycle adaptation stays on the existing complexity/history path.
     base_review = _scale_to_band(score, floor_review, cap_review)
-    audit["base_dev"] = base_dev
     audit["base_review"] = base_review
 
-    # History: p75 of matching-complexity runs; records within ±1 of the score.
+    profile_stats = None
+    if model_profiles:
+        from theforge.model_profiles import get_dev_complexity_stats  # noqa: PLC0415
+
+        profile_stats = get_dev_complexity_stats(
+            model_profiles,
+            model_name,
+            complexity_band,
+            min_runs=_MIN_PROFILE_RUNS,
+        )
+    profile_runs = int(profile_stats["runs"]) if profile_stats is not None else 0
+    audit["profile_history_runs"] = profile_runs
+    audit["profile_avg_iterations"] = (
+        round(float(profile_stats["avg_iterations"]), 4) if profile_stats is not None else None
+    )
+    audit["profile_avg_cost_usd"] = (
+        round(float(profile_stats["avg_cost_usd"]), 6) if profile_stats is not None else None
+    )
+
+    if profile_stats is None:
+        chosen_dev = static_dev_max
+        chosen_timeout = base_timeout_seconds
+        chosen_budget = base_budget_usd
+        dev_rationale = (
+            "insufficient profile history for complexity band; using static configured dev limits"
+        )
+    else:
+        raw_dev = profile_stats["avg_iterations"] * _HEADROOM_FACTOR
+        chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
+        timeout_per_iteration = base_timeout_seconds / max(static_dev_max, 1)
+        chosen_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
+        chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _HEADROOM_FACTOR)
+        audit["profile_raw_dev_max"] = round(raw_dev, 4)
+        dev_rationale = (
+            f"derived dev limits from {profile_runs} "
+            f"{complexity_band or 'unknown'}-band profile runs with "
+            f"{_HEADROOM_FACTOR}x headroom; timeout scaled from static "
+            "per-iteration baseline."
+        )
+    audit["chosen_dev_max"] = chosen_dev
+    audit["chosen_dev_timeout_seconds"] = chosen_timeout
+    audit["chosen_dev_budget_usd"] = round(chosen_budget, 4)
+
+    # Review history: p75 of matching-complexity runs; records within ±1 of the score.
     history_sample = 0
-    p75_dev = 0
     p75_review = 0
-    if history_path is not None:
-        recs = _read_history_tail(history_path)
-        matching_dev: list[int] = []
+    if review_history_path is not None:
+        recs = _read_history_tail(review_history_path)
         matching_review: list[int] = []
         for rec in recs:
             rec_score = _extract_record_score(rec)
             if rec_score is None or abs(rec_score - score) > 1:
                 continue
-            d = _extract_dev_used(rec)
             r = _extract_review_used(rec)
-            if d is not None:
-                matching_dev.append(d)
             if r is not None:
                 matching_review.append(r)
-        history_sample = max(len(matching_dev), len(matching_review))
-        p75_dev = _percentile(matching_dev, 75)
+        history_sample = len(matching_review)
         p75_review = _percentile(matching_review, 75)
-    audit["history_sample_size"] = history_sample
-    audit["p75_dev"] = p75_dev
+    audit["review_history_sample_size"] = history_sample
     audit["p75_review"] = p75_review
 
-    # Combine base and p75 — use max(base, p75+1) so history can push the limit
-    # up but not below the complexity-derived base.  Clamp to [floor, cap].
-    raw_dev = max(base_dev, p75_dev + 1 if p75_dev > 0 else 0)
+    # Review limit remains bounded by the existing complexity-derived base.
     raw_review = max(base_review, p75_review + 1 if p75_review > 0 else 0)
-    chosen_dev = max(floor_dev, min(cap_dev, raw_dev))
     chosen_review = max(floor_review, min(cap_review, raw_review))
-    audit["chosen_dev_max"] = chosen_dev
     audit["chosen_review_max"] = chosen_review
-    if history_sample > 0 and (raw_dev > base_dev or raw_review > base_review):
-        audit["rationale"] = (
-            f"history p75 (dev={p75_dev}, review={p75_review}) raised limits above complexity base"
-        )
+    if history_sample > 0 and raw_review > base_review:
+        review_note = f" review history raised review_max to {chosen_review}."
     elif history_sample > 0:
-        audit["rationale"] = "history within complexity base; using complexity-derived limits"
+        review_note = " review history stayed within the complexity-derived review base."
     else:
-        audit["rationale"] = "no matching history; using complexity-derived limits"
+        review_note = " no matching review history; using complexity-derived review limit."
+    audit["rationale"] = f"{dev_rationale}{review_note}"
 
-    return AdaptiveLimits(dev_max=chosen_dev, review_max=chosen_review, audit=audit)
+    return AdaptiveLimits(
+        dev_max=chosen_dev,
+        review_max=chosen_review,
+        dev_timeout_seconds=chosen_timeout,
+        dev_budget_usd=chosen_budget,
+        audit=audit,
+    )
