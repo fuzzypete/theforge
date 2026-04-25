@@ -254,7 +254,10 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "coordinator.py"
-    evidence: "Implemented in coordinator.py:42"
+    runtime_path: "run_task() -> _run_preflight_phase() -> coordinator execution path"
+    evidence: >-
+      The live coordinator path executes coordinator.py and produces the
+      expected observable behavior for Feature X.
 ```
 """
 
