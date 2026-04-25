@@ -47,6 +47,23 @@ class TestValidateReviewYaml:
         errors = validate_review_yaml(data)
         assert any("APPROVE" in e and "P1" in e for e in errors)
 
+    def test_approve_with_closure_style_p1_is_error(self):
+        """Closure-style acknowledgements in findings[] still trip APPROVE+P1 rejection."""
+        data = _valid_review()
+        data["verdict"] = "APPROVE"
+        data["summary"] = "Prior cycle issue appears resolved."
+        data["findings"] = [
+            {
+                "severity": "P1",
+                "file": "src/foo.py",
+                "line": 42,
+                "description": "Prior P1 from Cycle 3 is fixed: null check was added",
+                "suggestion": "Move this acknowledgement to summary or omit it",
+            }
+        ]
+        errors = validate_review_yaml(data)
+        assert any("APPROVE" in e and "P1" in e for e in errors)
+
     def test_request_changes_without_p1_is_error(self):
         data = _valid_review()
         data["verdict"] = "REQUEST_CHANGES"

@@ -218,6 +218,17 @@ class TestBuildReviewPromptCycleHistory:
         assert "Missing null check in src/foo.py:42" in prompt
         assert "Cycle 1" in prompt
 
+    def test_cycle2_forbids_closure_notes_in_findings(self, review_task: TaskStory) -> None:
+        """Cycle-aware review prompt routes resolved-prior notes away from findings[]."""
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            cycle_history=self._make_history(),
+        )
+        assert "Do NOT put closure notes or acknowledgements of resolved prior bugs in" in prompt
+        assert "`findings[]`" in prompt
+        assert "put it in `summary`" in prompt
+
     def test_cycle2_shows_correct_cycle_number(self, review_task: TaskStory) -> None:
         """Cycle 2+: cycle number in header reflects current cycle."""
         history = self._make_history()  # 1 cycle → reviewing cycle 2
@@ -556,6 +567,20 @@ class TestBuildPlanReviewPrompt:
             rejection_findings=None,
         )
         assert "Previous Rejection Findings" not in prompt
+
+    def test_forbids_closure_notes_in_findings(self, tmp_path: Path) -> None:
+        task = _make_task(tmp_path)
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="# Story",
+            plan_content="# Plan",
+            rejection_findings="- [P1] Prior API mismatch",
+        )
+        assert "`findings[]` is only for current defects in the plan under review." in prompt
+        assert 'Do NOT use it for closure notes such as "Previous rejection is fixed".' in prompt
+        assert "put it\n          in `summary` or omit it entirely" in prompt or (
+            "put it in `summary` or omit it entirely." in prompt
+        )
 
 
 # ── Notes section convention tests ──────────────────────────────────────

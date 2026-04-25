@@ -348,6 +348,7 @@ def build_plan_review_prompt(
 
         ```yaml
         verdict: APPROVE | REJECT
+        summary: "<one-line summary of your review>"
         criteria_coverage:
           - criterion: "<acceptance criterion text from the spec>"
             covered: true | false
@@ -422,6 +423,10 @@ def build_plan_review_prompt(
         - **List ALL issues in a single pass.** Multiple findings in one REJECT
           is far better than discovering new issues across multiple cycles.
         - APPROVE with P1-impl and P2 suggestions is valid and encouraged
+        - `findings[]` is only for current defects in the plan under review.
+          Do NOT use it for closure notes such as "Previous rejection is fixed".
+          If you want to acknowledge that a prior issue is now addressed, put it
+          in `summary` or omit it entirely.
         - Be specific: cite the plan section, the actual codebase function/file,
           and why it would fail
         - A plan does not need to be perfect — it needs to not be wrong
