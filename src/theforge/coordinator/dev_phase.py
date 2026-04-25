@@ -133,8 +133,6 @@ def record_dev_iteration_telemetry(
     gate_result: str | None,
     gate_output_tail: str = "",
     is_timeout: bool = False,
-    agent_exit_code: int | None = None,
-    runner_failure_code: str | None = None,
     runner_failure_summary: str | None = None,
 ) -> None:
     """Capture per-iteration dev telemetry after validation completes."""
@@ -175,8 +173,8 @@ def record_dev_iteration_telemetry(
             tests_fixed_count=tests_fixed_count,
             meaningful_progress=meaningful_progress,
             sandboxed=state.sandboxed,
-            agent_exit_code=agent_exit_code,
-            runner_failure_code=runner_failure_code,
+            agent_exit_code=dev_result.exit_code,
+            runner_failure_code=dev_result.failure_code,
             runner_failure_summary=runner_failure_summary,
         )
     )
@@ -477,7 +475,7 @@ def _run_dev_phase(
     _runner_failure = None
     if not dev_result.success and not dev_result.startup_failure:
         _runner_failure = classify_runner_subprocess_failure(dev_result.output)
-        if _runner_failure is not None and dev_result.failure_code is None:
+        if _runner_failure is not None:
             dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
     _dev_elapsed = time.monotonic() - _dev_start
     write_trace(
@@ -522,19 +520,10 @@ def _run_dev_phase(
                 workspace_path,
                 max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
                 gate_result="RUNNER_CRASH",
-                agent_exit_code=dev_result.exit_code,
-                runner_failure_code=dev_result.failure_code,
                 runner_failure_summary=_runner_failure[1],
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
-                logger._safe_emit(
-                    "phase_end",
-                    phase="DEV",
-                    outcome="escalate",
-                    cost_usd=dev_result.cost_usd,
-                    duration_s=round(_dev_elapsed, 2),
-                )
                 logger._safe_emit("escalate", reason=state.error, phase="DEV")
             _escalate_notify(task, state, notify, config)
             return CoordinatorResult(
