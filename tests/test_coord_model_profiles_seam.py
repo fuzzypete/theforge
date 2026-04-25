@@ -312,6 +312,156 @@ def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, mon
     assert state_low_off.complexity_routing_audit["role_sources"]["dev"] == "static"
 
 
+def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, monkeypatch):
+    """Explicit planner + review_pool must show as overrides in audit and budget total."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from dataclasses import replace as _replace
+
+    from theforge.config import ModelProfile, PlanConfig
+    from theforge.coordinator import preflight as _pf
+
+    explicit_planner_model = "explicit-planner-model"
+    explicit_reviewer = ModelProfile(
+        name="custom-reviewer",
+        cli="claude",
+        provider=None,
+        model="custom-reviewer-model",
+        budget_usd=2.5,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Grep"),
+    )
+
+    config = _replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+            AgentDef(
+                name="opus",
+                provider="anthropic",
+                model="opus",
+                budget_usd=8.0,
+                timeout_seconds=1200,
+                tier="strong",
+                cli="claude",
+            ),
+        ],
+        plan=PlanConfig(
+            enabled=True,
+            cli="claude",
+            model=explicit_planner_model,
+            provider=None,
+            budget_usd=7.5,
+            timeout=600,
+        ),
+        plan_model_is_default=False,
+        review_pool=[explicit_reviewer, explicit_reviewer],
+        review_pool_is_default=False,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=20.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    # planner and code_review must be flagged as explicit overrides.
+    assert audit["role_sources"]["planner"] == "explicit_override"
+    assert audit["role_sources"]["code_review"] == "explicit_override"
+    # The audit's recorded planner/code_reviewers must match what runtime uses.
+    assert audit["assignments"]["planner"] == explicit_planner_model
+    assert audit["assignments"]["code_reviewers"] == [
+        explicit_reviewer.model,
+        explicit_reviewer.model,
+    ]
+    # Budget total reflects the explicit pool, not the adaptive single-reviewer count.
+    decision = state._adaptive_decision
+    runtime_total = (
+        decision.preflight.budget_usd
+        + decision.planner.budget_usd
+        + sum(p.budget_usd for p in decision.plan_reviewers)
+        + decision.dev.budget_usd
+        + sum(p.budget_usd for p in decision.code_reviewers)
+    )
+    assert audit["budget"]["final_total_usd"] == round(runtime_total, 2)
+
+
+def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_path, monkeypatch):
+    """An expensive explicit review_pool must surface override_forced_overrun in audit."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from dataclasses import replace as _replace
+
+    from theforge.config import ModelProfile
+    from theforge.coordinator import preflight as _pf
+
+    pricey_reviewer = ModelProfile(
+        name="pricey-reviewer",
+        cli="claude",
+        provider=None,
+        model="pricey-model",
+        budget_usd=50.0,
+        timeout_seconds=300,
+        allowed_tools=("Read",),
+    )
+
+    config = _replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+        ],
+        review_pool=[pricey_reviewer, pricey_reviewer],
+        review_pool_is_default=False,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=5.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    assert audit["role_sources"]["code_review"] == "explicit_override"
+    assert audit["budget"]["within_budget"] is False
+    assert audit["budget"]["override_forced_overrun"] is True
+    assert "code_review" in audit["budget"]["locked_roles"]
+
+
 def test_record_run_memory_is_called_from_resume_path(tmp_path):
     """Both run_task and _run_resume_coordinator must call _record_run_memory.
 

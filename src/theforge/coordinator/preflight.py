@@ -741,8 +741,12 @@ def _apply_preflight_config(
     _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
     _model_profiles = _load_profiles(_profiles_path)
 
+    from theforge.config import ModelProfile as _ModelProfile  # noqa: PLC0415
+
     _explicit: dict[str, object] = {}
     _explicit_roles: set[str] = set()
+    _explicit_review_pool: list[_ModelProfile] = []
+    _explicit_plan_review_pool: list[_ModelProfile] = []
     if config.models is None:
         if config.dev_profile is not _DEF_DEV:
             _explicit["dev"] = config.dev_profile
@@ -752,10 +756,27 @@ def _apply_preflight_config(
             _explicit_roles.add("preflight")
         if config.review_pool and not config.review_pool_is_default:
             _explicit_roles.add("review_pool")
+            _explicit_review_pool = list(config.review_pool)
+            # Lock code_review against budget downgrade and audit it as overridden.
+            _explicit["code_review"] = _explicit_review_pool[0]
         if not config.plan_model_is_default:
             _explicit_roles.add("planner")
+            _explicit_planner = _ModelProfile(
+                name="plan",
+                cli=config.plan.cli,
+                model=config.plan.model,
+                provider=config.plan.provider,
+                budget_usd=config.plan.budget_usd,
+                timeout_seconds=config.plan.timeout,
+                allowed_tools=config.preflight_profile.allowed_tools,
+                api_fallback=config.plan.api_fallback,
+                phase="plan",
+            )
+            _explicit["planner"] = _explicit_planner
         if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
             _explicit_roles.add("plan_agent_review")
+            _explicit_plan_review_pool = list(config.plan_agent_review.profiles)
+            _explicit["plan_review"] = _explicit_plan_review_pool[0]
 
     _decision = _assign_models(
         config.agents,
@@ -768,6 +789,41 @@ def _apply_preflight_config(
         secrets=config.secrets,
         model_profiles=_model_profiles,
     )
+
+    # Splice the full explicit pools back into the decision so audit and
+    # downstream consumers see the models that actually run, then recompute
+    # the budget audit total against the runtime configuration so explicit
+    # planner/reviewer overrides cannot silently overrun the cap.
+    if _explicit_review_pool or _explicit_plan_review_pool:
+        _decision = _dc_replace(
+            _decision,
+            code_reviewers=(
+                _explicit_review_pool if _explicit_review_pool else _decision.code_reviewers
+            ),
+            plan_reviewers=(
+                _explicit_plan_review_pool
+                if _explicit_plan_review_pool
+                else _decision.plan_reviewers
+            ),
+        )
+
+    if _explicit:
+        _runtime_total = (
+            _decision.preflight.budget_usd
+            + _decision.planner.budget_usd
+            + sum(p.budget_usd for p in _decision.plan_reviewers)
+            + _decision.dev.budget_usd
+            + sum(p.budget_usd for p in _decision.code_reviewers)
+        )
+        _budget_cap = config.assignment.budget_per_story_usd
+        _within = _runtime_total <= _budget_cap
+        _new_audit = dict(_decision.budget_audit)
+        _new_audit["final_total_usd"] = round(_runtime_total, 2)
+        _new_audit["within_budget"] = _within
+        if not _within:
+            _new_audit["override_forced_overrun"] = True
+            _new_audit["locked_roles"] = sorted(set(_explicit.keys()))
+        _decision = _dc_replace(_decision, budget_audit=_new_audit)
 
     _replace_kwargs: dict[str, object] = {
         "dev_profile": _decision.dev,
@@ -804,8 +860,20 @@ def _apply_preflight_config(
         if isinstance(step, dict) and step.get("role")
     }
 
-    def _role_source(role: str, override_keys: set[str]) -> str:
-        if role in override_keys:
+    # Map audit roles to whichever explicit-source hint indicates an override.
+    # _explicit (passed to assign_models) keys: dev/preflight/planner/code_review/plan_review
+    # _explicit_roles (config-derived) keys: dev/preflight/planner/review_pool/plan_agent_review
+    _override_keys = set(_explicit.keys()) if isinstance(_explicit, dict) else set()
+    _audit_role_to_explicit_role = {
+        "preflight": "preflight",
+        "planner": "planner",
+        "plan_review": "plan_agent_review",
+        "dev": "dev",
+        "code_review": "review_pool",
+    }
+
+    def _role_source(role: str) -> str:
+        if role in _override_keys or _audit_role_to_explicit_role.get(role) in _explicit_roles:
             return "explicit_override"
         if not _adaptive_enabled:
             return "static"
@@ -813,13 +881,12 @@ def _apply_preflight_config(
             return "budget_downgrade"
         return "adaptive"
 
-    _override_keys = set(_explicit.keys()) if isinstance(_explicit, dict) else set()
     _per_role_sources = {
-        "preflight": _role_source("preflight", _override_keys),
-        "planner": _role_source("planner", _override_keys),
-        "plan_review": _role_source("plan_review", _override_keys),
-        "dev": _role_source("dev", _override_keys),
-        "code_review": _role_source("code_review", _override_keys),
+        "preflight": _role_source("preflight"),
+        "planner": _role_source("planner"),
+        "plan_review": _role_source("plan_review"),
+        "dev": _role_source("dev"),
+        "code_review": _role_source("code_review"),
     }
     state.complexity_routing_audit = {
         "complexity": complexity,
