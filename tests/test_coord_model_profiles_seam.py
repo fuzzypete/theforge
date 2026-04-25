@@ -44,6 +44,11 @@ def _cached_proceed_state_with_complexity(complexity: str = "medium") -> Coordin
     state.preflight_complexity_score = 5
     state.preflight_sufficiency = "implementation_ready"
     state.preflight_work_type = "feature"
+    state.preflight_cache_snapshot = {
+        "worktree_head": "OK",
+        "evaluation_base_branch": "main",
+        "evaluation_base_branch_head": "OK",
+    }
     return state
 
 

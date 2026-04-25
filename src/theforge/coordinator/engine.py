@@ -59,6 +59,10 @@ from .log_tee import (  # noqa: E402
 # ── Structured logging ────────────────────────────────────────────────
 from .logging import StructuredLogger
 from .notify import _escalate_notify
+from .preflight_cache import (
+    apply_cached_preflight_state,
+    validate_preflight_cache,
+)
 from .signals import (  # noqa: E402
     _fire_post_run_hook,
     _make_sigterm_handler,
@@ -628,41 +632,44 @@ def run_task(
         if cached_preflight_state is not None:
             from .preflight import _apply_preflight_config  # noqa: PLC0415
 
-            state.preflight_verdict = cached_preflight_state.preflight_verdict
-            state.preflight_reason = cached_preflight_state.preflight_reason
-            state.preflight_complexity = cached_preflight_state.preflight_complexity
-            state.preflight_complexity_score = cached_preflight_state.preflight_complexity_score
-            state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
-            state.preflight_work_type = cached_preflight_state.preflight_work_type
-            state.preflight_contract_change = cached_preflight_state.preflight_contract_change
-            state.preflight_bundle_candidate = cached_preflight_state.preflight_bundle_candidate
-            state.preflight_warnings = list(cached_preflight_state.preflight_warnings or [])
-            state.preflight_likely_files = (
-                None
-                if cached_preflight_state.preflight_likely_files is None
-                else list(cached_preflight_state.preflight_likely_files)
-            )
-            state.preflight_duration_s = cached_preflight_state.preflight_duration_s
-            state.preflight_cached = True
-            state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
-            state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
-            state.preflight_criteria_checked = list(
-                getattr(cached_preflight_state, "preflight_criteria_checked", None) or []
-            )
-            config = _apply_preflight_config(config, state)
-            from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
-
-            config, _pf_result, _pf_already_done_loop = _handle_preflight_verdict(
-                verdict=state.preflight_verdict,
-                reason=state.preflight_reason,
-                state=state,
+            cache_valid, cache_validation = validate_preflight_cache(
+                cached_preflight_state,
                 config=config,
-                task=task,
-                branch_name=branch_name,
-                notify=notify,
-                logger=logger,
-                task_start=_task_start,
+                workspace_path=workspace_path,
             )
+            state.preflight_cache_validation = cache_validation
+            if cache_valid:
+                apply_cached_preflight_state(state, cached_preflight_state)
+                config = _apply_preflight_config(config, state)
+                from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
+
+                config, _pf_result, _pf_already_done_loop = _handle_preflight_verdict(
+                    verdict=state.preflight_verdict,
+                    reason=state.preflight_reason,
+                    state=state,
+                    config=config,
+                    task=task,
+                    branch_name=branch_name,
+                    notify=notify,
+                    logger=logger,
+                    task_start=_task_start,
+                )
+            else:
+                from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
+
+                config, _pf_result, _pf_already_done_loop = _run_preflight_phase(
+                    state,
+                    config,
+                    task,
+                    story_content,
+                    workspace_path,
+                    branch_name,
+                    notify=notify,
+                    logger=logger,
+                    task_start=_task_start,
+                    state_update_fn=state_update_fn,
+                    stop_phase=stop_phase,
+                )
         else:
             from .preflight_flow import _run_preflight_phase  # noqa: PLC0415
 
@@ -904,27 +911,15 @@ def _run_resume_coordinator(
     if cached_preflight_state is not None:
         from .preflight import _apply_preflight_config  # noqa: PLC0415
 
-        state.preflight_verdict = cached_preflight_state.preflight_verdict
-        state.preflight_reason = cached_preflight_state.preflight_reason
-        state.preflight_complexity = cached_preflight_state.preflight_complexity
-        state.preflight_complexity_score = cached_preflight_state.preflight_complexity_score
-        state.preflight_sufficiency = cached_preflight_state.preflight_sufficiency
-        state.preflight_work_type = cached_preflight_state.preflight_work_type
-        state.preflight_contract_change = cached_preflight_state.preflight_contract_change
-        state.preflight_warnings = list(cached_preflight_state.preflight_warnings or [])
-        state.preflight_likely_files = (
-            None
-            if cached_preflight_state.preflight_likely_files is None
-            else list(cached_preflight_state.preflight_likely_files)
+        cache_valid, cache_validation = validate_preflight_cache(
+            cached_preflight_state,
+            config=config,
+            workspace_path=workspace_path,
         )
-        state.preflight_duration_s = cached_preflight_state.preflight_duration_s
-        state.preflight_cached = True
-        state.preflight_cached_original_verdict = cached_preflight_state.preflight_verdict
-        state.preflight_cached_from_run_id = getattr(cached_preflight_state, "run_id", None)
-        state.preflight_criteria_checked = list(
-            getattr(cached_preflight_state, "preflight_criteria_checked", None) or []
-        )
-        config = _apply_preflight_config(config, state)
+        state.preflight_cache_validation = cache_validation
+        if cache_valid:
+            apply_cached_preflight_state(state, cached_preflight_state)
+            config = _apply_preflight_config(config, state)
 
     with _run_log_context(config, logger, task, state, _task_start):
         base_branch = config.workspace.base_branch

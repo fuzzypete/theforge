@@ -14,6 +14,15 @@ from theforge.sprint.dag import StoryTriage
 from theforge.sprint.runner import run_sprint
 
 
+def _set_snapshot(state: CoordinatorState) -> CoordinatorState:
+    state.preflight_cache_snapshot = {
+        "worktree_head": "OK",
+        "evaluation_base_branch": "main",
+        "evaluation_base_branch_head": "OK",
+    }
+    return state
+
+
 class TestSprintResumeCachedPreflight:
     def test_resume_sprint_passes_cached_preflight_to_resumed_entrypoints(
         self, tmp_path: Path
@@ -42,16 +51,20 @@ class TestSprintResumeCachedPreflight:
             worktree_path=dev_worktree,
         )
 
-        review_cached = CoordinatorState(
-            preflight_verdict="PROCEED",
-            preflight_reason="cached review",
-            preflight_likely_files=["src/review.py"],
+        review_cached = _set_snapshot(
+            CoordinatorState(
+                preflight_verdict="PROCEED",
+                preflight_reason="cached review",
+                preflight_likely_files=["src/review.py"],
+            )
         )
         review_cached.run_id = "run-review"
-        dev_cached = CoordinatorState(
-            preflight_verdict="PROCEED",
-            preflight_reason="cached dev",
-            preflight_likely_files=["src/dev.py"],
+        dev_cached = _set_snapshot(
+            CoordinatorState(
+                preflight_verdict="PROCEED",
+                preflight_reason="cached dev",
+                preflight_likely_files=["src/dev.py"],
+            )
         )
         dev_cached.run_id = "run-dev"
 
@@ -112,16 +125,20 @@ class TestSprintResumeCachedPreflight:
             worktree_path=dev_worktree,
         )
 
-        review_cached = CoordinatorState(
-            preflight_verdict="PROCEED",
-            preflight_reason="cached review",
-            preflight_likely_files=["src/review.py"],
+        review_cached = _set_snapshot(
+            CoordinatorState(
+                preflight_verdict="PROCEED",
+                preflight_reason="cached review",
+                preflight_likely_files=["src/review.py"],
+            )
         )
         review_cached.run_id = "run-review"
-        dev_cached = CoordinatorState(
-            preflight_verdict="ALREADY_DONE",
-            preflight_reason="cached dev",
-            preflight_likely_files=["src/dev.py"],
+        dev_cached = _set_snapshot(
+            CoordinatorState(
+                preflight_verdict="ALREADY_DONE",
+                preflight_reason="cached dev",
+                preflight_likely_files=["src/dev.py"],
+            )
         )
         dev_cached.run_id = "run-dev"
 
