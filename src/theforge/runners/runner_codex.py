@@ -111,7 +111,9 @@ def _run_codex(
     os.close(fd)
     output_file = Path(output_path_str)
 
-    # Resume: `codex exec resume <id> [flags] -` (prompt via stdin).
+    # Resume: `codex exec resume [flags] <id> -` (prompt via stdin).
+    # Current Codex CLI exposes `--full-auto` on resume but not `--sandbox`.
+    # Fresh runs still accept the explicit sandbox flag.
     # Fresh start: `codex exec [flags] <prompt>` (prompt as positional arg).
     if session_id:
         cmd: list[str] = [
@@ -119,16 +121,13 @@ def _run_codex(
             "@openai/codex",
             "exec",
             "resume",
-            session_id,
             "--full-auto",
             "-m",
             profile.model,
         ]
         if profile.reasoning_effort:
             cmd += ["-c", f"model_reasoning_effort={profile.reasoning_effort}"]
-        if profile.sandbox_mode != "none":
-            cmd += ["--sandbox", profile.sandbox_mode]
-        cmd += ["-C", str(working_dir), "-o", str(output_file), "-"]
+        cmd += ["-C", str(working_dir), "-o", str(output_file), session_id, "-"]
         stdin_prompt: str | None = prompt
     else:
         cmd = [

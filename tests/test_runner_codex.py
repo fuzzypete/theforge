@@ -40,7 +40,7 @@ def _extract_codex_cmd(mock_run: MagicMock) -> list[str]:
 
 
 class TestCodexSandboxFlag:
-    """Assert that --sandbox flag is injected based on sandbox_mode."""
+    """Assert that sandbox handling matches the Codex CLI contract."""
 
     def test_workspace_write_adds_sandbox_flag(self, tmp_path: Path) -> None:
         """sandbox_mode=workspace-write → --sandbox workspace-write in cmd."""
@@ -95,8 +95,8 @@ class TestCodexSandboxFlag:
         cmd = _extract_codex_cmd(mock_run)
         assert "--sandbox" not in cmd
 
-    def test_sandbox_flag_present_on_resume(self, tmp_path: Path) -> None:
-        """--sandbox flag is also injected on session resume (not just fresh start)."""
+    def test_resume_omits_sandbox_flag(self, tmp_path: Path) -> None:
+        """Resume path omits --sandbox because current Codex CLI rejects it there."""
         profile = _make_profile(sandbox_mode="workspace-write")
         mock_proc = _make_subprocess_mock()
         with patch(
@@ -109,10 +109,8 @@ class TestCodexSandboxFlag:
                 session_id="sess-abc123",
             )
         cmd = _extract_codex_cmd(mock_run)
-        assert "--sandbox" in cmd
         assert "resume" in cmd
-        sandbox_idx = cmd.index("--sandbox")
-        assert cmd[sandbox_idx + 1] == "workspace-write"
+        assert "--sandbox" not in cmd
 
     def test_sandbox_flag_none_on_resume(self, tmp_path: Path) -> None:
         """sandbox_mode=none omits --sandbox on resume too."""
@@ -130,6 +128,23 @@ class TestCodexSandboxFlag:
         cmd = _extract_codex_cmd(mock_run)
         assert "--sandbox" not in cmd
         assert "resume" in cmd
+
+    def test_resume_orders_session_id_after_flags(self, tmp_path: Path) -> None:
+        """Resume command keeps flags before the positional session id."""
+        profile = _make_profile(sandbox_mode="workspace-write")
+        mock_proc = _make_subprocess_mock()
+        with patch(
+            "theforge.runners.runner_codex.subprocess.run", return_value=mock_proc
+        ) as mock_run:
+            _run_codex(
+                prompt="continue",
+                profile=profile,
+                working_dir=tmp_path,
+                session_id="sess-abc123",
+            )
+        cmd = _extract_codex_cmd(mock_run)
+        assert cmd[:4] == ["npx", "@openai/codex", "exec", "resume"]
+        assert cmd[-2:] == ["sess-abc123", "-"]
 
     def test_uses_workspace_venv_env(self, tmp_path: Path) -> None:
         """Codex subprocess env prefers the worktree virtualenv."""
