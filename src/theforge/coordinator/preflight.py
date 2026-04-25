@@ -422,9 +422,9 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
                 {
                     "criterion": str(entry.get("criterion", "")),
                     "files_checked": list(entry.get("files_checked") or []),
-                    "runtime_path": str(entry.get("runtime_path", "")),
+                    "runtime_path": str(entry.get("runtime_path") or ""),
                     "satisfied": bool(entry.get("satisfied", False)),
-                    "evidence": str(entry.get("evidence", "")),
+                    "evidence": str(entry.get("evidence") or ""),
                 }
             )
         return result

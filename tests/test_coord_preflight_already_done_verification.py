@@ -185,6 +185,23 @@ criteria_checked:
 ```
 """
 
+PREFLIGHT_ALREADY_DONE_NULL_RUNTIME_AND_EVIDENCE = """\
+```yaml
+verdict: ALREADY_DONE
+reason: "The code looks done."
+complexity: small
+sufficiency: implementation_ready
+work_type: feature
+criteria_checked:
+  - criterion: "Feature X is implemented"
+    satisfied: true
+    files_checked:
+      - "src/theforge/coordinator/engine.py"
+    runtime_path: null
+    evidence: null
+```
+"""
+
 
 class TestPreflightAlreadyDoneVerification:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -500,6 +517,46 @@ class TestPreflightAlreadyDoneVerification:
         assert any("evidence missing" in w for w in (result.state.preflight_warnings or []))
         mock_dev.assert_called()
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_null_runtime_path_downgraded_to_proceed(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """Explicit YAML null runtime_path/evidence still downgrade ALREADY_DONE."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output=PREFLIGHT_ALREADY_DONE_NULL_RUNTIME_AND_EVIDENCE,
+            cost_usd=0.05,
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_criteria_checked[0]["runtime_path"] == ""
+        assert result.state.preflight_criteria_checked[0]["evidence"] == ""
+        assert any("runtime_path missing" in w for w in (result.state.preflight_warnings or []))
+        mock_dev.assert_called()
+
     def test_parse_criteria_checked_captures_runtime_path(self) -> None:
         criteria = _parse_preflight_criteria_checked(PREFLIGHT_ALREADY_DONE_ALL_EVIDENCED)
 
@@ -515,3 +572,12 @@ class TestPreflightAlreadyDoneVerification:
         assert len(criteria) == 1
         assert criteria[0]["runtime_path"] == ""
         assert criteria[0]["criterion"] == "Feature X is implemented"
+
+    def test_parse_criteria_checked_normalizes_explicit_nulls(self) -> None:
+        criteria = _parse_preflight_criteria_checked(
+            PREFLIGHT_ALREADY_DONE_NULL_RUNTIME_AND_EVIDENCE
+        )
+
+        assert len(criteria) == 1
+        assert criteria[0]["runtime_path"] == ""
+        assert criteria[0]["evidence"] == ""
