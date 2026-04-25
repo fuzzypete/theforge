@@ -4,10 +4,10 @@ project: theforge
 # v0.8 simple model list. TheForge derives preflight, plan, dev, review,
 # and synthesis roles automatically from this list and the story complexity.
 # See docs/guides/inputs-reference.md for the full schema reference.
-#  - openai/gpt-5.4
 models:
   - claude/sonnet
   - claude/opus
+  - openai/gpt-5.4
   - deepseek/deepseek-reasoner
   - google/gemini-3.1-pro-preview
 
