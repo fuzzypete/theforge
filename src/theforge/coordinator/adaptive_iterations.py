@@ -251,32 +251,24 @@ def derive_limits(
     )
 
     if profile_stats is None:
-        audit["chosen_dev_max"] = static_dev_max
-        audit["chosen_dev_timeout_seconds"] = base_timeout_seconds
-        audit["chosen_dev_budget_usd"] = round(base_budget_usd, 4)
-        audit["review_history_sample_size"] = 0
-        audit["p75_review"] = 0
-        audit["chosen_review_max"] = floor_review
-        audit["rationale"] = (
-            "insufficient profile history for complexity band; using static configured limits"
+        chosen_dev = static_dev_max
+        chosen_timeout = base_timeout_seconds
+        chosen_budget = base_budget_usd
+        dev_rationale = "insufficient profile history for complexity band; using static configured dev limits"
+    else:
+        raw_dev = profile_stats["avg_iterations"] * _HEADROOM_FACTOR
+        chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
+        timeout_per_iteration = base_timeout_seconds / max(static_dev_max, 1)
+        chosen_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
+        chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _HEADROOM_FACTOR)
+        audit["profile_raw_dev_max"] = round(raw_dev, 4)
+        dev_rationale = (
+            f"derived dev limits from {profile_runs} {complexity_band or 'unknown'}-band profile runs "
+            f"with {_HEADROOM_FACTOR}x headroom; timeout scaled from static per-iteration baseline."
         )
-        return AdaptiveLimits(
-            dev_max=static_dev_max,
-            review_max=floor_review,
-            dev_timeout_seconds=base_timeout_seconds,
-            dev_budget_usd=base_budget_usd,
-            audit=audit,
-        )
-
-    raw_dev = profile_stats["avg_iterations"] * _HEADROOM_FACTOR
-    chosen_dev = max(floor_dev, min(cap_dev, _ceil_int(raw_dev)))
-    timeout_per_iteration = base_timeout_seconds / max(static_dev_max, 1)
-    chosen_timeout = _ceil_int(chosen_dev * timeout_per_iteration)
-    chosen_budget = _round_money(profile_stats["avg_cost_usd"] * _HEADROOM_FACTOR)
-    audit["profile_raw_dev_max"] = round(raw_dev, 4)
     audit["chosen_dev_max"] = chosen_dev
     audit["chosen_dev_timeout_seconds"] = chosen_timeout
-    audit["chosen_dev_budget_usd"] = chosen_budget
+    audit["chosen_dev_budget_usd"] = round(chosen_budget, 4)
 
     # Review history: p75 of matching-complexity runs; records within ±1 of the score.
     history_sample = 0
@@ -306,11 +298,7 @@ def derive_limits(
         review_note = " review history stayed within the complexity-derived review base."
     else:
         review_note = " no matching review history; using complexity-derived review limit."
-    audit["rationale"] = (
-        f"derived dev limits from {profile_runs} {complexity_band or 'unknown'}-band profile runs "
-        f"with {_HEADROOM_FACTOR}x headroom; timeout scaled from static per-iteration baseline."
-        f"{review_note}"
-    )
+    audit["rationale"] = f"{dev_rationale}{review_note}"
 
     return AdaptiveLimits(
         dev_max=chosen_dev,

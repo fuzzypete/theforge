@@ -307,6 +307,43 @@ def test_adaptive_off_produces_policy_values(tmp_path: Path):
     assert result.review_max == 2
 
 
+def test_adaptive_assignment_off_keeps_review_limits_adaptive(tmp_path: Path):
+    from theforge.coordinator.engine import _coordinator_loop
+
+    config = replace(
+        _make_adaptive_config(tmp_path),
+        assignment=AssignmentConfig(enabled=True, adaptive_enabled=False),
+    )
+    task = _make_task(tmp_path)
+    state = CoordinatorState()
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 9
+    state.workspace_path = tmp_path
+    state.branch_name = "feat/test"
+    (tmp_path / ".forge").mkdir()
+    (tmp_path / ".forge" / "model_profiles.yaml").write_text("models: {}\n", encoding="utf-8")
+
+    class _StopLoop(Exception):
+        pass
+
+    def _fake_dev(*args, **kwargs):
+        raise _StopLoop()
+
+    with patch("theforge.coordinator.engine._run_dev_phase", _fake_dev):
+        try:
+            _coordinator_loop(state, config, task, "story", task_start=0.0)
+        except _StopLoop:
+            pass
+
+    assert state.adaptive_dev_max == (
+        config.dev_profile.max_iterations or config.retry.max_dev_iterations
+    )
+    assert state.adaptive_review_max == config.retry.max_review_cycles_cap
+    assert state.adaptive_limits_audit["base_review"] == config.retry.max_review_cycles_cap
+    assert state.adaptive_limits_audit["profile_history_runs"] == 0
+    assert "complexity-derived review limit" in state.adaptive_limits_audit["rationale"]
+
+
 def test_explicit_dev_override_wins_over_computed_limits(tmp_path: Path):
     from theforge.coordinator.engine import _coordinator_loop
 

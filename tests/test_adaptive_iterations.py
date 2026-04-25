@@ -132,7 +132,11 @@ def test_insufficient_profile_history_falls_back_to_static_limits(tmp_path: Path
     assert result.dev_max == 3
     assert result.dev_timeout_seconds == 900
     assert result.dev_budget_usd == 10.0
+    assert result.review_max == 3
+    assert result.audit["base_review"] == 3
     assert result.audit["profile_history_runs"] == 0
+    assert result.audit["chosen_review_max"] == 3
+    assert "complexity-derived review limit" in result.audit["rationale"]
 
 
 def test_deterministic_same_inputs_same_output(tmp_path: Path):
@@ -224,3 +228,34 @@ def test_oversized_history_skipped(tmp_path: Path, monkeypatch):
         model_profiles=_profiles(),
     )
     assert result.audit["review_history_sample_size"] == 0
+
+
+def test_insufficient_profile_history_still_uses_review_history_signal(tmp_path: Path):
+    history = tmp_path / "audit.jsonl"
+    history.write_text(
+        "\n".join(
+            [
+                '{"preflight":{"complexity_score":5},"iterations":{"review_cycles_total":3}}',
+                '{"preflight":{"complexity_score":6},"iterations":{"review_cycles_total":4}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result = derive_limits(
+        5,
+        "medium",
+        _policy(),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_budget_usd=10.0,
+        static_dev_max=3,
+        review_history_path=history,
+        model_profiles=_profiles(runs=2, avg_iterations=9.0, avg_cost=9.0),
+    )
+    assert result.dev_max == 3
+    assert result.review_max == 4
+    assert result.audit["review_history_sample_size"] == 2
+    assert result.audit["p75_review"] == 4
+    assert result.audit["chosen_review_max"] == 4
+    assert "review history raised review_max to 4" in result.audit["rationale"]

@@ -300,6 +300,19 @@ def _coordinator_loop(
                 _audit["rationale"] = (
                     "adaptive assignment disabled; using static configured dev limits"
                 )
+            if _limits.audit.get("review_history_sample_size", 0) > 0:
+                if _limits.audit.get("chosen_review_max", 0) > _limits.audit.get("base_review", 0):
+                    _audit["rationale"] += (
+                        f" review history raised review_max to {_limits.review_max}."
+                    )
+                else:
+                    _audit["rationale"] += (
+                        " review history stayed within the complexity-derived review base."
+                    )
+            else:
+                _audit["rationale"] += (
+                    " no matching review history; using complexity-derived review limit."
+                )
             _limits = type(_limits)(
                 dev_max=_static_dev_max,
                 review_max=_limits.review_max,
