@@ -1,14 +1,93 @@
+# forge.yaml — TheForge developing itself
+project: theforge
 
-project: test
-assignment:
+# v0.8 simple model list. TheForge derives preflight, plan, dev, review,
+# and synthesis roles automatically from this list and the story complexity.
+# See docs/guides/inputs-reference.md for the full schema reference.
+models:
+  - claude/sonnet
+  - claude/opus
+  - openai/gpt-5.4
+  - deepseek/deepseek-reasoner
+  - google/gemini-3.1-pro-preview
+
+plan_agent_review:
   enabled: true
-  adaptive_enabled: true
-  budget_per_story_usd: 10.0
+  pool:
+    - name: plan-reviewer-deepseek
+      provider: deepseek
+      model: deepseek-reasoner
+      budget_usd: 1.00
+      timeout_seconds: 600
+    - name: plan-reviewer-gemini
+      provider: google
+      model: gemini-3.1-pro-preview
+      budget_usd: 1.00
+      timeout_seconds: 600
+      
+provider_fallbacks:
+  openai:
+    model: gpt-5.4
+    timeout_seconds: 600
+
+budget_usd: 50.0
+
+workspace:
+  create_command: "git worktree add .forge/worktrees/{slug} -b feat/{slug} {base_branch}"
+  setup_command: "test -d .venv || ({forge_python} -m venv .venv && .venv/bin/pip install -e '.[all,dev]' -q)"
+  path_pattern: ".forge/worktrees/{slug}"
+  branch_pattern: "feat/{slug}"
+  on_approve: merge-pr
+  merge_strategy: squash
+  auto_push: true
+  # Bounds queued auto-merge polling. Expiry is fail-closed: story is marked
+  # failed and dependents remain blocked. Increase for slow CI environments.
+  merge_wait_timeout_seconds: 3600
+
+validation:
+  # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
+  # gate_decision_key; do not add them back under validation:.
+  gate_command: "make gate"
+  # Canonical intermediate test command dev agents should use while working.
+  test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
+  gate_timeout: 45
+
+conventions:
+  hard:
+    max_module_lines: 600
+    max_test_file_lines: 1000
+    no_circular_imports: true
+    test_mirrors_source: true
+    no_scratch_files: true
+    allowed_root_files:
+      - pyproject.toml
+      - poetry.lock
+  soft:
+    - "Coordinator is pure Python — no LLM calls for routing or process decisions"
+    - "Schema validation is the integrity boundary — do not relax cross-validation rules"
+    - "Keep modules single-purpose; extract instead of growing monolith files"
+    - "Keep pure-data types in low-dependency modules with stdlib-only imports"
+    - "Separate prompt construction, output parsing, and coordinator control flow"
+    - "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail — diagnosing sprint failures requires tracing real data, not reconstructing it"
+    - "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing."
+    - "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+
+retry:
+  max_dev_iterations: 3
+  max_review_cycles: 3
+
 plan:
   enabled: true
-  model: expensive-planner
-  budget_usd: 50.0
-review:
-  pool:
-    - model: expensive-reviewer
-      budget_usd: 50.0
+
+hooks:
+  pre_run: .forge/hooks/pre_run.sh
+  post_run: .forge/hooks/post_run.sh
+  post_merge: .forge/hooks/post_merge.sh
+  post_sprint: .forge/hooks/post_sprint.sh
+  timeout_seconds: 30
+
+notifications:
+  backend: slack
+  slack:
+    webhook_url_env: SLACK_WEBHOOK_URL
+  human_review_timeout_seconds: 600
