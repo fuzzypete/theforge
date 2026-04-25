@@ -187,7 +187,9 @@ def build_review_prompt(
 
             ### Part 1 — Verify Fixes
             Confirm that each prior P1 finding listed below is now resolved. For each:
-            - If fixed: note it briefly (no need to re-report).
+            - If fixed: mention it briefly in `summary` if useful, or omit it entirely.
+              Do NOT put closure notes or acknowledgements of resolved prior bugs in
+              `findings[]`.
             - If still present: report it again as a P1 with its original description.
 
             Prior P1 findings:
@@ -377,6 +379,10 @@ def build_review_prompt(
         - Do NOT invent issues. Only report problems you can find in the source.
         - Do NOT flag the same issue that was already flagged and fixed in a
           previous review cycle.
+        - `findings[]` is only for defects in the current code under review.
+          Do NOT use it for closure notes such as "Prior P1 from Cycle 2 is fixed".
+          If you want to acknowledge a resolved prior issue, put it in `summary`
+          or omit it entirely.
         - This review may be merged with other reviewers' outputs. One speculative
           P1 from you blocks the entire pipeline. Be precise.
         - If the spec contains a **Notes** section, treat it as informal hints
