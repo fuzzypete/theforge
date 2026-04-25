@@ -401,7 +401,8 @@ class TestHasPersistentP1:
             suggestion="fix it",
         )
 
-    def test_same_description_different_files_returns_true(self):
+    def test_same_description_different_files_returns_false(self):
+        """Same description on different real files is NOT persistent — no file evidence."""
         from theforge.coordinator.preflight import _has_persistent_p1
 
         curr = [
@@ -412,7 +413,7 @@ class TestHasPersistentP1:
         prev = [
             self._make_finding("P1", "coordinator routing ignores extend path", file="task.py")
         ]
-        assert _has_persistent_p1(curr, prev) is True
+        assert _has_persistent_p1(curr, prev) is False
 
     def test_same_description_same_files_returns_true(self):
         from theforge.coordinator.preflight import _has_persistent_p1

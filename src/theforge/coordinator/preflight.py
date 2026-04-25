@@ -527,34 +527,45 @@ def _persistent_p1_descriptions(
 
 
 def _p1_findings_match(current: ReviewFinding, previous: ReviewFinding) -> bool:
-    """Return True when two P1 findings should be treated as the same persistent issue."""
-    if (
-        current.file
-        and previous.file
-        and current.line is not None
-        and previous.line is not None
-        and current.file != "unknown"
-        and previous.file != "unknown"
-        and current.file == previous.file
-        and current.line == previous.line
-    ):
-        return True
+    """Return True when two P1 findings should be treated as the same persistent issue.
 
-    if (
-        current.description
-        and previous.description
-        and (
+    A match requires file-level evidence plus either:
+    - line proximity (within 10 lines of the same file), or
+    - meaningful description overlap (substring or >=60% token overlap) in the same file.
+
+    Description-only overlap without file evidence is rejected to avoid tagging distinct
+    bugs in the same module as persistent when they happen to share vocabulary.
+    When neither finding has a real file (both are "unknown"/null), description overlap
+    alone is accepted as a fallback.
+    """
+    curr_has_file = bool(current.file and current.file != "unknown")
+    prev_has_file = bool(previous.file and previous.file != "unknown")
+    same_real_file = curr_has_file and prev_has_file and current.file == previous.file
+
+    # Same file + line proximity (covers exact match and nearby edits)
+    if same_real_file and current.line is not None and previous.line is not None:
+        if abs(current.line - previous.line) <= 10:
+            return True
+
+    # Description-based matching
+    desc_match = False
+    if current.description and previous.description:
+        if (
             current.description in previous.description
             or previous.description in current.description
-        )
-    ):
-        return True
+        ):
+            desc_match = True
+        else:
+            curr_tokens = set(re.findall(r"\w+", current.description.lower()))
+            prev_tokens = set(re.findall(r"\w+", previous.description.lower()))
+            if curr_tokens and prev_tokens:
+                overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
+                if overlap >= 0.6:
+                    desc_match = True
 
-    curr_tokens = set(re.findall(r"\w+", current.description.lower()))
-    prev_tokens = set(re.findall(r"\w+", previous.description.lower()))
-    if curr_tokens and prev_tokens:
-        overlap = len(curr_tokens & prev_tokens) / max(len(curr_tokens), len(prev_tokens))
-        if overlap >= 0.6:
+    if desc_match:
+        # Require same real file, or accept when neither has a known file location
+        if same_real_file or (not curr_has_file and not prev_has_file):
             return True
 
     return False
