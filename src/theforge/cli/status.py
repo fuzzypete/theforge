@@ -61,13 +61,30 @@ def _find_active_run_id(project_root: Path) -> str | None:
 
 
 def _is_sprint_run(run_id: str, project_root: Path) -> bool:
-    """Return True if run_id is a sprint (has a .state file or sprint-summary.yaml)."""
+    """Return True if run_id is a sprint (has a .state file or sprint-summary.yaml).
+
+    Also checks .redirect files: a re-exec writes its predecessor's .redirect before
+    calling SprintStateWriter.init(), so during the startup window where .state hasn't
+    been written yet we can still detect the run as a sprint.
+    """
+    import json
+
     from theforge.sprint.status_reader import find_sprint_summary
 
     state_path = project_root / ".forge" / "runs" / f"{run_id}.state"
     if state_path.exists():
         return True
-    return find_sprint_summary(run_id, project_root) is not None
+    if find_sprint_summary(run_id, project_root) is not None:
+        return True
+    runs_dir = project_root / ".forge" / "runs"
+    for redirect_file in runs_dir.glob("*.redirect"):
+        try:
+            d = json.loads(redirect_file.read_text(encoding="utf-8"))
+            if d.get("new_run_id") == run_id:
+                return True
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
+    return False
 
 
 def _find_most_recent_run(project_root: Path) -> tuple[str, bool] | None:
