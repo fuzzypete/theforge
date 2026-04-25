@@ -24,6 +24,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.coordinator.dev_phase import classify_runner_subprocess_failure
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase, parse_phase_name
 from theforge.runners import AgentResult, LogLevel
@@ -1078,13 +1079,22 @@ class TestStartupFailureEscalation:
         phase_end_calls = [
             call
             for call in logger._safe_emit.call_args_list
-            if call.args
-            and call.args[0] == "phase_end"
-            and call.kwargs.get("phase") == "DEV"
+            if call.args and call.args[0] == "phase_end" and call.kwargs.get("phase") == "DEV"
         ]
         assert len(phase_end_calls) == 1
         assert phase_end_calls[0].kwargs["outcome"] == "failure"
         mock_pool.assert_not_called()
+
+    def test_runner_command_not_found_classifier_ignores_agent_tool_errors(self):
+        """Shell-style launcher evidence is required for command-not-found crashes."""
+        output = (
+            "I ran the build and got tool output:\n"
+            "ripgrep: command not found\n"
+            "no such file or directory: src/missing.py\n"
+        )
+
+        assert classify_runner_subprocess_failure(output, exit_code=1) is None
+        assert classify_runner_subprocess_failure(output, exit_code=127) is None
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")

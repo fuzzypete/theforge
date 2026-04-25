@@ -61,6 +61,7 @@ _RUNNER_FAILURE_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("permission denied",),
     ),
 )
+_SHELL_ERROR_PREFIXES = ("bash:", "sh:", "zsh:")
 
 
 def _summarize_runner_failure(output: str, indicators: tuple[str, ...]) -> str:
@@ -77,12 +78,47 @@ def _summarize_runner_failure(output: str, indicators: tuple[str, ...]) -> str:
     return lines[0][:200] if lines else "(no output)"
 
 
-def classify_runner_subprocess_failure(output: str) -> tuple[str, str] | None:
+def _runner_failure_evidence(output: str, exit_code: int) -> list[str]:
+    """Return candidate shell-level crash lines from runner output."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return []
+    candidates = lines[:3]
+    if len(lines) > 3:
+        candidates.extend(lines[-2:])
+    lowered = [line.lower() for line in candidates]
+    if exit_code == 127:
+        return [
+            line
+            for line, lowered_line in zip(candidates, lowered, strict=False)
+            if lowered_line.startswith(_SHELL_ERROR_PREFIXES)
+            and "command not found" in lowered_line
+        ]
+    if exit_code == 126:
+        return [
+            line
+            for line, lowered_line in zip(candidates, lowered, strict=False)
+            if lowered_line.startswith(_SHELL_ERROR_PREFIXES)
+            and "permission denied" in lowered_line
+        ]
+    return candidates
+
+
+def classify_runner_subprocess_failure(output: str, exit_code: int) -> tuple[str, str] | None:
     """Classify a runner subprocess crash that occurred before agent execution."""
-    lowered = output.lower()
+    evidence_lines = _runner_failure_evidence(output, exit_code)
+    evidence_text = "\n".join(evidence_lines)
+    lowered = evidence_text.lower()
     for failure_code, indicators in _RUNNER_FAILURE_SIGNATURES:
+        if failure_code == "runner_command_not_found" and exit_code != 127:
+            continue
+        if failure_code == "runner_permission_denied" and exit_code != 126:
+            continue
+        if failure_code in {"runner_command_not_found", "runner_permission_denied"}:
+            if not evidence_lines:
+                continue
         if any(indicator in lowered for indicator in indicators):
-            return failure_code, _summarize_runner_failure(output, indicators)
+            return failure_code, _summarize_runner_failure(evidence_text, indicators)
     return None
 
 
@@ -474,7 +510,9 @@ def _run_dev_phase(
     )
     _runner_failure = None
     if not dev_result.success and not dev_result.startup_failure:
-        _runner_failure = classify_runner_subprocess_failure(dev_result.output)
+        _runner_failure = classify_runner_subprocess_failure(
+            dev_result.output, dev_result.exit_code
+        )
         if _runner_failure is not None:
             dev_result = _dc_replace(dev_result, failure_code=_runner_failure[0])
     _dev_elapsed = time.monotonic() - _dev_start
