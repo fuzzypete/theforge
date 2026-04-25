@@ -163,6 +163,7 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     def _fake_assign_models(*args, **kwargs):
         captured["model_profiles"] = kwargs.get("model_profiles")
+        captured["complexity_score"] = kwargs.get("complexity_score")
         # Return a minimal decision with the configured dev profile to avoid
         # exercising the real logic.
         from theforge.assignment import AssignmentDecision
@@ -182,6 +183,376 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     assert "model_profiles" in captured
     assert captured["model_profiles"] == seeded
+    assert captured["complexity_score"] == 5
+
+
+def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeypatch):
+    """Adaptive assignment details must be visible on state for audit rendering."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    config = replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="claude-sonnet",
+                provider="anthropic",
+                model="sonnet",
+                budget_usd=10.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            )
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=30.0,
+            min_reviewers=1,
+            max_reviewers=1,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 7
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    assert audit["complexity_score"] == 7
+    assert audit["source"] == "adaptive_assignment"
+    assert audit["adaptive_enabled"] is True
+    assert audit["role_sources"]["dev"] == "adaptive"
+    assert audit["assignments"]["dev"] == state._adaptive_decision.dev.model
+    assert "dev" in audit["rationale"]
+    assert "budget_cap_usd" in audit["budget"]
+
+
+def test_preflight_seam_adaptive_on_vs_off_diverges_then_converges(tmp_path, monkeypatch):
+    """Seam: adaptive_enabled toggles between score-aware routing and static bands."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    base_agents = [
+        AgentDef(
+            name="haiku",
+            provider="anthropic",
+            model="haiku",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            tier="cheap",
+            cli="claude",
+        ),
+        AgentDef(
+            name="sonnet",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=5.0,
+            timeout_seconds=900,
+            tier="mid",
+            cli="claude",
+        ),
+        AgentDef(
+            name="opus",
+            provider="anthropic",
+            model="opus",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+            cli="claude",
+        ),
+    ]
+
+    def _build(adaptive_enabled: bool):
+        return replace(
+            _make_config(tmp_path),
+            agents=base_agents,
+            assignment=AssignmentConfig(
+                enabled=True,
+                escalation_memory=False,
+                budget_per_story_usd=100.0,
+                min_reviewers=1,
+                max_reviewers=3,
+                prefer_cross_provider=False,
+                adaptive_enabled=adaptive_enabled,
+            ),
+        )
+
+    def _state_with_score(score: int) -> CoordinatorState:
+        s = CoordinatorState()
+        s.preflight_complexity = "medium"
+        s.preflight_complexity_score = score
+        return s
+
+    # Adaptive ON: scores 2 and 9 should diverge.
+    cfg_on = _build(True)
+    state_low = _state_with_score(2)
+    state_high = _state_with_score(9)
+    _pf._apply_preflight_config(cfg_on, state_low)
+    _pf._apply_preflight_config(cfg_on, state_high)
+    assert state_low._adaptive_decision.dev.model != state_high._adaptive_decision.dev.model
+    assert state_low.complexity_routing_audit["adaptive_enabled"] is True
+    assert state_low.complexity_routing_audit["role_sources"]["dev"] == "adaptive"
+
+    # Adaptive OFF: same band → same assignment regardless of score.
+    cfg_off = _build(False)
+    state_low_off = _state_with_score(2)
+    state_high_off = _state_with_score(9)
+    _pf._apply_preflight_config(cfg_off, state_low_off)
+    _pf._apply_preflight_config(cfg_off, state_high_off)
+    assert (
+        state_low_off._adaptive_decision.dev.model == state_high_off._adaptive_decision.dev.model
+    )
+    assert state_low_off.complexity_routing_audit["adaptive_enabled"] is False
+    assert state_low_off.complexity_routing_audit["source"] == "static_assignment"
+    assert state_low_off.complexity_routing_audit["role_sources"]["dev"] == "static"
+
+
+def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, monkeypatch):
+    """Explicit planner + review_pool must show as overrides in audit and budget total."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from dataclasses import replace as _replace
+
+    from theforge.config import ModelProfile, PlanConfig
+    from theforge.coordinator import preflight as _pf
+
+    explicit_planner_model = "explicit-planner-model"
+    explicit_reviewer = ModelProfile(
+        name="custom-reviewer",
+        cli="claude",
+        provider=None,
+        model="custom-reviewer-model",
+        budget_usd=2.5,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Grep"),
+    )
+
+    config = _replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+            AgentDef(
+                name="opus",
+                provider="anthropic",
+                model="opus",
+                budget_usd=8.0,
+                timeout_seconds=1200,
+                tier="strong",
+                cli="claude",
+            ),
+        ],
+        plan=PlanConfig(
+            enabled=True,
+            cli="claude",
+            model=explicit_planner_model,
+            provider=None,
+            budget_usd=7.5,
+            timeout=600,
+        ),
+        plan_model_is_default=False,
+        review_pool=[explicit_reviewer, explicit_reviewer],
+        review_pool_is_default=False,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=20.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    # planner and code_review must be flagged as explicit overrides.
+    assert audit["role_sources"]["planner"] == "explicit_override"
+    assert audit["role_sources"]["code_review"] == "explicit_override"
+    # The audit's recorded planner/code_reviewers must match what runtime uses.
+    assert audit["assignments"]["planner"] == explicit_planner_model
+    assert audit["assignments"]["code_reviewers"] == [
+        explicit_reviewer.model,
+        explicit_reviewer.model,
+    ]
+    # Budget total reflects the explicit pool, not the adaptive single-reviewer count.
+    decision = state._adaptive_decision
+    runtime_total = (
+        decision.preflight.budget_usd
+        + decision.planner.budget_usd
+        + sum(p.budget_usd for p in decision.plan_reviewers)
+        + decision.dev.budget_usd
+        + sum(p.budget_usd for p in decision.code_reviewers)
+    )
+    assert audit["budget"]["final_total_usd"] == round(runtime_total, 2)
+
+
+def test_explicit_review_pool_records_override_forced_overrun_when_over_cap(tmp_path, monkeypatch):
+    """An expensive explicit review_pool must surface override_forced_overrun in audit."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from dataclasses import replace as _replace
+
+    from theforge.config import ModelProfile
+    from theforge.coordinator import preflight as _pf
+
+    pricey_reviewer = ModelProfile(
+        name="pricey-reviewer",
+        cli="claude",
+        provider=None,
+        model="pricey-model",
+        budget_usd=50.0,
+        timeout_seconds=300,
+        allowed_tools=("Read",),
+    )
+
+    config = _replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+        ],
+        review_pool=[pricey_reviewer, pricey_reviewer],
+        review_pool_is_default=False,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=5.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    assert audit["role_sources"]["code_review"] == "explicit_override"
+    assert audit["budget"]["within_budget"] is False
+    assert audit["budget"]["override_forced_overrun"] is True
+    assert "code_review" in audit["budget"]["locked_roles"]
+
+
+def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monkeypatch):
+    """Explicit plan + review_pool overrides must win even when config.models is set.
+
+    Regression guard for the pattern bug: the override-collection block was
+    guarded by `if config.models is None`, so a models: config with additional
+    explicit plan/review_pool overrides silently used adaptive selections instead.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    from dataclasses import replace as _replace
+
+    from theforge.config import ModelProfile, PlanConfig
+    from theforge.coordinator import preflight as _pf
+
+    explicit_plan_model = "pinned-planner-model"
+    explicit_reviewer = ModelProfile(
+        name="pinned-reviewer",
+        cli="claude",
+        provider=None,
+        model="pinned-reviewer-model",
+        budget_usd=2.0,
+        timeout_seconds=300,
+        allowed_tools=("Read", "Grep"),
+    )
+
+    config = _replace(
+        _make_config(tmp_path),
+        # Simulate a v0.8 models: path by setting config.models to a non-None list.
+        # Use an empty list so _apply_complexity_adaptation exits early while
+        # still setting the "models path" branch of the code.
+        models=[],
+        agents=[
+            AgentDef(
+                name="haiku",
+                provider="anthropic",
+                model="haiku",
+                budget_usd=1.0,
+                timeout_seconds=300,
+                tier="cheap",
+                cli="claude",
+            ),
+            AgentDef(
+                name="opus",
+                provider="anthropic",
+                model="opus",
+                budget_usd=8.0,
+                timeout_seconds=1200,
+                tier="strong",
+                cli="claude",
+            ),
+        ],
+        plan=PlanConfig(
+            enabled=True,
+            cli="claude",
+            model=explicit_plan_model,
+            provider=None,
+            budget_usd=6.0,
+            timeout=600,
+        ),
+        plan_model_is_default=False,
+        review_pool=[explicit_reviewer],
+        review_pool_is_default=False,
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            budget_per_story_usd=50.0,
+            min_reviewers=1,
+            max_reviewers=2,
+            prefer_cross_provider=False,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 5
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    # Planner must show the explicit model, not an adaptive selection.
+    assert audit["assignments"]["planner"] == explicit_plan_model
+    assert audit["role_sources"]["planner"] == "explicit_override"
+    # Code reviewer must show the explicit pool, not an adaptive selection.
+    assert audit["assignments"]["code_reviewers"] == [explicit_reviewer.model]
+    assert audit["role_sources"]["code_review"] == "explicit_override"
+    # The adaptive decision must also have the explicit planner so plan_flow
+    # will see it when "planner" is in _explicit_roles.
+    decision = state._adaptive_decision
+    assert decision.planner.model == explicit_plan_model
+    assert [p.model for p in decision.code_reviewers] == [explicit_reviewer.model]
 
 
 def test_record_run_memory_is_called_from_resume_path(tmp_path):

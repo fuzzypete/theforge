@@ -22,6 +22,7 @@ class AssignmentConfig:
     prefer_cross_provider: bool = True
     budget_per_story_usd: float = 15.0
     escalation_memory: bool = True
+    adaptive_enabled: bool = True
 
 
 @dataclass(frozen=True)

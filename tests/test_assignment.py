@@ -312,6 +312,139 @@ def test_explicit_override():
     assert decision.planner.model in ("haiku", "sonnet", "opus")
 
 
+def test_numeric_complexity_score_splits_same_legacy_band_assignments():
+    """Different scores in the medium band can route to different roles."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, prefer_cross_provider=False)
+
+    lower_medium = assign_models(agents, cfg, "medium", complexity_score=4)
+    upper_medium = assign_models(agents, cfg, "medium", complexity_score=7)
+
+    assert lower_medium.planner.model == "sonnet"
+    assert upper_medium.planner.model == "opus"
+    assert lower_medium.dev.model == "sonnet"
+    assert upper_medium.dev.model == "opus"
+    assert len(lower_medium.code_reviewers) == 1
+    assert len(upper_medium.code_reviewers) == 2
+
+
+def test_adaptive_disabled_ignores_complexity_score():
+    """With adaptive_enabled=False, two scores in the same band yield identical assignments."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=3,
+        prefer_cross_provider=False,
+        adaptive_enabled=False,
+    )
+
+    low_score = assign_models(agents, cfg, "medium", complexity_score=2)
+    high_score = assign_models(agents, cfg, "medium", complexity_score=9)
+
+    # Legacy band-only routing: MEDIUM dev tier == "mid" regardless of score.
+    assert low_score.dev.model == high_score.dev.model == "sonnet"
+    assert low_score.planner.model == high_score.planner.model
+    assert [p.model for p in low_score.code_reviewers] == [
+        p.model for p in high_score.code_reviewers
+    ]
+    assert [p.model for p in low_score.plan_reviewers] == [
+        p.model for p in high_score.plan_reviewers
+    ]
+
+
+def test_adaptive_disabled_skips_promotion_and_profiles():
+    """Static mode bypasses escalation-history promotion and capability rerank."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        prefer_cross_provider=False,
+        adaptive_enabled=False,
+    )
+    history = [
+        EscalationRecord(
+            story=f"story-{i}",
+            complexity="MEDIUM",
+            dev_model="sonnet",
+            outcome="ESCALATE",
+        )
+        for i in range(5)
+    ]
+
+    decision = assign_models(agents, cfg, "medium", escalation_history=history)
+
+    # With adaptive off, no promotion: dev stays at MEDIUM band tier "mid" → sonnet.
+    assert decision.dev.model == "sonnet"
+
+
+def test_explicit_override_survives_budget_downgrade_pressure():
+    """Budget enforcement must not replace an explicitly configured role."""
+    from theforge.config import ModelProfile
+
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        budget_per_story_usd=6.0,
+        prefer_cross_provider=False,
+    )
+    explicit_dev = ModelProfile(
+        name="custom-dev",
+        cli="claude",
+        provider=None,
+        model="custom-model",
+        budget_usd=4.5,
+        timeout_seconds=500,
+        allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    )
+
+    decision = assign_models(
+        agents,
+        cfg,
+        "medium",
+        explicit_profiles={"dev": explicit_dev},
+    )
+
+    assert decision.dev.model == "custom-model"
+    assert decision.budget_audit["downgraded"] is True
+    assert all(step["role"] != "dev" for step in decision.budget_audit["steps"])
+
+
+def test_explicit_override_records_forced_overrun_when_budget_unmet():
+    """When a locked role keeps total over cap, audit must flag override_forced_overrun."""
+    from theforge.config import ModelProfile
+
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        budget_per_story_usd=2.0,  # very tight cap
+        prefer_cross_provider=False,
+    )
+    explicit_dev = ModelProfile(
+        name="custom-dev",
+        cli="claude",
+        provider=None,
+        model="custom-model",
+        budget_usd=50.0,
+        timeout_seconds=500,
+        allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep"),
+    )
+
+    with pytest.warns(UserWarning, match="Budget cap"):
+        decision = assign_models(
+            agents,
+            cfg,
+            "medium",
+            explicit_profiles={"dev": explicit_dev},
+        )
+
+    assert decision.dev.model == "custom-model"
+    assert decision.budget_audit["within_budget"] is False
+    assert decision.budget_audit.get("override_forced_overrun") is True
+    assert "dev" in decision.budget_audit.get("locked_roles", [])
+
+
 def test_agent_to_profile_preserves_api_fallback_for_adaptive_cli_agents(monkeypatch):
     """Adaptive assignment must preserve CLI fallback metadata on synthesized profiles."""
     monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}")
@@ -486,6 +619,24 @@ def test_budget_cap_downgrade_dev_medium_stops_at_mid():
     assert decision.dev.name != "haiku", (
         f"Dev should not fall below mid floor for MEDIUM; got {decision.dev.name}"
     )
+
+
+def test_budget_cap_records_downgrade_rationale():
+    """Budget downgrades must be visible in the decision rationale/audit."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(
+        min_reviewers=1,
+        max_reviewers=1,
+        budget_per_story_usd=10.0,
+        prefer_cross_provider=False,
+    )
+
+    decision = assign_models(agents, cfg, "medium")
+
+    assert "budget cap $10.00" in decision.rationale["budget"]
+    assert decision.budget_audit["downgraded"] is True
+    assert decision.budget_audit["final_total_usd"] <= 10.0
+    assert decision.budget_audit["steps"]
 
 
 # ── test_deterministic ────────────────────────────────────────────────

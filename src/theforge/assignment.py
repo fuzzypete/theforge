@@ -72,6 +72,7 @@ class AssignmentDecision:
     dev: ModelProfile
     code_reviewers: list[ModelProfile]
     rationale: dict[str, str] = field(default_factory=dict)
+    budget_audit: dict[str, object] = field(default_factory=dict)
 
 
 # ── Phase → tier mapping ───────────────────────────────────────────────
@@ -110,6 +111,61 @@ def _reviewer_count(complexity: str, min_r: int, max_r: int) -> int:
         return max_r
     # MEDIUM: midpoint (round up)
     return min_r + (max_r - min_r + 1) // 2
+
+
+def _normalize_complexity_score(complexity_score: int | None) -> int | None:
+    """Clamp numeric complexity scores to the supported 1-10 range."""
+    if complexity_score is None:
+        return None
+    return max(1, min(10, int(complexity_score)))
+
+
+def _plan_tier_for_score(complexity: str, complexity_score: int | None) -> str:
+    """Return the planner tier, preferring score-driven routing when present."""
+    score = _normalize_complexity_score(complexity_score)
+    if score is None:
+        return PHASE_TIER["plan"][complexity]
+    return "mid" if score <= 5 else "strong"
+
+
+def _dev_tier_for_score(complexity: str, complexity_score: int | None) -> str:
+    """Return the dev tier, preferring score-driven routing when present."""
+    score = _normalize_complexity_score(complexity_score)
+    if score is None:
+        return PHASE_TIER["dev"][complexity]
+    if score <= 3:
+        return "cheap"
+    if score <= 6:
+        return "mid"
+    return "strong"
+
+
+def _reviewer_target_for_score(
+    complexity: str,
+    complexity_score: int | None,
+    min_r: int,
+    max_r: int,
+) -> int:
+    """Return reviewer count, allowing same-band stories to diverge by score."""
+    score = _normalize_complexity_score(complexity_score)
+    if score is None:
+        return _reviewer_count(complexity, min_r, max_r)
+    if score <= 4:
+        return min_r
+    if score >= 8:
+        return max_r
+    return min_r + (max_r - min_r + 1) // 2
+
+
+def _decision_total(decision: AssignmentDecision) -> float:
+    """Return the total estimated assignment spend for the story."""
+    return (
+        decision.preflight.budget_usd
+        + decision.planner.budget_usd
+        + sum(p.budget_usd for p in decision.plan_reviewers)
+        + decision.dev.budget_usd
+        + sum(p.budget_usd for p in decision.code_reviewers)
+    )
 
 
 def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
@@ -293,6 +349,7 @@ def _enforce_budget(
     agents: list[AgentDef],
     budget_per_story_usd: float,
     dev_floor_tier: str = "cheap",
+    locked_roles: set[str] | None = None,
 ) -> AssignmentDecision:
     """Downgrade highest-cost non-preflight model if over budget cap.
 
@@ -306,17 +363,27 @@ def _enforce_budget(
     """
     from dataclasses import replace as _dc_replace
 
-    def _total(d: AssignmentDecision) -> float:
-        return (
-            d.preflight.budget_usd
-            + d.planner.budget_usd
-            + sum(p.budget_usd for p in d.plan_reviewers)
-            + d.dev.budget_usd
-            + sum(p.budget_usd for p in d.code_reviewers)
-        )
+    locked_roles = locked_roles or set()
+    initial_total = _decision_total(decision)
+    budget_steps: list[dict[str, object]] = []
 
-    if _total(decision) <= budget_per_story_usd:
-        return decision
+    if initial_total <= budget_per_story_usd:
+        rationale = dict(decision.rationale)
+        rationale["budget"] = (
+            f"within budget cap ${budget_per_story_usd:.2f} (estimated total ${initial_total:.2f})"
+        )
+        return _dc_replace(
+            decision,
+            rationale=rationale,
+            budget_audit={
+                "budget_cap_usd": budget_per_story_usd,
+                "initial_total_usd": round(initial_total, 2),
+                "final_total_usd": round(initial_total, 2),
+                "within_budget": True,
+                "downgraded": False,
+                "steps": [],
+            },
+        )
 
     # Build a lookup from profile name → AgentDef for downgrade
     agent_by_name = {a.name: a for a in agents}
@@ -345,7 +412,7 @@ def _enforce_budget(
 
     # Iteratively downgrade until within budget (max 10 passes)
     for _ in range(10):
-        if _total(decision) <= budget_per_story_usd:
+        if _decision_total(decision) <= budget_per_story_usd:
             break
 
         # Find highest-cost non-preflight profile that can be downgraded.
@@ -368,6 +435,15 @@ def _enforce_budget(
         dev_floor_idx = _TIER_ORDER.index(dev_floor_tier) if dev_floor_tier in _TIER_ORDER else 0
         downgraded = False
         for role, profile in candidates:
+            role_class = (
+                "plan_review"
+                if role.startswith("plan_review_")
+                else "code_review"
+                if role.startswith("code_review_")
+                else role
+            )
+            if role_class in locked_roles:
+                continue
             cheaper = _next_cheaper_profile(profile)
             if cheaper is not None:
                 # Guardrail: never downgrade dev below its complexity tier floor.
@@ -390,26 +466,83 @@ def _enforce_budget(
                     new_reviewers = list(decision.code_reviewers)
                     new_reviewers[i] = cheaper
                     decision = _dc_replace(decision, code_reviewers=new_reviewers)
+                budget_steps.append(
+                    {
+                        "action": "downgrade",
+                        "role": role_class,
+                        "from_model": profile.model,
+                        "to_model": cheaper.model,
+                        "from_budget_usd": profile.budget_usd,
+                        "to_budget_usd": cheaper.budget_usd,
+                    }
+                )
                 downgraded = True
                 break
 
         if not downgraded:
             # Can't downgrade any model; try removing a reviewer (keep min 1 each)
-            if len(decision.code_reviewers) > 1:
+            if "code_review" not in locked_roles and len(decision.code_reviewers) > 1:
+                removed = decision.code_reviewers[-1]
                 decision = _dc_replace(decision, code_reviewers=decision.code_reviewers[:-1])
-            elif len(decision.plan_reviewers) > 1:
+                budget_steps.append(
+                    {
+                        "action": "drop_reviewer",
+                        "role": "code_review",
+                        "model": removed.model,
+                        "budget_usd": removed.budget_usd,
+                    }
+                )
+            elif "plan_review" not in locked_roles and len(decision.plan_reviewers) > 1:
+                removed = decision.plan_reviewers[-1]
                 decision = _dc_replace(decision, plan_reviewers=decision.plan_reviewers[:-1])
+                budget_steps.append(
+                    {
+                        "action": "drop_reviewer",
+                        "role": "plan_review",
+                        "model": removed.model,
+                        "budget_usd": removed.budget_usd,
+                    }
+                )
             else:
                 break
 
-    if _total(decision) > budget_per_story_usd:
+    final_total = _decision_total(decision)
+    within_budget = final_total <= budget_per_story_usd
+    rationale = dict(decision.rationale)
+    if budget_steps:
+        rationale["budget"] = (
+            f"budget cap ${budget_per_story_usd:.2f}: downgraded to "
+            f"${final_total:.2f} via {len(budget_steps)} adjustment(s)"
+        )
+    elif within_budget:
+        rationale["budget"] = (
+            f"within budget cap ${budget_per_story_usd:.2f} (estimated total ${final_total:.2f})"
+        )
+    else:
+        rationale["budget"] = (
+            f"budget cap ${budget_per_story_usd:.2f} could not be met; "
+            f"estimated total ${final_total:.2f}"
+        )
+
+    if not within_budget:
         warnings.warn(
             f"[adaptive] Budget cap ${budget_per_story_usd:.2f} cannot be met; "
-            f"actual total ${_total(decision):.2f}",
+            f"actual total ${final_total:.2f}",
             stacklevel=2,
         )
 
-    return decision
+    audit: dict[str, object] = {
+        "budget_cap_usd": budget_per_story_usd,
+        "initial_total_usd": round(initial_total, 2),
+        "final_total_usd": round(final_total, 2),
+        "within_budget": within_budget,
+        "downgraded": bool(budget_steps),
+        "steps": budget_steps,
+    }
+    if not within_budget and locked_roles:
+        audit["override_forced_overrun"] = True
+        audit["locked_roles"] = sorted(locked_roles)
+    return _dc_replace(decision, rationale=rationale, budget_audit=audit)
 
 
 def _agent_to_profile(
@@ -444,6 +577,7 @@ def assign_models(
     agents: list[AgentDef],
     assignment_config: AssignmentConfig,
     complexity: str,
+    complexity_score: int | None = None,
     escalation_history: list[EscalationRecord] | None = None,
     explicit_profiles: dict[str, ModelProfile] | None = None,
     sprint_promotions: dict[str, str] | None = None,
@@ -463,9 +597,23 @@ def assign_models(
 
     norm_complexity = _normalize_complexity(complexity)
     rationale: dict[str, str] = {}
+    adaptive_enabled = assignment_config.adaptive_enabled
+    # In static mode, ignore the numeric score, capability profiles, and
+    # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
+    score = _normalize_complexity_score(complexity_score) if adaptive_enabled else None
+    effective_history = history if adaptive_enabled else []
+    effective_promotions = sprint_promotions if adaptive_enabled else None
+    effective_profiles = model_profiles if adaptive_enabled else None
+    locked_roles = set(explicit_profiles)
+    if not adaptive_enabled:
+        rationale["adaptive_enabled"] = "false (static band-only routing)"
 
     # ── Dev tier with promotion ────────────────────────────────────────
-    dev_base_tier = PHASE_TIER["dev"][norm_complexity]
+    dev_base_tier = (
+        _dev_tier_for_score(norm_complexity, score)
+        if adaptive_enabled
+        else PHASE_TIER["dev"][norm_complexity]
+    )
 
     # Check if dev profile is explicitly overridden
     if "dev" in explicit_profiles:
@@ -477,19 +625,21 @@ def assign_models(
             agents,
             dev_base_tier,
             secrets,
-            model_profiles=model_profiles,
+            model_profiles=effective_profiles,
             role="dev",
             complexity=norm_complexity,
         )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
-        promoted = _check_promotion(norm_complexity, dev_model_name, history, sprint_promotions)
+        promoted = _check_promotion(
+            norm_complexity, dev_model_name, effective_history, effective_promotions
+        )
         effective_dev_tier = dev_base_tier
         if promoted is not None:
             effective_dev_tier = _promote_tier(dev_base_tier)
             # Use filtered matching records (same slice as _check_promotion uses)
             _matching = [
                 r
-                for r in history
+                for r in effective_history
                 if r.complexity == norm_complexity and r.dev_model == dev_model_name
             ][-10:]
             escalation_cnt = sum(1 for r in _matching if r.outcome == "ESCALATE")
@@ -499,17 +649,22 @@ def assign_models(
                 f"{escalation_cnt}/10 recent {norm_complexity} stories escalated"
             )
         else:
-            rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
+            if score is not None:
+                rationale["dev"] = (
+                    f"complexity score {score} ({norm_complexity}) → tier {effective_dev_tier}"
+                )
+            else:
+                rationale["dev"] = f"{norm_complexity} complexity → tier {effective_dev_tier}"
 
         dev_agent = _pick_agent(
             agents,
             effective_dev_tier,
             secrets,
-            model_profiles=model_profiles,
+            model_profiles=effective_profiles,
             role="dev",
             complexity=norm_complexity,
         )
-        if dev_agent is not None and model_profiles:
+        if dev_agent is not None and effective_profiles:
             from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
 
             _rate = get_dev_success_rate(model_profiles, dev_agent.name, norm_complexity)
@@ -580,24 +735,46 @@ def assign_models(
         planner_profile = explicit_profiles["planner"]
         rationale["planner"] = f"explicit override: {planner_profile.model}"
     else:
-        tier = PHASE_TIER["plan"][norm_complexity]
+        tier = (
+            _plan_tier_for_score(norm_complexity, score)
+            if adaptive_enabled
+            else PHASE_TIER["plan"][norm_complexity]
+        )
         agent = _pick_agent(agents, tier, secrets)
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
         planner_profile = _agent_to_profile(agent, role="review")
-        rationale["planner"] = f"tier {tier} (${agent.budget_usd:.2f})"
+        if score is not None:
+            rationale["planner"] = (
+                f"complexity score {score} → tier {tier} (${agent.budget_usd:.2f})"
+            )
+        else:
+            rationale["planner"] = f"tier {tier} (${agent.budget_usd:.2f})"
 
     # ── Plan reviewers ─────────────────────────────────────────────────
     if "plan_review" in explicit_profiles:
         plan_reviewers = [explicit_profiles["plan_review"]]
         rationale["plan_review"] = f"explicit override: {explicit_profiles['plan_review'].model}"
     else:
-        tier = PHASE_TIER["plan_review"][norm_complexity]
-        n = _reviewer_count(
-            norm_complexity,
-            assignment_config.min_reviewers,
-            assignment_config.max_reviewers,
+        tier = (
+            _plan_tier_for_score(norm_complexity, score)
+            if adaptive_enabled
+            else PHASE_TIER["plan_review"][norm_complexity]
+        )
+        n = (
+            _reviewer_target_for_score(
+                norm_complexity,
+                score,
+                assignment_config.min_reviewers,
+                assignment_config.max_reviewers,
+            )
+            if adaptive_enabled
+            else _reviewer_count(
+                norm_complexity,
+                assignment_config.min_reviewers,
+                assignment_config.max_reviewers,
+            )
         )
         planner_model = planner_profile.model
         selected = _select_reviewers(
@@ -610,8 +787,9 @@ def assign_models(
         )
         plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
+        score_note = f", complexity score {score}" if score is not None else ""
         rationale["plan_review"] = (
-            f"{len(plan_reviewers)} reviewer(s), tier {tier}, providers {providers}"
+            f"{len(plan_reviewers)} reviewer(s), tier {tier}, providers {providers}{score_note}"
         )
 
     # ── Code reviewers ─────────────────────────────────────────────────
@@ -619,11 +797,24 @@ def assign_models(
         code_reviewers = [explicit_profiles["code_review"]]
         rationale["code_review"] = f"explicit override: {explicit_profiles['code_review'].model}"
     else:
-        tier = PHASE_TIER["code_review"][norm_complexity]
-        n = _reviewer_count(
-            norm_complexity,
-            assignment_config.min_reviewers,
-            assignment_config.max_reviewers,
+        tier = (
+            _plan_tier_for_score(norm_complexity, score)
+            if adaptive_enabled
+            else PHASE_TIER["code_review"][norm_complexity]
+        )
+        n = (
+            _reviewer_target_for_score(
+                norm_complexity,
+                score,
+                assignment_config.min_reviewers,
+                assignment_config.max_reviewers,
+            )
+            if adaptive_enabled
+            else _reviewer_count(
+                norm_complexity,
+                assignment_config.min_reviewers,
+                assignment_config.max_reviewers,
+            )
         )
         dev_model = dev_profile.model
         selected = _select_reviewers(
@@ -636,8 +827,9 @@ def assign_models(
         )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.provider for a in selected]
+        score_note = f", complexity score {score}" if score is not None else ""
         rationale["code_review"] = (
-            f"{len(code_reviewers)} reviewer(s), tier {tier}, providers {providers}"
+            f"{len(code_reviewers)} reviewer(s), tier {tier}, providers {providers}{score_note}"
         )
 
     decision = AssignmentDecision(
@@ -656,6 +848,7 @@ def assign_models(
         agents,
         assignment_config.budget_per_story_usd,
         dev_floor_tier=dev_base_tier,
+        locked_roles=locked_roles,
     )
 
     return decision

@@ -144,6 +144,52 @@ class TestTiming:
         assert log["timing"]["duration_seconds"] is None
 
 
+class TestPreflightAudit:
+    def test_complexity_routing_assignment_details_are_emitted(self, tmp_path: Path) -> None:
+        """Adaptive assignment rationale must appear in the audit log."""
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_reason = "ok"
+        state.preflight_complexity = "medium"
+        state.preflight_complexity_score = 7
+        state.complexity_routing_audit = {
+            "source": "adaptive_assignment",
+            "adaptive_enabled": True,
+            "role_sources": {
+                "preflight": "adaptive",
+                "planner": "adaptive",
+                "plan_review": "adaptive",
+                "dev": "explicit_override",
+                "code_review": "budget_downgrade",
+            },
+            "assignments": {
+                "planner": "opus",
+                "dev": "opus",
+                "plan_reviewers": ["sonnet"],
+                "code_reviewers": ["sonnet", "haiku"],
+            },
+            "rationale": {
+                "dev": "complexity score 7 (MEDIUM) -> tier strong",
+                "budget": "within budget cap $30.00 (estimated total $27.00)",
+            },
+            "budget": {"budget_cap_usd": 30.0, "within_budget": True},
+        }
+
+        log = generate_audit_log(
+            _make_config(tmp_path),
+            _make_task(tmp_path),
+            _make_coordinator_result(state),
+        )
+
+        routing = log["preflight"]["complexity_routing"]
+        assert routing["source"] == "adaptive_assignment"
+        assert routing["adaptive_enabled"] is True
+        assert routing["role_sources"]["dev"] == "explicit_override"
+        assert routing["role_sources"]["code_review"] == "budget_downgrade"
+        assert routing["assignments"]["dev"] == "opus"
+        assert "budget" in routing["rationale"]
+
+
 # ── Cost.agents tests ─────────────────────────────────────────────────
 
 
