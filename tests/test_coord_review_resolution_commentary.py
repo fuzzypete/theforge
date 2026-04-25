@@ -61,6 +61,25 @@ test_coverage:
 ```
 """
 
+_CYCLE2_UNRESOLVED_WORDING = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Issue still open."
+findings:
+  - severity: P1
+    file: src/changed.py
+    line: 10
+    description: "The prior finding is unresolved: missing null handling in runtime path"
+    suggestion: "Still needs a null guard"
+story_compliance:
+  matches_spec: true
+  mismatches: []
+test_coverage:
+  adequate: true
+  gaps: []
+```
+"""
+
 
 def _in_process_worktree_eval(
     workspace_path: Path, command: str, payload: dict, timeout: int = 120
@@ -72,7 +91,7 @@ def _in_process_worktree_eval(
 
 
 class TestResolutionCommentaryBridge:
-    def _two_cycle_pool(self):
+    def _two_cycle_pool(self, cycle2_review: str):
         call_n = {"n": 0}
 
         def side_effect(**kwargs):
@@ -88,7 +107,7 @@ class TestResolutionCommentaryBridge:
             return [
                 _make_agent_result(
                     success=True,
-                    output=_CYCLE2_RESOLUTION_COMMENTARY,
+                    output=cycle2_review,
                     profile_name="review",
                 )
             ]
@@ -124,7 +143,7 @@ class TestResolutionCommentaryBridge:
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
-        mock_pool.side_effect = self._two_cycle_pool()
+        mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_RESOLUTION_COMMENTARY)
 
         result = run_from_review(config, task, workspace)
 
@@ -146,3 +165,42 @@ class TestResolutionCommentaryBridge:
         assert prior.cycle_last_seen == 1
         assert commentary.disposition == "net_new"
         assert commentary.cycle_first_seen == 2
+
+    @patch("theforge.coordinator.util._run_worktree_eval", side_effect=_in_process_worktree_eval)
+    @patch("theforge.finding_classifier._get_changed_files")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_unresolved_wording_still_tracks_prior_finding_across_cycles(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        mock_changed_files,
+        mock_eval,
+        tmp_path,
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_changed_files.return_value = frozenset(["src/changed.py"])
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_UNRESOLVED_WORDING)
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert result.state.review_cycle == 2
+        assert len(result.state.finding_registry) == 1
+
+        prior = result.state.finding_registry[0]
+        assert prior.description == "Missing null handling in runtime path"
+        assert prior.disposition == "unresolved"
+        assert prior.cycle_last_seen == 2

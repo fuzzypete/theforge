@@ -103,12 +103,10 @@ def _matches_prior_agnostic(
 
 def _is_resolution_commentary(description: str) -> bool:
     """Return True for closure-style commentary that should not be treated as a regression."""
-    normalized = " ".join(_normalize_tokens(description))
-    resolution_terms = ("fixed", "resolved", "addressed")
-    reference_terms = ("prior", "previous", "cycle", "finding", "issue")
-    return any(term in normalized for term in resolution_terms) and any(
-        term in normalized for term in reference_terms
-    )
+    tokens = _normalize_tokens(description)
+    resolution_terms = frozenset({"fixed", "resolved", "addressed"})
+    reference_terms = frozenset({"prior", "previous", "cycle", "finding", "issue"})
+    return bool(tokens & resolution_terms) and bool(tokens & reference_terms)
 
 
 def _matches_fixed_finding_regression_candidate(

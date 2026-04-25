@@ -240,6 +240,16 @@ class TestRegressionCandidates:
             "Prior P1 from Cycle 1 is fixed: null handling is safe now"
         )
 
+    def test_unresolved_word_does_not_trigger_resolution_commentary(self):
+        assert not _is_resolution_commentary(
+            "The prior finding is unresolved: null handling still fails"
+        )
+
+    def test_unaddressed_word_does_not_trigger_resolution_commentary(self):
+        assert not _is_resolution_commentary(
+            "The previous issue is unaddressed in the runtime path"
+        )
+
     def test_resolution_commentary_not_treated_as_regression_candidate(self):
         prior = self._make_record("Missing null handling in runtime path")
         finding = _make_finding(
@@ -509,6 +519,20 @@ class TestUpdateFindingRegistryCycle2:
         self._populate_cycle1(state, "Missing null check in handler")
 
         finding = _make_finding("Missing null check in handler")
+        review = _make_review([finding])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        assert classified[0].disposition == "unresolved"
+        assert classified[0].cycle_last_seen == 2
+
+    def test_unresolved_wording_still_matches_prior_finding(self, tmp_path):
+        state = _make_state()
+        self._populate_cycle1(state, "Missing null check in handler")
+
+        finding = _make_finding("The prior finding is unresolved: missing null check in handler")
         review = _make_review([finding])
         cycle_results = [("reviewer-a", review)]
 
