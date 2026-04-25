@@ -602,6 +602,47 @@ def review_to_dev_handoff(result: ReviewResult) -> str:
     return "\n\n".join(parts)
 
 
+def convention_violations_to_review_findings(violations: list[dict] | None) -> list[ReviewFinding]:
+    """Convert blocking hard convention violations into actionable review-style findings."""
+    findings: list[ReviewFinding] = []
+    for violation in violations or []:
+        if not violation.get("blocking", False):
+            continue
+        file = str(violation.get("file") or "unknown")
+        rule = str(violation.get("rule") or "unknown")
+        detail = str(violation.get("detail") or "No details recorded.")
+        findings.append(
+            ReviewFinding(
+                severity="P1",
+                file=file,
+                line=None,
+                description=f"Hard convention violation [{rule}] in {file}: {detail}",
+                suggestion=f"Resolve the [{rule}] convention violation in {file}.",
+            )
+        )
+    return findings
+
+
+def append_convention_retry_findings(
+    existing_feedback: str | None, violations: list[dict] | None
+) -> str | None:
+    """Append blocking convention violations to dev retry findings in review format."""
+    convention_findings = convention_violations_to_review_findings(violations)
+    if not convention_findings:
+        return existing_feedback
+
+    convention_block = "\n".join(
+        [
+            "## Blocking Convention Violations",
+            "",
+            findings_to_markdown(convention_findings),
+        ]
+    )
+    if existing_feedback:
+        return f"{existing_feedback}\n\n{convention_block}"
+    return convention_block
+
+
 def _normalize_description(description: str) -> str:
     """Normalize a finding description for duplicate detection: lowercase + stripped."""
     return description.strip().lower()

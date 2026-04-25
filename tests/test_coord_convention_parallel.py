@@ -80,6 +80,7 @@ class TestConventionParallelCheck:
         # Convention violations are recorded on state
         assert len(state.convention_violations) == 1
         assert state.convention_violations[0]["rule"] == "max_module_lines"
+        assert state.last_review_findings is None
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")
@@ -125,6 +126,7 @@ class TestConventionParallelCheck:
         assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
         assert len(state.convention_violations) == 1
         assert "Hard convention violations" in state.human_feedback
+        assert state.last_review_findings is None
 
     @patch("theforge.coordinator.validate_phase.record_dev_iteration_telemetry")
     @patch("theforge.coordinator.validate_phase._check_conventions_parallel")

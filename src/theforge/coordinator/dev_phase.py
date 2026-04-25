@@ -13,6 +13,7 @@ import yaml
 from theforge.config import MODEL_REGISTRY, ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile
 from theforge.coordinator.context_scope import plan_file_list
+from theforge.review import append_convention_retry_findings
 from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_dev_prompt, build_fix_prompt
 from theforge.traces import write_trace
@@ -159,6 +160,14 @@ def _git_lines(workspace_path: Path, args: Iterable[str]) -> list[str]:
     if not ok and not output:
         return []
     return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def _retry_review_findings_for_dev_prompt(state: CoordinatorState) -> str | None:
+    """Return current actionable findings for a validate-driven retry prompt."""
+    return append_convention_retry_findings(
+        state.last_review_findings,
+        state.convention_violations,
+    )
 
 
 def record_dev_iteration_telemetry(
@@ -415,7 +424,7 @@ def _run_dev_phase(
                 gate_command=_gate_cmd,
                 test_command=_test_cmd,
                 gate_skipped=_is_gate_skip(task.gate_override),
-                review_findings=state.last_review_findings,
+                review_findings=_retry_review_findings_for_dev_prompt(state),
                 human_feedback=state.human_feedback,
                 preflight_output=(
                     state.preflight_result.output if state.preflight_result else None
@@ -459,7 +468,7 @@ def _run_dev_phase(
                 gate_command=_gate_cmd,
                 test_command=_test_cmd,
                 gate_skipped=_is_gate_skip(task.gate_override),
-                review_findings=state.last_review_findings,
+                review_findings=_retry_review_findings_for_dev_prompt(state),
                 human_feedback=state.human_feedback,
                 preflight_output=(
                     state.preflight_result.output if state.preflight_result else None
