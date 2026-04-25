@@ -15,7 +15,7 @@ Schema on disk::
         dev:
           runs, success_rate, avg_iterations, avg_cost_usd
           by_complexity:
-            small|medium|large: {runs, success_rate}
+            small|medium|large: {runs, success_rate, avg_iterations, avg_cost_usd}
         review:
           runs, avg_findings, avg_cost_usd
         preflight:
@@ -138,9 +138,15 @@ def _update_dev(
     bc = by.setdefault(complexity, {})
     bc_runs = int(bc.get("runs", 0)) + 1
     bc_successes = int(bc.get("_successes", 0)) + (1 if success else 0)
+    bc_iter_sum = float(bc.get("_iterations_sum", 0.0)) + float(iterations)
+    bc_cost_sum = float(bc.get("_cost_sum", 0.0)) + float(cost_usd)
     bc["runs"] = bc_runs
     bc["_successes"] = bc_successes
+    bc["_iterations_sum"] = bc_iter_sum
+    bc["_cost_sum"] = bc_cost_sum
     bc["success_rate"] = round(bc_successes / bc_runs, 4)
+    bc["avg_iterations"] = round(bc_iter_sum / bc_runs, 4)
+    bc["avg_cost_usd"] = round(bc_cost_sum / bc_runs, 6)
 
 
 def _update_review(entry: dict, cycles: int, findings: int, cost_usd: float) -> None:
@@ -268,3 +274,34 @@ def get_dev_success_rate(
         return None
     runs = int(bc.get("runs", 0))
     return float(bc.get("success_rate", 0.0)) if runs >= min_runs else None
+
+
+def get_dev_complexity_stats(
+    profiles: dict,
+    model: str,
+    complexity: str | None,
+    *,
+    min_runs: int = 3,
+) -> dict[str, float] | None:
+    """Return per-band dev averages when the complexity band has enough runs."""
+    models = (profiles or {}).get("models") or {}
+    entry = models.get(model)
+    if not isinstance(entry, dict):
+        return None
+    dev = entry.get("dev")
+    if not isinstance(dev, dict):
+        return None
+    band = _normalize_band(complexity)
+    bc = (dev.get("by_complexity") or {}).get(band)
+    if not isinstance(bc, dict):
+        return None
+    runs = int(bc.get("runs", 0))
+    if runs < min_runs:
+        return None
+    if "avg_iterations" not in bc or "avg_cost_usd" not in bc:
+        return None
+    return {
+        "runs": float(runs),
+        "avg_iterations": float(bc.get("avg_iterations", 0.0)),
+        "avg_cost_usd": float(bc.get("avg_cost_usd", 0.0)),
+    }

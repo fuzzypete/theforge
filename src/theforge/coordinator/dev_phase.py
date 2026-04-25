@@ -496,18 +496,23 @@ def _run_dev_phase(
         prompt,
     )
 
-    _dev_timeout, _dev_override_active = resolve_timeout_with_active(
+    _resolved_timeout, _dev_override_active = resolve_timeout_with_active(
         config.dev_profile.timeout_seconds,
         config.dev_profile.timeout_medium_seconds,
         config.dev_profile.timeout_large_seconds,
         state.preflight_complexity,
         state.preflight_complexity_score,
     )
+    _dev_timeout = state.adaptive_dev_timeout_seconds or _resolved_timeout
     if _dev_override_active:
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
     else:
         _log(f"  Dev timeout: {_dev_timeout}s")
-    _dev_profile = _dc_replace(config.dev_profile, timeout_seconds=_dev_timeout)
+    _dev_profile = _dc_replace(
+        config.dev_profile,
+        timeout_seconds=_dev_timeout,
+        max_iterations=state.adaptive_dev_max or config.dev_profile.max_iterations,
+    )
 
     _dev_start = time.monotonic()
     dev_result = run_agent(
@@ -618,12 +623,12 @@ def _run_dev_phase(
     if (
         dev_result.success
         and state.error_type != "max_iterations_no_submit"
-        and state.total_dev_cost > config.dev_profile.budget_usd
+        and state.total_dev_cost > (state.adaptive_dev_budget_usd or config.dev_profile.budget_usd)
     ):
+        _budget_limit = state.adaptive_dev_budget_usd or config.dev_profile.budget_usd
         state.phase = Phase.ESCALATE
         state.error = (
-            f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} "
-            f"(limit ${config.dev_profile.budget_usd:.4f})"
+            f"Dev budget exceeded: spent ${state.total_dev_cost:.4f} (limit ${_budget_limit:.4f})"
         )
         _log(f"✗ ESCALATE   {state.error}")
         if logger:

@@ -9,6 +9,7 @@ from theforge.model_profiles import (
     RunOutcome,
     apply_run,
     backfill_from_history,
+    get_dev_complexity_stats,
     get_dev_success_rate,
     load_profiles,
     save_profiles,
@@ -36,6 +37,8 @@ def test_apply_run_records_dev_stats():
     assert dev["avg_cost_usd"] == 1.5
     assert dev["by_complexity"]["medium"]["runs"] == 1
     assert dev["by_complexity"]["medium"]["success_rate"] == 1.0
+    assert dev["by_complexity"]["medium"]["avg_iterations"] == 2.0
+    assert dev["by_complexity"]["medium"]["avg_cost_usd"] == 1.5
 
 
 def test_apply_run_averages_across_runs():
@@ -305,6 +308,48 @@ def test_get_dev_success_rate_requires_min_runs():
     assert get_dev_success_rate(profiles, "opus", "medium") == 0.8
     # Unknown model / role → None
     assert get_dev_success_rate(profiles, "gemini", "medium") is None
+
+
+def test_get_dev_complexity_stats_requires_band_averages():
+    profiles = {
+        "models": {
+            "sonnet": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 3,
+                            "avg_iterations": 2.5,
+                            "avg_cost_usd": 1.25,
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert get_dev_complexity_stats(profiles, "sonnet", "medium") == {
+        "runs": 3.0,
+        "avg_iterations": 2.5,
+        "avg_cost_usd": 1.25,
+    }
+
+
+def test_get_dev_complexity_stats_returns_none_under_min_runs():
+    profiles = {
+        "models": {
+            "sonnet": {
+                "dev": {
+                    "by_complexity": {
+                        "medium": {
+                            "runs": 2,
+                            "avg_iterations": 2.5,
+                            "avg_cost_usd": 1.25,
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert get_dev_complexity_stats(profiles, "sonnet", "medium") is None
 
 
 def test_complexity_bands_constant():

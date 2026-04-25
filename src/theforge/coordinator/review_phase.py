@@ -971,7 +971,9 @@ def _run_review_phase(
         config.retry.auto_model_escalation
         and _is_persistent_p1
         and not state.dev_escalated
-        and (state.total_dev_cost < config.dev_profile.budget_usd)
+        and (
+            state.total_dev_cost < (state.adaptive_dev_budget_usd or config.dev_profile.budget_usd)
+        )
     ):
         _curr_key = _find_registry_key_for_profile(config.dev_profile)
         if _curr_key is not None:

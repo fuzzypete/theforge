@@ -249,21 +249,74 @@ def _coordinator_loop(
     # Derive per-story adaptive iteration limits from preflight complexity and
     # historical usage.  RetryPolicy.adaptive_iterations=False returns the
     # policy floor values verbatim; floor and cap always bound the outcome.
-    from .adaptive_iterations import derive_limits  # noqa: PLC0415
+    from theforge.model_profiles import load_profiles  # noqa: PLC0415
 
-    if state.adaptive_dev_max == 0 or state.adaptive_review_max == 0:
+    from .adaptive_iterations import derive_limits  # noqa: PLC0415
+    from .util import resolve_timeout_with_active  # noqa: PLC0415
+
+    if (
+        state.adaptive_dev_max == 0
+        or state.adaptive_review_max == 0
+        or state.adaptive_dev_timeout_seconds == 0
+        or state.adaptive_dev_budget_usd == 0.0
+    ):
+        _static_dev_timeout, _timeout_override_active = resolve_timeout_with_active(
+            config.dev_profile.timeout_seconds,
+            config.dev_profile.timeout_medium_seconds,
+            config.dev_profile.timeout_large_seconds,
+            state.preflight_complexity,
+            state.preflight_complexity_score,
+        )
+        _static_dev_max = config.dev_profile.max_iterations or config.retry.max_dev_iterations
+        _static_dev_budget = config.dev_profile.budget_usd
+        _explicit_dev_override = "dev" in getattr(state, "_explicit_roles", set())
         _history_path = config.project_root / ".forge" / "audits" / "history.jsonl"
+        _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
+        _adaptive_resource_enabled = (
+            config.assignment.enabled
+            and config.assignment.adaptive_enabled
+            and not _explicit_dev_override
+        )
         _limits = derive_limits(
             state.preflight_complexity_score,
             state.preflight_complexity,
             config.retry,
-            _history_path,
+            model_name=config.dev_profile.name,
+            base_timeout_seconds=_static_dev_timeout,
+            base_budget_usd=_static_dev_budget,
+            static_dev_max=_static_dev_max,
+            review_history_path=_history_path,
+            model_profiles=load_profiles(_profiles_path) if _adaptive_resource_enabled else None,
         )
+        if not _adaptive_resource_enabled:
+            _audit = dict(_limits.audit)
+            _audit["enabled"] = False
+            _audit["explicit_dev_override"] = _explicit_dev_override
+            if _explicit_dev_override:
+                _audit["rationale"] = (
+                    "explicit dev forge.yaml override preserved over adaptive limits"
+                )
+            else:
+                _audit["rationale"] = (
+                    "adaptive assignment disabled; using static configured dev limits"
+                )
+            _limits = type(_limits)(
+                dev_max=_static_dev_max,
+                review_max=_limits.review_max,
+                dev_timeout_seconds=_static_dev_timeout,
+                dev_budget_usd=_static_dev_budget,
+                audit=_audit,
+            )
         state.adaptive_dev_max = _limits.dev_max
         state.adaptive_review_max = _limits.review_max
+        state.adaptive_dev_timeout_seconds = _limits.dev_timeout_seconds
+        state.adaptive_dev_budget_usd = _limits.dev_budget_usd
         state.adaptive_limits_audit = _limits.audit
         _log_verbose(
-            f"  adaptive limits: dev={_limits.dev_max} review={_limits.review_max} "
+            "  adaptive limits: "
+            f"dev_max={_limits.dev_max} review_max={_limits.review_max} "
+            f"dev_timeout={_limits.dev_timeout_seconds}s "
+            f"dev_budget=${_limits.dev_budget_usd:.4f} "
             f"({_limits.audit.get('rationale', '')})"
         )
 

@@ -403,6 +403,8 @@ class CoordinatorState:
     # to config.retry.max_dev_iterations / max_review_cycles in that case.
     adaptive_dev_max: int = 0
     adaptive_review_max: int = 0
+    adaptive_dev_timeout_seconds: int = 0
+    adaptive_dev_budget_usd: float = 0.0
     adaptive_limits_audit: dict = field(default_factory=dict)
     review_early_terminated: bool = False  # True when early-termination triggered
 
