@@ -777,6 +777,11 @@ criteria_checked: []
             preflight_sufficiency="implementation_ready",
             preflight_work_type="feature",
         )
+        cached_state.preflight_cache_snapshot = {
+            "worktree_head": "OK",
+            "evaluation_base_branch": "main",
+            "evaluation_base_branch_head": "OK",
+        }
 
         with (
             patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_gate(workspace)),

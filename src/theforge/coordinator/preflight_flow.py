@@ -50,6 +50,7 @@ from .preflight import (
     _parse_preflight_work_type,
     score_to_band,
 )
+from .preflight_cache import capture_preflight_cache_snapshot
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_duration, _log_phase
 
@@ -506,8 +507,13 @@ def _run_preflight_phase(
         "bundle_candidate": state.preflight_bundle_candidate,
         "branch_merged": branch_merged,
         "evaluation_base_branch": config.workspace.base_branch,
+        "cache_snapshot": capture_preflight_cache_snapshot(
+            config=config,
+            workspace_path=workspace_path,
+        ),
         "criteria_checked": state.preflight_criteria_checked,
     }
+    state.preflight_cache_snapshot = dict(_preflight_artifact["cache_snapshot"])
     _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
     _write_log_artifact(
         state.log_dir,

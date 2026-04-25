@@ -39,6 +39,11 @@ def _make_cached_state(
     state.preflight_work_type = "feature"
     state.preflight_likely_files = preflight_likely_files
     state.preflight_warnings = preflight_warnings  # type: ignore[assignment]
+    state.preflight_cache_snapshot = {
+        "worktree_head": "OK",
+        "evaluation_base_branch": "main",
+        "evaluation_base_branch_head": "OK",
+    }
     state.run_id = "prior-run-id"
     return state
 

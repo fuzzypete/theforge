@@ -10,10 +10,26 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest.mock import patch
 
-from coord_test_helpers import _make_config, _make_task
+from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import CoordinatorState, Phase
+
+
+def _with_cache_snapshot(state: CoordinatorState) -> CoordinatorState:
+    state.preflight_cache_snapshot = {
+        "worktree_head": "OK",
+        "evaluation_base_branch": "main",
+        "evaluation_base_branch_head": "OK",
+    }
+    return state
+
+
+def _shell_with_matching_cache(cmd, cwd, **kwargs):
+    rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+    if rendered.startswith("git rev-parse "):
+        return (True, "OK")
+    return (True, "")
 
 
 class TestCachedPreflightVerdictDispatch:
@@ -24,17 +40,19 @@ class TestCachedPreflightVerdictDispatch:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        cached_state = replace(
-            CoordinatorState(),
-            preflight_verdict="ALREADY_DONE",
-            preflight_reason="All acceptance criteria already satisfied.",
-            preflight_complexity="medium",
-            preflight_sufficiency="implementation_ready",
-            preflight_work_type="feature",
+        cached_state = _with_cache_snapshot(
+            replace(
+                CoordinatorState(),
+                preflight_verdict="ALREADY_DONE",
+                preflight_reason="All acceptance criteria already satisfied.",
+                preflight_complexity="medium",
+                preflight_sufficiency="implementation_ready",
+                preflight_work_type="feature",
+            )
         )
 
         with (
-            patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_matching_cache),
             patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
@@ -60,17 +78,19 @@ class TestCachedPreflightVerdictDispatch:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        cached_state = replace(
-            CoordinatorState(),
-            preflight_verdict="BLOCKED",
-            preflight_reason="Dependency removed_function() no longer exists.",
-            preflight_complexity="medium",
-            preflight_sufficiency="needs_planning",
-            preflight_work_type="feature",
+        cached_state = _with_cache_snapshot(
+            replace(
+                CoordinatorState(),
+                preflight_verdict="BLOCKED",
+                preflight_reason="Dependency removed_function() no longer exists.",
+                preflight_complexity="medium",
+                preflight_sufficiency="needs_planning",
+                preflight_work_type="feature",
+            )
         )
 
         with (
-            patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_matching_cache),
             patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
             patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
             patch("theforge.coordinator.plan_flow.run_agent") as mock_plan,
@@ -99,18 +119,20 @@ class TestCachedPreflightVerdictDispatch:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        cached_state = replace(
-            CoordinatorState(),
-            preflight_verdict="ALREADY_DONE",
-            preflight_reason="All acceptance criteria already satisfied.",
-            preflight_complexity="medium",
-            preflight_complexity_score=7,
-            preflight_sufficiency="implementation_ready",
-            preflight_work_type="feature",
+        cached_state = _with_cache_snapshot(
+            replace(
+                CoordinatorState(),
+                preflight_verdict="ALREADY_DONE",
+                preflight_reason="All acceptance criteria already satisfied.",
+                preflight_complexity="medium",
+                preflight_complexity_score=7,
+                preflight_sufficiency="implementation_ready",
+                preflight_work_type="feature",
+            )
         )
 
         with (
-            patch("theforge.coordinator.util._run_shell", return_value=(True, "")),
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_matching_cache),
             patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=True),
             patch("theforge.coordinator.preflight_flow.run_agent"),
             patch("theforge.coordinator.dev_phase.run_agent"),
@@ -121,3 +143,65 @@ class TestCachedPreflightVerdictDispatch:
 
         assert result.state.preflight_complexity_score == 7
         assert result.state.preflight_complexity == "medium"
+
+    def test_stale_cached_preflight_is_invalidated_and_rerun(self, tmp_path):
+        """Changed git state must invalidate cached preflight and trigger a fresh run."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="ALREADY_DONE",
+            preflight_reason="Stale cached verdict.",
+            preflight_complexity="medium",
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+            preflight_cache_snapshot={
+                "worktree_head": "old-head",
+                "evaluation_base_branch": "main",
+                "evaluation_base_branch_head": "base-head",
+            },
+        )
+
+        fresh_preflight = _make_agent_result(
+            output="""\
+```yaml
+verdict: PROCEED
+complexity: small
+sufficiency: implementation_ready
+work_type: bug
+reason: "Head changed; reevaluated."
+criteria_checked: []
+```
+""",
+            profile_name="preflight",
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if rendered.startswith("git rev-parse "):
+                return (True, "new-head" if str(cwd) == str(workspace) else "base-head")
+            return (True, "")
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                return_value=fresh_preflight,
+            ) as mock_preflight,
+        ):
+            result = run_task(
+                config,
+                task,
+                cached_preflight_state=cached_state,
+                stop_phase=Phase.PREFLIGHT,
+            )
+
+        assert result.success is True
+        assert mock_preflight.call_count == 1
+        assert result.state.preflight_cached is False
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_cache_validation["status"] == "invalidated"
+        assert result.state.preflight_cache_validation["reason"] == "worktree_head_changed"

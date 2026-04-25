@@ -445,6 +445,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "cached": state.preflight_cached,
                 "original_verdict": state.preflight_cached_original_verdict,
                 "source_run_id": state.preflight_cached_from_run_id,
+                "cache_snapshot": state.preflight_cache_snapshot or None,
+                "cache_validation": state.preflight_cache_validation or None,
                 "degraded": state.preflight_degraded,
                 "degraded_reason": state.preflight_degraded_reason,
                 **(

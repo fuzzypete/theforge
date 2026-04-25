@@ -95,6 +95,28 @@ class TestDurationAndCostNoneChecks:
         assert "fast-reviewer" in per_reviewer
         assert per_reviewer["fast-reviewer"]["cost"] == 0.0
 
+    def test_preflight_cache_snapshot_and_validation_appear_in_audit(self, tmp_path: Path) -> None:
+        """Preflight audit block serializes cache git-state details for diagnosis."""
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_reason = "ok"
+        state.preflight_cache_snapshot = {
+            "worktree_head": "abc123",
+            "evaluation_base_branch": "main",
+            "evaluation_base_branch_head": "def456",
+        }
+        state.preflight_cache_validation = {
+            "status": "invalidated",
+            "reason": "worktree_head_changed",
+            "cached_worktree_head": "abc123",
+            "current_worktree_head": "fedcba",
+        }
+
+        log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), _make_result(state))
+
+        assert log["preflight"]["cache_snapshot"]["worktree_head"] == "abc123"
+        assert log["preflight"]["cache_validation"]["reason"] == "worktree_head_changed"
+
 
 class TestHasReviewApprove:
     def test_no_history_file(self, tmp_path: Path) -> None:

@@ -47,6 +47,15 @@ def _make_review_finding(
     )
 
 
+def _with_cache_snapshot(state: CoordinatorState) -> CoordinatorState:
+    state.preflight_cache_snapshot = {
+        "worktree_head": "OK",
+        "evaluation_base_branch": "main",
+        "evaluation_base_branch_head": "OK",
+    }
+    return state
+
+
 # _make_smart_config for escalation tests (2-model config)
 def _make_smart_config(
     tmp_path: Path,
@@ -312,7 +321,7 @@ class TestDevModelEscalationIntegration:
         task = _make_task(tmp_path)
         workspace = tmp_path / task.slug
         workspace.mkdir()
-        cached_state = _cached_proceed_state_with_complexity()
+        cached_state = _with_cache_snapshot(_cached_proceed_state_with_complexity())
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_plan_agent.side_effect = mock_agent

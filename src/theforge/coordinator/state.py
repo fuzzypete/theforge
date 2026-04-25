@@ -298,6 +298,8 @@ class CoordinatorState:
     preflight_cached: bool = False
     preflight_cached_from_run_id: str | None = None
     preflight_cached_original_verdict: str | None = None
+    preflight_cache_snapshot: dict[str, str] = field(default_factory=dict)
+    preflight_cache_validation: dict[str, Any] = field(default_factory=dict)
     preflight_degraded: bool = False
     preflight_degraded_reason: str | None = None
     preflight_criteria_checked: list[dict] = field(default_factory=list)
