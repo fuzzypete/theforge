@@ -392,7 +392,7 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
     """Extract criteria_checked list from preflight agent output.
 
     Each entry should have: criterion (str), files_checked (list[str]),
-    satisfied (bool), evidence (str).
+    runtime_path (str), satisfied (bool), evidence (str).
 
     Returns [] on parse failure, missing key, or non-list value so that
     callers can treat an absent map as insufficient evidence (conservative).
@@ -422,6 +422,7 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
                 {
                     "criterion": str(entry.get("criterion", "")),
                     "files_checked": list(entry.get("files_checked") or []),
+                    "runtime_path": str(entry.get("runtime_path", "")),
                     "satisfied": bool(entry.get("satisfied", False)),
                     "evidence": str(entry.get("evidence", "")),
                 }

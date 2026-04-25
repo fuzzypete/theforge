@@ -222,8 +222,13 @@ def build_preflight_prompt(
           - criterion: "<acceptance criterion text>"
             files_checked:
               - "<repo-relative path[:line] inspected to check this criterion>"
+            runtime_path: >-
+              <path:line or function chain proving the live pipeline
+              executes this behavior>
             satisfied: true | false
-            evidence: "<conclusion: what confirms it is satisfied, or what is missing>"
+            evidence: >-
+              <conclusion: how the cited runtime path turns the relevant
+              input into the observable behavior/output, or what is missing>
         ```
 
         Use `spec_issues: []` if the spec is clean.
@@ -240,11 +245,24 @@ def build_preflight_prompt(
         The `files_checked` list is the evidence map: AC → files inspected → conclusion.
         A valid ALREADY_DONE verdict requires non-empty `files_checked` for every criterion.
         An empty `files_checked` means the criterion was not actually checked.
+        A valid ALREADY_DONE verdict also requires a non-empty `runtime_path` for every
+        criterion. `runtime_path` must cite the live orchestrator/coordinator/sprint call
+        path that actually exercises the behavior, not a related helper that merely exists.
 
         ## Rules
 
         - Check EVERY acceptance criterion individually. Do not shortcut.
         - "Related code exists" is NOT the same as "criterion is satisfied."
+        - For ALREADY_DONE, every `criteria_checked` entry must cite the actual runtime
+          path that executes the criterion on the configured pipeline. Naming a helper,
+          config field, or nearby module is insufficient unless you prove the live path
+          calls into it.
+        - For ALREADY_DONE, every `evidence` field must explain observable behavior:
+          input/state → executed runtime path → output/side effect that satisfies the
+          criterion. Merely saying a symbol exists is insufficient.
+        - Counter-example: "src/theforge/assignment.py defines assign_models()" does NOT
+          satisfy a routing acceptance criterion unless you also cite the coordinator or
+          sprint runtime path that actually invokes it for this story's configured flow.
         - Evaluate ALREADY_DONE against the configured target baseline branch
           content from `config.workspace.base_branch`, not the resumed worktree contents.
         - If even ONE criterion is unsatisfied, the verdict cannot be ALREADY_DONE.

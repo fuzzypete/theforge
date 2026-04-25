@@ -69,6 +69,11 @@ _AMBIGUITY_TOKENS = (
 )
 
 
+def _evidence_is_too_thin(evidence: str) -> bool:
+    """Return True when evidence is too short to justify ALREADY_DONE."""
+    return len(evidence.strip()) < 20
+
+
 def _has_prior_execution_evidence(
     project_root: "Path", branch_name: str, base_branch: str
 ) -> bool:
@@ -363,6 +368,21 @@ def _run_preflight_phase(
             _log(f"  ⚠ PREFLIGHT warnings: {'; '.join(_warnings)}")
         if _likely_files is not None:
             _log(f"  Likely files: {', '.join(_likely_files)}")
+        for entry in criteria_checked:
+            criterion = entry.get("criterion", "(unnamed)")
+            files_checked = entry.get("files_checked") or []
+            runtime_path = entry.get("runtime_path", "")
+            evidence = " ".join(str(entry.get("evidence", "")).split())
+            if len(evidence) > 200:
+                evidence = f"{evidence[:197]}..."
+            _log_verbose(
+                "  Criteria checked: "
+                f"criterion={criterion!r} "
+                f"satisfied={entry.get('satisfied', False)} "
+                f"files_checked={files_checked!r} "
+                f"runtime_path={runtime_path!r} "
+                f"evidence={evidence!r}"
+            )
 
         # ── ALREADY_DONE evidence downgrade ───────────────────────────
         # Require that every AC has concrete file evidence (files_checked is
@@ -378,11 +398,26 @@ def _run_preflight_phase(
             else:
                 for entry in criteria_checked:
                     criterion = entry.get("criterion", "(unnamed)")
+                    runtime_path = str(entry.get("runtime_path", "")).strip()
+                    evidence = str(entry.get("evidence", "")).strip()
                     if not entry.get("satisfied"):
                         downgrade_reasons.append(f"AC '{criterion}' marked satisfied=false")
                     elif not entry.get("files_checked"):
                         downgrade_reasons.append(
                             f"AC '{criterion}' lacked concrete evidence (no files_checked)"
+                        )
+                    elif not runtime_path:
+                        downgrade_reasons.append(
+                            f"AC '{criterion}' lacked runtime-path evidence (runtime_path missing)"
+                        )
+                    elif not evidence:
+                        downgrade_reasons.append(
+                            f"AC '{criterion}' lacked concrete evidence (evidence missing)"
+                        )
+                    elif _evidence_is_too_thin(evidence):
+                        downgrade_reasons.append(
+                            f"AC '{criterion}' evidence too thin for ALREADY_DONE "
+                            f"(len={len(evidence)})"
                         )
             if downgrade_reasons:
                 verdict = "PROCEED"

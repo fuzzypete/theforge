@@ -1,8 +1,11 @@
-"""Tests for preflight ALREADY_DONE AC-evidence downgrade logic (issue #705).
+"""Tests for preflight ALREADY_DONE AC-evidence downgrade logic.
 
 Acceptance criteria:
-- All ACs evidenced (files_checked non-empty, satisfied=true) → ALREADY_DONE honored
+- All ACs evidenced (files_checked non-empty, runtime_path present, satisfied=true)
+  → ALREADY_DONE honored
 - Any AC lacking files_checked evidence → verdict downgraded to PROCEED
+- Any AC lacking runtime_path evidence → verdict downgraded to PROCEED
+- Any AC with empty or thin evidence → verdict downgraded to PROCEED
 - Missing/empty criteria_checked → verdict downgraded to PROCEED
 - criteria_checked evidence map persists in the preflight.yaml artifact
 """
@@ -21,6 +24,7 @@ from coord_test_helpers import (
 )
 
 from theforge.coordinator.engine import run_task
+from theforge.coordinator.preflight import _parse_preflight_criteria_checked
 from theforge.coordinator.state import Phase
 
 # ── Test fixtures ─────────────────────────────────────────────────────────────
@@ -38,12 +42,18 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/coordinator/engine.py"
-    evidence: "Found implementation at engine.py:42"
+    runtime_path: "run_task() -> _run_preflight_phase() -> engine execution path"
+    evidence: >-
+      The coordinator enters the runtime path in engine.py and executes the
+      behavior, producing the expected observable result for Feature X.
   - criterion: "Feature X has tests"
     satisfied: true
     files_checked:
       - "tests/test_coord_engine.py"
-    evidence: "Test coverage confirmed at test_coord_engine.py:100"
+    runtime_path: "run_task() -> validate/review path asserts the covered behavior"
+    evidence: >-
+      The covered runtime path is exercised by the test case, which verifies
+      the expected output and keeps the acceptance criterion observable.
 ```
 """
 
@@ -60,11 +70,17 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/coordinator/engine.py"
-    evidence: "Confirmed at engine.py:42"
+    runtime_path: "run_task() -> _run_preflight_phase() -> engine execution path"
+    evidence: >-
+      The live coordinator path executes the implementation and yields the
+      expected behavior.
   - criterion: "Feature Y is implemented"
     satisfied: true
     files_checked: []
-    evidence: "Believed to be done but no file checked"
+    runtime_path: "run_task() -> _run_preflight_phase() -> engine execution path"
+    evidence: >-
+      The claim may be true, but there is no inspected file proving the live
+      path satisfies Feature Y.
 ```
 """
 
@@ -92,7 +108,63 @@ criteria_checked:
     satisfied: false
     files_checked:
       - "src/theforge/coordinator/engine.py"
-    evidence: "Found partial implementation"
+    runtime_path: "run_task() -> _run_preflight_phase() -> engine execution path"
+    evidence: >-
+      The live path reaches partial implementation only, so the observable
+      output does not satisfy the criterion.
+```
+"""
+
+PREFLIGHT_ALREADY_DONE_MISSING_RUNTIME_PATH = """\
+```yaml
+verdict: ALREADY_DONE
+reason: "The code looks done."
+complexity: small
+sufficiency: implementation_ready
+work_type: feature
+criteria_checked:
+  - criterion: "Feature X is implemented"
+    satisfied: true
+    files_checked:
+      - "src/theforge/coordinator/engine.py"
+    evidence: >-
+      The coordinator path executes the implementation and returns the
+      expected behavior for Feature X.
+```
+"""
+
+PREFLIGHT_ALREADY_DONE_THIN_EVIDENCE = """\
+```yaml
+verdict: ALREADY_DONE
+reason: "The code looks done."
+complexity: small
+sufficiency: implementation_ready
+work_type: feature
+criteria_checked:
+  - criterion: "Feature X is implemented"
+    satisfied: true
+    files_checked:
+      - "src/theforge/coordinator/engine.py"
+    runtime_path: "run_task() -> _run_preflight_phase() -> engine execution path"
+    evidence: "Implemented."
+```
+"""
+
+PREFLIGHT_ALREADY_DONE_NO_RUNTIME_PATH_FIELD = """\
+```yaml
+verdict: ALREADY_DONE
+reason: "The code looks done."
+complexity: small
+sufficiency: implementation_ready
+work_type: feature
+criteria_checked:
+  - criterion: "Feature X is implemented"
+    satisfied: true
+    files_checked:
+      - "src/theforge/coordinator/engine.py"
+    evidence: >-
+      The coordinator path executes the implementation and returns the
+      expected behavior for Feature X.
 ```
 """
 
@@ -139,6 +211,10 @@ class TestPreflightAlreadyDoneVerification:
             result.state.preflight_criteria_checked[0]["criterion"] == "Feature X is implemented"
         )
         assert result.state.preflight_criteria_checked[0]["satisfied"] is True
+        assert (
+            result.state.preflight_criteria_checked[0]["runtime_path"]
+            == "run_task() -> _run_preflight_phase() -> engine execution path"
+        )
         assert (
             "src/theforge/coordinator/engine.py"
             in result.state.preflight_criteria_checked[0]["files_checked"]
@@ -295,3 +371,94 @@ class TestPreflightAlreadyDoneVerification:
         assert len(criteria) == 2
         assert criteria[0]["criterion"] == "Feature X is implemented"
         assert "src/theforge/coordinator/engine.py" in criteria[0]["files_checked"]
+        assert criteria[0]["runtime_path"] == (
+            "run_task() -> _run_preflight_phase() -> engine execution path"
+        )
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_missing_runtime_path_downgraded_to_proceed(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """AC without runtime_path → ALREADY_DONE downgraded to PROCEED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE_MISSING_RUNTIME_PATH, cost_usd=0.05
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "PROCEED"
+        assert any("runtime_path missing" in w for w in (result.state.preflight_warnings or []))
+        mock_dev.assert_called()
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch("theforge.coordinator.util._run_shell")
+    def test_thin_evidence_downgraded_to_proceed(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """AC with evidence shorter than 20 chars → ALREADY_DONE downgraded to PROCEED."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_ALREADY_DONE_THIN_EVIDENCE, cost_usd=0.05
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.state.preflight_verdict == "PROCEED"
+        assert any("evidence too thin" in w for w in (result.state.preflight_warnings or []))
+        mock_dev.assert_called()
+
+    def test_parse_criteria_checked_captures_runtime_path(self) -> None:
+        criteria = _parse_preflight_criteria_checked(PREFLIGHT_ALREADY_DONE_ALL_EVIDENCED)
+
+        assert len(criteria) == 2
+        assert criteria[0]["runtime_path"] == (
+            "run_task() -> _run_preflight_phase() -> engine execution path"
+        )
+        assert criteria[0]["evidence"].startswith("The coordinator enters the runtime path")
+
+    def test_parse_criteria_checked_defaults_runtime_path_when_absent(self) -> None:
+        criteria = _parse_preflight_criteria_checked(PREFLIGHT_ALREADY_DONE_NO_RUNTIME_PATH_FIELD)
+
+        assert len(criteria) == 1
+        assert criteria[0]["runtime_path"] == ""
+        assert criteria[0]["criterion"] == "Feature X is implemented"
