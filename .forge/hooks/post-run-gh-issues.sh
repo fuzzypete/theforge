@@ -26,5 +26,7 @@ echo "$payload" | jq -c '.findings[]' | while read -r finding; do
 ${desc}
 
 *Filed by theforge post_run hook.*" \
-    --label "forge-${sev,,}" || true
+    --label "forge-finding" \
+    --label "forge-${sev,,}" \
+    --label "needs-triage" || true
 done
